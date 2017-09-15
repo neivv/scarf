@@ -98,10 +98,17 @@ impl<'a, 'b> Instruction<'a, 'b> {
     }
 }
 
+struct InstructionPrefixes {
+    prefix_66: bool,
+    prefix_67: bool,
+    prefix_f2: bool,
+    prefix_f3: bool,
+}
+
 pub struct InstructionOps<'a, 'exec> {
     address: VirtualAddress,
     data: &'a [u8],
-    prefix_bytes: u8,
+    prefixes: InstructionPrefixes,
     pos: u8,
     ctx: &'exec OperandContext,
 }
@@ -114,7 +121,7 @@ impl<'a, 'exec: 'a> Iterator for InstructionOps<'a, 'exec> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
 
-        let op = match self.data[self.prefix_bytes as usize] {
+        let op = match self.data[0] {
             0x00 ... 0x03 => self.generic_arith_op(add_ops, add_flags, result_flags),
             0x04 ... 0x05 => self.eax_imm_arith(add_ops, add_flags, result_flags),
             0x08 ... 0x0b => self.generic_arith_op(or_ops, zero_carry_oflow, result_flags),
@@ -197,7 +204,7 @@ impl<'a, 'exec: 'a> Iterator for InstructionOps<'a, 'exec> {
             0xfc => self.flag_set(Flag::Direction, false),
             0xfd => self.flag_set(Flag::Direction, true),
             0xfe ... 0xff => self.various_fe_ff(),
-            0xf => match self.data[self.prefix_bytes as usize + 1] {
+            0xf => match self.data[1] {
                 0x11 => self.mov_sse_11(),
                 // Nop
                 0x1f => None,
@@ -234,15 +241,34 @@ impl<'a, 'exec: 'a> InstructionOps<'a, 'exec> {
     ) -> InstructionOps<'b, 'e> {
         let is_prefix_byte = |byte| match byte {
             0x64 => true, // TODO fs segment is not handled
+            0x65 => true, // TODO gs segment is not handled
             0x66 => true,
             0x67 => true,
+            0xf2 => true,
             0xf3 => true,
             _ => false,
         };
+        let mut prefixes = InstructionPrefixes {
+            prefix_66: false,
+            prefix_67: false,
+            prefix_f2: false,
+            prefix_f3: false,
+        };
+
+        let prefix_count = data.iter().take_while(|&&x| is_prefix_byte(x)).count();
+        for &prefix in data.iter().take_while(|&&x| is_prefix_byte(x)) {
+            match prefix {
+                0x66 => prefixes.prefix_66 = true,
+                0x67 => prefixes.prefix_67 = true,
+                0xf2 => prefixes.prefix_f2 = true,
+                0xf3 => prefixes.prefix_f3 = true,
+                _ => (),
+            }
+        }
         InstructionOps {
             address,
-            data,
-            prefix_bytes: data.iter().take_while(|&&x| is_prefix_byte(x)).count() as u8,
+            data: &data[prefix_count..],
+            prefixes,
             pos: 0,
             ctx,
         }
@@ -257,22 +283,31 @@ impl<'a, 'exec: 'a> InstructionOps<'a, 'exec> {
     }
 
     fn has_prefix(&self, val: u8) -> bool {
-        self.data[..self.prefix_bytes as usize].iter().any(|&x| x == val)
+        match val {
+            0x66 => self.prefixes.prefix_66,
+            0x67 => self.prefixes.prefix_67,
+            0xf2 => self.prefixes.prefix_f2,
+            0xf3 => self.prefixes.prefix_f3,
+            _ => {
+                error!("Tried to check prefix {:x}", val);
+                false
+            }
+        }
     }
 
     fn get(&self, idx: usize) -> u8 {
-        if self.data[self.prefix_bytes as usize + 0] == 0xf {
-            self.data[self.prefix_bytes as usize + idx + 1]
+        if self.data[0] == 0xf {
+            self.data[idx + 1]
         } else {
-            self.data[self.prefix_bytes as usize + idx]
+            self.data[idx]
         }
     }
 
     fn slice(&self, idx: usize) -> &[u8] {
-        if self.data[self.prefix_bytes as usize + 0] == 0xf {
-            &self.data[self.prefix_bytes as usize + idx + 1..]
+        if self.data[0] == 0xf {
+            &self.data[idx + 1..]
         } else {
-            &self.data[self.prefix_bytes as usize + idx..]
+            &self.data[idx..]
         }
     }
 
