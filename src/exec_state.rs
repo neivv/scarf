@@ -185,10 +185,10 @@ pub struct XmmOperand(InternedOperand, InternedOperand, InternedOperand, Interne
 impl XmmOperand {
     fn undefined(ctx: &OperandContext, interner: &mut InternMap) -> XmmOperand {
         XmmOperand(
-            interner.intern(ctx.undefined_rc()),
-            interner.intern(ctx.undefined_rc()),
-            interner.intern(ctx.undefined_rc()),
-            interner.intern(ctx.undefined_rc()),
+            interner.new_undef(ctx),
+            interner.new_undef(ctx),
+            interner.new_undef(ctx),
+            interner.new_undef(ctx),
         )
     }
 
@@ -327,6 +327,8 @@ impl<'a> Destination<'a> {
 ///
 /// Generally anything that gets set as ExecutionState field gets interned here, other
 /// intermediate values do not.
+///
+/// Additionally, Undefined(n) is always InternedOperand(!n)
 pub struct InternMap {
     map: Vec<Rc<Operand>>,
     reverse: HashMap<Rc<Operand>, InternedOperand>,
@@ -344,25 +346,39 @@ impl InternMap {
     }
 
     pub fn intern(&mut self, val: Rc<Operand>) -> InternedOperand {
-        match self.reverse.entry(val.clone()) {
-            hash_map::Entry::Occupied(e) => *e.get(),
-            hash_map::Entry::Vacant(e) => {
-                let new = InternedOperand(self.map.len() as u32);
-                e.insert(new);
-                self.map.push(val);
-                new
+        if let OperandType::Undefined(id) = val.ty {
+            InternedOperand(!id.0)
+        } else {
+            match self.reverse.entry(val.clone()) {
+                hash_map::Entry::Occupied(e) => *e.get(),
+                hash_map::Entry::Vacant(e) => {
+                    let new = InternedOperand(self.map.len() as u32);
+                    e.insert(new);
+                    self.map.push(val);
+                    new
+                }
             }
         }
     }
 
+    /// Faster than `self.intern(ctx.undefined_rc())`
+    pub fn new_undef(&self, ctx: &OperandContext) -> InternedOperand {
+        InternedOperand(!ctx.new_undefined_id())
+    }
+
     pub fn operand(&self, val: InternedOperand) -> Rc<Operand> {
-        self.map[val.0 as usize].clone()
+        if val.0 > 0x80000000 {
+            let ty = OperandType::Undefined(operand::UndefinedId(!val.0));
+            Operand::new_simplified_rc(ty)
+        } else {
+            self.map[val.0 as usize].clone()
+        }
     }
 }
 
 impl Flags {
     fn undefined(ctx: &OperandContext, interner: &mut InternMap) -> Flags {
-        let undef = |interner: &mut InternMap| interner.intern(ctx.undefined_rc());
+        let undef = |interner: &mut InternMap| interner.new_undef(ctx);
         Flags {
             zero: undef(interner),
             carry: undef(interner),
@@ -377,7 +393,7 @@ impl Flags {
 
 impl<'a> ExecutionState<'a> {
     pub fn new<'b>(ctx: &'b OperandContext, interner: &mut InternMap) -> ExecutionState<'b> {
-        let undef = |interner: &mut InternMap| interner.intern(ctx.undefined_rc());
+        let undef = |interner: &mut InternMap| interner.new_undef(ctx);
         ExecutionState {
             registers: [
                 undef(interner),
@@ -452,10 +468,10 @@ impl<'a> ExecutionState<'a> {
                     .set(resolved, intern_map)?;
             }
             Operation::Call(_) => {
-                self.registers[0] = intern_map.intern(self.ctx.undefined_rc());
-                self.registers[1] = intern_map.intern(self.ctx.undefined_rc());
-                self.registers[2] = intern_map.intern(self.ctx.undefined_rc());
-                self.registers[4] = intern_map.intern(self.ctx.undefined_rc());
+                self.registers[0] = intern_map.new_undef(self.ctx);
+                self.registers[1] = intern_map.new_undef(self.ctx);
+                self.registers[2] = intern_map.new_undef(self.ctx);
+                self.registers[4] = intern_map.new_undef(self.ctx);
                 self.flags = Flags::undefined(self.ctx, intern_map);
             }
             x => return Err(Error::Unimplemented(format!("{:?}", x))),
@@ -739,7 +755,7 @@ pub fn merge_states<'a>(
     let merge = |a: InternedOperand, b: InternedOperand, i: &mut InternMap| -> InternedOperand {
         match a == b {
             true => a,
-            false => i.intern(old.ctx.undefined_rc()),
+            false => i.new_undef(old.ctx),
         }
     };
     let merge_xmm = |a: &XmmOperand, b: &XmmOperand, i: &mut InternMap| -> XmmOperand {

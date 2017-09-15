@@ -312,7 +312,7 @@ impl ArithOpType {
 
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
-pub struct UndefinedId(u32);
+pub struct UndefinedId(pub u32);
 
 #[derive(Debug)]
 pub struct OperandContext {
@@ -426,9 +426,16 @@ impl OperandContext {
     }
 
     fn undefined(&self) -> Operand {
-        let id = self.next_undefined.get();
-        self.next_undefined.set(id.checked_add(1).expect("Undefined id overflow"));
+        let id = self.new_undefined_id();
         Operand::new_simplified(OperandType::Undefined(UndefinedId(id)))
+    }
+
+    pub fn new_undefined_id(&self) -> u32 {
+        let id = self.next_undefined.get();
+        // exec_state InternMap relies on this.
+        assert!(id < u32::max_value() / 2);
+        self.next_undefined.set(id + 1);
+        id
     }
 
     pub fn undefined_rc(&self) -> Rc<Operand> {
