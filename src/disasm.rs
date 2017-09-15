@@ -105,11 +105,19 @@ struct InstructionPrefixes {
     prefix_f3: bool,
 }
 
-pub struct InstructionOps<'a, 'exec> {
+pub struct InstructionOps<'a, 'exec: 'a> {
+    inner: InstructionOpsState<'a, 'exec>,
+    next_fn: Box<
+        FnMut(&mut InstructionOpsState) -> Option<Result<Operation, Error>> + 'static
+    >,
+}
+
+struct InstructionOpsState<'a, 'exec: 'a> {
     address: VirtualAddress,
     data: &'a [u8],
     prefixes: InstructionPrefixes,
     pos: u8,
+    len: u8,
     ctx: &'exec OperandContext,
 }
 
@@ -117,120 +125,18 @@ impl<'a, 'exec: 'a> Iterator for InstructionOps<'a, 'exec> {
     type Item = Result<Operation, Error>;
 
     fn next(&mut self) -> Option<Result<Operation, Error>> {
-        use self::Error::*;
-        use self::operation_helpers::*;
-        use operand::operand_helpers::*;
-
-        let op = match self.data[0] {
-            0x00 ... 0x03 => self.generic_arith_op(add_ops, add_flags, result_flags),
-            0x04 ... 0x05 => self.eax_imm_arith(add_ops, add_flags, result_flags),
-            0x08 ... 0x0b => self.generic_arith_op(or_ops, zero_carry_oflow, result_flags),
-            0x0c ... 0x0d => self.eax_imm_arith(or_ops, zero_carry_oflow, result_flags),
-            0x20 ... 0x23 => self.generic_arith_op(and_ops, zero_carry_oflow, result_flags),
-            0x24 ... 0x25 => self.eax_imm_arith(and_ops, zero_carry_oflow, result_flags),
-            0x28 ... 0x2b => self.generic_arith_op(sub_ops, sub_flags, result_flags),
-            0x2c ... 0x2d => self.eax_imm_arith(sub_ops, sub_flags, result_flags),
-            0x30 ... 0x33 => self.generic_arith_op(xor_ops, zero_carry_oflow, result_flags),
-            0x34 ... 0x35 => self.eax_imm_arith(xor_ops, zero_carry_oflow, result_flags),
-            // Cmp
-            0x38 ... 0x3b => self.generic_cmp_op(operand_sub, sub_flags, result_flags),
-            0x3c ... 0x3d => self.eax_imm_cmp(operand_sub, sub_flags, result_flags),
-            0x40 ... 0x4f => self.inc_dec_op(),
-            0x50 ... 0x5f => self.pushpop_reg_op(),
-            0x68 | 0x6a => self.push_imm(),
-            0x69 | 0x6b => self.signed_multiply_rm_imm(),
-            0x70 ... 0x7f => self.conditional_jmp(MemAccessSize::Mem8),
-            0x80 ... 0x83 => self.arith_with_imm_op(),
-            // Test
-            0x84 ... 0x85 => self.generic_cmp_op(operand_and, zero_carry_oflow, result_flags),
-            0x86 ... 0x87 => self.xchg(),
-            0x88 ... 0x8b => self.generic_arith_op(mov_ops, |_, _, s| Err(s), |_, _, _| None),
-            0x8d => self.generic_arith_op(lea_ops, |_, _, s| Err(s), |_, _, _| None),
-            0x90 => None,
-            // Cwde
-            0x98 => match self.pos {
-                0 => Some(Ok(and(operand_register(0), constval(0xffff)))),
-                1 => {
-                    let eax = operand_register(0);
-                    let signed_max = constval(0x7fff);
-                    let compare = ArithOpType::GreaterThan(eax.clone(), signed_max);
-                    let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
-                    let negative_sign_extend = operand_or(eax.clone(), constval(0xffff0000));
-                    Some(Ok(Operation::Move((*eax).clone().into(), negative_sign_extend, Some(cond))))
-                }
-                _ => None,
-            },
-            // Cdq
-            0x99 => match self.pos {
-                0 => Some(Ok(mov(operand_register(2), constval(0)))),
-                1 => {
-                    let eax = operand_register(0);
-                    let edx = operand_register(2);
-                    let signed_max = constval(0x7fffffff);
-                    let compare = ArithOpType::GreaterThan(eax, signed_max);
-                    let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
-                    Some(Ok(Operation::Move((*edx).clone().into(), constval(!0), Some(cond))))
-                }
-                _ => None,
-            },
-            0xa0 ... 0xa3 => self.move_mem_eax(),
-            0xa8 ... 0xa9 => self.eax_imm_cmp(operand_and, zero_carry_oflow, result_flags),
-            0xb0 ... 0xbf => self.move_const_to_reg(),
-            0xc0 ... 0xc1 => self.bitwise_with_imm_op(),
-            0xc2 ... 0xc3 => {
-                let stack_pop_size = match self.data[0] {
-                    0xc2 => match read_u16(self.slice(1)) {
-                        Err(e) => return Some(Err(e)),
-                        Ok(o) => o as u32,
-                    },
-                    _ => 0,
-                };
-                match self.pos {
-                    0 => Some(Ok(Operation::Return(stack_pop_size))),
-                    _ => None,
-                }
-            }
-            0xc6 ... 0xc7 => self.generic_arith_with_imm_op(&MOV_OPS, match self.get(0) {
-                0xc6 => MemAccessSize::Mem8,
-                _ => self.mem16_32(),
-            }),
-            0xd0 ... 0xd3 => self.bitwise_compact_op(),
-            0xe8 => self.call_op(),
-            0xe9 => self.jump_op(),
-            0xeb => self.short_jmp(),
-            0xf6 | 0xf7 => self.various_f7(),
-            0xf8 => self.flag_set(Flag::Carry, false),
-            0xf9 => self.flag_set(Flag::Carry, true),
-            0xfc => self.flag_set(Flag::Direction, false),
-            0xfd => self.flag_set(Flag::Direction, true),
-            0xfe ... 0xff => self.various_fe_ff(),
-            0xf => match self.data[1] {
-                0x11 => self.mov_sse_11(),
-                // Nop
-                0x1f => None,
-                // Rdtsc
-                0x31 => match self.pos {
-                    0 => Some(Ok(mov(operand_register(0), self.ctx.undefined_rc()))),
-                    1 => Some(Ok(mov(operand_register(2), self.ctx.undefined_rc()))),
-                    _ => None,
-                },
-                0x40 ... 0x4f => self.cmov(),
-                0x57 => self.xorps(),
-                0x6e => self.mov_sse_6e(),
-                0x7e => self.mov_sse_7e(),
-                0x80 ... 0x8f => self.conditional_jmp(self.mem16_32()),
-                0x90 ... 0x9f => self.conditional_set(),
-                0xb6 ... 0xb7 => self.movzx(),
-                0xbe ... 0xbf => self.movsx(),
-                0xd3 => self.packed_shift_right(),
-                0xd6 => self.mov_sse_d6(),
-                _ => Some(Err(UnknownOpcode(self.data.into())))
-            },
-            _ => Some(Err(UnknownOpcode(self.data.into())))
-        };
-        self.pos = self.pos.checked_add(1).unwrap();
-        op
+        let result = (self.next_fn)(&mut self.inner);
+        self.inner.pos = self.inner.pos.checked_add(1).unwrap();
+        result
     }
+}
+
+// Type hints the closure
+fn ins_next<V>(val: V) ->
+    Box<FnMut(&mut InstructionOpsState) -> Option<Result<Operation, Error>> + 'static>
+where V: FnMut(&mut InstructionOpsState) -> Option<Result<Operation, Error>> + 'static,
+{
+    Box::new(val)
 }
 
 impl<'a, 'exec: 'a> InstructionOps<'a, 'exec> {
@@ -239,6 +145,10 @@ impl<'a, 'exec: 'a> InstructionOps<'a, 'exec> {
         data: &'b [u8],
         ctx: &'e OperandContext,
     ) -> InstructionOps<'b, 'e> {
+        use self::Error::*;
+        use self::operation_helpers::*;
+        use operand::operand_helpers::*;
+
         let is_prefix_byte = |byte| match byte {
             0x64 => true, // TODO fs segment is not handled
             0x65 => true, // TODO gs segment is not handled
@@ -265,21 +175,166 @@ impl<'a, 'exec: 'a> InstructionOps<'a, 'exec> {
                 _ => (),
             }
         }
+        let instruction_len = data.len();
+        let data = &data[prefix_count..];
+        let is_ext = data[0] == 0xf;
+        let data = match is_ext {
+            true => &data[1..],
+            false => data,
+        };
+        let first_byte = data[0];
+        let next_fn = if !is_ext {
+            match first_byte {
+                0x00 ... 0x03 | 0x04 ... 0x05 | 0x08 ... 0x0b | 0x0c ... 0x0d | 0x20 ... 0x23 |
+                0x24 ... 0x25 | 0x28 ... 0x2b | 0x2c ... 0x2d | 0x30 ... 0x33 | 0x34 ... 0x35 |
+                0x88 ... 0x8b | 0x8d => {
+                    // Avoid ridiculous generic binary bloat
+                    let (ops, flags, flags_post):
+                        (fn(_, _, _) -> _, fn(_, _, _) -> _, fn(_, _, _) -> _) = match first_byte {
+                        0x00 ... 0x05 => (add_ops, add_flags, result_flags),
+                        0x08 ... 0x0d => (or_ops, zero_carry_oflow, result_flags),
+                        0x20 ... 0x25 => (and_ops, zero_carry_oflow, result_flags),
+                        0x28 ... 0x2d => (sub_ops, zero_carry_oflow, result_flags),
+                        0x30 ... 0x35 => (xor_ops, zero_carry_oflow, result_flags),
+                        0x88 ... 0x8b => (mov_ops, |_, _, s| Err(s), |_, _, _| None),
+                        0x8d | _ => (lea_ops, |_, _, s| Err(s), |_, _, _| None),
+                    };
+                    let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
+                    ins_next(move |s| if eax_imm_arith {
+                        s.eax_imm_arith(ops, flags, flags_post)
+                    } else {
+                        s.generic_arith_op(ops, flags, flags_post)
+                    })
+                }
+
+                0x38 ... 0x3b => ins_next(|s| s.generic_cmp_op(operand_sub, sub_flags, result_flags)),
+                0x3c ... 0x3d => ins_next(|s| s.eax_imm_cmp(operand_sub, sub_flags, result_flags)),
+                0x40 ... 0x4f => ins_next(|s| s.inc_dec_op()),
+                0x50 ... 0x5f => ins_next(|s| s.pushpop_reg_op()),
+                0x68 | 0x6a => ins_next(|s| s.push_imm()),
+                0x69 | 0x6b => ins_next(|s| s.signed_multiply_rm_imm()),
+                0x70 ... 0x7f => ins_next(|s| s.conditional_jmp(MemAccessSize::Mem8)),
+                0x80 ... 0x83 => ins_next(|s| s.arith_with_imm_op()),
+                // Test
+                0x84 ... 0x85 => ins_next(|s| s.generic_cmp_op(operand_and, zero_carry_oflow, result_flags)),
+                0x86 ... 0x87 => ins_next(|s| s.xchg()),
+                0x90 => ins_next(|_| None),
+                // Cwde
+                0x98 => ins_next(|s| match s.pos {
+                    0 => Some(Ok(and(operand_register(0), constval(0xffff)))),
+                    1 => {
+                        let eax = operand_register(0);
+                        let signed_max = constval(0x7fff);
+                        let compare = ArithOpType::GreaterThan(eax.clone(), signed_max);
+                        let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
+                        let negative_sign_extend = operand_or(eax.clone(), constval(0xffff0000));
+                        Some(Ok(Operation::Move((*eax).clone().into(), negative_sign_extend, Some(cond))))
+                    }
+                    _ => None,
+                }),
+                // Cdq
+                0x99 => ins_next(|s| match s.pos {
+                    0 => Some(Ok(mov(operand_register(2), constval(0)))),
+                    1 => {
+                        let eax = operand_register(0);
+                        let edx = operand_register(2);
+                        let signed_max = constval(0x7fffffff);
+                        let compare = ArithOpType::GreaterThan(eax, signed_max);
+                        let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
+                        Some(Ok(Operation::Move((*edx).clone().into(), constval(!0), Some(cond))))
+                    }
+                    _ => None,
+                }),
+                0xa0 ... 0xa3 => ins_next(|s| s.move_mem_eax()),
+                0xa8 ... 0xa9 => ins_next(|s| s.eax_imm_cmp(operand_and, zero_carry_oflow, result_flags)),
+                0xb0 ... 0xbf => ins_next(|s| s.move_const_to_reg()),
+                0xc0 ... 0xc1 => ins_next(|s| s.bitwise_with_imm_op()),
+                0xc2 ... 0xc3 => {
+                    let stack_pop_size = match data[0] {
+                        0xc2 => match read_u16(&data[1..]) {
+                            Err(_) => 0,
+                            Ok(o) => o as u32,
+                        },
+                        _ => 0,
+                    };
+                    ins_next(move |s| match s.pos {
+                        0 => Some(Ok(Operation::Return(stack_pop_size))),
+                        _ => None,
+                    })
+                }
+                0xc6 ... 0xc7 => ins_next(|s| s.generic_arith_with_imm_op(&MOV_OPS, match s.get(0) {
+                    0xc6 => MemAccessSize::Mem8,
+                    _ => s.mem16_32(),
+                })),
+                0xd0 ... 0xd3 => ins_next(|s| s.bitwise_compact_op()),
+                0xe8 => ins_next(|s| s.call_op()),
+                0xe9 => ins_next(|s| s.jump_op()),
+                0xeb => ins_next(|s| s.short_jmp()),
+                0xf6 | 0xf7 => ins_next(|s| s.various_f7()),
+                0xf8 ... 0xfd => {
+                    let flag = match first_byte {
+                        0xf8 ... 0xf9 => Flag::Carry,
+                        _ => Flag::Direction,
+                    };
+                    let state = first_byte & 0x1 == 1;
+                    ins_next(move |s| s.flag_set(flag, state))
+                }
+                0xfe ... 0xff => ins_next(|s| s.various_fe_ff()),
+                _ => ins_next(|s| Some(Err(UnknownOpcode(s.data.into()))))
+            }
+        } else {
+            match first_byte {
+                0x11 => ins_next(|s| s.mov_sse_11()),
+                // nop
+                0x1f => ins_next(|_| None),
+                // rdtsc
+                0x31 => ins_next(|s| match s.pos {
+                    0 => Some(Ok(mov(operand_register(0), s.ctx.undefined_rc()))),
+                    1 => Some(Ok(mov(operand_register(2), s.ctx.undefined_rc()))),
+                    _ => None,
+                }),
+                0x40 ... 0x4f => ins_next(|s| s.cmov()),
+                0x57 => ins_next(|s| s.xorps()),
+                0x6e => ins_next(|s| s.mov_sse_6e()),
+                0x7e => ins_next(|s| s.mov_sse_7e()),
+                0x80 ... 0x8f => ins_next(|s| s.conditional_jmp(s.mem16_32())),
+                0x90 ... 0x9f => ins_next(|s| s.conditional_set()),
+                0xb6 ... 0xb7 => ins_next(|s| s.movzx()),
+                0xbe ... 0xbf => ins_next(|s| s.movsx()),
+                0xd3 => ins_next(|s| s.packed_shift_right()),
+                0xd6 => ins_next(|s| s.mov_sse_d6()),
+                _ => ins_next(|s| {
+                    let mut bytes = vec![0xf];
+                    bytes.extend(s.data);
+                    Some(Err(UnknownOpcode(bytes)))
+                })
+            }
+        };
         InstructionOps {
-            address,
-            data: &data[prefix_count..],
-            prefixes,
-            pos: 0,
-            ctx,
+            inner: InstructionOpsState {
+                address,
+                data,
+                prefixes,
+                pos: 0,
+                len: instruction_len as u8,
+                ctx,
+            },
+            next_fn,
         }
     }
 
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.inner.len()
     }
 
     pub fn address(&self) -> VirtualAddress {
-        self.address
+        self.inner.address
+    }
+}
+
+impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
+    pub fn len(&self) -> usize {
+        self.len as usize
     }
 
     fn has_prefix(&self, val: u8) -> bool {
@@ -296,19 +351,11 @@ impl<'a, 'exec: 'a> InstructionOps<'a, 'exec> {
     }
 
     fn get(&self, idx: usize) -> u8 {
-        if self.data[0] == 0xf {
-            self.data[idx + 1]
-        } else {
-            self.data[idx]
-        }
+        self.data[idx]
     }
 
     fn slice(&self, idx: usize) -> &[u8] {
-        if self.data[0] == 0xf {
-            &self.data[idx + 1..]
-        } else {
-            &self.data[idx..]
-        }
+        &self.data[idx..]
     }
 
     fn mem16_32(&self) -> MemAccessSize {
