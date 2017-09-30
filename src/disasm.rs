@@ -945,18 +945,24 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn mov_sse_11(&self) -> Option<Result<Operation, Error>> {
         use self::operation_helpers::*;
-        if self.has_prefix(0xf3) || self.has_prefix(0xf2) {
-            return Some(Err(Error::UnknownOpcode(self.data.into())));
-        }
-        // movups, movupd
+        let length = match (self.has_prefix(0xf3), self.has_prefix(0xf2)) {
+            // movss
+            (true, false) => 1,
+            // movsd
+            (false, true) => 2,
+            // movups, movupd
+            (false, false) => 4,
+            (true, true) => return Some(Err(Error::UnknownOpcode(self.data.into()))),
+        };
         let (rm, src, _) = match self.parse_modrm_xmm(self.pos) {
             Err(e) => return Some(Err(e)),
             Ok(x) => x,
         };
-        Some(Ok(match self.pos {
-            0 | 1 | 2 | 3 => mov(rm.into(), src.into()),
-            _ => return None,
-        }))
+        if self.pos < length {
+            Some(Ok(mov(rm.into(), src.into())))
+        } else {
+            None
+        }
     }
 
     fn mov_sse_7e(&self) -> Option<Result<Operation, Error>> {
