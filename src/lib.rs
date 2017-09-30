@@ -28,11 +28,23 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use operand::MemAccessSize;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Rva(pub u32);
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+impl std::fmt::Debug for Rva {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Rva({:08x})", self.0)
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct VirtualAddress(pub u32);
+
+impl std::fmt::Debug for VirtualAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "VirtualAddress({:08x})", self.0)
+    }
+}
 
 impl std::ops::Add<Rva> for VirtualAddress {
     type Output = VirtualAddress;
