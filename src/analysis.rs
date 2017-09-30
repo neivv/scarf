@@ -5,7 +5,7 @@ use ordermap::{self, OrderMap};
 
 use disasm::{self, InstructionOps, Operation};
 use exec_state::{self, ExecutionState};
-use operand::{Operand, OperandContext, OperandType, Register};
+use operand::{Operand, OperandContext};
 use ::{BinaryFile, Rva, VirtualAddress};
 
 quick_error! {
@@ -285,9 +285,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                     }
                 }
             }
-            disasm::Operation::Return(_) => {
-                check_return_esp(&self.state, &mut self.analysis.interner);
-            }
+            disasm::Operation::Return(_) => {}
             o => {
                 self.state.update(o, &mut self.analysis.interner)?;
             }
@@ -297,15 +295,6 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
 
     pub fn address(&self) -> VirtualAddress {
         self.addr
-    }
-}
-
-fn check_return_esp(state: &ExecutionState, interner: &mut exec_state::InternMap) {
-    use operand::operand_helpers::*;
-    if let Ok(esp) = state.resolve(&operand_register(4), interner) {
-        if esp.ty != OperandType::Register(Register(4)) {
-            trace!("Return to unusual esp: {:?}", esp);
-        }
     }
 }
 
