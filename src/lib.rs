@@ -14,7 +14,7 @@ pub mod exec_state;
 pub mod operand;
 mod vec_drop_iter;
 
-pub use disasm::{ArithmeticOp, Operation, operation_helpers};
+pub use disasm::{ArithmeticOp, DestOperand, Operation, operation_helpers};
 pub use exec_state::{ExecutionState};
 pub use operand::{Operand, OperandType, operand_helpers};
 

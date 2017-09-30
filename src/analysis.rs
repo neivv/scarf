@@ -22,6 +22,31 @@ quick_error! {
     }
 }
 
+pub struct FuncCallPair {
+    pub caller: Rva,
+    pub callee: Rva,
+}
+
+/// Sorted by callee, so looking up callers can be done with bsearch
+pub fn find_functions_with_callers(file: &BinaryFile) -> Vec<FuncCallPair> {
+    let code = &file.code_section().data;
+    let mut called_functions = code.iter().enumerate()
+        .filter(|&(_, &x)| x == 0xe8 || x == 0xe9)
+        .flat_map(|(idx, _)| {
+            code.get(idx + 1..).and_then(|mut x| x.read_u32::<LittleEndian>().ok())
+                .map(|relative| FuncCallPair {
+                    caller: Rva(idx as u32),
+                    callee: Rva((idx as u32 + 5).wrapping_add(relative)),
+                })
+        })
+        .filter(|pair| {
+            (pair.callee.0 as usize) < code.len() - 5
+        })
+        .collect::<Vec<_>>();
+    called_functions.sort_by_key(|x| (x.callee, x.caller));
+    called_functions
+}
+
 /// Attempts to find functions of a binary, accepting ones that are called/long jumped to
 /// from somewhere.
 /// Returns addresses relative to start of code section.
