@@ -393,17 +393,16 @@ impl Flags {
 
 impl<'a> ExecutionState<'a> {
     pub fn new<'b>(ctx: &'b OperandContext, interner: &mut InternMap) -> ExecutionState<'b> {
-        let undef = |interner: &mut InternMap| interner.new_undef(ctx);
         ExecutionState {
             registers: [
-                undef(interner),
-                undef(interner),
-                undef(interner),
-                undef(interner),
+                interner.intern(operand::operand_helpers::operand_register(0)),
+                interner.intern(operand::operand_helpers::operand_register(1)),
+                interner.intern(operand::operand_helpers::operand_register(2)),
+                interner.intern(operand::operand_helpers::operand_register(3)),
                 interner.intern(operand::operand_helpers::operand_register(4)),
-                undef(interner),
-                undef(interner),
-                undef(interner),
+                interner.intern(operand::operand_helpers::operand_register(5)),
+                interner.intern(operand::operand_helpers::operand_register(6)),
+                interner.intern(operand::operand_helpers::operand_register(7)),
             ],
             xmm_registers: [
                 XmmOperand::undefined(ctx, interner),
