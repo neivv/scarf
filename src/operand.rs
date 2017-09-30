@@ -521,7 +521,11 @@ impl OperandType {
                     let left_bits = left.relevant_bits();
                     let start = min(32, left_bits.start + c as u8);
                     let end = min(32, left_bits.end + c as u8);
-                    start..end
+                    if start <= end {
+                        start..end
+                    } else {
+                        0..0
+                    }
                 } else {
                     0..32
                 }
@@ -532,7 +536,11 @@ impl OperandType {
                     let left_bits = left.relevant_bits();
                     let start = left_bits.start.saturating_sub(c as u8);
                     let end = left_bits.end.saturating_sub(c as u8);
-                    start..end
+                    if start <= end {
+                        start..end
+                    } else {
+                        0..0
+                    }
                 } else {
                     0..32
                 }
@@ -1506,7 +1514,7 @@ fn simplify_with_and_mask(op: &Rc<Operand>, mask: u32) -> Rc<Operand> {
 /// bitwise and).
 fn simplify_with_zero_bits(op: Rc<Operand>, bits: &Range<u8>) -> Option<Rc<Operand>> {
     use self::operand_helpers::*;
-    if op.min_zero_bit_simplify_size > bits.end - bits.start {
+    if op.min_zero_bit_simplify_size > bits.end - bits.start || bits.start >= bits.end {
         return Some(op);
     }
     match op.clone().ty {
@@ -1595,6 +1603,9 @@ fn simplify_with_zero_bits(op: Rc<Operand>, bits: &Range<u8>) -> Option<Rc<Opera
 /// Returning `None` means that `op | constval(bits) == constval(bits)`
 fn simplify_with_one_bits(op: Rc<Operand>, bits: &Range<u8>) -> Option<Rc<Operand>> {
     use self::operand_helpers::*;
+    if bits.start >= bits.end {
+        return Some(op);
+    }
     match op.clone().ty {
         OperandType::Arithmetic(ArithOpType::And(ref left, ref right)) => {
             let left = simplify_with_one_bits(left.clone(), bits);
