@@ -119,6 +119,13 @@ impl BinaryFile {
     pub fn section(&self, name: &[u8; 0x8]) -> Option<&BinarySection> {
         self.sections.iter().find(|x| &x.name[..] == &name[..])
     }
+
+    /// Returns a section containing the address, if it exists
+    pub fn section_by_addr(&self, address: VirtualAddress) -> Option<&BinarySection> {
+        self.sections.iter().find(|x| {
+            address >= x.virtual_address && address < (x.virtual_address + x.data.len() as u32)
+        })
+    }
 }
 
 /// Allows loading a BinaryFile from memory buffer(s) representing the binary sections.
