@@ -274,9 +274,11 @@ enum Destination<'a> {
     Memory(&'a mut Memory, Rc<Operand>),
 }
 
-pub struct MemoryIter<'a> {
+struct MemoryIterUntilImm<'a> {
     iter: hash_map::Iter<'a, InternedOperand, InternedOperand>,
     immutable: &'a Option<Rc<Memory>>,
+    limit: Option<&'a Memory>,
+    in_immutable: bool,
 }
 
 impl Memory {
@@ -288,8 +290,19 @@ impl Memory {
     }
 
     pub fn get(&self, address: InternedOperand) -> Option<InternedOperand> {
-        self.map.get(&address).cloned()
-            .or_else(|| self.immutable.as_ref().and_then(|x| x.get(address)))
+        let op = self.map.get(&address).cloned()
+            .or_else(|| self.immutable.as_ref().and_then(|x| x.get(address)));
+        match op {
+            Some(s) => match s.is_undefined() {
+                true => None,
+                false => Some(s),
+            },
+            None => None,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len() + self.immutable.as_ref().map(|x| x.len()).unwrap_or(0)
     }
 
     /// The bool is true if the value is in immutable map
@@ -297,21 +310,58 @@ impl Memory {
         &self,
         address: InternedOperand
     ) -> Option<(InternedOperand, bool)> {
-        self.map.get(&address).map(|&x| (x, false))
+        let op = self.map.get(&address).map(|&x| (x, false))
             .or_else(|| {
                 self.immutable.as_ref().and_then(|x| x.get(address)).map(|x| (x, true))
-            })
+            });
+        match op {
+            Some(s) => match s.0.is_undefined() {
+                true => None,
+                false => Some(s),
+            },
+            None => None,
+        }
     }
 
-    pub fn iter(&self) -> MemoryIter {
-        MemoryIter {
+    /// Iterates until the immutable block.
+    /// Only ref-equality is considered, not deep-eq.
+    fn iter_until_immutable<'a>(&'a self, limit: Option<&'a Memory>) -> MemoryIterUntilImm<'a> {
+        MemoryIterUntilImm {
             iter: self.map.iter(),
             immutable: &self.immutable,
+            limit,
+            in_immutable: false,
+        }
+    }
+
+    fn common_immutable<'a>(&'a self, other: &'a Memory) -> Option<&'a Memory> {
+        self.immutable.as_ref().and_then(|i| {
+            let a = &**i as *const Memory;
+            let mut pos = Some(other);
+            while let Some(o) = pos {
+                if o as *const Memory == a {
+                    return pos;
+                }
+                pos = o.immutable.as_ref().map(|x| &**x);
+            }
+            i.common_immutable(other)
+        })
+    }
+
+    fn has_before_immutable(&self, address: InternedOperand, immutable: &Memory) -> bool {
+        if self as *const Memory == immutable as *const Memory {
+            false
+        } else if self.map.contains_key(&address) {
+            true
+        } else {
+            self.immutable.as_ref()
+                .map(|x| x.has_before_immutable(address, immutable))
+                .unwrap_or(false)
         }
     }
 
     pub fn maybe_convert_immutable(&mut self) {
-        if self.map.len() >= 256 {
+        if self.map.len() >= 64 {
             let map = mem::replace(&mut self.map, HashMap::new());
             let old_immutable = self.immutable.take();
             self.immutable = Some(Rc::new(Memory {
@@ -322,15 +372,22 @@ impl Memory {
     }
 }
 
-impl<'a> Iterator for MemoryIter<'a> {
-    type Item = (&'a InternedOperand, &'a InternedOperand);
+impl<'a> Iterator for MemoryIterUntilImm<'a> {
+    /// The bool tells if we're at immutable parts of the calling operand or not
+    type Item = (&'a InternedOperand, &'a InternedOperand, bool);
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
-            Some(s) => Some(s),
+            Some(s) => Some((s.0, s.1, self.in_immutable)),
             None => {
+                let at_limit = self.immutable.as_ref().map(|x| &**x as *const Memory) ==
+                    self.limit.map(|x| x as *const Memory);
+                if at_limit {
+                    return None;
+                }
                 match *self.immutable {
                     Some(ref i) => {
-                        *self = i.iter();
+                        *self = i.iter_until_immutable(self.limit);
+                        self.in_immutable = true;
                         self.next()
                     }
                     None => None,
@@ -395,6 +452,12 @@ pub struct InternMap {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct InternedOperand(u32);
 
+impl InternedOperand {
+    pub fn is_undefined(&self) -> bool {
+        self.0 > 0x80000000
+    }
+}
+
 impl InternMap {
     pub fn new() -> InternMap {
         InternMap {
@@ -425,7 +488,7 @@ impl InternMap {
     }
 
     pub fn operand(&self, val: InternedOperand) -> Rc<Operand> {
-        if val.0 > 0x80000000 {
+        if val.is_undefined() {
             let ty = OperandType::Undefined(operand::UndefinedId(!val.0));
             Operand::new_simplified_rc(ty)
         } else {
@@ -824,23 +887,28 @@ pub fn merge_states<'a>(
         )
     };
     let merge_memory = |a: &Memory, b: &Memory, i: &mut InternMap| -> Memory {
+        if a.len() == 0 {
+            return b.clone();
+        }
+        if b.len() == 0 {
+            return a.clone();
+        }
         let mut result = HashMap::new();
         let imm_eq = a.immutable.as_ref().map(|x| &**x as *const Memory) ==
             b.immutable.as_ref().map(|x| &**x as *const Memory);
         if imm_eq {
-            // The else branch can just skip differing (undefined) values, this one can only do
-            // that if the immutable block doesn't contain it.
+            // Allows just checking a.map.iter() instead of a.iter()
             for (&key, &a_val) in a.map.iter() {
                 match b.get_with_immutable_info(key) {
                     Some((b_val, is_imm)) => match a_val == b_val {
                         true => {
                             if !is_imm {
-                                result.insert(key.clone(), a_val.clone());
+                                result.insert(key, a_val);
                             }
                         }
                         false => {
                             if is_imm {
-                                result.insert(key.clone(), i.new_undef(old.ctx));
+                                result.insert(key, i.new_undef(old.ctx));
                             }
                         }
                     },
@@ -855,21 +923,62 @@ pub fn merge_states<'a>(
             // Not inserting undefined addresses here, as missing entry is effectively undefined.
             // Should be fine?
             //
-            // Maybe this could also use immutable somehow, but not going to think about it now.
-            for (&key, &a_val) in a.iter() {
-                match b.get(key) {
-                    Some(b_val) => match a_val == b_val {
+            // a's immutable map is used as base, so one which exist there don't get inserted to
+            // result, but if it has ones that should become undefined, the undefined has to be
+            // inserted to the result instead.
+            let common = a.common_immutable(b);
+            for (&key, &b_val, _is_imm) in b.iter_until_immutable(common) {
+                match a.get_with_immutable_info(key) {
+                    Some((a_val, is_imm)) => match a_val == b_val {
                         true => {
-                            result.insert(key.clone(), a_val.clone());
+                            if !is_imm {
+                                result.insert(key, a_val);
+                            }
                         }
-                        false => (),
+                        false => {
+                            if is_imm {
+                                result.insert(key, i.new_undef(old.ctx));
+                            }
+                        }
                     },
                     None => (),
                 };
             }
+            // The result contains now anything that was in b's unique branch of the memory and
+            // matched something in a.
+            // However, it is possible that for address A, the common branch contains X and b's
+            // unique branch has nothing, in which case b's value for A is X.
+            // if a's unique branch has something for A, then A's value may be X (if the values
+            // are equal), or undefined.
+            //
+            // Only checking both unique branches instead of walking through the common branch
+            // ends up being faster in cases where the memory grows large.
+            //
+            // If there is no common branch, we don't have to do anything else.
+            if let Some(common) = common {
+                for (&key, &a_val, is_imm) in a.iter_until_immutable(Some(common)) {
+                    if !b.has_before_immutable(key, common) {
+                        match common.get(key) {
+                            Some(b_val) => match a_val == b_val {
+                                true => {
+                                    if !is_imm {
+                                        result.insert(key, a_val);
+                                    }
+                                }
+                                false => {
+                                    if is_imm {
+                                        result.insert(key, i.new_undef(old.ctx));
+                                    }
+                                }
+                            }
+                            None => (),
+                        }
+                    }
+                }
+            }
             Memory {
                 map: result,
-                immutable: None,
+                immutable: a.immutable.clone(),
             }
         }
     };
