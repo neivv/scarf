@@ -1,4 +1,5 @@
 use std::collections::{hash_map, HashMap};
+use std::mem;
 use std::rc::Rc;
 
 use disasm::{DestOperand, Operation};
@@ -257,6 +258,9 @@ pub struct Flags {
 #[derive(Debug, Clone)]
 pub struct Memory {
     map: HashMap<InternedOperand, InternedOperand>,
+    /// Optimization for cases where memory gets large.
+    /// The existing mapping can be moved to Rc, where cloning it is effectively free.
+    immutable: Option<Rc<Memory>>,
 }
 
 /// Handles regular &'mut Operand assign for regs,
@@ -270,15 +274,69 @@ enum Destination<'a> {
     Memory(&'a mut Memory, Rc<Operand>),
 }
 
+pub struct MemoryIter<'a> {
+    iter: hash_map::Iter<'a, InternedOperand, InternedOperand>,
+    immutable: &'a Option<Rc<Memory>>,
+}
+
 impl Memory {
     fn new() -> Memory {
         Memory {
             map: HashMap::new(),
+            immutable: None,
         }
     }
 
     pub fn get(&self, address: InternedOperand) -> Option<InternedOperand> {
         self.map.get(&address).cloned()
+            .or_else(|| self.immutable.as_ref().and_then(|x| x.get(address)))
+    }
+
+    /// The bool is true if the value is in immutable map
+    fn get_with_immutable_info(
+        &self,
+        address: InternedOperand
+    ) -> Option<(InternedOperand, bool)> {
+        self.map.get(&address).map(|&x| (x, false))
+            .or_else(|| {
+                self.immutable.as_ref().and_then(|x| x.get(address)).map(|x| (x, true))
+            })
+    }
+
+    pub fn iter(&self) -> MemoryIter {
+        MemoryIter {
+            iter: self.map.iter(),
+            immutable: &self.immutable,
+        }
+    }
+
+    pub fn maybe_convert_immutable(&mut self) {
+        if self.map.len() >= 256 {
+            let map = mem::replace(&mut self.map, HashMap::new());
+            let old_immutable = self.immutable.take();
+            self.immutable = Some(Rc::new(Memory {
+                map,
+                immutable: old_immutable,
+            }));
+        }
+    }
+}
+
+impl<'a> Iterator for MemoryIter<'a> {
+    type Item = (&'a InternedOperand, &'a InternedOperand);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter.next() {
+            Some(s) => Some(s),
+            None => {
+                match *self.immutable {
+                    Some(ref i) => {
+                        *self = i.iter();
+                        self.next()
+                    }
+                    None => None,
+                }
+            }
+        }
     }
 }
 
@@ -330,7 +388,7 @@ impl<'a> Destination<'a> {
 ///
 /// Additionally, Undefined(n) is always InternedOperand(!n)
 pub struct InternMap {
-    map: Vec<Rc<Operand>>,
+    pub map: Vec<Rc<Operand>>,
     reverse: HashMap<Rc<Operand>, InternedOperand>,
 }
 
@@ -765,23 +823,54 @@ pub fn merge_states<'a>(
             merge(a.3, b.3, i),
         )
     };
-    // Not inserting undefined addresses here, as missing entry is effectively undefined.
-    // Should be fine?
-    let merge_memory = |a: &Memory, b: &Memory| -> Memory {
+    let merge_memory = |a: &Memory, b: &Memory, i: &mut InternMap| -> Memory {
         let mut result = HashMap::new();
-        for (key, a_val) in a.map.iter() {
-            match b.map.get(key) {
-                Some(b_val) => match a_val == b_val {
-                    true => {
-                        result.insert(key.clone(), a_val.clone());
-                    }
-                    false => (),
-                },
-                None => (),
-            };
-        }
-        Memory {
-            map: result,
+        let imm_eq = a.immutable.as_ref().map(|x| &**x as *const Memory) ==
+            b.immutable.as_ref().map(|x| &**x as *const Memory);
+        if imm_eq {
+            // The else branch can just skip differing (undefined) values, this one can only do
+            // that if the immutable block doesn't contain it.
+            for (&key, &a_val) in a.map.iter() {
+                match b.get_with_immutable_info(key) {
+                    Some((b_val, is_imm)) => match a_val == b_val {
+                        true => {
+                            if !is_imm {
+                                result.insert(key.clone(), a_val.clone());
+                            }
+                        }
+                        false => {
+                            if is_imm {
+                                result.insert(key.clone(), i.new_undef(old.ctx));
+                            }
+                        }
+                    },
+                    None => (),
+                };
+            }
+            Memory {
+                map: result,
+                immutable: a.immutable.clone(),
+            }
+        } else {
+            // Not inserting undefined addresses here, as missing entry is effectively undefined.
+            // Should be fine?
+            //
+            // Maybe this could also use immutable somehow, but not going to think about it now.
+            for (&key, &a_val) in a.iter() {
+                match b.get(key) {
+                    Some(b_val) => match a_val == b_val {
+                        true => {
+                            result.insert(key.clone(), a_val.clone());
+                        }
+                        false => (),
+                    },
+                    None => (),
+                };
+            }
+            Memory {
+                map: result,
+                immutable: None,
+            }
         }
     };
 
@@ -822,7 +911,7 @@ pub fn merge_states<'a>(
                 parity: merge(old.flags.parity, new.flags.parity, interner),
                 direction: merge(old.flags.direction, new.flags.direction, interner),
             },
-            memory: merge_memory(&old.memory, &new.memory),
+            memory: merge_memory(&old.memory, &new.memory, interner),
             last_jump_extra_constraint: {
                 let eq = old.last_jump_extra_constraint == new.last_jump_extra_constraint;
                 match eq {

@@ -270,6 +270,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
             disasm::Operation::Jump { condition, to } => {
                 // TODO Move simplify to disasm::next
                 let condition = Operand::simplified(condition);
+                self.state.memory.maybe_convert_immutable();
                 match self.state.try_resolve_const(&condition, &mut self.analysis.interner) {
                     Some(0) => {
                         trace!("Branch never jumps to {:?}", to);
