@@ -273,12 +273,10 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                 self.state.memory.maybe_convert_immutable();
                 match self.state.try_resolve_const(&condition, &mut self.analysis.interner) {
                     Some(0) => {
-                        trace!("Branch never jumps to {:?}", to);
                         let address = ins.address() + ins.len() as u32;
                         self.analysis.unchecked_branches.push((address, self.state.clone()));
                     }
                     Some(_) => {
-                        trace!("Guaranteed jump to {:?}", to);
                         let state = self.state.clone();
                         self.try_add_branch(state, to, ins.address());
                     }
