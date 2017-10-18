@@ -580,13 +580,6 @@ impl<'a> ExecutionState<'a> {
                 self.get_dest_invalidate_constraints(&right, intern_map)?
                     .set(left_res, intern_map)?;
             }
-            Operation::Arithmetic(arith) => {
-                // TODO: Move this simplified call too
-                let value = Operand::simplified(arith.op.to_operand().into());
-                let resolved = self.resolve(&value, intern_map)?;
-                self.get_dest_invalidate_constraints(&arith.dest, intern_map)?
-                    .set(resolved, intern_map)?;
-            }
             Operation::Call(_) => {
                 self.registers[0] = intern_map.new_undef(self.ctx);
                 self.registers[1] = intern_map.new_undef(self.ctx);

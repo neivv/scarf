@@ -886,10 +886,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         match variant {
             0 | 1 => self.generic_arith_with_imm_op(&TEST_OPS, MemAccessSize::Mem8),
             2 => match self.pos {
-                0 => Some(Ok(Operation::Arithmetic(ArithmeticOp {
-                    dest: rm.clone().into(),
-                    op: ArithOpType::Not(rm.into()),
-                }))),
+                0 => Some(Ok(make_arith_operation(
+                    rm.clone().into(),
+                    ArithOpType::Not(rm.into()),
+                ))),
                 _ => None,
             },
             5 => match self.pos {
@@ -1019,13 +1019,13 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             0 | 2 => {
                 let (low, high) = dest.to_xmm_64(self.pos >> 1);
                 let rm = rm.to_xmm_32(0);
-                Operation::Arithmetic(ArithmeticOp {
-                    dest: (*low).clone().into(),
-                    op: ArithOpType::Or(
+                make_arith_operation(
+                    (*low).clone().into(),
+                    ArithOpType::Or(
                         operand_rsh(low, rm.clone()),
                         operand_lsh(high, operand_sub(constval(32), rm)),
                     ),
-                })
+                )
             }
             1 | 3 => {
                 let (_, high) = dest.to_xmm_64(self.pos >> 1);
@@ -1353,7 +1353,7 @@ pub mod operation_helpers {
     use operand::MemAccessSize::*;
     use operand::{Flag, MemAccessSize, Operand, OperandType};
     use operand::operand_helpers::*;
-    use super::{ArithmeticOp, DestOperand, Error, Operation};
+    use super::{make_arith_operation, DestOperand, Error, Operation};
 
     pub fn read_u32(mut val: &[u8]) -> Result<u32, Error> {
         val.read_u32::<LittleEndian>().map_err(|_| Error::InternalDecodeError)
@@ -1413,10 +1413,10 @@ pub mod operation_helpers {
     }
 
     pub fn add(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        Operation::Arithmetic(ArithmeticOp {
-            dest: (*dest).clone().into(),
-            op: Add(dest, rhs),
-        })
+        make_arith_operation(
+            (*dest).clone().into(),
+            Add(dest, rhs),
+        )
     }
 
     pub fn add_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
@@ -1434,10 +1434,10 @@ pub mod operation_helpers {
     }
 
     pub fn sub(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        Operation::Arithmetic(ArithmeticOp {
-            dest: (*dest).clone().into(),
-            op: Sub(dest, rhs),
-        })
+        make_arith_operation(
+            (*dest).clone().into(),
+            Sub(dest, rhs),
+        )
     }
 
     pub fn sub_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
@@ -1455,17 +1455,17 @@ pub mod operation_helpers {
     }
 
     pub fn signed_mul(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        Operation::Arithmetic(ArithmeticOp {
-            dest: (*dest).clone().into(),
-            op: SignedMul(dest, rhs),
-        })
+        make_arith_operation(
+            (*dest).clone().into(),
+            SignedMul(dest, rhs),
+        )
     }
 
     pub fn xor(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        Operation::Arithmetic(ArithmeticOp {
-            dest: (*dest).clone().into(),
-            op: Xor(dest, rhs),
-        })
+        make_arith_operation(
+            (*dest).clone().into(),
+            Xor(dest, rhs),
+        )
     }
 
     pub fn xor_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
@@ -1477,47 +1477,47 @@ pub mod operation_helpers {
 
     pub fn rol_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
         match state {
-            0 => Ok(Ok(Operation::Arithmetic(ArithmeticOp {
-                dest: (*dest).clone().into(),
-                op: RotateLeft(dest, rhs),
-            }))),
+            0 => Ok(Ok(make_arith_operation(
+                (*dest).clone().into(),
+                RotateLeft(dest, rhs),
+            ))),
             x => Err(x - 1),
         }
     }
 
     pub fn ror_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
         match state {
-            0 => Ok(Ok(Operation::Arithmetic(ArithmeticOp {
-                dest: (*dest).clone().into(),
-                op: RotateLeft(dest, operand_sub(constval(32), rhs)),
-            }))),
+            0 => Ok(Ok(make_arith_operation(
+                (*dest).clone().into(),
+                RotateLeft(dest, operand_sub(constval(32), rhs)),
+            ))),
             x => Err(x - 1),
         }
     }
 
     pub fn lsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
         match state {
-            0 => Ok(Ok(Operation::Arithmetic(ArithmeticOp {
-                dest: (*dest).clone().into(),
-                op: Lsh(dest, rhs),
-            }))),
+            0 => Ok(Ok(make_arith_operation(
+                (*dest).clone().into(),
+                Lsh(dest, rhs),
+            ))),
             x => Err(x - 1),
         }
     }
 
     pub fn rsh(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        Operation::Arithmetic(ArithmeticOp {
-            dest: (*dest).clone().into(),
-            op: Rsh(dest, rhs),
-        })
+        make_arith_operation(
+            (*dest).clone().into(),
+            Rsh(dest, rhs),
+        )
     }
 
     pub fn rsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
         match state {
-            0 => Ok(Ok(Operation::Arithmetic(ArithmeticOp {
-                dest: (*dest).clone().into(),
-                op: Rsh(dest, rhs),
-            }))),
+            0 => Ok(Ok(make_arith_operation(
+                (*dest).clone().into(),
+                Rsh(dest, rhs),
+            ))),
             x => Err(x - 1),
         }
     }
@@ -1547,10 +1547,10 @@ pub mod operation_helpers {
     }
 
     pub fn or(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        Operation::Arithmetic(ArithmeticOp {
-            dest: (*dest).clone().into(),
-            op: Or(dest, rhs),
-        })
+        make_arith_operation(
+            (*dest).clone().into(),
+            Or(dest, rhs),
+        )
     }
 
     pub fn or_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
@@ -1561,10 +1561,10 @@ pub mod operation_helpers {
     }
 
     pub fn and(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        Operation::Arithmetic(ArithmeticOp {
-            dest: (*dest).clone().into(),
-            op: And(dest, rhs),
-        })
+        make_arith_operation(
+            (*dest).clone().into(),
+            And(dest, rhs),
+        )
     }
 
     pub fn and_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
@@ -1596,14 +1596,14 @@ pub mod operation_helpers {
         state: u8
     ) -> Result<Result<Operation, Error>, u8> {
         Ok(Ok(match state {
-            0 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Carry),
-                op: GreaterThan(lhs.clone(), operand_add(lhs, rhs)),
-            }),
-            1 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Overflow),
-                op: GreaterThanSigned(lhs.clone(), operand_add(lhs, rhs)),
-            }),
+            0 => make_arith_operation(
+                DestOperand::Flag(Flag::Carry),
+                GreaterThan(lhs.clone(), operand_add(lhs, rhs)),
+            ),
+            1 => make_arith_operation(
+                DestOperand::Flag(Flag::Overflow),
+                GreaterThanSigned(lhs.clone(), operand_add(lhs, rhs)),
+            ),
             x => return Err(x - 2),
         }))
     }
@@ -1614,14 +1614,14 @@ pub mod operation_helpers {
         state: u8
     ) -> Result<Result<Operation, Error>, u8> {
         Ok(Ok(match state {
-            0 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Carry),
-                op: GreaterThan(lhs.clone(), operand_add(operand_add(lhs, rhs), flag_c())),
-            }),
-            1 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Overflow),
-                op: GreaterThanSigned(lhs.clone(), operand_add(operand_add(lhs, rhs), flag_c())),
-            }),
+            0 => make_arith_operation(
+                DestOperand::Flag(Flag::Carry),
+                GreaterThan(lhs.clone(), operand_add(operand_add(lhs, rhs), flag_c())),
+            ),
+            1 => make_arith_operation(
+                DestOperand::Flag(Flag::Overflow),
+                GreaterThanSigned(lhs.clone(), operand_add(operand_add(lhs, rhs), flag_c())),
+            ),
             x => return Err(x - 2),
         }))
     }
@@ -1632,14 +1632,14 @@ pub mod operation_helpers {
         state: u8
     ) -> Result<Result<Operation, Error>, u8> {
         Ok(Ok(match state {
-            0 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Carry),
-                op: GreaterThan(operand_sub(lhs.clone(), rhs), lhs),
-            }),
-            1 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Overflow),
-                op: GreaterThanSigned(operand_sub(lhs.clone(), rhs), lhs),
-            }),
+            0 => make_arith_operation(
+                DestOperand::Flag(Flag::Carry),
+                GreaterThan(operand_sub(lhs.clone(), rhs), lhs),
+            ),
+            1 => make_arith_operation(
+                DestOperand::Flag(Flag::Overflow),
+                GreaterThanSigned(operand_sub(lhs.clone(), rhs), lhs),
+            ),
             x => return Err(x - 2),
         }))
     }
@@ -1650,14 +1650,14 @@ pub mod operation_helpers {
         state: u8
     ) -> Result<Result<Operation, Error>, u8> {
         Ok(Ok(match state {
-            0 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Carry),
-                op: GreaterThan(operand_sub(operand_sub(lhs.clone(), rhs), flag_c()), lhs),
-            }),
-            1 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Overflow),
-                op: GreaterThanSigned(operand_sub(operand_sub(lhs.clone(), rhs), flag_c()), lhs),
-            }),
+            0 => make_arith_operation(
+                DestOperand::Flag(Flag::Carry),
+                GreaterThan(operand_sub(operand_sub(lhs.clone(), rhs), flag_c()), lhs),
+            ),
+            1 => make_arith_operation(
+                DestOperand::Flag(Flag::Overflow),
+                GreaterThanSigned(operand_sub(operand_sub(lhs.clone(), rhs), flag_c()), lhs),
+            ),
             x => return Err(x - 2),
         }))
     }
@@ -1676,18 +1676,18 @@ pub mod operation_helpers {
 
     pub fn result_flags(lhs: Rc<Operand>, _: Rc<Operand>, state: u8) -> Option<Result<Operation, Error>> {
         Some(Ok(match state {
-            0 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Zero),
-                op: Equal(lhs, constval(0)),
-            }),
-            1 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Sign),
-                op: GreaterThan(lhs, constval(0x7fffffff)),
-            }),
-            2 => Operation::Arithmetic(ArithmeticOp {
-                dest: DestOperand::Flag(Flag::Parity),
-                op: Parity(lhs),
-            }),
+            0 => make_arith_operation(
+                DestOperand::Flag(Flag::Zero),
+                Equal(lhs, constval(0)),
+            ),
+            1 => make_arith_operation(
+                DestOperand::Flag(Flag::Sign),
+                GreaterThan(lhs, constval(0x7fffffff)),
+            ),
+            2 => make_arith_operation(
+                DestOperand::Flag(Flag::Parity),
+                Parity(lhs),
+            ),
             _ => return None,
         }))
     }
@@ -1732,12 +1732,15 @@ pub mod operation_helpers {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
-    Arithmetic(ArithmeticOp),
     Move(DestOperand, Rc<Operand>, Option<Rc<Operand>>),
     Swap(DestOperand, DestOperand),
     Call(Rc<Operand>),
     Jump { condition: Rc<Operand>, to: Rc<Operand> },
     Return(u32),
+}
+
+fn make_arith_operation(dest: DestOperand, arith: ArithOpType) -> Operation {
+    Operation::Move(dest, Operand::new_not_simplified_rc(OperandType::Arithmetic(arith)), None)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1790,12 +1793,6 @@ impl From<DestOperand> for Operand {
         };
         Operand::new_not_simplified(ty)
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArithmeticOp {
-    pub dest: DestOperand,
-    pub op: ArithOpType,
 }
 
 #[cfg(test)]
