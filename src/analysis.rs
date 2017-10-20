@@ -99,6 +99,42 @@ fn find_vtable_calls(file: &BinaryFile, out: &mut Vec<Rva>) {
     }
 }
 
+macro_rules! try_get {
+    ($slice:expr, $range:expr) => {
+        match $slice.get($range) {
+            Some(s) => s,
+            None => return Err(::Error::OutOfBounds),
+        }
+    }
+}
+
+pub fn find_relocs(file: &BinaryFile) -> Result<Vec<VirtualAddress>, ::Error> {
+    let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
+    let reloc_offset = file.read_u32(pe_header + 0xa0)?;
+    let reloc_len = file.read_u32(pe_header + 0xa4)?;
+    let relocs = file.slice_from(reloc_offset..reloc_offset + reloc_len)?;
+    let mut result = Vec::new();
+    let mut offset = 0;
+    while offset < relocs.len() {
+        let rva = try_get!(relocs, offset..).read_u32::<LittleEndian>()?;
+        let base = file.base + rva;
+        let size = try_get!(relocs, offset + 4..).read_u32::<LittleEndian>()? as usize;
+        if size < 8 {
+            break;
+        }
+        let block_relocs = try_get!(relocs, offset + 8..offset + size);
+        for mut reloc in block_relocs.chunks(2) {
+            if let Ok(c) = reloc.read_u16::<LittleEndian>() {
+                if c & 0xf000 == 0x3000 {
+                    result.push(base + (c & 0xfff) as u32);
+                }
+            }
+        }
+        offset += size;
+    }
+    Ok(result)
+}
+
 pub struct FuncAnalysis<'a> {
     binary: &'a BinaryFile,
     /// The value is first byte of each instruction, so instructions

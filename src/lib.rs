@@ -74,6 +74,13 @@ impl std::ops::Sub<VirtualAddress> for VirtualAddress {
     }
 }
 
+impl std::ops::Add<u32> for Rva {
+    type Output = Rva;
+    fn add(self, rhs: u32) -> Rva {
+        Rva(self.0 + rhs)
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct PhysicalAddress(pub u32);
 
@@ -95,15 +102,21 @@ quick_error! {
             description("Invalid filename")
             display("Invalid filename {:?}", filename)
         }
+        OutOfBounds {
+            display("Out of bounds")
+        }
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct BinaryFile {
+    pub base: VirtualAddress,
     // For "hardcoded" checks that check that return address matches module code section
     pub dump_code_offset: VirtualAddress,
     sections: Vec<BinarySection>,
 }
 
+#[derive(Debug, Clone)]
 pub struct BinarySection {
     pub name: [u8; 8],
     pub virtual_address: VirtualAddress,
@@ -126,12 +139,38 @@ impl BinaryFile {
             address >= x.virtual_address && address < (x.virtual_address + x.data.len() as u32)
         })
     }
+
+    /// Range is relative from base
+    pub fn slice_from(&self, range: std::ops::Range<u32>) -> Result<&[u8], Error> {
+        self.section_by_addr(self.base + range.start)
+            .and_then(|s| {
+                let section_relative = (self.base + range.start) - s.virtual_address;
+                s.data.get(
+                    section_relative.0 as usize ..
+                    (section_relative + (range.end - range.start)).0 as usize,
+                )
+            })
+            .ok_or_else(|| Error::OutOfBounds)
+    }
+
+    pub fn read_u32(&self, addr: VirtualAddress) -> Result<u32, Error> {
+        self.section_by_addr(addr)
+            .and_then(|s| {
+                let section_relative = addr - s.virtual_address;
+                s.data.get(section_relative.0 as usize..)
+            })
+            .and_then(|mut data| {
+                data.read_u32::<LittleEndian>().ok()
+            })
+            .ok_or_else(|| Error::OutOfBounds)
+    }
 }
 
 /// Allows loading a BinaryFile from memory buffer(s) representing the binary sections.
-pub fn raw_bin(sections: Vec<BinarySection>) -> BinaryFile {
+pub fn raw_bin(base: VirtualAddress, sections: Vec<BinarySection>) -> BinaryFile {
     BinaryFile {
-        dump_code_offset: VirtualAddress(0x401000),
+        base,
+        dump_code_offset: base + 0x1000,
         sections: sections,
     }
 }
@@ -148,7 +187,7 @@ pub fn parse(filename: &OsStr, silps_path: &OsStr) -> Result<BinaryFile, Error> 
     }
     let section_count = read_at_16(&mut file, pe_offset + 6)?;
     let base = VirtualAddress(read_at_32(&mut file, pe_offset + 0x34)?);
-    let sections = (0..section_count).map(|i| {
+    let mut sections = (0..section_count).map(|i| {
         let mut name = [0; 8];
         file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i as u64))?;
         file.read_exact(&mut name)?;
@@ -166,6 +205,21 @@ pub fn parse(filename: &OsStr, silps_path: &OsStr) -> Result<BinaryFile, Error> 
             data,
         })
     }).collect::<Result<Vec<_>, Error>>()?;
+    let header_block_size = read_at_32(&mut file, pe_offset + 0x54)?;
+    file.seek(io::SeekFrom::Start(0))?;
+    let mut header_data = vec![0; header_block_size as usize];
+    file.read_exact(&mut header_data)?;
+    sections.push(BinarySection {
+        name: {
+            let mut name = [0; 8];
+            for (&c, out) in b"(header)".iter().zip(name.iter_mut()) {
+                *out = c;
+            }
+            name
+        },
+        virtual_address: base,
+        data: header_data,
+    });
     let dump_code_offset;
     let code_offset;
     {
@@ -178,6 +232,7 @@ pub fn parse(filename: &OsStr, silps_path: &OsStr) -> Result<BinaryFile, Error> 
             .map(|x| x + (code_offset - base));
     }
     Ok(BinaryFile {
+        base,
         dump_code_offset: dump_code_offset.unwrap_or(code_offset),
         sections,
     })
