@@ -874,7 +874,7 @@ impl Operand {
                         _ => true,
                     });
                     ops.sort();
-                    simplify_add_merge_to_mul(&mut ops);
+                    simplify_add_merge_muls(&mut ops);
                     if ops.is_empty() {
                         return constval(const_sum);
                     }
@@ -1666,39 +1666,108 @@ fn simplify_with_one_bits(op: Rc<Operand>, bits: &Range<u8>) -> Option<Rc<Operan
     }
 }
 
-/// Assumes that `ops` is sorted.
-fn simplify_add_merge_to_mul(ops: &mut Vec<(Rc<Operand>, bool)>) {
+/// Merges things like [2 * b, a, c, b, c] to [a, 3 * b, 2 * c]
+fn simplify_add_merge_muls(ops: &mut Vec<(Rc<Operand>, bool)>) {
     use self::operand_helpers::*;
-    let mut first_same = ops.len() as isize - 1;
-    let mut pos = first_same;
-    while pos >= 0 {
-        let pos_u = pos as usize;
-        let first_u = first_same as usize;
-        if pos == 0 || ops[pos_u - 1].0 != ops[first_u].0 {
-            if first_same != pos {
-                let sum: isize = ops[pos_u..first_u + 1].iter().map(|&(_, neg)| match neg {
-                    true => -1isize,
-                    false => 1isize,
-                }).sum();
-                if sum == 0 {
-                    ops.drain(pos_u..first_u + 1);
-                } else {
-                    ops.drain(pos_u..first_u);
-                    if sum > 1 || sum < -1 {
-                        ops[pos_u].0 = Operand::simplified(
-                            operand_mul(ops[pos_u].0.clone(), constval(sum.abs() as u32))
-                        );
+
+    fn count_equivalent_opers(ops: &[(Rc<Operand>, bool)], equiv: &Operand) -> u32 {
+        ops.iter().map(|&(ref o, neg)| {
+            let (mul, val) = match o.ty {
+                OperandType::Arithmetic(ArithOpType::Mul(ref l, ref r)) => {
+                    match (&l.ty, &r.ty) {
+                        (&OperandType::Constant(c), _) => (c, r),
+                        (_, &OperandType::Constant(c)) => (c, l),
+                        _ => (1, o),
                     }
-                    if sum > 0 {
-                        ops[pos_u].1 = false;
+                }
+                _ => (1, o),
+            };
+            match *equiv == **val {
+                true => if neg { 0u32.wrapping_sub(mul) } else { mul },
+                false => 0,
+            }
+        }).fold(0, |sum, next| sum.wrapping_add(next))
+    }
+
+    let mut pos = 0;
+    while pos < ops.len() {
+        let merged = {
+            let (self_mul, op) = match ops[pos].0.ty {
+                OperandType::Arithmetic(ArithOpType::Mul(ref l, ref r)) => match (&l.ty, &r.ty) {
+                    (&OperandType::Constant(c), _) => (c, r),
+                    (_, &OperandType::Constant(c)) => (c, l),
+                    _ => (1, &ops[pos].0),
+                }
+                _ => (1, &ops[pos].0)
+            };
+
+            let others = count_equivalent_opers(&ops[pos + 1..], op);
+            if others != 0 {
+                let self_mul = if ops[pos].1 { 0u32.wrapping_sub(self_mul) } else { self_mul };
+                let sum = self_mul.wrapping_add(others);
+                if sum == 0 {
+                    Some(None)
+                } else {
+                    Some(Some((sum, op.clone())))
+                }
+            } else {
+                None
+            }
+        };
+        match merged {
+            Some(Some((sum, equiv))) => {
+                let mut other_pos = pos + 1;
+                while other_pos < ops.len() {
+                    let is_equiv = match ops[other_pos].0.ty {
+                        OperandType::Arithmetic(ArithOpType::Mul(ref l, ref r)) => match (&l.ty, &r.ty) {
+                            (&OperandType::Constant(_), _) => *r == equiv,
+                            (_, &OperandType::Constant(_)) => *l == equiv,
+                            _ => ops[other_pos].0 == equiv,
+                        }
+                        _ => ops[other_pos].0 == equiv,
+                    };
+                    if is_equiv {
+                        ops.remove(other_pos);
                     } else {
-                        ops[pos_u].1 = true;
+                        other_pos += 1;
+                    }
+                }
+                if sum > 0x80000000 {
+                    let sum = !sum.wrapping_add(1);
+                    ops[pos].0 = Operand::simplified(operand_mul(constval(sum), equiv));
+                    ops[pos].1 = true;
+                } else {
+                    ops[pos].0 = Operand::simplified(operand_mul(constval(sum), equiv));
+                    ops[pos].1 = false;
+                }
+                pos += 1;
+            }
+            // Remove everything matching
+            Some(None) => {
+                let (op, _) = ops.remove(pos);
+                let equiv = match op.ty {
+                    OperandType::Arithmetic(ArithOpType::Mul(ref l, ref r)) => {
+                        match (&l.ty, &r.ty) {
+                            (&OperandType::Constant(_), _) => r,
+                            (_, &OperandType::Constant(_)) => l,
+                            _ => &op,
+                        }
+                    },
+                    _ => &op,
+                };
+                let mut other_pos = pos;
+                while other_pos < ops.len() {
+                    if ops[other_pos].0 == *equiv {
+                        ops.remove(other_pos);
+                    } else {
+                        other_pos += 1;
                     }
                 }
             }
-            first_same = pos - 1;
+            None => {
+                pos += 1;
+            }
         }
-        pos -= 1;
     }
 }
 
@@ -2690,6 +2759,38 @@ mod test {
             );
             println!("Rsh done");
         }
+    }
+
+    #[test]
+    fn simplify_merge_adds_as_mul() {
+        use super::operand_helpers::*;
+        let op = operand_add(
+            operand_mul(
+                operand_register(1),
+                constval(2),
+            ),
+            operand_register(1),
+        );
+        let eq = operand_mul(
+            operand_register(1),
+            constval(3),
+        );
+        let op2 = operand_add(
+            operand_mul(
+                operand_register(1),
+                constval(2),
+            ),
+            operand_mul(
+                operand_register(1),
+                constval(8),
+            ),
+        );
+        let eq2 = operand_mul(
+            operand_register(1),
+            constval(10),
+        );
+        assert_eq!(Operand::simplified(op), Operand::simplified(eq));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 
     #[test]
