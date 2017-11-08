@@ -1079,46 +1079,61 @@ impl Operand {
         }
     }
 
-    pub fn substitute(oper: Rc<Operand>, val: &Rc<Operand>, with: &Rc<Operand>) -> Rc<Operand> {
+    pub fn transform<F>(oper: Rc<Operand>, mut f: F) -> Rc<Operand>
+    where F: FnMut(&Operand) -> Option<Rc<Operand>>
+    {
+        Operand::transform_internal(oper, &mut f)
+    }
+
+    pub fn transform_internal<F>(oper: Rc<Operand>, f: &mut F) -> Rc<Operand>
+    where F: FnMut(&Operand) -> Option<Rc<Operand>>
+    {
         use self::OperandType::*;
         use self::ArithOpType::*;
 
-        if oper == *val {
-            return with.clone();
+        if let Some(val) = f(&oper) {
+            return val;
         }
-        let sub = |oper: &Rc<Operand>| Operand::substitute(oper.clone(), val, with);
+        let sub = |oper: &Rc<Operand>, f: &mut F| Operand::transform_internal(oper.clone(), f);
         let ty = match oper.ty {
             Arithmetic(ref arith) => Arithmetic(match *arith {
-                Add(ref l, ref r) => Add(sub(l), sub(r)),
-                Sub(ref l, ref r) => Sub(sub(l), sub(r)),
-                Mul(ref l, ref r) => Mul(sub(l), sub(r)),
-                SignedMul(ref l, ref r) => SignedMul(sub(l), sub(r)),
-                Div(ref l, ref r) => Div(sub(l), sub(r)),
-                Modulo(ref l, ref r) => Modulo(sub(l), sub(r)),
-                And(ref l, ref r) => And(sub(l), sub(r)),
-                Or(ref l, ref r) => Or(sub(l), sub(r)),
-                Xor(ref l, ref r) => Xor(sub(l), sub(r)),
-                Lsh(ref l, ref r) => Lsh(sub(l), sub(r)),
-                Rsh(ref l, ref r) => Rsh(sub(l), sub(r)),
-                RotateLeft(ref l, ref r) => RotateLeft(sub(l), sub(r)),
-                Equal(ref l, ref r) => Equal(sub(l), sub(r)),
-                Not(ref x) => Not(sub(x)),
-                LogicalNot(ref x) => LogicalNot(sub(x)),
-                Parity(ref x) => Parity(sub(x)),
-                GreaterThan(ref l, ref r) => GreaterThan(sub(l), sub(r)),
+                Add(ref l, ref r) => Add(sub(l, f), sub(r, f)),
+                Sub(ref l, ref r) => Sub(sub(l, f), sub(r, f)),
+                Mul(ref l, ref r) => Mul(sub(l, f), sub(r, f)),
+                SignedMul(ref l, ref r) => SignedMul(sub(l, f), sub(r, f)),
+                Div(ref l, ref r) => Div(sub(l, f), sub(r, f)),
+                Modulo(ref l, ref r) => Modulo(sub(l, f), sub(r, f)),
+                And(ref l, ref r) => And(sub(l, f), sub(r, f)),
+                Or(ref l, ref r) => Or(sub(l, f), sub(r, f)),
+                Xor(ref l, ref r) => Xor(sub(l, f), sub(r, f)),
+                Lsh(ref l, ref r) => Lsh(sub(l, f), sub(r, f)),
+                Rsh(ref l, ref r) => Rsh(sub(l, f), sub(r, f)),
+                RotateLeft(ref l, ref r) => RotateLeft(sub(l, f), sub(r, f)),
+                Equal(ref l, ref r) => Equal(sub(l, f), sub(r, f)),
+                Not(ref x) => Not(sub(x, f)),
+                LogicalNot(ref x) => LogicalNot(sub(x, f)),
+                Parity(ref x) => Parity(sub(x, f)),
+                GreaterThan(ref l, ref r) => GreaterThan(sub(l, f), sub(r, f)),
                 GreaterThanSigned(ref l, ref r) => {
-                    GreaterThanSigned(sub(l), sub(r))
+                    GreaterThanSigned(sub(l, f), sub(r, f))
                 }
             }),
             Memory(ref m) => {
                 Memory(MemAccess {
-                    address: sub(&m.address),
+                    address: sub(&m.address, f),
                     size: m.size,
                 })
             }
             ref x => x.clone(),
         };
         Operand::new_not_simplified_rc(ty)
+    }
+
+    pub fn substitute(oper: Rc<Operand>, val: &Rc<Operand>, with: &Rc<Operand>) -> Rc<Operand> {
+        Operand::transform(oper, |old| match *old == **val {
+            true => Some(with.clone()),
+            false => None,
+        })
     }
 }
 
