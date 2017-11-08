@@ -252,7 +252,6 @@ pub struct Branch<'a, 'exec: 'a> {
 pub struct Operations<'a, 'branch: 'a, 'exec: 'branch> {
     branch: &'a mut Branch<'branch, 'exec>,
     disasm: disasm::Disassembler<'a>,
-    start_addresses: Vec<VirtualAddress>,
     current_ins: Option<InstructionOps<'a, 'exec>>,
     current_operation: Option<Operation>,
 }
@@ -269,7 +268,6 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                 (self.addr - self.analysis.binary.code_section().virtual_address).0 as usize,
                 self.analysis.binary.code_section().virtual_address,
             ),
-            start_addresses: Vec::with_capacity(32),
             current_ins: None,
             current_operation: None,
             branch: self,
@@ -391,7 +389,6 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
                 }
             }
             let address = self.disasm.address();
-            self.start_addresses.push(address);
             let ins = match self.disasm.next(&self.branch.analysis.operand_ctx) {
                 Ok(o) => o,
                 Err(disasm::Error::Branch(_)) => {
