@@ -1194,7 +1194,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             Ok(x) => x,
         });
         Some(Ok(match self.pos {
-            0 => signed_mul(r.into(), operand_signed_mul(rm.into(), imm)),
+            0 => mov(r.into(), operand_signed_mul(rm.into(), imm)),
             // TODO flags, imul only sets c and o on overflow
             _ => return None,
         }))
