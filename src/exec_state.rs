@@ -444,6 +444,7 @@ impl<'a> Destination<'a> {
 /// intermediate values do not.
 ///
 /// Additionally, Undefined(n) is always InternedOperand(!n)
+#[derive(Clone)]
 pub struct InternMap {
     pub map: Vec<Rc<Operand>>,
     reverse: HashMap<Rc<Operand>, InternedOperand>,

@@ -215,6 +215,25 @@ impl<'a> FuncAnalysis<'a> {
         }
     }
 
+    pub fn with_state<'b>(
+        binary: &'b BinaryFile,
+        operand_ctx: &'b OperandContext,
+        start_address: VirtualAddress,
+        state: ExecutionState<'b>,
+        interner: exec_state::InternMap,
+    ) -> FuncAnalysis<'b> {
+        FuncAnalysis {
+            binary,
+            errors: Vec::new(),
+            checked_branches: OrderMap::new(),
+            unchecked_branches: {
+                vec![(start_address, state)]
+            },
+            operand_ctx,
+            interner,
+        }
+    }
+
     pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a>> {
         while let Some((addr, state)) = self.unchecked_branches.pop() {
             let state = match self.checked_branches.entry(addr) {
