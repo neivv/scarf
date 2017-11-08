@@ -572,6 +572,20 @@ impl OperandType {
             _ => 0..32,
         }
     }
+
+    /// Returns whether the operand is 8, 16, or 32 bits.
+    /// Relevant with signed multiplication, usually operands can be considered
+    /// zero-extended u32.
+    fn expr_size(&self) -> MemAccessSize {
+        use self::OperandType::*;
+        match *self {
+            Memory(ref mem) => mem.size,
+            Register(..) | Arithmetic(..) | Pair(..) | Xmm(..) | Flag(..) | Constant(..) |
+                Undefined(..) | ArithmeticHigh(..) => MemAccessSize::Mem32,
+            Register16(..) => MemAccessSize::Mem16,
+            Register8High(..) | Register8Low(..) => MemAccessSize::Mem8,
+        }
+    }
 }
 
 impl Operand {
@@ -715,6 +729,18 @@ impl Operand {
             OperandType::Arithmetic(ArithOpType::Mul(ref left, ref right)) => {
                 Operand::collect_mul_ops(left.clone(), ops);
                 Operand::collect_mul_ops(right.clone(), ops);
+            }
+            _ => {
+                ops.push(Operand::simplified(s));
+            }
+        }
+    }
+
+    fn collect_signed_mul_ops(s: Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
+        match s.clone().ty {
+            OperandType::Arithmetic(ArithOpType::SignedMul(ref left, ref right)) => {
+                Operand::collect_signed_mul_ops(left.clone(), ops);
+                Operand::collect_signed_mul_ops(right.clone(), ops);
             }
             _ => {
                 ops.push(Operand::simplified(s));
@@ -935,6 +961,42 @@ impl Operand {
                         .unwrap_or_else(|| constval(1));
                     while let Some(op) = ops.pop() {
                         tree = Operand::new_simplified_rc(OperandType::Arithmetic(Mul(tree, op)))
+                    }
+                    tree
+                }
+                ArithOpType::SignedMul(_, _) => {
+                    let mut ops = vec![];
+                    Operand::collect_signed_mul_ops(s, &mut ops);
+                    let const_product = ops.iter().fold(1i32, |product, x| match x.ty {
+                        OperandType::Constant(num) => product.wrapping_mul(num as i32),
+                        _ => product,
+                    }) as u32;
+                    if const_product == 0 {
+                        return constval(0)
+                    }
+                    ops.retain(|x| match x.ty {
+                        OperandType::Constant(_) => false,
+                        _ => true,
+                    });
+                    if ops.is_empty() {
+                        return constval(const_product);
+                    }
+                    ops.sort();
+                    if const_product != 1 {
+                        ops.push(constval(const_product));
+                    }
+                    // If there are no small operands, equivalent to unsigned multiply
+                    // Maybe could assume if there's even one 32-bit operand? As having different
+                    // size operands is sketchy.
+                    let all_32bit = ops.iter().all(|x| x.ty.expr_size() == MemAccessSize::Mem32);
+                    let mut tree = ops.pop().map(mark_self_simplified)
+                        .unwrap_or_else(|| constval(1));
+                    while let Some(op) = ops.pop() {
+                        let ty = match all_32bit {
+                            true => OperandType::Arithmetic(Mul(tree, op)),
+                            false => OperandType::Arithmetic(SignedMul(tree, op)),
+                        };
+                        tree = Operand::new_simplified_rc(ty)
                     }
                     tree
                 }
@@ -2029,6 +2091,48 @@ mod test {
             ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(op2));
+    }
+
+    #[test]
+    fn simplify_signed_mul() {
+        // It's same as unsigned until sign extension is needed
+        use super::operand_helpers::*;
+        let op1 = operand_add(constval(5), operand_sub(operand_register(2), constval(5)));
+        assert_eq!(Operand::simplified(op1), operand_register(2));
+        // (5 * r2) + (5 - (5 + r2)) == (5 * r2) - r2
+        let op1 = operand_signed_mul(
+            operand_signed_mul(constval(5), operand_register(2)),
+            operand_signed_mul(
+                constval(5),
+                operand_add(constval(5), operand_register(2)),
+            )
+        );
+        let eq1 = operand_signed_mul(
+            constval(25),
+            operand_signed_mul(
+                operand_register(2),
+                operand_add(constval(5), operand_register(2)),
+            ),
+        );
+        let op2 = operand_signed_mul(
+            operand_register(1),
+            operand_register(2),
+        );
+        let eq2 = operand_mul(
+            operand_register(1),
+            operand_register(2),
+        );
+        let op3 = operand_signed_mul(
+            Operand::new_simplified_rc(OperandType::Register16(Register(1))),
+            Operand::new_simplified_rc(OperandType::Register16(Register(2))),
+        );
+        let ne3 = operand_mul(
+            Operand::new_simplified_rc(OperandType::Register16(Register(1))),
+            Operand::new_simplified_rc(OperandType::Register16(Register(2))),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+        assert_ne!(Operand::simplified(op3), Operand::simplified(ne3));
     }
 
     #[test]
