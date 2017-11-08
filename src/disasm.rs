@@ -98,6 +98,7 @@ impl<'a, 'b> Instruction<'a, 'b> {
     }
 }
 
+#[derive(Copy, Clone)]
 struct InstructionPrefixes {
     prefix_66: bool,
     prefix_67: bool,
@@ -299,6 +300,7 @@ impl<'a, 'exec: 'a> InstructionOps<'a, 'exec> {
                 0x7e => ins_next(|s| s.mov_sse_7e()),
                 0x80 ... 0x8f => ins_next(|s| s.conditional_jmp(s.mem16_32())),
                 0x90 ... 0x9f => ins_next(|s| s.conditional_set()),
+                0xaf => ins_next(|s| s.imul_normal()),
                 0xb6 ... 0xb7 => ins_next(|s| s.movzx()),
                 0xbe ... 0xbf => ins_next(|s| s.movsx()),
                 0xd3 => ins_next(|s| s.packed_shift_right()),
@@ -806,22 +808,52 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 _ => return None,
             }))
         } else {
-            Some(Ok(match self.pos {
-                0 => mov(r, constval(0)),
-                1 => {
-                    use self::ArithOpType::*;
-                    let signed_max = match op_size {
-                        MemAccessSize::Mem8 => constval(0x7f),
-                        MemAccessSize::Mem16 => constval(0x7fff),
-                        _ => unreachable!(),
-                    };
-                    let compare = OperandType::Arithmetic(GreaterThan(rm, signed_max));
-                    let rm_cond = Operand::new_not_simplified_rc(compare);
-                    Operation::Move((*r).clone().into(), constval(!0), Some(rm_cond))
-                }
-                2 => mov(r, rm),
-                _ => return None,
-            }))
+            let mem_size = match rm.ty {
+                OperandType::Memory(ref mem) => Some(mem.size),
+                _ => None,
+            };
+            if let Some(mem_size) = mem_size {
+                Some(Ok(match self.pos {
+                    0 => mov(r, rm),
+                    x => {
+                        // sigh
+                        let reg = match r.ty {
+                            OperandType::Register(r) => r.0,
+                            _ => panic!("Movsx r, [mem] r is not register? {:?}", r),
+                        };
+                        let dat = match mem_size == MemAccessSize::Mem8 {
+                            true => [0xbe, 0xc0 + reg * 9],
+                            false => [0xbf, 0xc0 + reg * 9],
+                        };
+                        let state = InstructionOpsState {
+                            address: self.address,
+                            data: &dat[..],
+                            prefixes: self.prefixes,
+                            pos: x - 1,
+                            len: 3,
+                            ctx: self.ctx,
+                        };
+                        return state.movsx();
+                    }
+                }))
+            } else {
+                Some(Ok(match self.pos {
+                    0 => mov(r, constval(0)),
+                    1 => {
+                        use self::ArithOpType::*;
+                        let signed_max = match op_size {
+                            MemAccessSize::Mem8 => constval(0x7f),
+                            MemAccessSize::Mem16 => constval(0x7fff),
+                            _ => unreachable!(),
+                        };
+                        let compare = OperandType::Arithmetic(GreaterThan(rm, signed_max));
+                        let rm_cond = Operand::new_not_simplified_rc(compare);
+                        Operation::Move((*r).clone().into(), constval(!0), Some(rm_cond))
+                    }
+                    2 => mov(r, rm),
+                    _ => return None,
+                }))
+            }
         }
     }
 
@@ -863,11 +895,22 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 _ => return None,
             }))
         } else {
-            Some(Ok(match self.pos {
-                0 => mov(r, constval(0)),
-                1 => mov(r, rm),
-                _ => return None,
-            }))
+            let is_mem = match rm.ty {
+                OperandType::Memory(_) => true,
+                _ => false,
+            };
+            if is_mem {
+                Some(Ok(match self.pos {
+                    0 => mov(r, rm),
+                    _ => return None,
+                }))
+            } else {
+                Some(Ok(match self.pos {
+                    0 => mov(r, constval(0)),
+                    1 => mov(r, rm),
+                    _ => return None,
+                }))
+            }
         }
     }
 
@@ -1152,6 +1195,19 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         });
         Some(Ok(match self.pos {
             0 => signed_mul(r.into(), operand_signed_mul(rm.into(), imm)),
+            // TODO flags, imul only sets c and o on overflow
+            _ => return None,
+        }))
+    }
+
+    fn imul_normal(&self) -> Option<Result<Operation, Error>> {
+        use self::operation_helpers::*;
+        let (rm, r, _) = match self.parse_modrm(self.mem16_32()) {
+            Err(e) => return Some(Err(e)),
+            Ok(x) => x,
+        };
+        Some(Ok(match self.pos {
+            0 => signed_mul(r.into(), rm.into()),
             // TODO flags, imul only sets c and o on overflow
             _ => return None,
         }))
