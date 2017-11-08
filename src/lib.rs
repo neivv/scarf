@@ -120,6 +120,7 @@ pub struct BinaryFile {
 pub struct BinarySection {
     pub name: [u8; 8],
     pub virtual_address: VirtualAddress,
+    pub virtual_size: u32,
     pub data: Vec<u8>,
 }
 
@@ -191,7 +192,8 @@ pub fn parse(filename: &OsStr, silps_path: &OsStr) -> Result<BinaryFile, Error> 
         let mut name = [0; 8];
         file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i as u64))?;
         file.read_exact(&mut name)?;
-        file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i as u64 + 0xc))?;
+        file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i as u64 + 0x8))?;
+        let virtual_size = file.read_u32::<LittleEndian>()?;
         let rva = Rva(file.read_u32::<LittleEndian>()?);
         let phys_size = file.read_u32::<LittleEndian>()?;
         let phys = PhysicalAddress(file.read_u32::<LittleEndian>()?);
@@ -202,6 +204,7 @@ pub fn parse(filename: &OsStr, silps_path: &OsStr) -> Result<BinaryFile, Error> 
         Ok(BinarySection {
             name: name,
             virtual_address: base + rva,
+            virtual_size,
             data,
         })
     }).collect::<Result<Vec<_>, Error>>()?;
@@ -218,6 +221,7 @@ pub fn parse(filename: &OsStr, silps_path: &OsStr) -> Result<BinaryFile, Error> 
             name
         },
         virtual_address: base,
+        virtual_size: header_block_size,
         data: header_data,
     });
     let dump_code_offset;
