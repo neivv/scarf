@@ -1080,13 +1080,13 @@ impl Operand {
     }
 
     pub fn transform<F>(oper: Rc<Operand>, mut f: F) -> Rc<Operand>
-    where F: FnMut(&Operand) -> Option<Rc<Operand>>
+    where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
     {
         Operand::transform_internal(oper, &mut f)
     }
 
     pub fn transform_internal<F>(oper: Rc<Operand>, f: &mut F) -> Rc<Operand>
-    where F: FnMut(&Operand) -> Option<Rc<Operand>>
+    where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
     {
         use self::OperandType::*;
         use self::ArithOpType::*;
@@ -1130,7 +1130,7 @@ impl Operand {
     }
 
     pub fn substitute(oper: Rc<Operand>, val: &Rc<Operand>, with: &Rc<Operand>) -> Rc<Operand> {
-        Operand::transform(oper, |old| match *old == **val {
+        Operand::transform(oper, |old| match old == val {
             true => Some(with.clone()),
             false => None,
         })
