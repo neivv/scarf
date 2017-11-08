@@ -1067,6 +1067,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 0 => Some(Ok(Operation::Call(rm.into()))),
                 _ => None,
             },
+            4 | 5 => match self.pos {
+                0 => Some(Ok(Operation::Jump { condition: constval(1), to: rm.into() })),
+                _ => None,
+            },
             6 => {
                 PUSH_OPS.operation(rm.into(), constval(!0), self.pos).ok()
             }
