@@ -753,6 +753,25 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
+    /// Tries to find an register/memory address corresponding to a resolved value.
+    pub fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
+        use operand::operand_helpers::*;
+
+        // TODO: Could also check xmm but who honestly uses it for unique storage
+        let interned = i.intern(val.clone());
+        for (reg, &val) in self.registers.iter().enumerate() {
+            if interned == val {
+                return Some(operand_register(reg as u8));
+            }
+        }
+        for (&key, &val) in self.memory.map.iter() {
+            if interned == val {
+                return Some(i.operand(key));
+            }
+        }
+        None
+    }
+
     /// Returns state with the condition assumed to be true/false
     pub fn assume_jump_flag(
         &self,
