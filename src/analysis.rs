@@ -6,7 +6,7 @@ use ordermap::{self, OrderMap};
 use disasm::{self, InstructionOps, Operation};
 use exec_state::{self, ExecutionState};
 use operand::{Operand, OperandContext};
-use ::{BinaryFile, Rva, VirtualAddress};
+use ::{BinaryFile, BinarySection, Rva, VirtualAddress};
 
 quick_error! {
     #[derive(Debug)]
@@ -22,8 +22,15 @@ quick_error! {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct FuncCallPair {
     pub caller: Rva,
+    pub callee: Rva,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct FuncPtrPair {
+    pub address: VirtualAddress,
     pub callee: Rva,
 }
 
@@ -47,10 +54,7 @@ pub fn find_functions_with_callers(file: &BinaryFile) -> Vec<FuncCallPair> {
     called_functions
 }
 
-/// Attempts to find functions of a binary, accepting ones that are called/long jumped to
-/// from somewhere.
-/// Returns addresses relative to start of code section.
-pub fn find_functions(file: &BinaryFile) -> Vec<Rva> {
+fn find_functions_from_calls(file: &BinaryFile) -> Vec<Rva> {
     let code = &file.code_section().data;
     let mut called_functions = code.iter().enumerate()
         .filter(|&(_, &x)| x == 0xe8 || x == 0xe9)
@@ -63,40 +67,83 @@ pub fn find_functions(file: &BinaryFile) -> Vec<Rva> {
         })
         .map(|x| Rva(x))
         .collect::<Vec<_>>();
-    find_vtable_calls(file, &mut called_functions);
     called_functions.sort();
     called_functions.dedup();
     called_functions
 }
 
+/// Attempts to find functions of a binary, accepting ones that are called/long jumped to
+/// from somewhere.
+/// Returns addresses relative to start of code section.
+pub fn find_functions(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<Rva> {
+    let mut called_functions = find_functions_from_calls(file);
+    called_functions.extend(find_funcptrs(file, relocs).iter().map(|x| x.callee));
+    called_functions.sort();
+    called_functions.dedup();
+    called_functions
+}
+
+fn conservative_function_filter(code: &[u8], func: Rva) -> bool {
+    match code.get(func.0 as usize) {
+        Some(&first_byte) => first_byte >= 0x50 && first_byte < 0x58,
+        _ => false,
+    }
+}
+
 /// Like find_functions, but requires the function to start with "push"
-pub fn find_functions_conservative(file: &BinaryFile) -> Vec<Rva> {
+pub fn find_functions_conservative(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<Rva> {
     let code = &file.code_section().data;
-    let mut funcs = find_functions(file);
-    funcs.retain(|rva| {
-        match code.get(rva.0 as usize) {
-            Some(&first_byte) => first_byte >= 0x50 && first_byte < 0x58,
-            _ => false,
-        }
-    });
+    let mut funcs = find_functions(file, relocs);
+    funcs.retain(|&rva| conservative_function_filter(code, rva));
     funcs
 }
 
-fn find_vtable_calls(file: &BinaryFile, out: &mut Vec<Rva>) {
-    // TODO Could only check relocs
+pub fn find_switch_tables(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
+    let mut out = Vec::with_capacity(4096);
+    let code = file.code_section();
+    for sect in file.sections.iter().filter(|sect| &sect.name[..] == b".text\0\0\0") {
+        collect_relocs_pointing_to_code(code, relocs, sect, &mut out);
+    }
+    out
+}
+
+
+fn find_funcptrs(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
+    let mut out = Vec::with_capacity(4096);
     let code = file.code_section();
     for sect in file.sections.iter().filter(|sect| {
         &sect.name[..] == b".data\0\0\0" || &sect.name[..] == b".rdata\0\0"
     }) {
-        let funcs = sect.data.chunks(4)
-            .flat_map(|mut c| c.read_u32::<LittleEndian>().ok().map(|x| VirtualAddress(x)))
-            .filter(|addr| {
-                let code_size = code.data.len() as u32;
-                addr >= &code.virtual_address && addr < &(code.virtual_address + code_size)
-            })
-            .map(|addr| addr - code.virtual_address);
-        out.extend(funcs);
+        collect_relocs_pointing_to_code(code, relocs, sect, &mut out);
     }
+    out
+}
+
+fn collect_relocs_pointing_to_code(
+    code: &BinarySection,
+    relocs: &[VirtualAddress],
+    sect: &BinarySection,
+    out: &mut Vec<FuncPtrPair>,
+) {
+    let funcs = sect.data.chunks(4)
+        .enumerate()
+        .filter(|&(i, _)| {
+            let addr = sect.virtual_address + i as u32 * 4;
+            relocs.binary_search(&addr).is_ok()
+        })
+        .flat_map(|(i, mut c)| {
+            let addr = sect.virtual_address + i as u32 * 4;
+            c.read_u32::<LittleEndian>().ok().map(|x| (addr, VirtualAddress(x)))
+        })
+        .filter(|&(_src_addr, func_addr)| {
+            let code_size = code.data.len() as u32;
+            func_addr >= code.virtual_address && func_addr < code.virtual_address + code_size
+        })
+        .map(|(src_addr, func_addr)| FuncPtrPair {
+            address: src_addr,
+            callee: func_addr - code.virtual_address,
+        });
+    out.extend(funcs);
 }
 
 macro_rules! try_get {
@@ -132,6 +179,7 @@ pub fn find_relocs(file: &BinaryFile) -> Result<Vec<VirtualAddress>, ::Error> {
         }
         offset += size;
     }
+    result.sort();
     Ok(result)
 }
 
@@ -401,5 +449,9 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
             };
             self.current_ins = Some(ins.ops());
         }
+    }
+
+    pub fn current_address(&self) -> VirtualAddress {
+        self.disasm.address()
     }
 }
