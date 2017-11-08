@@ -936,7 +936,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 _ => None,
             },
             5 => match self.pos {
-                0 => Some(Ok(signed_mul(pair_edx_eax(), rm.clone().into()))),
+                0 => {
+                    let eax = operand_register(0);
+                    Some(Ok(mov(pair_edx_eax(), operand_signed_mul(eax, rm.clone().into()))))
+                }
                 // TODO flags, imul only sets c and o on overflow
                 _ => None,
             },

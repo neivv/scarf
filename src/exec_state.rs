@@ -713,11 +713,11 @@ impl<'a> ExecutionState<'a> {
             }).clone(),
             OperandType::Arithmetic(ref op) => {
                 let ty = OperandType::Arithmetic(self.resolve_arith(op, interner)?);
-                Operand::new_not_simplified_rc(ty)
+                Operand::simplified(Operand::new_not_simplified_rc(ty))
             }
             OperandType::ArithmeticHigh(ref op) => {
                 let ty = OperandType::ArithmeticHigh(self.resolve_arith(op, interner)?);
-                Operand::new_not_simplified_rc(ty)
+                Operand::simplified(Operand::new_not_simplified_rc(ty))
             }
             OperandType::Constant(x) => Operand::new_simplified_rc(OperandType::Constant(x)),
             OperandType::Memory(ref mem) => {
@@ -725,10 +725,12 @@ impl<'a> ExecutionState<'a> {
                 self.memory.get(interner.intern(address.clone()))
                     .map(|interned| interner.operand(interned))
                     .unwrap_or_else(|| {
-                        Operand::new_not_simplified_rc(OperandType::Memory(MemAccess {
-                            address: address,
-                            size: mem.size,
-                        }))
+                        Operand::simplified(
+                            Operand::new_not_simplified_rc(OperandType::Memory(MemAccess {
+                                address: address,
+                                size: mem.size,
+                            }))
+                        )
                     })
             }
             OperandType::Undefined(x) => Operand::new_simplified_rc(OperandType::Undefined(x))

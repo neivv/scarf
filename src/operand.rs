@@ -635,12 +635,16 @@ impl Operand {
     }
 
     pub fn pair(&self) -> Option<(Rc<Operand>, Rc<Operand>)> {
+        use self::operand_helpers::*;
         match self.ty {
             OperandType::Pair(ref a, ref b) => Some((a.clone(), b.clone())),
             OperandType::Arithmetic(ref arith) => {
                 let high_ty = OperandType::ArithmeticHigh(arith.clone());
                 let high = Operand::new_not_simplified_rc(high_ty);
                 Some((Operand::simplified(high), Rc::new(self.clone())))
+            }
+            OperandType::Constant(c) => {
+                Some((constval(0), constval(c)))
             }
             _ => None,
         }
