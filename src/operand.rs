@@ -576,7 +576,7 @@ impl OperandType {
     /// Returns whether the operand is 8, 16, or 32 bits.
     /// Relevant with signed multiplication, usually operands can be considered
     /// zero-extended u32.
-    fn expr_size(&self) -> MemAccessSize {
+    pub fn expr_size(&self) -> MemAccessSize {
         use self::OperandType::*;
         match *self {
             Memory(ref mem) => mem.size,
