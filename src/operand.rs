@@ -848,7 +848,16 @@ impl Operand {
                     MemAccessSize::Mem16 => Some((op, 0xffff)),
                     _ => None,
                 }
-                _ => None,
+                _ => {
+                    let bits = op.relevant_bits();
+                    if bits != (0..32) {
+                        let low = bits.start;
+                        let high = 32 - bits.end;
+                        Some((op, !0 >> low << low << high >> high))
+                    } else {
+                        None
+                    }
+                }
             }
         }
 
@@ -2914,6 +2923,45 @@ mod test {
         );
         assert_eq!(Operand::simplified(op), Operand::simplified(eq));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_merge_and_xor() {
+        use super::operand_helpers::*;
+        let mem16 = |x| mem_variable_rc(MemAccessSize::Mem16, x);
+        let op = operand_or(
+            operand_and(
+                operand_xor(
+                    operand_xor(
+                        mem32(constval(1234)),
+                        constval(0x1123),
+                    ),
+                    mem32(constval(3333)),
+                ),
+                constval(0xff00),
+            ),
+            operand_and(
+                operand_xor(
+                    operand_xor(
+                        mem32(constval(1234)),
+                        constval(0x666666),
+                    ),
+                    mem32(constval(3333)),
+                ),
+                constval(0xff),
+            ),
+        );
+        let eq = operand_and(
+            constval(0xffff),
+            operand_xor(
+                operand_xor(
+                    mem16(constval(1234)),
+                    mem16(constval(3333)),
+                ),
+                constval(0x1166),
+            ),
+        );
+        assert_eq!(Operand::simplified(op), Operand::simplified(eq));
     }
 
     #[test]
