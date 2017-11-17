@@ -5,15 +5,6 @@ use std::rc::Rc;
 use disasm::{DestOperand, Operation};
 use operand::{self, ArithOpType, Flag, MemAccess, Operand, OperandContext, OperandType};
 
-quick_error! {
-    #[derive(Debug)]
-    pub enum Error {
-        Unimplemented(desc: String) {
-            display("Unimplemented {}", desc)
-        }
-    }
-}
-
 /// The constraint is assumed to be something that can be substituted with 1 if met
 /// (so constraint == constval(1))
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -398,7 +389,7 @@ impl<'a> Iterator for MemoryIterUntilImm<'a> {
 }
 
 impl<'a> Destination<'a> {
-    fn set(self, value: Rc<Operand>, intern_map: &mut InternMap) -> Result<(), Error> {
+    fn set(self, value: Rc<Operand>, intern_map: &mut InternMap) {
         use operand::operand_helpers::*;
         match self {
             Destination::Oper(o) => {
@@ -433,7 +424,6 @@ impl<'a> Destination<'a> {
                 mem.map.insert(addr, intern_map.intern(Operand::simplified(value)));
             }
         }
-        Ok(())
     }
 }
 
@@ -543,11 +533,7 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
-    pub fn update(
-        &mut self,
-        operation: Operation,
-        intern_map: &mut InternMap,
-    ) -> Result<(), Error> {
+    pub fn update(&mut self, operation: Operation, intern_map: &mut InternMap) {
         match operation {
             Operation::Move(dest, value, cond) => {
                 // TODO: disassembly module should give the simplified values always
@@ -557,29 +543,29 @@ impl<'a> ExecutionState<'a> {
                     match self.try_resolve_const(&cond, intern_map) {
                         Some(0) => (),
                         Some(_) => {
-                            let resolved = self.resolve(&value, intern_map)?;
-                            let dest = self.get_dest_invalidate_constraints(&dest, intern_map)?;
-                            dest.set(resolved, intern_map)?;
+                            let resolved = self.resolve(&value, intern_map);
+                            let dest = self.get_dest_invalidate_constraints(&dest, intern_map);
+                            dest.set(resolved, intern_map);
                         }
                         None => {
-                            self.get_dest_invalidate_constraints(&dest, intern_map)?
-                                .set(self.ctx.undefined_rc(), intern_map)?
+                            self.get_dest_invalidate_constraints(&dest, intern_map)
+                                .set(self.ctx.undefined_rc(), intern_map)
                         }
                     }
                 } else {
-                    let resolved = self.resolve(&value, intern_map)?;
-                    let dest = self.get_dest_invalidate_constraints(&dest, intern_map)?;
-                    dest.set(resolved, intern_map)?;
+                    let resolved = self.resolve(&value, intern_map);
+                    let dest = self.get_dest_invalidate_constraints(&dest, intern_map);
+                    dest.set(resolved, intern_map);
                 }
             }
             Operation::Swap(left, right) => {
                 // Shouldn't have to clone
-                let left_res = self.resolve(&left.clone().into(), intern_map)?;
-                let right_res = self.resolve(&right.clone().into(), intern_map)?;
-                self.get_dest_invalidate_constraints(&left, intern_map)?
-                    .set(right_res, intern_map)?;
-                self.get_dest_invalidate_constraints(&right, intern_map)?
-                    .set(left_res, intern_map)?;
+                let left_res = self.resolve(&left.clone().into(), intern_map);
+                let right_res = self.resolve(&right.clone().into(), intern_map);
+                self.get_dest_invalidate_constraints(&left, intern_map)
+                    .set(right_res, intern_map);
+                self.get_dest_invalidate_constraints(&right, intern_map)
+                    .set(left_res, intern_map);
             }
             Operation::Call(_) => {
                 self.registers[0] = intern_map.new_undef(self.ctx);
@@ -588,16 +574,18 @@ impl<'a> ExecutionState<'a> {
                 self.registers[4] = intern_map.new_undef(self.ctx);
                 self.flags = Flags::undefined(self.ctx, intern_map);
             }
-            x => return Err(Error::Unimplemented(format!("{:?}", x))),
+            Operation::Jump { .. } => {
+            }
+            Operation::Return(_) => {
+            }
         };
-        Ok(())
     }
 
     fn get_dest_invalidate_constraints(
         &mut self,
         dest: &DestOperand,
         interner: &mut InternMap,
-    ) -> Result<Destination, Error> {
+    ) -> Destination {
         self.last_jump_extra_constraint = match self.last_jump_extra_constraint {
             Some(ref s) => s.invalidate_dest_operand(dest),
             None => None,
@@ -605,12 +593,8 @@ impl<'a> ExecutionState<'a> {
         self.get_dest(dest, interner)
     }
 
-    fn get_dest(
-        &mut self,
-        dest: &DestOperand,
-        intern_map: &mut InternMap
-    ) -> Result<Destination, Error> {
-        Ok(match *dest {
+    fn get_dest(&mut self, dest: &DestOperand, intern_map: &mut InternMap) -> Destination {
+        match *dest {
             DestOperand::Register(reg) => Destination::Oper(&mut self.registers[reg.0 as usize]),
             DestOperand::Register16(reg) => {
                 Destination::Register16(&mut self.registers[reg.0 as usize])
@@ -638,46 +622,42 @@ impl<'a> ExecutionState<'a> {
                 Flag::Direction => &mut self.flags.direction,
             }),
             DestOperand::Memory(ref mem) => {
-                let address = self.resolve(&mem.address, intern_map)?;
+                let address = self.resolve(&mem.address, intern_map);
                 Destination::Memory(&mut self.memory, address)
             }
-        })
+        }
     }
 
-    fn resolve_arith(&self, op: &ArithOpType, i: &mut InternMap) -> Result<ArithOpType, Error> {
+    fn resolve_arith(&self, op: &ArithOpType, i: &mut InternMap) -> ArithOpType {
         use operand::ArithOpType::*;
-        Ok(match *op {
-            Add(ref l, ref r) => Add(self.resolve(l, i)?, self.resolve(r, i)?),
-            Sub(ref l, ref r) => Sub(self.resolve(l, i)?, self.resolve(r, i)?),
-            Mul(ref l, ref r) => Mul(self.resolve(l, i)?, self.resolve(r, i)?),
-            SignedMul(ref l, ref r) => SignedMul(self.resolve(l, i)?, self.resolve(r, i)?),
-            Div(ref l, ref r) => Div(self.resolve(l, i)?, self.resolve(r, i)?),
-            Modulo(ref l, ref r) => Modulo(self.resolve(l, i)?, self.resolve(r, i)?),
-            And(ref l, ref r) => And(self.resolve(l, i)?, self.resolve(r, i)?),
-            Or(ref l, ref r) => Or(self.resolve(l, i)?, self.resolve(r, i)?),
-            Xor(ref l, ref r) => Xor(self.resolve(l, i)?, self.resolve(r, i)?),
-            Lsh(ref l, ref r) => Lsh(self.resolve(l, i)?, self.resolve(r, i)?),
-            Rsh(ref l, ref r) => Rsh(self.resolve(l, i)?, self.resolve(r, i)?),
-            RotateLeft(ref l, ref r) => RotateLeft(self.resolve(l, i)?, self.resolve(r, i)?),
-            Equal(ref l, ref r) => Equal(self.resolve(l, i)?, self.resolve(r, i)?),
-            Not(ref x) => Not(self.resolve(x, i)?),
-            LogicalNot(ref x) => LogicalNot(self.resolve(x, i)?),
-            Parity(ref x) => Parity(self.resolve(x, i)?),
-            GreaterThan(ref l, ref r) => GreaterThan(self.resolve(l, i)?, self.resolve(r, i)?),
+        match *op {
+            Add(ref l, ref r) => Add(self.resolve(l, i), self.resolve(r, i)),
+            Sub(ref l, ref r) => Sub(self.resolve(l, i), self.resolve(r, i)),
+            Mul(ref l, ref r) => Mul(self.resolve(l, i), self.resolve(r, i)),
+            SignedMul(ref l, ref r) => SignedMul(self.resolve(l, i), self.resolve(r, i)),
+            Div(ref l, ref r) => Div(self.resolve(l, i), self.resolve(r, i)),
+            Modulo(ref l, ref r) => Modulo(self.resolve(l, i), self.resolve(r, i)),
+            And(ref l, ref r) => And(self.resolve(l, i), self.resolve(r, i)),
+            Or(ref l, ref r) => Or(self.resolve(l, i), self.resolve(r, i)),
+            Xor(ref l, ref r) => Xor(self.resolve(l, i), self.resolve(r, i)),
+            Lsh(ref l, ref r) => Lsh(self.resolve(l, i), self.resolve(r, i)),
+            Rsh(ref l, ref r) => Rsh(self.resolve(l, i), self.resolve(r, i)),
+            RotateLeft(ref l, ref r) => RotateLeft(self.resolve(l, i), self.resolve(r, i)),
+            Equal(ref l, ref r) => Equal(self.resolve(l, i), self.resolve(r, i)),
+            Not(ref x) => Not(self.resolve(x, i)),
+            LogicalNot(ref x) => LogicalNot(self.resolve(x, i)),
+            Parity(ref x) => Parity(self.resolve(x, i)),
+            GreaterThan(ref l, ref r) => GreaterThan(self.resolve(l, i), self.resolve(r, i)),
             GreaterThanSigned(ref l, ref r) => {
-                GreaterThanSigned(self.resolve(l, i)?, self.resolve(r, i)?)
+                GreaterThanSigned(self.resolve(l, i), self.resolve(r, i))
             }
-        })
+        }
     }
 
-    pub fn resolve(
-        &self,
-        value: &Operand,
-        interner: &mut InternMap,
-    ) -> Result<Rc<Operand>, Error> {
+    pub fn resolve(&self, value: &Operand, interner: &mut InternMap) -> Rc<Operand> {
         use operand::operand_helpers::*;
 
-        Ok(match value.ty {
+        match value.ty {
             OperandType::Register(reg) => interner.operand(self.registers[reg.0 as usize]),
             OperandType::Register16(reg) => {
                 operand_and(interner.operand(self.registers[reg.0 as usize]), constval(0xffff))
@@ -698,7 +678,7 @@ impl<'a> ExecutionState<'a> {
                 )
             },
             OperandType::Pair(ref high, ref low) => {
-                pair(self.resolve(&high, interner)?, self.resolve(&low, interner)?)
+                pair(self.resolve(&high, interner), self.resolve(&low, interner))
             }
             OperandType::Xmm(reg, word) => {
                 interner.operand(self.xmm_registers[reg as usize].word(word))
@@ -712,16 +692,16 @@ impl<'a> ExecutionState<'a> {
                 Flag::Direction => self.flags.direction.clone(),
             }).clone(),
             OperandType::Arithmetic(ref op) => {
-                let ty = OperandType::Arithmetic(self.resolve_arith(op, interner)?);
+                let ty = OperandType::Arithmetic(self.resolve_arith(op, interner));
                 Operand::simplified(Operand::new_not_simplified_rc(ty))
             }
             OperandType::ArithmeticHigh(ref op) => {
-                let ty = OperandType::ArithmeticHigh(self.resolve_arith(op, interner)?);
+                let ty = OperandType::ArithmeticHigh(self.resolve_arith(op, interner));
                 Operand::simplified(Operand::new_not_simplified_rc(ty))
             }
             OperandType::Constant(x) => Operand::new_simplified_rc(OperandType::Constant(x)),
             OperandType::Memory(ref mem) => {
-                let address = Operand::simplified(self.resolve(&mem.address, interner)?);
+                let address = Operand::simplified(self.resolve(&mem.address, interner));
                 self.memory.get(interner.intern(address.clone()))
                     .map(|interned| interner.operand(interned))
                     .unwrap_or_else(|| {
@@ -734,7 +714,7 @@ impl<'a> ExecutionState<'a> {
                     })
             }
             OperandType::Undefined(x) => Operand::new_simplified_rc(OperandType::Undefined(x))
-        })
+        }
     }
 
     pub fn try_resolve_const(&self, condition: &Operand, i: &mut InternMap) -> Option<u32> {
@@ -742,15 +722,11 @@ impl<'a> ExecutionState<'a> {
         if let Some(ref constraint) = self.last_jump_extra_constraint {
             constraint.apply_to(&mut condition);
         }
-        match self.resolve(&condition, i) {
-            Ok(operand) => {
-                let simplified = Operand::simplified(operand.clone());
-                //trace!("Resolve const {:#?} -> {:#?}", operand, simplified);
-                match simplified.ty {
-                    OperandType::Constant(c) => Some(c),
-                    _ => None,
-                }
-            }
+        let operand = self.resolve(&condition, i);
+        let simplified = Operand::simplified(operand.clone());
+        //trace!("Resolve const {:#?} -> {:#?}", operand, simplified);
+        match simplified.ty {
+            OperandType::Constant(c) => Some(c),
             _ => None,
         }
     }
@@ -780,7 +756,7 @@ impl<'a> ExecutionState<'a> {
         condition: &Operand,
         jump: bool,
         intern_map: &mut InternMap,
-    ) -> Result<ExecutionState<'a>, Error> {
+    ) -> ExecutionState<'a> {
         use operand::ArithOpType::*;
         use operand::operand_helpers::*;
 
@@ -798,18 +774,18 @@ impl<'a> ExecutionState<'a> {
                             false => operand_logical_not(condition.clone().into()),
                         };
                         state.last_jump_extra_constraint = Some(Constraint::new(cond));
-                        return Ok(state);
+                        return state;
                     }
                 };
                 let flag_operand = Operand::new_simplified_rc(OperandType::Flag(flag));
-                state.get_dest(&(*flag_operand).clone().into(), intern_map)?
-                    .set(constval(flag_state), intern_map)?;
-                Ok(state)
+                state.get_dest(&(*flag_operand).clone().into(), intern_map)
+                    .set(constval(flag_state), intern_map);
+                state
             }
             (false, &OperandType::Arithmetic(Or(ref left, ref right))) => {
-                let mut state = self.assume_jump_flag(left, false, intern_map)?;
-                state = state.assume_jump_flag(right, false, intern_map)?;
-                Ok(state)
+                let mut state = self.assume_jump_flag(left, false, intern_map);
+                state = state.assume_jump_flag(right, false, intern_map);
+                state
             }
             (true, &OperandType::Arithmetic(Or(ref left, ref right))) => {
                 let mut state = self.clone();
@@ -818,12 +794,12 @@ impl<'a> ExecutionState<'a> {
                     right.clone()
                 ));
                 state.last_jump_extra_constraint = Some(Constraint::new(cond));
-                Ok(state)
+                state
             }
             (true, &OperandType::Arithmetic(And(ref left, ref right))) => {
-                let mut state = self.assume_jump_flag(left, true, intern_map)?;
-                state = state.assume_jump_flag(right, true, intern_map)?;
-                Ok(state)
+                let mut state = self.assume_jump_flag(left, true, intern_map);
+                state = state.assume_jump_flag(right, true, intern_map);
+                state
             }
             (false, &OperandType::Arithmetic(And(ref left, ref right))) => {
                 let mut state = self.clone();
@@ -832,12 +808,12 @@ impl<'a> ExecutionState<'a> {
                     operand_logical_not(right.clone())
                 ));
                 state.last_jump_extra_constraint = Some(Constraint::new(cond));
-                Ok(state)
+                state
             }
             (_, &OperandType::Arithmetic(LogicalNot(ref left))) => {
                 self.assume_jump_flag(left, !jump, intern_map)
             }
-            (_, _) => Ok(self.clone()),
+            (_, _) => self.clone(),
         }
     }
 }

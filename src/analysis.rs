@@ -11,10 +11,6 @@ use ::{BinaryFile, BinarySection, Rva, VirtualAddress};
 quick_error! {
     #[derive(Debug)]
     pub enum Error {
-        ExecState(e: exec_state::Error) {
-            display("Execution state error: {}", e)
-            from()
-        }
         Disasm(e: disasm::Error) {
             display("Disassembly error: {}", e)
             from()
@@ -282,7 +278,7 @@ fn initial_exec_state<'e>(
         (*return_address).clone().into(),
         constval(binary.dump_code_offset.0 + 0x4230),
         None
-    ), interner).unwrap();
+    ), interner);
 
     // Set the bytes above return address to 'call eax' to make it look like a legitmate call.
     state.update(disasm::Operation::Move(
@@ -294,7 +290,7 @@ fn initial_exec_state<'e>(
         ).into(),
         constval(0xd0),
         None,
-    ), interner).unwrap();
+    ), interner);
     state.update(disasm::Operation::Move(
         mem_variable(MemAccessSize::Mem8,
             operand_sub(
@@ -304,7 +300,7 @@ fn initial_exec_state<'e>(
         ).into(),
         constval(0xff),
         None,
-    ), interner).unwrap();
+    ), interner);
     state
 }
 
@@ -387,12 +383,12 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                             &condition,
                             true,
                             &mut self.analysis.interner
-                        ).unwrap_or_else(|_| self.state.clone());
+                        );
                         let no_jump_state = self.state.assume_jump_flag(
                             &condition,
                             false,
                             &mut self.analysis.interner
-                        ).unwrap_or_else(|_| self.state.clone());
+                        );
                         // The branch pushed last is analyzed first; prefer loops first
                         let jump_dest =
                             jump_state.try_resolve_const(&to, &mut self.analysis.interner);
@@ -412,7 +408,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
             }
             disasm::Operation::Return(_) => {}
             o => {
-                self.state.update(o, &mut self.analysis.interner)?;
+                self.state.update(o, &mut self.analysis.interner);
             }
         }
         Ok(())
