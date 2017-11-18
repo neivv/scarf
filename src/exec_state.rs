@@ -398,20 +398,26 @@ impl<'a> Destination<'a> {
             Destination::Register16(o) => {
                 let old = intern_map.operand(*o);
                 *o = intern_map.intern(Operand::simplified(
-                    operand_or(operand_and(old, constval(0xffff0000)), value)
+                    operand_or(
+                        operand_and(old, constval(0xffff0000)),
+                        operand_and(value, constval(0xffff)),
+                    )
                 ));
             }
             Destination::Register8High(o) => {
                 let old = intern_map.operand(*o);
                 *o = intern_map.intern(Operand::simplified(operand_or(
                     operand_and(old, constval(0xffff00ff)),
-                    operand_lsh(value, constval(8))
+                    operand_and(operand_lsh(value, constval(8)), constval(0xff00)),
                 )));
             }
             Destination::Register8Low(o) => {
                 let old = intern_map.operand(*o);
                 *o = intern_map.intern(Operand::simplified(
-                    operand_or(operand_and(old, constval(0xffffff00)), value)
+                    operand_or(
+                        operand_and(old, constval(0xffffff00)),
+                        operand_and(value, constval(0xff)),
+                    )
                 ));
             }
             Destination::Pair(high, low) => {

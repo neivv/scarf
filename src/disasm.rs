@@ -850,7 +850,18 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                         let rm_cond = Operand::new_not_simplified_rc(compare);
                         Operation::Move((*r).clone().into(), constval(!0), Some(rm_cond))
                     }
-                    2 => mov(r, rm),
+                    2 => {
+                        let reg = match r.ty {
+                            OperandType::Register(r) => r,
+                            _ => unreachable!(),
+                        };
+                        let short_r = match op_size {
+                            MemAccessSize::Mem8 => OperandType::Register8Low(reg),
+                            MemAccessSize::Mem16 => OperandType::Register16(reg),
+                            _ => unreachable!(),
+                        };
+                        mov(Operand::new_simplified_rc(short_r), rm)
+                    }
                     _ => return None,
                 }))
             }
