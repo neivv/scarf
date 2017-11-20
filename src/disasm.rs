@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use hex_slice::AsHex;
 use lde::{self, InsnSet};
+use smallvec::SmallVec;
 
 use ::{VirtualAddress};
 use operand::{
@@ -28,6 +29,8 @@ quick_error! {
     }
 }
 
+pub type OperationVec = SmallVec<[Operation; 8]>;
+
 pub struct Disassembler<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -46,7 +49,7 @@ impl<'a> Disassembler<'a> {
         }
     }
 
-    pub fn next<'b, 'c>(&'b mut self, ctx: &'c OperandContext) -> Result<Instruction<'a, 'c>, Error> {
+    pub fn next<'b, 'c>(&'b mut self, ctx: &'c OperandContext) -> Result<Instruction, Error> {
         if let Some(finishing_instruction_pos) = self.finishing_instruction_pos {
             return Err(Error::Branch(self.virtual_address + finishing_instruction_pos as u32));
         }
@@ -58,10 +61,13 @@ impl<'a> Disassembler<'a> {
                 return Err(Error::UnknownOpcode(self.buf[self.pos..self.pos + 1].into()));
             }
         }
+        let address = VirtualAddress(self.virtual_address.0 + self.pos as u32);
+        let data = &self.buf[self.pos..self.pos + length];
+        let ops = instruction_operations(address, data, ctx)?;
         let ins = Instruction {
-            address: VirtualAddress(self.virtual_address.0 + self.pos as u32),
-            data: &self.buf[self.pos..self.pos + length],
-            ctx: ctx,
+            address,
+            ops,
+            length,
         };
         if ins.is_finishing() {
             self.finishing_instruction_pos = Some(self.pos);
@@ -78,19 +84,27 @@ impl<'a> Disassembler<'a> {
     }
 }
 
-pub struct Instruction<'a, 'b> {
+pub struct Instruction {
     address: VirtualAddress,
-    data: &'a [u8],
-    ctx: &'b OperandContext,
+    ops: SmallVec<[Operation; 8]>,
+    length: usize,
 }
 
-impl<'a, 'b> Instruction<'a, 'b> {
-    pub fn ops<'c>(&'c self) -> InstructionOps<'a, 'b> {
-        InstructionOps::new(self.address, self.data, self.ctx)
+impl Instruction {
+    pub fn ops(&self) -> &[Operation] {
+        &self.ops
+    }
+
+    pub fn address(&self) -> VirtualAddress {
+        self.address
+    }
+
+    pub fn len(&self) -> usize {
+        self.length
     }
 
     fn is_finishing(&self) -> bool {
-        self.ops().take_while(|x| !x.is_err()).flat_map(|op| op.ok()).any(|op| match op {
+        self.ops().iter().any(|op| match *op {
             Operation::Jump { .. } => true,
             Operation::Return(..) => true,
             _ => false,
@@ -106,231 +120,217 @@ struct InstructionPrefixes {
     prefix_f3: bool,
 }
 
-pub struct InstructionOps<'a, 'exec: 'a> {
-    inner: InstructionOpsState<'a, 'exec>,
-    next_fn: Box<
-        FnMut(&mut InstructionOpsState) -> Option<Result<Operation, Error>> + 'static
-    >,
-}
-
 struct InstructionOpsState<'a, 'exec: 'a> {
     address: VirtualAddress,
     data: &'a [u8],
     prefixes: InstructionPrefixes,
-    pos: u8,
     len: u8,
     ctx: &'exec OperandContext,
 }
 
-impl<'a, 'exec: 'a> Iterator for InstructionOps<'a, 'exec> {
-    type Item = Result<Operation, Error>;
+fn instruction_operations(
+    address: VirtualAddress,
+    data: &[u8],
+    ctx: &OperandContext,
+) -> Result<SmallVec<[Operation; 8]>, Error> {
+    use self::Error::*;
+    use self::operation_helpers::*;
+    use operand::operand_helpers::*;
 
-    fn next(&mut self) -> Option<Result<Operation, Error>> {
-        let result = (self.next_fn)(&mut self.inner);
-        self.inner.pos = self.inner.pos.checked_add(1).unwrap();
-        result
-    }
-}
+    let is_prefix_byte = |byte| match byte {
+        0x64 => true, // TODO fs segment is not handled
+        0x65 => true, // TODO gs segment is not handled
+        0x66 => true,
+        0x67 => true,
+        0xf2 => true,
+        0xf3 => true,
+        _ => false,
+    };
+    let mut prefixes = InstructionPrefixes {
+        prefix_66: false,
+        prefix_67: false,
+        prefix_f2: false,
+        prefix_f3: false,
+    };
 
-// Type hints the closure
-fn ins_next<V>(val: V) ->
-    Box<FnMut(&mut InstructionOpsState) -> Option<Result<Operation, Error>> + 'static>
-where V: FnMut(&mut InstructionOpsState) -> Option<Result<Operation, Error>> + 'static,
-{
-    Box::new(val)
-}
-
-impl<'a, 'exec: 'a> InstructionOps<'a, 'exec> {
-    fn new<'b, 'e>(
-        address: VirtualAddress,
-        data: &'b [u8],
-        ctx: &'e OperandContext,
-    ) -> InstructionOps<'b, 'e> {
-        use self::Error::*;
-        use self::operation_helpers::*;
-        use operand::operand_helpers::*;
-
-        let is_prefix_byte = |byte| match byte {
-            0x64 => true, // TODO fs segment is not handled
-            0x65 => true, // TODO gs segment is not handled
-            0x66 => true,
-            0x67 => true,
-            0xf2 => true,
-            0xf3 => true,
-            _ => false,
-        };
-        let mut prefixes = InstructionPrefixes {
-            prefix_66: false,
-            prefix_67: false,
-            prefix_f2: false,
-            prefix_f3: false,
-        };
-
-        let prefix_count = data.iter().take_while(|&&x| is_prefix_byte(x)).count();
-        for &prefix in data.iter().take_while(|&&x| is_prefix_byte(x)) {
-            match prefix {
-                0x66 => prefixes.prefix_66 = true,
-                0x67 => prefixes.prefix_67 = true,
-                0xf2 => prefixes.prefix_f2 = true,
-                0xf3 => prefixes.prefix_f3 = true,
-                _ => (),
-            }
+    let prefix_count = data.iter().take_while(|&&x| is_prefix_byte(x)).count();
+    for &prefix in data.iter().take_while(|&&x| is_prefix_byte(x)) {
+        match prefix {
+            0x66 => prefixes.prefix_66 = true,
+            0x67 => prefixes.prefix_67 = true,
+            0xf2 => prefixes.prefix_f2 = true,
+            0xf3 => prefixes.prefix_f3 = true,
+            _ => (),
         }
-        let instruction_len = data.len();
-        let data = &data[prefix_count..];
-        let is_ext = data[0] == 0xf;
-        let data = match is_ext {
-            true => &data[1..],
-            false => data,
-        };
-        let first_byte = data[0];
-        let next_fn = if !is_ext {
-            match first_byte {
-                0x00 ... 0x03 | 0x04 ... 0x05 | 0x08 ... 0x0b | 0x0c ... 0x0d | 0x20 ... 0x23 |
-                0x24 ... 0x25 | 0x28 ... 0x2b | 0x2c ... 0x2d | 0x30 ... 0x33 | 0x34 ... 0x35 |
-                0x88 ... 0x8b | 0x8d => {
-                    // Avoid ridiculous generic binary bloat
-                    let (ops, flags, flags_post):
-                        (fn(_, _, _) -> _, fn(_, _, _) -> _, fn(_, _, _) -> _) = match first_byte {
-                        0x00 ... 0x05 => (add_ops, add_flags, result_flags),
-                        0x08 ... 0x0d => (or_ops, zero_carry_oflow, result_flags),
-                        0x20 ... 0x25 => (and_ops, zero_carry_oflow, result_flags),
-                        0x28 ... 0x2d => (sub_ops, zero_carry_oflow, result_flags),
-                        0x30 ... 0x35 => (xor_ops, zero_carry_oflow, result_flags),
-                        0x88 ... 0x8b => (mov_ops, |_, _, s| Err(s), |_, _, _| None),
-                        0x8d | _ => (lea_ops, |_, _, s| Err(s), |_, _, _| None),
-                    };
-                    let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
-                    ins_next(move |s| if eax_imm_arith {
-                        s.eax_imm_arith(ops, flags, flags_post)
-                    } else {
-                        s.generic_arith_op(ops, flags, flags_post)
-                    })
+    }
+    let instruction_len = data.len();
+    let data = &data[prefix_count..];
+    let is_ext = data[0] == 0xf;
+    let data = match is_ext {
+        true => &data[1..],
+        false => data,
+    };
+    let s = InstructionOpsState {
+        address,
+        data,
+        prefixes,
+        len: instruction_len as u8,
+        ctx,
+    };
+    let first_byte = data[0];
+    if !is_ext {
+        match first_byte {
+            0x00 ... 0x03 | 0x04 ... 0x05 | 0x08 ... 0x0b | 0x0c ... 0x0d | 0x20 ... 0x23 |
+            0x24 ... 0x25 | 0x28 ... 0x2b | 0x2c ... 0x2d | 0x30 ... 0x33 | 0x34 ... 0x35 |
+            0x88 ... 0x8b | 0x8d => {
+                // Avoid ridiculous generic binary bloat
+                let (ops, flags, flags_post):
+                (
+                    for<'x> fn(_, _, &'x mut _),
+                    for<'x> fn(_, _, &'x mut _),
+                    for<'x> fn(_, _, &'x mut _),
+                ) = match first_byte {
+                    0x00 ... 0x05 => (add_ops, add_flags, result_flags),
+                    0x08 ... 0x0d => (or_ops, zero_carry_oflow, result_flags),
+                    0x20 ... 0x25 => (and_ops, zero_carry_oflow, result_flags),
+                    0x28 ... 0x2d => (sub_ops, zero_carry_oflow, result_flags),
+                    0x30 ... 0x35 => (xor_ops, zero_carry_oflow, result_flags),
+                    0x88 ... 0x8b => (mov_ops, |_, _, _| {}, |_, _, _| {}),
+                    0x8d | _ => (lea_ops, |_, _, _| {}, |_, _, _| {}),
+                };
+                let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
+                if eax_imm_arith {
+                    s.eax_imm_arith(ops, flags, flags_post)
+                } else {
+                    s.generic_arith_op(ops, flags, flags_post)
                 }
+            }
 
-                0x38 ... 0x3b => ins_next(|s| s.generic_cmp_op(operand_sub, sub_flags, result_flags)),
-                0x3c ... 0x3d => ins_next(|s| s.eax_imm_cmp(operand_sub, sub_flags, result_flags)),
-                0x40 ... 0x4f => ins_next(|s| s.inc_dec_op()),
-                0x50 ... 0x5f => ins_next(|s| s.pushpop_reg_op()),
-                0x68 | 0x6a => ins_next(|s| s.push_imm()),
-                0x69 | 0x6b => ins_next(|s| s.signed_multiply_rm_imm()),
-                0x70 ... 0x7f => ins_next(|s| s.conditional_jmp(MemAccessSize::Mem8)),
-                0x80 ... 0x83 => ins_next(|s| s.arith_with_imm_op()),
-                // Test
-                0x84 ... 0x85 => ins_next(|s| s.generic_cmp_op(operand_and, zero_carry_oflow, result_flags)),
-                0x86 ... 0x87 => ins_next(|s| s.xchg()),
-                0x90 => ins_next(|_| None),
-                // Cwde
-                0x98 => ins_next(|s| match s.pos {
-                    0 => Some(Ok(and(operand_register(0), constval(0xffff)))),
-                    1 => {
-                        let eax = operand_register(0);
-                        let signed_max = constval(0x7fff);
-                        let compare = ArithOpType::GreaterThan(eax.clone(), signed_max);
-                        let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
-                        let negative_sign_extend = operand_or(eax.clone(), constval(0xffff0000));
-                        Some(Ok(Operation::Move((*eax).clone().into(), negative_sign_extend, Some(cond))))
-                    }
-                    _ => None,
-                }),
-                // Cdq
-                0x99 => ins_next(|s| match s.pos {
-                    0 => Some(Ok(mov(operand_register(2), constval(0)))),
-                    1 => {
-                        let eax = operand_register(0);
-                        let edx = operand_register(2);
-                        let signed_max = constval(0x7fffffff);
-                        let compare = ArithOpType::GreaterThan(eax, signed_max);
-                        let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
-                        Some(Ok(Operation::Move((*edx).clone().into(), constval(!0), Some(cond))))
-                    }
-                    _ => None,
-                }),
-                0xa0 ... 0xa3 => ins_next(|s| s.move_mem_eax()),
-                0xa8 ... 0xa9 => ins_next(|s| s.eax_imm_cmp(operand_and, zero_carry_oflow, result_flags)),
-                0xb0 ... 0xbf => ins_next(|s| s.move_const_to_reg()),
-                0xc0 ... 0xc1 => ins_next(|s| s.bitwise_with_imm_op()),
-                0xc2 ... 0xc3 => {
-                    let stack_pop_size = match data[0] {
-                        0xc2 => match read_u16(&data[1..]) {
-                            Err(_) => 0,
-                            Ok(o) => o as u32,
-                        },
-                        _ => 0,
-                    };
-                    ins_next(move |s| match s.pos {
-                        0 => Some(Ok(Operation::Return(stack_pop_size))),
-                        _ => None,
-                    })
-                }
-                0xc6 ... 0xc7 => ins_next(|s| s.generic_arith_with_imm_op(&MOV_OPS, match s.get(0) {
+            0x38 ... 0x3b => s.generic_cmp_op(operand_sub, sub_flags, result_flags),
+            0x3c ... 0x3d => s.eax_imm_cmp(operand_sub, sub_flags, result_flags),
+            0x40 ... 0x4f => s.inc_dec_op(),
+            0x50 ... 0x5f => s.pushpop_reg_op(),
+            0x68 | 0x6a => s.push_imm(),
+            0x69 | 0x6b => s.signed_multiply_rm_imm(),
+            0x70 ... 0x7f => s.conditional_jmp(MemAccessSize::Mem8),
+            0x80 ... 0x83 => s.arith_with_imm_op(),
+            // Test
+            0x84 ... 0x85 => s.generic_cmp_op(operand_and, zero_carry_oflow, result_flags),
+            0x86 ... 0x87 => s.xchg(),
+            0x90 => Ok(SmallVec::new()),
+            // Cwde
+            0x98 => {
+                let mut out = SmallVec::new();
+                let eax = operand_register(0);
+                let signed_max = constval(0x7fff);
+                let compare = ArithOpType::GreaterThan(eax.clone(), signed_max);
+                let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
+                let neg_sign_extend = operand_or(eax.clone(), constval(0xffff0000));
+                let neg_sign_extend_op =
+                    Operation::Move(dest_operand(&eax), neg_sign_extend, Some(cond));
+                out.push(and(eax, constval(0xffff)));
+                out.push(neg_sign_extend_op);
+                Ok(out)
+            }
+            // Cdq
+            0x99 => {
+                let mut out = SmallVec::new();
+                let eax = operand_register(0);
+                let edx = operand_register(2);
+                let signed_max = constval(0x7fffffff);
+                let compare = ArithOpType::GreaterThan(eax, signed_max);
+                let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
+                let neg_sign_extend_op =
+                    Operation::Move(dest_operand(&edx), constval(!0), Some(cond));
+                out.push(mov(edx, constval(0)));
+                out.push(neg_sign_extend_op);
+                Ok(out)
+            },
+            0xa0 ... 0xa3 => s.move_mem_eax(),
+            0xa8 ... 0xa9 => s.eax_imm_cmp(operand_and, zero_carry_oflow, result_flags),
+            0xb0 ... 0xbf => s.move_const_to_reg(),
+            0xc0 ... 0xc1 => s.bitwise_with_imm_op(),
+            0xc2 ... 0xc3 => {
+                let stack_pop_size = match data[0] {
+                    0xc2 => match read_u16(&data[1..]) {
+                        Err(_) => 0,
+                        Ok(o) => o as u32,
+                    },
+                    _ => 0,
+                };
+                Ok(Some(Operation::Return(stack_pop_size)).into_iter().collect())
+            }
+            0xc6 ... 0xc7 => {
+                s.generic_arith_with_imm_op(&MOV_OPS, match s.get(0) {
                     0xc6 => MemAccessSize::Mem8,
                     _ => s.mem16_32(),
-                })),
-                0xd0 ... 0xd3 => ins_next(|s| s.bitwise_compact_op()),
-                0xe8 => ins_next(|s| s.call_op()),
-                0xe9 => ins_next(|s| s.jump_op()),
-                0xeb => ins_next(|s| s.short_jmp()),
-                0xf6 | 0xf7 => ins_next(|s| s.various_f7()),
-                0xf8 ... 0xfd => {
-                    let flag = match first_byte {
-                        0xf8 ... 0xf9 => Flag::Carry,
-                        _ => Flag::Direction,
-                    };
-                    let state = first_byte & 0x1 == 1;
-                    ins_next(move |s| s.flag_set(flag, state))
-                }
-                0xfe ... 0xff => ins_next(|s| s.various_fe_ff()),
-                _ => ins_next(|s| Some(Err(UnknownOpcode(s.data.into()))))
-            }
-        } else {
-            match first_byte {
-                0x11 => ins_next(|s| s.mov_sse_11()),
-                // nop
-                0x1f => ins_next(|_| None),
-                // rdtsc
-                0x31 => ins_next(|s| match s.pos {
-                    0 => Some(Ok(mov(operand_register(0), s.ctx.undefined_rc()))),
-                    1 => Some(Ok(mov(operand_register(2), s.ctx.undefined_rc()))),
-                    _ => None,
-                }),
-                0x40 ... 0x4f => ins_next(|s| s.cmov()),
-                0x57 => ins_next(|s| s.xorps()),
-                0x6e => ins_next(|s| s.mov_sse_6e()),
-                0x7e => ins_next(|s| s.mov_sse_7e()),
-                0x80 ... 0x8f => ins_next(|s| s.conditional_jmp(s.mem16_32())),
-                0x90 ... 0x9f => ins_next(|s| s.conditional_set()),
-                0xaf => ins_next(|s| s.imul_normal()),
-                0xb6 ... 0xb7 => ins_next(|s| s.movzx()),
-                0xbe ... 0xbf => ins_next(|s| s.movsx()),
-                0xd3 => ins_next(|s| s.packed_shift_right()),
-                0xd6 => ins_next(|s| s.mov_sse_d6()),
-                _ => ins_next(|s| {
-                    let mut bytes = vec![0xf];
-                    bytes.extend(s.data);
-                    Some(Err(UnknownOpcode(bytes)))
                 })
             }
-        };
-        InstructionOps {
-            inner: InstructionOpsState {
-                address,
-                data,
-                prefixes,
-                pos: 0,
-                len: instruction_len as u8,
-                ctx,
-            },
-            next_fn,
+            0xd0 ... 0xd3 => s.bitwise_compact_op(),
+            0xe8 => s.call_op(),
+            0xe9 => s.jump_op(),
+            0xeb => s.short_jmp(),
+            0xf6 | 0xf7 => s.various_f7(),
+            0xf8 ... 0xfd => {
+                let flag = match first_byte {
+                    0xf8 ... 0xf9 => Flag::Carry,
+                    _ => Flag::Direction,
+                };
+                let state = first_byte & 0x1 == 1;
+                s.flag_set(flag, state)
+            }
+            0xfe ... 0xff => s.various_fe_ff(),
+            _ => Err(UnknownOpcode(s.data.into()))
+        }
+    } else {
+        match first_byte {
+            0x11 => s.mov_sse_11(),
+            // nop
+            0x1f => Ok(SmallVec::new()),
+            // rdtsc
+            0x31 => {
+                let mut out = SmallVec::new();
+                out.push(mov(operand_register(0), s.ctx.undefined_rc()));
+                out.push(mov(operand_register(2), s.ctx.undefined_rc()));
+                Ok(out)
+            }
+            0x40 ... 0x4f => s.cmov(),
+            0x57 => s.xorps(),
+            0x6e => s.mov_sse_6e(),
+            0x7e => s.mov_sse_7e(),
+            0x80 ... 0x8f => s.conditional_jmp(s.mem16_32()),
+            0x90 ... 0x9f => s.conditional_set(),
+            0xaf => s.imul_normal(),
+            0xb6 ... 0xb7 => s.movzx(),
+            0xbe ... 0xbf => s.movsx(),
+            0xd3 => s.packed_shift_right(),
+            0xd6 => s.mov_sse_d6(),
+            _ => {
+                let mut bytes = vec![0xf];
+                bytes.extend(s.data);
+                Err(UnknownOpcode(bytes))
+            }
         }
     }
+}
 
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    pub fn address(&self) -> VirtualAddress {
-        self.inner.address
+fn xmm_variant(op: &Rc<Operand>, i: u8) -> Rc<Operand> {
+    use operand::operand_helpers::*;
+    assert!(i < 4);
+    match op.ty {
+        OperandType::Register(Register(r)) | OperandType::Xmm(r, _) => operand_xmm(r, i),
+        OperandType::Memory(ref mem) => {
+            let bytes = match mem.size {
+                MemAccessSize::Mem8 => 1,
+                MemAccessSize::Mem16 => 2,
+                MemAccessSize::Mem32 => 4,
+            };
+            mem_variable_rc(
+                mem.size,
+                operand_add(mem.address.clone(), constval(bytes * i as u32))
+            )
+        }
+        _ => panic!("Cannot xmm {:?}", op),
     }
 }
 
@@ -372,37 +372,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         MemAccessSize::Mem32
     }
 
-    fn parse_modrm_xmm(&self, word_id: u8) -> Result<(Operand, Operand, usize), Error> {
-        use operand::operand_helpers::*;
-
-        let (mut rm, _, bytes) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let modrm = self.get(1);
-        let register = (modrm >> 3) & 0x7;
-        let r = Operand::new_xmm(register, word_id);
-        rm.ty = match rm.ty {
-            OperandType::Register(r) => OperandType::Xmm(r.0, word_id),
-            OperandType::Memory(mem) => match word_id {
-                0 => OperandType::Memory(mem),
-                1 => OperandType::Memory(MemAccess {
-                    address: operand_add(mem.address, constval(4)),
-                    size: MemAccessSize::Mem32,
-                }),
-                2 => OperandType::Memory(MemAccess {
-                    address: operand_add(mem.address, constval(8)),
-                    size: MemAccessSize::Mem32,
-                }),
-                _ => OperandType::Memory(MemAccess {
-                    address: operand_add(mem.address, constval(12)),
-                    size: MemAccessSize::Mem32,
-                }),
-            },
-            x => x,
-        };
-        Ok((rm, r, bytes))
-    }
-
     /// Returns (rm, r, modrm_size)
-    fn parse_modrm(
+    fn parse_modrm_inner(
         &self,
         op_size: MemAccessSize
     ) -> Result<(Operand, Operand, usize), Error> {
@@ -443,6 +414,23 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         Ok((rm, r, size))
     }
 
+    fn parse_modrm(&self, op_size: MemAccessSize) -> Result<(Rc<Operand>, Rc<Operand>), Error> {
+        let (rm, r, _) = self.parse_modrm_inner(op_size)?;
+        Ok((Rc::new(rm), Rc::new(r)))
+    }
+
+    fn parse_modrm_imm(
+        &self,
+        op_size: MemAccessSize,
+        imm_size: MemAccessSize,
+    ) -> Result<(Rc<Operand>, Rc<Operand>, Rc<Operand>), Error> {
+        use self::operation_helpers::*;
+        use operand::operand_helpers::*;
+        let (rm, r, offset) = self.parse_modrm_inner(op_size)?;
+        let imm = read_variable_size(self.slice(offset), imm_size)?;
+        Ok((Rc::new(rm), Rc::new(r), constval(imm)))
+    }
+
     fn parse_sib(
         &self,
         variation: u8,
@@ -481,60 +469,63 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         }
     }
 
-    fn push_imm(&self) -> Option<Result<Operation, Error>> {
+    fn push_imm(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let imm_size = match self.get(0) {
             0x68 => self.mem16_32(),
             _ => MemAccessSize::Mem8,
         };
-        let constant = match read_variable_size(self.slice(1), imm_size) {
-            Ok(o) => o,
-            Err(e) => return Some(Err(e)),
-        };
-        Some(Ok(match self.pos {
-            0 => sub(esp(), constval(4)),
-            1 => mov(mem32(esp()), constval(constant)),
-            _ => return None,
-        }))
+        let constant = read_variable_size(self.slice(1), imm_size)?;
+        let mut out = SmallVec::new();
+        out.push(sub(esp(), constval(4)));
+        out.push(mov(mem32(esp()), constval(constant)));
+        Ok(out)
     }
 
-    fn inc_dec_op(&self) -> Option<Result<Operation, Error>> {
+    fn inc_dec_op(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let byte = self.get(0);
         let is_inc = byte < 0x48;
         let reg = byte & 0x7;
         let reg = Rc::new(Operand::reg_variable_size(Register(reg), self.mem16_32()));
-        Some(Ok(match (self.pos, is_inc) {
-            (0, true) => add(reg, constval(1)),
-            (0, false) => sub(reg, constval(1)),
-            _ => return None,
-        }))
+        let mut out = SmallVec::new();
+        out.push(match is_inc {
+            true => add(reg, constval(1)),
+            false => sub(reg, constval(1)),
+        });
+        Ok(out)
     }
 
-    fn pushpop_reg_op(&self) -> Option<Result<Operation, Error>> {
+    fn pushpop_reg_op(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let byte = self.get(0);
         let is_push = byte < 0x58;
         let reg = byte & 0x7;
-        Some(Ok(match (self.pos, is_push) {
-            (0, true) => sub(esp(), constval(4)),
-            (1, true) => mov(mem32(esp()), operand_register(reg)),
-            (0, false) => mov(operand_register(reg), mem32(esp())),
-            (1, false) => add(esp(), constval(4)),
-            _ => return None,
-        }))
+        let mut out = SmallVec::new();
+        match is_push {
+            true => {
+                out.push(sub(esp(), constval(4)));
+                out.push(mov(mem32(esp()), operand_register(reg)));
+            }
+            false => {
+                out.push(mov(operand_register(reg), mem32(esp())));
+                out.push(add(esp(), constval(4)));
+            }
+        }
+        Ok(out)
     }
 
-    fn flag_set(&self, flag: Flag, value: bool) -> Option<Result<Operation, Error>> {
+    fn flag_set(&self, flag: Flag, value: bool) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
-        Some(Ok(match self.pos {
-            0 => mov(Operand::new_simplified_rc(OperandType::Flag(flag)), constval(value as u32)),
-            _ => return None,
-        }))
+        let mut out = SmallVec::new();
+        out.push(
+            mov(Operand::new_simplified_rc(OperandType::Flag(flag)), constval(value as u32))
+        );
+        Ok(out)
     }
 
     fn condition(&self) -> Rc<Operand> {
@@ -581,98 +572,72 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         }
     }
 
-    fn cmov(&self) -> Option<Result<Operation, Error>> {
-        let (rm, r, _) = match self.parse_modrm(self.mem16_32()) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        let rm = Rc::new(rm);
-        let r = Rc::new(r);
-        return Some(Ok(match self.pos {
-            0 => Operation::Move((*r).clone().into(), rm, Some(self.condition())),
-            _ => return None,
-        }))
+    fn cmov(&self) -> Result<OperationVec, Error> {
+        let (rm, r) = self.parse_modrm(self.mem16_32())?;
+        let mut out = SmallVec::new();
+        out.push(Operation::Move(dest_operand(&r), rm, Some(self.condition())));
+        Ok(out)
     }
 
-    fn conditional_jmp(&self, op_size: MemAccessSize) -> Option<Result<Operation, Error>> {
+    fn conditional_jmp(&self, op_size: MemAccessSize) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
-        let offset = match read_variable_size_signed(self.slice(1), op_size) {
-            Ok(o) => o,
-            Err(e) => return Some(Err(e)),
-        };
+        let offset = read_variable_size_signed(self.slice(1), op_size)?;
         let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
-        match self.pos {
-            0 => Some(Ok(Operation::Jump { condition: self.condition(), to })),
-            _ => None,
-        }
+        let mut out = SmallVec::new();
+        out.push(Operation::Jump { condition: self.condition(), to });
+        Ok(out)
     }
 
-    fn conditional_set(&self) -> Option<Result<Operation, Error>> {
+    fn conditional_set(&self) -> Result<OperationVec, Error> {
         let condition = self.condition();
-        let (rm, _, _) = match self.parse_modrm(MemAccessSize::Mem8) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        let rm = Rc::new(rm);
-        return Some(Ok(match self.pos {
-            0 => Operation::Move((*rm).clone().into(), condition, None),
-            _ => return None,
-        }))
+        let (rm, _) = self.parse_modrm(MemAccessSize::Mem8)?;
+        let mut out = SmallVec::new();
+        out.push(Operation::Move(dest_operand(&rm), condition, None));
+        Ok(out)
     }
 
-    fn short_jmp(&self) -> Option<Result<Operation, Error>> {
+    fn short_jmp(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
-        let offset = match read_variable_size_signed(self.slice(1), MemAccessSize::Mem8) {
-            Ok(o) => o,
-            Err(e) => return Some(Err(e)),
-        };
+        let offset = read_variable_size_signed(self.slice(1), MemAccessSize::Mem8)?;
         let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
-        match self.pos {
-            0 => Some(Ok(Operation::Jump { condition: constval(1), to })),
-            _ => None,
-        }
+        let mut out = SmallVec::new();
+        out.push(Operation::Jump { condition: constval(1), to });
+        Ok(out)
     }
 
-    fn xchg(&self) -> Option<Result<Operation, Error>> {
+    fn xchg(&self) -> Result<OperationVec, Error> {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, r, _) = match self.parse_modrm(op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        let rm = Rc::new(rm);
-        let r = Rc::new(r);
-        match self.pos {
-            0 => Some(Ok(Operation::Swap((*r).clone().into(), (*rm).clone().into()))),
-            _ => None,
-        }
+        let (rm, r) = self.parse_modrm(op_size)?;
+        let mut out = SmallVec::new();
+        out.push(Operation::Swap(dest_operand(&r), dest_operand(&rm)));
+        Ok(out)
     }
 
-    fn move_mem_eax(&self) -> Option<Result<Operation, Error>> {
+    fn move_mem_eax(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let constant = match read_variable_size(self.slice(1), op_size) {
-            Ok(o) => o,
-            Err(e) => return Some(Err(e)),
-        };
+        let constant = read_variable_size(self.slice(1), op_size)?;
         let mem = mem_variable(op_size, constval(constant)).into();
         let eax_left = self.get(0) & 0x2 == 0;
-        Some(Ok(match (eax_left, self.pos) {
-            (true, 0) => mov(operand_register(0), mem),
-            (false, 0) => mov(mem, operand_register(0)),
-            _ => return None,
-        }))
+        let eax = operand_register(0);
+        let mut out = SmallVec::new();
+        out.push(match eax_left {
+            true => mov(eax, mem),
+            false => mov(mem, eax),
+        });
+        Ok(out)
     }
 
-    fn move_const_to_reg(&self) -> Option<Result<Operation, Error>> {
+    fn move_const_to_reg(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x8 {
@@ -680,14 +645,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             _ => self.mem16_32(),
         };
         let register = self.get(0) & 0x7;
-        let constant = match read_variable_size(self.slice(1), op_size) {
-            Ok(o) => o,
-            Err(e) => return Some(Err(e)),
-        };
-        Some(Ok(match self.pos {
-            0 => mov(operand_register(register), constval(constant)),
-            _ => return None,
-        }))
+        let constant = read_variable_size(self.slice(1), op_size)?;
+        let mut out = SmallVec::new();
+        out.push(mov(operand_register(register), constval(constant)));
+        Ok(out)
     }
 
     fn eax_imm_arith<F, G, H>(
@@ -695,10 +656,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         make_arith: F,
         pre_flags: G,
         post_flags: H,
-    ) -> Option<Result<Operation, Error>>
-    where F: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Result<Result<Operation, Error>, u8>,
-          G: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Result<Result<Operation, Error>, u8>,
-          H: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Option<Result<Operation, Error>>,
+    ) -> Result<OperationVec, Error>
+    where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
     {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
@@ -707,15 +668,13 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             _ => self.mem16_32(),
         };
         let dest = Rc::new(Operand::reg_variable_size(Register(0), op_size));
-        let imm = match read_variable_size(self.slice(1), op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
+        let imm = read_variable_size(self.slice(1), op_size)?;
         let val = constval(imm);
-        pre_flags(dest.clone(), val.clone(), self.pos)
-            .or_else(|state| make_arith(dest.clone(), val.clone(), state))
-            .or_else(|state| post_flags(dest, val, state).ok_or(!0))
-            .ok()
+        let mut out = SmallVec::new();
+        pre_flags(dest.clone(), val.clone(), &mut out);
+        make_arith(dest.clone(), val.clone(), &mut out);
+        post_flags(dest.clone(), val.clone(), &mut out);
+        Ok(out)
     }
 
     /// Also mov even though I'm not sure if I should count it as no-op arith or a separate
@@ -725,49 +684,40 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         make_arith: F,
         pre_flags: G,
         post_flags: H,
-    ) -> Option<Result<Operation, Error>>
-    where F: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Result<Result<Operation, Error>, u8>,
-          G: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Result<Result<Operation, Error>, u8>,
-          H: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Option<Result<Operation, Error>>,
+    ) -> Result<OperationVec, Error>
+    where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
     {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, r, _) = match self.parse_modrm(op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        let rm = Rc::new(rm);
-        let r = Rc::new(r);
+        let (rm, r) = self.parse_modrm(op_size)?;
         let rm_left = self.get(0) & 0x3 < 2;
-        match rm_left {
-            true => pre_flags(rm.clone(), r.clone(), self.pos),
-            false => pre_flags(r.clone(), rm.clone(), self.pos),
-        }.or_else(|state| match rm_left {
-            true => make_arith(rm.clone(), r.clone(), state),
-            false => make_arith(r.clone(), rm.clone(), state),
-        }).or_else(|state| match rm_left {
-            true => return post_flags(rm, r, state).ok_or(!0),
-            false => return post_flags(r, rm, state).ok_or(!0),
-        }).ok()
+        let mut out = SmallVec::new();
+        let (left, right) = match rm_left {
+            true => (rm, r),
+            false => (r, rm),
+        };
+        pre_flags(left.clone(), right.clone(), &mut out);
+        make_arith(left.clone(), right.clone(), &mut out);
+        post_flags(left, right, &mut out);
+        Ok(out)
     }
 
-    fn movsx(&self) -> Option<Result<Operation, Error>> {
+    fn movsx(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => MemAccessSize::Mem16,
         };
-        let (mut rm, r, _) = match self.parse_modrm(self.mem16_32()) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        rm.ty = match rm.ty {
-            OperandType::Memory(mem) => {
+        let (rm, r) = self.parse_modrm(self.mem16_32())?;
+        let actual_rm_ty = match rm.ty {
+            OperandType::Memory(ref mem) => {
                 OperandType::Memory(MemAccess {
-                    address: mem.address,
+                    address: mem.address.clone(),
                     size: op_size,
                 })
             }
@@ -776,99 +726,83 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 MemAccessSize::Mem16 => OperandType::Register16(r),
                 _ => unreachable!(),
             },
-            x => x,
+            ref x => x.clone(),
         };
-        let rm = Rc::new(rm);
-        let r = Rc::new(r);
+        let rm = Operand::new_not_simplified_rc(actual_rm_ty);
 
+        let mut out = SmallVec::new();
         if is_rm_short_r_register(&rm, &r) {
-            Some(Ok(match self.pos {
-                0 => match op_size {
-                    MemAccessSize::Mem8 => and(r, constval(0xff)),
-                    MemAccessSize::Mem16 => and(r, constval(0xffff)),
-                    _ => unreachable!(),
-                },
-                1 => {
-                    use self::ArithOpType::*;
-                    let signed_max = match op_size {
-                        MemAccessSize::Mem8 => constval(0x7f),
-                        MemAccessSize::Mem16 => constval(0x7fff),
-                        _ => unreachable!(),
-                    };
-                    let high_const = match op_size {
-                        MemAccessSize::Mem8 => operand_or(constval(0xffffff00), r.clone()),
-                        MemAccessSize::Mem16 => operand_or(constval(0xffff0000), r.clone()),
-                        _ => unreachable!(),
-                    };
+            let keep_mask = match op_size {
+                MemAccessSize::Mem8 => and(r.clone(), constval(0xff)),
+                MemAccessSize::Mem16 => and(r.clone(), constval(0xffff)),
+                _ => unreachable!(),
+            };
+            let signed_max = match op_size {
+                MemAccessSize::Mem8 => constval(0x7f),
+                MemAccessSize::Mem16 => constval(0x7fff),
+                _ => unreachable!(),
+            };
+            let high_const = match op_size {
+                MemAccessSize::Mem8 => operand_or(constval(0xffffff00), r.clone()),
+                MemAccessSize::Mem16 => operand_or(constval(0xffff0000), r.clone()),
+                _ => unreachable!(),
+            };
 
-                    let compare = OperandType::Arithmetic(GreaterThan(rm, signed_max));
-                    let rm_cond = Operand::new_not_simplified_rc(compare);
-                    Operation::Move((*r).clone().into(), high_const, Some(rm_cond))
-                }
-                _ => return None,
-            }))
+            let compare = OperandType::Arithmetic(ArithOpType::GreaterThan(rm, signed_max));
+            let rm_cond = Operand::new_not_simplified_rc(compare);
+            out.push(keep_mask);
+            out.push(Operation::Move(dest_operand(&r), high_const, Some(rm_cond)));
         } else {
             let mem_size = match rm.ty {
                 OperandType::Memory(ref mem) => Some(mem.size),
                 _ => None,
             };
             if let Some(mem_size) = mem_size {
-                Some(Ok(match self.pos {
-                    0 => mov(r, rm),
-                    x => {
-                        // sigh
-                        let reg = match r.ty {
-                            OperandType::Register(r) => r.0,
-                            _ => panic!("Movsx r, [mem] r is not register? {:?}", r),
-                        };
-                        let dat = match mem_size == MemAccessSize::Mem8 {
-                            true => [0xbe, 0xc0 + reg * 9],
-                            false => [0xbf, 0xc0 + reg * 9],
-                        };
-                        let state = InstructionOpsState {
-                            address: self.address,
-                            data: &dat[..],
-                            prefixes: self.prefixes,
-                            pos: x - 1,
-                            len: 3,
-                            ctx: self.ctx,
-                        };
-                        return state.movsx();
-                    }
-                }))
+                out.push(mov(r.clone(), rm));
+                // sigh
+                let reg = match r.ty {
+                    OperandType::Register(r) => r.0,
+                    _ => panic!("Movsx r, [mem] r is not register? {:?}", r),
+                };
+                let dat = match mem_size == MemAccessSize::Mem8 {
+                    true => [0xbe, 0xc0 + reg * 9],
+                    false => [0xbf, 0xc0 + reg * 9],
+                };
+                let state = InstructionOpsState {
+                    address: self.address,
+                    data: &dat[..],
+                    prefixes: self.prefixes,
+                    len: 3,
+                    ctx: self.ctx,
+                };
+                out.extend(state.movsx()?.into_iter());
             } else {
-                Some(Ok(match self.pos {
-                    0 => mov(r, constval(0)),
-                    1 => {
-                        use self::ArithOpType::*;
-                        let signed_max = match op_size {
-                            MemAccessSize::Mem8 => constval(0x7f),
-                            MemAccessSize::Mem16 => constval(0x7fff),
-                            _ => unreachable!(),
-                        };
-                        let compare = OperandType::Arithmetic(GreaterThan(rm, signed_max));
-                        let rm_cond = Operand::new_not_simplified_rc(compare);
-                        Operation::Move((*r).clone().into(), constval(!0), Some(rm_cond))
-                    }
-                    2 => {
-                        let reg = match r.ty {
-                            OperandType::Register(r) => r,
-                            _ => unreachable!(),
-                        };
-                        let short_r = match op_size {
-                            MemAccessSize::Mem8 => OperandType::Register8Low(reg),
-                            MemAccessSize::Mem16 => OperandType::Register16(reg),
-                            _ => unreachable!(),
-                        };
-                        mov(Operand::new_simplified_rc(short_r), rm)
-                    }
-                    _ => return None,
-                }))
+                let signed_max = match op_size {
+                    MemAccessSize::Mem8 => constval(0x7f),
+                    MemAccessSize::Mem16 => constval(0x7fff),
+                    _ => unreachable!(),
+                };
+                let compare =
+                    OperandType::Arithmetic(ArithOpType::GreaterThan(rm.clone(), signed_max));
+                let rm_cond = Operand::new_not_simplified_rc(compare);
+                let reg = match r.ty {
+                    OperandType::Register(r) => r,
+                    _ => unreachable!(),
+                };
+                let short_r = match op_size {
+                    MemAccessSize::Mem8 => OperandType::Register8Low(reg),
+                    MemAccessSize::Mem16 => OperandType::Register16(reg),
+                    _ => unreachable!(),
+                };
+                out.push(mov(r.clone(), constval(0)));
+                out.push(Operation::Move(dest_operand(&r), constval(!0), Some(rm_cond)));
+                out.push(mov(Operand::new_simplified_rc(short_r), rm));
             }
         }
+        Ok(out)
     }
 
-    fn movzx(&self) -> Option<Result<Operation, Error>> {
+    fn movzx(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
 
@@ -876,14 +810,11 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             0 => MemAccessSize::Mem8,
             _ => MemAccessSize::Mem16,
         };
-        let (mut rm, r, _) = match self.parse_modrm(self.mem16_32()) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        rm.ty = match rm.ty {
-            OperandType::Memory(mem) => {
+        let (rm, r) = self.parse_modrm(self.mem16_32())?;
+        let actual_rm_ty = match rm.ty {
+            OperandType::Memory(ref mem) => {
                 OperandType::Memory(MemAccess {
-                    address: mem.address,
+                    address: mem.address.clone(),
                     size: op_size,
                 })
             }
@@ -892,115 +823,81 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 MemAccessSize::Mem16 => OperandType::Register16(r),
                 _ => unreachable!(),
             },
-            x => x,
+            ref x => x.clone(),
         };
-        let rm = Rc::new(rm);
-        let r = Rc::new(r);
+        let rm = Operand::new_not_simplified_rc(actual_rm_ty);
+        let mut out = SmallVec::new();
         if is_rm_short_r_register(&rm, &r) {
-            Some(Ok(match self.pos {
-                0 => match op_size {
-                    MemAccessSize::Mem8 => and(r, constval(0xff)),
-                    MemAccessSize::Mem16 => and(r, constval(0xffff)),
-                    _ => unreachable!(),
-                },
-                _ => return None,
-            }))
+            out.push(match op_size {
+                MemAccessSize::Mem8 => and(r, constval(0xff)),
+                MemAccessSize::Mem16 => and(r, constval(0xffff)),
+                _ => unreachable!(),
+            });
         } else {
             let is_mem = match rm.ty {
                 OperandType::Memory(_) => true,
                 _ => false,
             };
             if is_mem {
-                Some(Ok(match self.pos {
-                    0 => mov(r, rm),
-                    _ => return None,
-                }))
+                out.push(mov(r, rm));
             } else {
-                Some(Ok(match self.pos {
-                    0 => mov(r, constval(0)),
-                    1 => mov(r, rm),
-                    _ => return None,
-                }))
+                out.push(mov(r.clone(), constval(0)));
+                out.push(mov(r, rm));
             }
         }
+        Ok(out)
     }
 
-    fn various_f7(&self) -> Option<Result<Operation, Error>> {
+    fn various_f7(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, _, _) = match self.parse_modrm(op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
+        let (rm, _) = self.parse_modrm(op_size)?;
         let variant = (self.get(1) >> 3) & 0x7;
+        let mut out = SmallVec::new();
         match variant {
-            0 | 1 => self.generic_arith_with_imm_op(&TEST_OPS, MemAccessSize::Mem8),
-            2 => match self.pos {
-                0 => Some(Ok(make_arith_operation(
-                    rm.clone().into(),
-                    ArithOpType::Not(rm.into()),
-                ))),
-                _ => None,
+            0 | 1 => return self.generic_arith_with_imm_op(&TEST_OPS, MemAccessSize::Mem8),
+            2 => {
+                out.push(make_arith_operation(dest_operand(&rm), ArithOpType::Not(rm.into())));
+            }
+            5 => {
+                out.push(mov(pair_edx_eax(), operand_signed_mul(operand_register(0), rm)));
             },
-            5 => match self.pos {
-                0 => {
-                    let eax = operand_register(0);
-                    Some(Ok(mov(pair_edx_eax(), operand_signed_mul(eax, rm.clone().into()))))
-                }
-                // TODO flags, imul only sets c and o on overflow
-                _ => None,
-            },
-            6 => match self.pos {
-                0 => {
-                    let div = operand_div(pair_edx_eax(), rm.clone().into());
-                    let modulo = operand_mod(pair_edx_eax(), rm.clone().into());
-                    Some(Ok(Operation::Move(
-                        (*pair_edx_eax()).clone().into(),
-                        pair(modulo, div),
-                        None,
-                    )))
-                }
-                _ => None,
-            },
-            _ => return Some(Err(Error::UnknownOpcode(self.data.into()))),
+            6 => {
+                let div = operand_div(pair_edx_eax(), rm.clone());
+                let modulo = operand_mod(pair_edx_eax(), rm);
+                out.push(mov(pair_edx_eax(), pair(modulo, div)));
+            }
+            _ => return Err(Error::UnknownOpcode(self.data.into())),
         }
+        Ok(out)
     }
 
-    fn xorps(&self) -> Option<Result<Operation, Error>> {
+    fn xorps(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        let (rm, dest, _) = match self.parse_modrm_xmm(self.pos) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        Some(Ok(match self.pos {
-            0 | 1 | 2 | 3 => xor(dest.into(), rm.into()),
-            _ => return None,
-        }))
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        Ok((0..4).map(|i| xor(xmm_variant(&dest, i), xmm_variant(&rm, i))).collect())
     }
 
-    fn mov_sse_6e(&self) -> Option<Result<Operation, Error>> {
+    fn mov_sse_6e(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         if !self.has_prefix(0x66) {
-            return Some(Err(Error::UnknownOpcode(self.data.into())));
+            return Err(Error::UnknownOpcode(self.data.into()));
         }
-        let (rm, _, _) = match self.parse_modrm(MemAccessSize::Mem32) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        let dest = (self.get(1) >> 3) & 0x7;
-        Some(Ok(match self.pos {
-            0 => mov(operand_xmm(dest, 0).into(), rm.into()),
-            1 | 2 | 3 => mov(operand_xmm(dest, self.pos).into(), constval(0)),
-            _ => return None,
-        }))
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let mut out = SmallVec::new();
+        out.push(mov(xmm_variant(&r, 0), rm));
+        out.push(mov(xmm_variant(&r, 1), constval(0)));
+        out.push(mov(xmm_variant(&r, 2), constval(0)));
+        out.push(mov(xmm_variant(&r, 3), constval(0)));
+        Ok(out)
     }
 
-    fn mov_sse_11(&self) -> Option<Result<Operation, Error>> {
+    fn mov_sse_11(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         let length = match (self.has_prefix(0xf3), self.has_prefix(0xf2)) {
             // movss
@@ -1009,97 +906,98 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             (false, true) => 2,
             // movups, movupd
             (false, false) => 4,
-            (true, true) => return Some(Err(Error::UnknownOpcode(self.data.into()))),
+            (true, true) => return Err(Error::UnknownOpcode(self.data.into())),
         };
-        let (rm, src, _) = match self.parse_modrm_xmm(self.pos) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        if self.pos < length {
-            Some(Ok(mov(rm.into(), src.into())))
-        } else {
-            None
-        }
+        let (rm, src) = self.parse_modrm(MemAccessSize::Mem32)?;
+        Ok((0..length).map(|i| mov(xmm_variant(&rm, i), xmm_variant(&src, i))).collect())
     }
 
-    fn mov_sse_7e(&self) -> Option<Result<Operation, Error>> {
+    fn mov_sse_7e(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         if !self.has_prefix(0xf3) {
-            return Some(Err(Error::UnknownOpcode(self.data.into())));
+            return Err(Error::UnknownOpcode(self.data.into()));
         }
-        let (rm, dest, _) = match self.parse_modrm_xmm(self.pos) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        Some(Ok(match self.pos {
-            0 | 1 | 2 | 3 => mov(dest.into(), rm.into()),
-            _ => return None,
-        }))
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let mut out = SmallVec::new();
+        out.push(mov(xmm_variant(&dest, 0), xmm_variant(&rm, 0)));
+        out.push(mov(xmm_variant(&dest, 1), xmm_variant(&rm, 1)));
+        out.push(mov(xmm_variant(&dest, 2), xmm_variant(&rm, 2)));
+        out.push(mov(xmm_variant(&dest, 3), xmm_variant(&rm, 3)));
+        Ok(out)
     }
 
-    fn mov_sse_d6(&self) -> Option<Result<Operation, Error>> {
+    fn mov_sse_d6(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         if !self.has_prefix(0x66) {
-            return Some(Err(Error::UnknownOpcode(self.data.into())));
+            return Err(Error::UnknownOpcode(self.data.into()));
         }
-        let (rm, src, _) = match self.parse_modrm_xmm(self.pos) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        Some(Ok(match self.pos {
-            0 | 1 => mov(rm.into(), src.into()),
-            2 | 3 => match rm.ty {
-                OperandType::Xmm(_, _) => mov(rm.into(), constval(0)),
-                _ => return None,
-            },
-            _ => return None,
-        }))
+        let (rm, src) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let mut out = SmallVec::new();
+        out.push(mov(xmm_variant(&rm, 0), xmm_variant(&src, 0)));
+        out.push(mov(xmm_variant(&rm, 1), xmm_variant(&src, 1)));
+        if let OperandType::Xmm(_, _) = rm.ty {
+            out.push(mov(xmm_variant(&rm, 2), constval(0)));
+            out.push(mov(xmm_variant(&rm, 3), constval(0)));
+        }
+        Ok(out)
     }
 
-    fn packed_shift_right(&self) -> Option<Result<Operation, Error>> {
+    fn packed_shift_right(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         if !self.has_prefix(0x66) {
-            return Some(Err(Error::UnknownOpcode(self.data.into())));
+            return Err(Error::UnknownOpcode(self.data.into()));
         }
-        let (rm, dest, _) = match self.parse_modrm(MemAccessSize::Mem32) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
         // dest.0 = (dest.0 >> rm.0) | (dest.1 << (32 - rm.0))
         // shl dest.1, rm.0
         // dest.2 = (dest.2 >> rm.0) | (dest.3 << (32 - rm.0))
         // shl dest.3, rm.0
         // Zero everything if rm.1 is set
-        Some(Ok(match self.pos {
-            0 | 2 => {
-                let (low, high) = dest.to_xmm_64(self.pos >> 1);
-                let rm = rm.to_xmm_32(0);
-                make_arith_operation(
-                    (*low).clone().into(),
-                    ArithOpType::Or(
-                        operand_rsh(low, rm.clone()),
-                        operand_lsh(high, operand_sub(constval(32), rm)),
-                    ),
-                )
-            }
-            1 | 3 => {
-                let (_, high) = dest.to_xmm_64(self.pos >> 1);
-                let rm = rm.to_xmm_32(0);
-                rsh(high, rm)
-            }
-            4 | 5 | 6 | 7 => {
-                let dest = dest.to_xmm_32(self.pos & 3);
-                let (_, high) = rm.to_xmm_64(0);
-                let high_u32_set = operand_logical_not(operand_eq(high, constval(0)));
-                Operation::Move((*dest).clone().into(), constval(0), Some(high_u32_set))
-            }
-            _ => return None,
-        }))
+        let mut out = SmallVec::new();
+        out.push({
+            let (low, high) = Operand::to_xmm_64(&dest, 0);
+            let rm = Operand::to_xmm_32(&rm, 0);
+            make_arith_operation(
+                dest_operand(&low),
+                ArithOpType::Or(
+                    operand_rsh(low, rm.clone()),
+                    operand_lsh(high, operand_sub(constval(32), rm)),
+                ),
+            )
+        });
+        out.push({
+            let (_, high) = Operand::to_xmm_64(&dest, 0);
+            let rm = Operand::to_xmm_32(&rm, 0);
+            rsh(high, rm)
+        });
+        out.push({
+            let (low, high) = Operand::to_xmm_64(&dest, 1);
+            let rm = Operand::to_xmm_32(&rm, 0);
+            make_arith_operation(
+                dest_operand(&low),
+                ArithOpType::Or(
+                    operand_rsh(low, rm.clone()),
+                    operand_lsh(high, operand_sub(constval(32), rm)),
+                ),
+            )
+        });
+        out.push({
+            let (_, high) = Operand::to_xmm_64(&dest, 1);
+            let rm = Operand::to_xmm_32(&rm, 0);
+            rsh(high, rm)
+        });
+        for i in 0..4 {
+            let dest = Operand::to_xmm_32(&dest, i);
+            let (_, high) = Operand::to_xmm_64(&rm, 0);
+            let high_u32_set = operand_logical_not(operand_eq(high, constval(0)));
+            out.push(Operation::Move(dest_operand(&dest), constval(0), Some(high_u32_set)));
+        }
+        Ok(out)
     }
 
-    fn various_fe_ff(&self) -> Option<Result<Operation, Error>> {
+    fn various_fe_ff(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let variant = (self.get(1) >> 3) & 0x7;
@@ -1107,50 +1005,34 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, _, _) = match self.parse_modrm(op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
+        let (rm, _) = self.parse_modrm(op_size)?;
+        let mut out = SmallVec::new();
         match variant {
             0 | 1 => {
                 let is_inc = variant == 0;
-                Some(Ok(match (is_inc, self.pos) {
-                    (true, 0) => add(rm.into(), constval(1)),
-                    (false, 0) => sub(rm.into(), constval(1)),
-                    _ => return None,
-                }))
+                out.push(match is_inc {
+                    true => add(rm, constval(1)),
+                    false => sub(rm, constval(1)),
+                });
             }
-            2 | 3 => match self.pos {
-                0 => Some(Ok(Operation::Call(rm.into()))),
-                _ => None,
-            },
-            4 | 5 => match self.pos {
-                0 => Some(Ok(Operation::Jump { condition: constval(1), to: rm.into() })),
-                _ => None,
-            },
+            2 | 3 => out.push(Operation::Call(rm.into())),
+            4 | 5 => out.push(Operation::Jump { condition: constval(1), to: rm.into() }),
             6 => {
-                PUSH_OPS.operation(rm.into(), constval(!0), self.pos).ok()
+                PUSH_OPS.operation(rm.into(), constval(!0), &mut out);
             }
-            _ => return Some(Err(Error::UnknownOpcode(self.data.into()))),
+            _ => return Err(Error::UnknownOpcode(self.data.into())),
         }
+        Ok(out)
     }
 
-    fn bitwise_with_imm_op(&self) -> Option<Result<Operation, Error>> {
-        use self::operation_helpers::*;
+    fn bitwise_with_imm_op(&self) -> Result<OperationVec, Error> {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (_, _, modrm_size) = match self.parse_modrm(op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        let imm = match read_variable_size(self.slice(modrm_size), MemAccessSize::Mem8) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        if imm == 0 {
-            return None;
+        let (_, _, imm) = self.parse_modrm_imm(op_size, MemAccessSize::Mem8)?;
+        if imm.ty == OperandType::Constant(0) {
+            return Ok(SmallVec::new());
         }
         let op_gen: &ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
             0 => &ROL_OPS,
@@ -1158,22 +1040,18 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             4 | 6 => &LSH_OPS,
             5 => &RSH_OPS,
             7 => &SAR_OPS,
-            _ => return Some(Err(Error::UnknownOpcode(self.data.into()))),
+            _ => return Err(Error::UnknownOpcode(self.data.into())),
         };
         self.generic_arith_with_imm_op(op_gen, MemAccessSize::Mem8)
     }
 
-    fn bitwise_compact_op(&self) -> Option<Result<Operation, Error>> {
+    fn bitwise_compact_op(&self) -> Result<OperationVec, Error> {
         use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, _, _) = match self.parse_modrm(op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        let rm = Rc::new(rm);
+        let (rm, _) = self.parse_modrm(op_size)?;
         let shift_count = match self.get(0) & 2 {
             0 => constval(1),
             _ => Rc::new(Operand::reg_variable_size(Register(1), MemAccessSize::Mem8)),
@@ -1183,51 +1061,39 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             1 => &ROR_OPS,
             4 | 6 => &LSH_OPS,
             5 => &RSH_OPS,
-            _ => return Some(Err(Error::UnknownOpcode(self.data.into()))),
+            _ => return Err(Error::UnknownOpcode(self.data.into())),
         };
-        op_gen.pre_flags(rm.clone(), shift_count.clone(), self.pos).or_else(|state| {
-            op_gen.operation(rm.clone(), shift_count.clone(), state)
-        }).or_else(|state| {
-            op_gen.post_flags(rm, shift_count, state).ok_or(!0)
-        }).ok()
+        let mut out = SmallVec::new();
+        op_gen.pre_flags(rm.clone(), shift_count.clone(), &mut out);
+        op_gen.operation(rm.clone(), shift_count.clone(), &mut out);
+        op_gen.post_flags(rm, shift_count, &mut out);
+        Ok(out)
     }
 
-    fn signed_multiply_rm_imm(&self) -> Option<Result<Operation, Error>> {
+    fn signed_multiply_rm_imm(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let imm_size = match self.get(0) & 0x2 {
             2 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, r, modrm_size) = match self.parse_modrm(self.mem16_32()) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        let imm = constval(match read_variable_size(self.slice(modrm_size), imm_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        });
-        Some(Ok(match self.pos {
-            0 => mov(r.into(), operand_signed_mul(rm.into(), imm)),
-            // TODO flags, imul only sets c and o on overflow
-            _ => return None,
-        }))
+        let (rm, r, imm) = self.parse_modrm_imm(self.mem16_32(), imm_size)?;
+        // TODO flags, imul only sets c and o on overflow
+        let mut out = SmallVec::new();
+        out.push(mov(r, operand_signed_mul(rm, imm)));
+        Ok(out)
     }
 
-    fn imul_normal(&self) -> Option<Result<Operation, Error>> {
+    fn imul_normal(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        let (rm, r, _) = match self.parse_modrm(self.mem16_32()) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        Some(Ok(match self.pos {
-            0 => signed_mul(r.into(), rm.into()),
-            // TODO flags, imul only sets c and o on overflow
-            _ => return None,
-        }))
+        let (rm, r) = self.parse_modrm(self.mem16_32())?;
+        // TODO flags, imul only sets c and o on overflow
+        let mut out = SmallVec::new();
+        out.push(signed_mul(r, rm));
+        Ok(out)
     }
 
-    fn arith_with_imm_op(&self) -> Option<Result<Operation, Error>> {
+    fn arith_with_imm_op(&self) -> Result<OperationVec, Error> {
         let op_gen: &ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
             0 => &ADD_OPS,
             1 => &OR_OPS,
@@ -1237,7 +1103,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             5 => &SUB_OPS,
             6 => &XOR_OPS,
             7 => &CMP_OPS,
-            _ => return Some(Err(Error::UnknownOpcode(self.data.into()))),
+            _ => unreachable!(),
         };
         let imm_size = match self.get(0) & 0x3 {
             0 | 2 | 3 => MemAccessSize::Mem8,
@@ -1250,27 +1116,17 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         &self,
         op_gen: &ArithOperationGenerator,
         imm_size: MemAccessSize,
-    ) -> Option<Result<Operation, Error>> {
-        use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+    ) -> Result<OperationVec, Error> {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, _, modrm_size) = match self.parse_modrm(op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
-        let rm = Rc::new(rm);
-        let imm = constval(match read_variable_size(self.slice(modrm_size), imm_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        });
-        op_gen.pre_flags(rm.clone(), imm.clone(), self.pos).or_else(|state| {
-            op_gen.operation(rm.clone(), imm.clone(), state)
-        }).or_else(|state| {
-            op_gen.post_flags(rm, imm, state).ok_or(!0)
-        }).ok()
+        let (rm, _, imm) = self.parse_modrm_imm(op_size, imm_size)?;
+        let mut out = SmallVec::new();
+        op_gen.pre_flags(rm.clone(), imm.clone(), &mut out);
+        op_gen.operation(rm.clone(), imm.clone(), &mut out);
+        op_gen.post_flags(rm, imm, &mut out);
+        Ok(out)
     }
 
     fn eax_imm_cmp<F, G, H>(
@@ -1278,10 +1134,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         make_arith: F,
         pre_flags: G,
         post_flags: H,
-    ) -> Option<Result<Operation, Error>>
+    ) -> Result<OperationVec, Error>
     where F: FnOnce(Rc<Operand>, Rc<Operand>) -> Rc<Operand>,
-          G: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Result<Result<Operation, Error>, u8>,
-          H: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Option<Result<Operation, Error>>,
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
     {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
@@ -1290,17 +1146,13 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             _ => self.mem16_32(),
         };
         let eax = Rc::new(Operand::reg_variable_size(Register(0), op_size));
-        let imm = match read_variable_size(self.slice(1), op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
-        };
+        let imm = read_variable_size(self.slice(1), op_size)?;
         let val = constval(imm);
-        pre_flags(eax.clone(), val.clone(), self.pos)
-            .or_else(|state| {
-                let operand = make_arith(eax, val);
-                post_flags(operand, constval(!0), state).ok_or(!0)
-            })
-            .ok()
+        let mut out = SmallVec::new();
+        pre_flags(eax.clone(), val.clone(), &mut out);
+        let operand = make_arith(eax, val);
+        post_flags(operand, constval(!0), &mut out);
+        Ok(out)
     }
 
 
@@ -1309,10 +1161,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         make_arith: F,
         pre_flags: G,
         post_flags: H,
-    ) -> Option<Result<Operation, Error>>
+    ) -> Result<OperationVec, Error>
     where F: FnOnce(Rc<Operand>, Rc<Operand>) -> Rc<Operand>,
-          G: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Result<Result<Operation, Error>, u8>,
-          H: FnOnce(Rc<Operand>, Rc<Operand>, u8) -> Option<Result<Operation, Error>>,
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
     {
         use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
@@ -1320,50 +1172,36 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             _ => self.mem16_32(),
         };
         let rm_left = self.get(0) & 0x3 < 2;
-        let (rm, r, _) = match self.parse_modrm(op_size) {
-            Err(e) => return Some(Err(e)),
-            Ok(x) => x,
+        let (rm, r) = self.parse_modrm(op_size)?;
+        let (left, right) = match rm_left {
+            true => (rm, r),
+            false =>  (r, rm),
         };
-        let rm = Rc::new(rm);
-        let r = Rc::new(r);
-        match rm_left {
-            true => pre_flags(rm.clone(), r.clone(), self.pos),
-            false => pre_flags(r.clone(), rm.clone(), self.pos),
-        }.or_else(|state| {
-            let operand = match rm_left {
-                true => make_arith(rm, r),
-                false => make_arith(r, rm),
-            };
-            post_flags(operand, constval(!0), state).ok_or(!0)
-        }).ok()
+        let mut out = SmallVec::new();
+        pre_flags(left.clone(), right.clone(), &mut out);
+        let operand = make_arith(left, right);
+        post_flags(operand, constval(!0), &mut out);
+        Ok(out)
     }
 
-    fn call_op(&self) -> Option<Result<Operation, Error>> {
+    fn call_op(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
-        let offset = match read_u32(self.slice(1)) {
-            Ok(o) => o,
-            Err(e) => return Some(Err(e)),
-        };
+        let offset = read_u32(self.slice(1))?;
         let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
-        Some(Ok(match self.pos {
-            0 => Operation::Call(to),
-            _ => return None,
-        }))
+        let mut out = SmallVec::new();
+        out.push(Operation::Call(to));
+        Ok(out)
     }
 
-    fn jump_op(&self) -> Option<Result<Operation, Error>> {
+    fn jump_op(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
-        let offset = match read_u32(self.slice(1)) {
-            Ok(o) => o,
-            Err(e) => return Some(Err(e)),
-        };
+        let offset = read_u32(self.slice(1))?;
         let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
-        Some(Ok(match self.pos {
-            0 => Operation::Jump { condition: constval(1), to },
-            _ => return None,
-        }))
+        let mut out = SmallVec::new();
+        out.push(Operation::Jump { condition: constval(1), to });
+        Ok(out)
     }
 }
 
@@ -1378,22 +1216,22 @@ fn is_rm_short_r_register(rm: &Rc<Operand>, r: &Rc<Operand>) -> bool {
 }
 
 trait ArithOperationGenerator {
-    fn operation(&self, Rc<Operand>, Rc<Operand>, u8) -> Result<Result<Operation, Error>, u8>;
-    fn pre_flags(&self, Rc<Operand>, Rc<Operand>, u8) -> Result<Result<Operation, Error>, u8>;
-    fn post_flags(&self, Rc<Operand>, Rc<Operand>, u8) -> Option<Result<Operation, Error>>;
+    fn operation(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec);
+    fn pre_flags(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec);
+    fn post_flags(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec);
 }
 
 macro_rules! arith_op_generator {
     ($stname: ident, $name:ident, $pre:ident, $op:ident, $post:ident) => {
         struct $name;
         impl ArithOperationGenerator for $name {
-            fn operation(&self, a: Rc<Operand>, b: Rc<Operand>, c: u8) -> Result<Result<Operation, Error>, u8> {
+            fn operation(&self, a: Rc<Operand>, b: Rc<Operand>, c: &mut OperationVec) {
                 self::operation_helpers::$op(a, b, c)
             }
-            fn pre_flags(&self, a: Rc<Operand>, b: Rc<Operand>, c: u8) -> Result<Result<Operation, Error>, u8> {
+            fn pre_flags(&self, a: Rc<Operand>, b: Rc<Operand>, c: &mut OperationVec) {
                 self::operation_helpers::$pre(a, b, c)
             }
-            fn post_flags(&self, a: Rc<Operand>, b: Rc<Operand>, c :u8) -> Option<Result<Operation, Error>> {
+            fn post_flags(&self, a: Rc<Operand>, b: Rc<Operand>, c :&mut OperationVec) {
                 self::operation_helpers::$post(a, b, c)
             }
         }
@@ -1409,8 +1247,8 @@ arith_op_generator!(SBB_OPS, SbbOps, sbb_flags, sbb_ops, result_flags);
 arith_op_generator!(XOR_OPS, XorOps, zero_carry_oflow, xor_ops, result_flags);
 arith_op_generator!(CMP_OPS, CmpOps, sub_flags, nop_ops, cmp_result_flags);
 arith_op_generator!(TEST_OPS, TestOps, zero_carry_oflow, nop_ops, cmp_result_flags);
-arith_op_generator!(MOV_OPS, MovOps, nop_ops, mov_ops, nop_ops_post);
-arith_op_generator!(PUSH_OPS, PushOps, nop_ops, push_ops, nop_ops_post);
+arith_op_generator!(MOV_OPS, MovOps, nop_ops, mov_ops, nop_ops);
+arith_op_generator!(PUSH_OPS, PushOps, nop_ops, push_ops, nop_ops);
 // zero_carry_oflow is wrong but lazy
 arith_op_generator!(ROL_OPS, RolOps, zero_carry_oflow, rol_ops, result_flags);
 arith_op_generator!(ROR_OPS, RorOps, zero_carry_oflow, ror_ops, result_flags);
@@ -1427,7 +1265,7 @@ pub mod operation_helpers {
     use operand::MemAccessSize::*;
     use operand::{Flag, MemAccessSize, Operand, OperandType};
     use operand::operand_helpers::*;
-    use super::{make_arith_operation, DestOperand, Error, Operation};
+    use super::{dest_operand, make_arith_operation, DestOperand, Error, Operation, OperationVec};
 
     pub fn read_u32(mut val: &[u8]) -> Result<u32, Error> {
         val.read_u32::<LittleEndian>().map_err(|_| Error::InternalDecodeError)
@@ -1458,316 +1296,206 @@ pub mod operation_helpers {
     }
 
     pub fn mov(dest: Rc<Operand>, from: Rc<Operand>) -> Operation {
-        Operation::Move((*dest).clone().into(), from, None)
+        Operation::Move(dest_operand(&dest), from, None)
     }
 
-    pub fn mov_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(mov(dest, rhs))),
-            x => Err(x - 1),
+    pub fn mov_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(mov(dest, rhs));
+    }
+
+    pub fn lea_ops(rhs: Rc<Operand>, dest: Rc<Operand>, out: &mut OperationVec) {
+        if let OperandType::Memory(ref mem) = rhs.ty {
+            out.push(mov(dest, mem.address.clone()));
         }
     }
 
-    pub fn lea_ops(rhs: Rc<Operand>, dest: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => match rhs.ty {
-                OperandType::Memory(ref mem) => Ok(Ok(mov(dest, mem.address.clone()))),
-                _ => Ok(Err(Error::UnknownOpcode(vec![])))
-            },
-            x => Err(x - 1),
-        }
-    }
-
-    pub fn push_ops(val: Rc<Operand>, _unused: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(sub(esp(), constval(4)))),
-            1 => Ok(Ok(mov(mem32(esp()), val))),
-            x => Err(x - 2),
-        }
+    pub fn push_ops(val: Rc<Operand>, _unused: Rc<Operand>, out: &mut OperationVec) {
+        out.push(sub(esp(), constval(4)));
+        out.push(mov(mem32(esp()), val));
     }
 
     pub fn add(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
         make_arith_operation(
-            (*dest).clone().into(),
+            dest_operand(&dest),
             Add(dest, rhs),
         )
     }
 
-    pub fn add_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(add(dest, rhs))),
-            x => Err(x - 1),
-        }
+    pub fn add_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(add(dest, rhs));
     }
 
-    pub fn adc_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(add(dest, operand_add(rhs, flag_c())))),
-            x => Err(x - 1),
-        }
+    pub fn adc_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(add(dest, operand_add(rhs, flag_c())));
     }
 
     pub fn sub(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
         make_arith_operation(
-            (*dest).clone().into(),
+            dest_operand(&dest),
             Sub(dest, rhs),
         )
     }
 
-    pub fn sub_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(sub(dest, rhs))),
-            x => Err(x - 1),
-        }
+    pub fn sub_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(sub(dest, rhs));
     }
 
-    pub fn sbb_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(sub(dest, operand_add(rhs, flag_c())))),
-            x => Err(x - 1),
-        }
+    pub fn sbb_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(sub(dest, operand_add(rhs, flag_c())));
     }
 
     pub fn signed_mul(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
         make_arith_operation(
-            (*dest).clone().into(),
+            dest_operand(&dest),
             SignedMul(dest, rhs),
         )
     }
 
     pub fn xor(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
         make_arith_operation(
-            (*dest).clone().into(),
+            dest_operand(&dest),
             Xor(dest, rhs),
         )
     }
 
-    pub fn xor_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(xor(dest, rhs))),
-            x => Err(x - 1),
-        }
+    pub fn xor_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(xor(dest, rhs));
     }
 
-    pub fn rol_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(make_arith_operation(
-                (*dest).clone().into(),
-                RotateLeft(dest, rhs),
-            ))),
-            x => Err(x - 1),
-        }
+    pub fn rol_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(make_arith_operation(dest_operand(&dest), RotateLeft(dest, rhs)));
     }
 
-    pub fn ror_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(make_arith_operation(
-                (*dest).clone().into(),
-                RotateLeft(dest, operand_sub(constval(32), rhs)),
-            ))),
-            x => Err(x - 1),
-        }
+    pub fn ror_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(make_arith_operation(
+            dest_operand(&dest),
+            RotateLeft(dest, operand_sub(constval(32), rhs))
+        ));
     }
 
-    pub fn lsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(make_arith_operation(
-                (*dest).clone().into(),
-                Lsh(dest, rhs),
-            ))),
-            x => Err(x - 1),
-        }
+    pub fn lsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(make_arith_operation(dest_operand(&dest), Lsh(dest, rhs)));
     }
 
     pub fn rsh(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
         make_arith_operation(
-            (*dest).clone().into(),
+            dest_operand(&dest),
             Rsh(dest, rhs),
         )
     }
 
-    pub fn rsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(make_arith_operation(
-                (*dest).clone().into(),
-                Rsh(dest, rhs),
-            ))),
-            x => Err(x - 1),
-        }
+    pub fn rsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(rsh(dest, rhs));
     }
 
-    pub fn sar_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 | 1 => {
-                let is_positive = operand_eq(
-                    operand_and(constval(0x80000000), dest.clone()),
-                    constval(0)
-                );
-                Ok(Ok(match state {
-                    0 => Operation::Move(
-                        (*dest).clone().into(),
-                        operand_or(operand_rsh(dest, rhs), constval(0x80000000)),
-                        Some(operand_logical_not(is_positive)),
-                    ),
-                    _ => Operation::Move(
-                        (*dest).clone().into(),
-                        operand_rsh(dest, rhs),
-                        Some(is_positive),
-                    ),
-                }))
-            }
-            x => Err(x - 2),
-        }
+    pub fn sar_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        let is_positive = operand_eq(
+            operand_and(constval(0x80000000), dest.clone()),
+            constval(0),
+        );
+        out.push(Operation::Move(
+            dest_operand(&dest),
+            operand_or(operand_rsh(dest.clone(), rhs.clone()), constval(0x80000000)),
+            Some(operand_logical_not(is_positive.clone())),
+        ));
+        out.push(Operation::Move(
+            dest_operand(&dest),
+            operand_rsh(dest, rhs),
+            Some(is_positive),
+        ));
     }
 
     pub fn or(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
         make_arith_operation(
-            (*dest).clone().into(),
+            dest_operand(&dest),
             Or(dest, rhs),
         )
     }
 
-    pub fn or_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(or(dest, rhs))),
-            x => Err(x - 1),
-        }
+    pub fn or_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(or(dest, rhs));
     }
 
     pub fn and(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
         make_arith_operation(
-            (*dest).clone().into(),
+            dest_operand(&dest),
             And(dest, rhs),
         )
     }
 
-    pub fn and_ops(dest: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Result<Result<Operation, Error>, u8> {
-        match state {
-            0 => Ok(Ok(and(dest, rhs))),
-            x => Err(x - 1),
-        }
+    pub fn and_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(and(dest, rhs));
     }
 
-    pub fn nop_ops(
-        _dest: Rc<Operand>,
-        _rhs: Rc<Operand>,
-        state: u8
-    ) -> Result<Result<Operation, Error>, u8> {
-        Err(state)
+    pub fn nop_ops(_dest: Rc<Operand>, _rhs: Rc<Operand>, _out: &mut OperationVec) {
     }
 
-    pub fn nop_ops_post(
-        _dest: Rc<Operand>,
-        _rhs: Rc<Operand>,
-        _state: u8
-    ) -> Option<Result<Operation, Error>> {
-        None
+    pub fn add_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        let add = operand_add(lhs.clone(), rhs.clone());
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Carry),
+            GreaterThan(lhs.clone(), add.clone())
+        ));
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Overflow),
+            GreaterThanSigned(lhs, add)
+        ));
     }
 
-    pub fn add_flags(
-        lhs: Rc<Operand>,
-        rhs: Rc<Operand>,
-        state: u8
-    ) -> Result<Result<Operation, Error>, u8> {
-        Ok(Ok(match state {
-            0 => make_arith_operation(
-                DestOperand::Flag(Flag::Carry),
-                GreaterThan(lhs.clone(), operand_add(lhs, rhs)),
-            ),
-            1 => make_arith_operation(
-                DestOperand::Flag(Flag::Overflow),
-                GreaterThanSigned(lhs.clone(), operand_add(lhs, rhs)),
-            ),
-            x => return Err(x - 2),
-        }))
+    pub fn adc_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        let add = operand_add(operand_add(lhs.clone(), rhs), flag_c());
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Carry),
+            GreaterThan(lhs.clone(), add.clone()),
+        ));
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Overflow),
+            GreaterThanSigned(lhs, add)
+        ));
     }
 
-    pub fn adc_flags(
-        lhs: Rc<Operand>,
-        rhs: Rc<Operand>,
-        state: u8
-    ) -> Result<Result<Operation, Error>, u8> {
-        Ok(Ok(match state {
-            0 => make_arith_operation(
-                DestOperand::Flag(Flag::Carry),
-                GreaterThan(lhs.clone(), operand_add(operand_add(lhs, rhs), flag_c())),
-            ),
-            1 => make_arith_operation(
-                DestOperand::Flag(Flag::Overflow),
-                GreaterThanSigned(lhs.clone(), operand_add(operand_add(lhs, rhs), flag_c())),
-            ),
-            x => return Err(x - 2),
-        }))
+    pub fn sub_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        let sub = operand_sub(lhs.clone(), rhs);
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Carry),
+            GreaterThan(sub.clone(), lhs.clone()),
+        ));
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Overflow),
+            GreaterThanSigned(sub, lhs),
+        ));
     }
 
-    pub fn sub_flags(
-        lhs: Rc<Operand>,
-        rhs: Rc<Operand>,
-        state: u8
-    ) -> Result<Result<Operation, Error>, u8> {
-        Ok(Ok(match state {
-            0 => make_arith_operation(
-                DestOperand::Flag(Flag::Carry),
-                GreaterThan(operand_sub(lhs.clone(), rhs), lhs),
-            ),
-            1 => make_arith_operation(
-                DestOperand::Flag(Flag::Overflow),
-                GreaterThanSigned(operand_sub(lhs.clone(), rhs), lhs),
-            ),
-            x => return Err(x - 2),
-        }))
+    pub fn sbb_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        let sub = operand_sub(operand_sub(lhs.clone(), rhs), flag_c());
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Carry),
+            GreaterThan(sub.clone(), lhs.clone()),
+        ));
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Overflow),
+            GreaterThanSigned(sub, lhs),
+        ));
     }
 
-    pub fn sbb_flags(
-        lhs: Rc<Operand>,
-        rhs: Rc<Operand>,
-        state: u8
-    ) -> Result<Result<Operation, Error>, u8> {
-        Ok(Ok(match state {
-            0 => make_arith_operation(
-                DestOperand::Flag(Flag::Carry),
-                GreaterThan(operand_sub(operand_sub(lhs.clone(), rhs), flag_c()), lhs),
-            ),
-            1 => make_arith_operation(
-                DestOperand::Flag(Flag::Overflow),
-                GreaterThanSigned(operand_sub(operand_sub(lhs.clone(), rhs), flag_c()), lhs),
-            ),
-            x => return Err(x - 2),
-        }))
+    pub fn zero_carry_oflow(_lhs: Rc<Operand>, _rhs: Rc<Operand>, out: &mut OperationVec) {
+        out.push(mov(flag_c(), constval(0)));
+        out.push(mov(flag_o(), constval(0)));
     }
 
-    pub fn zero_carry_oflow(
-        _lhs: Rc<Operand>,
-        _rhs: Rc<Operand>,
-        state: u8
-    ) -> Result<Result<Operation, Error>, u8> {
-        Ok(Ok(match state {
-            0 => mov(flag_c(), constval(0)),
-            1 => mov(flag_o(), constval(0)),
-            x => return Err(x - 2),
-        }))
+    pub fn result_flags(lhs: Rc<Operand>, _: Rc<Operand>, out: &mut OperationVec) {
+        out.push(
+            make_arith_operation(DestOperand::Flag(Flag::Zero), Equal(lhs.clone(), constval(0)))
+        );
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Sign),
+            GreaterThan(lhs.clone(), constval(0x7fffffff)),
+        ));
+        out.push(make_arith_operation(DestOperand::Flag(Flag::Parity), Parity(lhs)));
     }
 
-    pub fn result_flags(lhs: Rc<Operand>, _: Rc<Operand>, state: u8) -> Option<Result<Operation, Error>> {
-        Some(Ok(match state {
-            0 => make_arith_operation(
-                DestOperand::Flag(Flag::Zero),
-                Equal(lhs, constval(0)),
-            ),
-            1 => make_arith_operation(
-                DestOperand::Flag(Flag::Sign),
-                GreaterThan(lhs, constval(0x7fffffff)),
-            ),
-            2 => make_arith_operation(
-                DestOperand::Flag(Flag::Parity),
-                Parity(lhs),
-            ),
-            _ => return None,
-        }))
-    }
-
-    pub fn cmp_result_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, state: u8) -> Option<Result<Operation, Error>> {
-        result_flags(operand_sub(lhs, rhs), constval(!0), state)
+    pub fn cmp_result_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        result_flags(operand_sub(lhs, rhs), constval(!0), out)
     }
 
     pub fn esp() -> Rc<Operand> {
@@ -1829,25 +1557,29 @@ pub enum DestOperand {
     Memory(MemAccess),
 }
 
-impl From<Operand> for DestOperand {
-    fn from(val: Operand) -> DestOperand {
-        use operand::operand_helpers::*;
-        use operand::OperandType::*;
-        match val.ty {
-            Register(x) => DestOperand::Register(x),
-            Register16(x) => DestOperand::Register16(x),
-            Register8High(x) => DestOperand::Register8High(x),
-            Register8Low(x) => DestOperand::Register8Low(x),
-            Pair(hi, low) => {
-                assert_eq!(hi, operand_register(1));
-                assert_eq!(low, operand_register(0));
-                DestOperand::PairEdxEax
-            }
-            Xmm(x, y) => DestOperand::Xmm(x, y),
-            Flag(x) => DestOperand::Flag(x),
-            Memory(x) => DestOperand::Memory(x),
-            x => panic!("Invalid value for converting Operand -> DestOperand: {:?}", x),
+impl DestOperand {
+    pub fn from_oper(val: &Operand) -> DestOperand {
+        dest_operand(val)
+    }
+}
+
+fn dest_operand(val: &Operand) -> DestOperand {
+    use operand::operand_helpers::*;
+    use operand::OperandType::*;
+    match val.ty {
+        Register(x) => DestOperand::Register(x),
+        Register16(x) => DestOperand::Register16(x),
+        Register8High(x) => DestOperand::Register8High(x),
+        Register8Low(x) => DestOperand::Register8Low(x),
+        Pair(ref hi, ref low) => {
+            assert_eq!(*hi, operand_register(1));
+            assert_eq!(*low, operand_register(0));
+            DestOperand::PairEdxEax
         }
+        Xmm(x, y) => DestOperand::Xmm(x, y),
+        Flag(x) => DestOperand::Flag(x),
+        Memory(ref x) => DestOperand::Memory(x.clone()),
+        ref x => panic!("Invalid value for converting Operand -> DestOperand: {:?}", x),
     }
 }
 
@@ -1881,14 +1613,14 @@ mod test {
         let buf = [0x66, 0xc7, 0x47, 0x62, 0x00, 0x20];
         let mut disasm = Disassembler::new(&buf[..], 0, VirtualAddress(0));
         let ins = disasm.next(&ctx).unwrap();
-        assert_eq!(ins.ops().count(), 1);
-        let op = ins.ops().next().unwrap().unwrap();
+        assert_eq!(ins.ops().len(), 1);
+        let op = &ins.ops()[0];
         let dest = mem_variable(
             MemAccessSize::Mem16,
             operand_add(operand_register(0x7), constval(0x62))
         );
 
-        assert_eq!(op, Operation::Move(dest.into(), constval(0x2000), None));
+        assert_eq!(*op, Operation::Move(dest_operand(&dest), constval(0x2000), None));
     }
 
     #[test]
@@ -1900,8 +1632,8 @@ mod test {
         let buf = [0x89, 0x84, 0xb5, 0x18, 0xeb, 0xff, 0xff];
         let mut disasm = Disassembler::new(&buf[..], 0, VirtualAddress(0));
         let ins = disasm.next(&ctx).unwrap();
-        assert_eq!(ins.ops().count(), 1);
-        let op = ins.ops().next().unwrap().unwrap();
+        assert_eq!(ins.ops().len(), 1);
+        let op = &ins.ops()[0];
         let dest = mem32(
             operand_add(
                 operand_mul(
@@ -1915,7 +1647,7 @@ mod test {
             ),
         );
 
-        match op {
+        match op.clone() {
             Operation::Move(d, f, cond) => {
                 let d: Operand = d.into();
                 assert_eq!(Operand::simplified(d.into()), Operand::simplified(dest));

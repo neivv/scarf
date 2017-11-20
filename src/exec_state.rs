@@ -784,7 +784,7 @@ impl<'a> ExecutionState<'a> {
                     }
                 };
                 let flag_operand = Operand::new_simplified_rc(OperandType::Flag(flag));
-                state.get_dest(&(*flag_operand).clone().into(), intern_map)
+                state.get_dest(&DestOperand::from_oper(&flag_operand), intern_map)
                     .set(constval(flag_state), intern_map);
                 state
             }

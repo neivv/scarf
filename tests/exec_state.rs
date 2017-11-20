@@ -7,7 +7,9 @@ use std::rc::Rc;
 
 use byteorder::{ReadBytesExt, LittleEndian};
 
-use scarf::{BinaryFile, BinarySection, ExecutionState, Operand, Operation, VirtualAddress};
+use scarf::{
+    BinaryFile, BinarySection, DestOperand, ExecutionState, Operand, Operation, VirtualAddress
+};
 use scarf::analysis;
 use scarf::operand_helpers::*;
 
@@ -52,7 +54,7 @@ fn test(idx: usize, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let state = ExecutionState::new(&ctx, &mut interner);
     let mut expected_state = state.clone();
     for &(ref op, ref val) in changes {
-        let op = Operation::Move((**op).clone().into(), val.clone(), None);
+        let op = Operation::Move(DestOperand::from_oper(op), val.clone(), None);
         expected_state.update(op, &mut interner);
     }
     let mut analysis =

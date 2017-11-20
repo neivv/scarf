@@ -650,33 +650,28 @@ impl Operand {
         }
     }
 
-    pub fn to_xmm_32(self, word: u8) -> Rc<Operand> {
-        Operand::to_xmm_32_rc(self.into(), word)
-    }
-
-    pub fn to_xmm_32_rc(s: Rc<Operand>, word: u8) -> Rc<Operand> {
+    pub fn to_xmm_32(s: &Rc<Operand>, word: u8) -> Rc<Operand> {
         use self::operand_helpers::*;
-        match s.clone().ty {
+        match s.ty {
             OperandType::Memory(ref mem) => match word {
-                0 => s,
+                0 => s.clone(),
                 x => mem32(operand_add(mem.address.clone(), constval(4 * x as u32))),
             },
             OperandType::Register(reg) => {
                 Operand::new_simplified(OperandType::Xmm(reg.0, word)).into()
             }
-            _ => s,
+            _ => s.clone(),
         }
     }
 
     /// Return (low, high)
-    pub fn to_xmm_64(self, word: u8) -> (Rc<Operand>, Rc<Operand>) {
+    pub fn to_xmm_64(s: &Rc<Operand>, word: u8) -> (Rc<Operand>, Rc<Operand>) {
         use self::operand_helpers::*;
-        let s = Rc::new(self);
-        match s.clone().ty {
+        match s.ty {
             OperandType::Memory(ref mem) => match word {
                 0 => {
                     let high = operand_add(mem.address.clone(), constval(4));
-                    (s, mem32(high))
+                    (s.clone(), mem32(high))
                 }
                 x => {
                     let low = operand_add(mem.address.clone(), constval(8 * x as u32));

@@ -3,7 +3,7 @@ use std::rc::Rc;
 use byteorder::{LittleEndian, ReadBytesExt};
 use ordermap::{self, OrderMap};
 
-use disasm::{self, InstructionOps, Operation};
+use disasm::{self, DestOperand, Instruction, Operation};
 use exec_state::{self, ExecutionState};
 use operand::{Operand, OperandContext};
 use ::{BinaryFile, BinarySection, Rva, VirtualAddress};
@@ -275,29 +275,29 @@ fn initial_exec_state<'e>(
     // Set the return address to somewhere in 0x400000 range
     let return_address = mem32(operand_register(4));
     state.update(disasm::Operation::Move(
-        (*return_address).clone().into(),
+        DestOperand::from_oper(&return_address),
         constval(binary.dump_code_offset.0 + 0x4230),
         None
     ), interner);
 
     // Set the bytes above return address to 'call eax' to make it look like a legitmate call.
     state.update(disasm::Operation::Move(
-        mem_variable(MemAccessSize::Mem8,
+        DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
             operand_sub(
                 return_address.clone(),
                 constval(1),
             ),
-        ).into(),
+        )),
         constval(0xd0),
         None,
     ), interner);
     state.update(disasm::Operation::Move(
-        mem_variable(MemAccessSize::Mem8,
+        DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
             operand_sub(
                 return_address,
                 constval(2),
             ),
-        ).into(),
+        )),
         constval(0xff),
         None,
     ), interner);
@@ -315,8 +315,8 @@ pub struct Branch<'a, 'exec: 'a> {
 pub struct Operations<'a, 'branch: 'a, 'exec: 'branch> {
     branch: &'a mut Branch<'branch, 'exec>,
     disasm: disasm::Disassembler<'a>,
-    current_ins: Option<InstructionOps<'a, 'exec>>,
-    current_operation: Option<Operation>,
+    current_ins: Option<Instruction>,
+    ins_pos: usize,
 }
 
 impl<'a, 'exec: 'a> Branch<'a, 'exec> {
@@ -332,7 +332,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                 self.analysis.binary.code_section().virtual_address,
             ),
             current_ins: None,
-            current_operation: None,
+            ins_pos: 0,
             branch: self,
         }
     }
@@ -362,7 +362,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
         }
     }
 
-    fn process_operation(&mut self, op: Operation, ins: &InstructionOps) -> Result<(), Error> {
+    fn process_operation(&mut self, op: Operation, ins: &Instruction) -> Result<(), Error> {
         match op {
             disasm::Operation::Jump { condition, to } => {
                 // TODO Move simplify to disasm::next
@@ -426,31 +426,27 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
         VirtualAddress,
         &mut exec_state::InternMap,
     )> {
-        if let Some(operation) = self.current_operation.take() {
-            if let Some(instruction) = self.current_ins.as_ref() {
-                if let Err(e) = self.branch.process_operation(operation, instruction) {
-                    self.branch.analysis.errors.push((instruction.address(), e.into()));
-                    return None;
-                }
+        let mut yield_ins = false;
+        if let Some(ref ins) = self.current_ins  {
+            let op = &ins.ops()[self.ins_pos];
+            if let Err(e) = self.branch.process_operation(op.clone(), ins) {
+                self.branch.analysis.errors.push((ins.address(), e.into()));
+                return None;
+            }
+            self.ins_pos += 1;
+            yield_ins = self.ins_pos < ins.ops().len();
+        }
+        if yield_ins {
+            if let Some(ref ins) = self.current_ins {
+                let state = &mut self.branch.state;
+                let interner = &mut self.branch.analysis.interner;
+                let op = &ins.ops()[self.ins_pos];
+                return Some((op, state, ins.address(), interner));
             }
         }
+
+        let instruction;
         loop {
-            if let Some(ref mut ins) = self.current_ins.as_mut() {
-                match ins.next() {
-                    Some(Ok(op)) => {
-                        self.current_operation = Some(op);
-                        let state = &mut self.branch.state;
-                        let interner = &mut self.branch.analysis.interner;
-                        return self.current_operation.as_ref()
-                            .map(|x| (x, state, ins.address(), interner));
-                    }
-                    Some(Err(e)) => {
-                        self.branch.analysis.errors.push((ins.address(), e.into()));
-                        return None;
-                    }
-                    None => (),
-                }
-            }
             let address = self.disasm.address();
             let ins = match self.disasm.next(&self.branch.analysis.operand_ctx) {
                 Ok(o) => o,
@@ -462,8 +458,18 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
                     return None;
                 }
             };
-            self.current_ins = Some(ins.ops());
+            if ins.ops().len() != 0 {
+                instruction = ins;
+                break;
+            }
         }
+        self.current_ins = Some(instruction);
+        self.ins_pos = 0;
+        let ins = self.current_ins.as_ref().unwrap();
+        let state = &mut self.branch.state;
+        let interner = &mut self.branch.analysis.interner;
+        let op = &ins.ops()[0];
+        Some((op, state, ins.address(), interner))
     }
 
     pub fn current_address(&self) -> VirtualAddress {
