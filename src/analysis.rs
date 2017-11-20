@@ -231,7 +231,7 @@ impl<'a> FuncAnalysis<'a> {
     }
 
     pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a>> {
-        while let Some((addr, state)) = self.unchecked_branches.pop() {
+        while let Some((addr, state)) = self.next_branch_merge_queued() {
             let state = match self.checked_branches.entry(addr) {
                 ordermap::Entry::Occupied(old_state) => {
                     let merged = exec_state::merge_states(
@@ -260,6 +260,23 @@ impl<'a> FuncAnalysis<'a> {
             }
         }
         None
+    }
+
+    fn next_branch_merge_queued(&mut self) -> Option<(VirtualAddress, ExecutionState<'a>)> {
+        let (addr, mut state) = match self.unchecked_branches.pop() {
+            Some(s) => s,
+            None => return None,
+        };
+        let interner = &mut self.interner;
+        self.unchecked_branches.retain(|&(a, ref s)| if a == addr {
+            if let Some(new) = exec_state::merge_states(&state, s, interner) {
+                state = new;
+            }
+            false
+        } else {
+            true
+        });
+        Some((addr, state))
     }
 }
 
