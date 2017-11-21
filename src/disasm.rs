@@ -267,6 +267,7 @@ fn instruction_operations(
                 })
             }
             0xd0 ... 0xd3 => s.bitwise_compact_op(),
+            0xd9 => s.various_d9(),
             0xe8 => s.call_op(),
             0xe9 => s.jump_op(),
             0xeb => s.short_jmp(),
@@ -997,6 +998,62 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         Ok(out)
     }
 
+    fn various_d9(&self) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        use operand::operand_helpers::*;
+        let variant = (self.get(1) >> 3) & 0x7;
+        match variant {
+            // Fst/Fstp, as long as rm is mem
+            2 | 3 => {
+                let (rm, _) = self.parse_modrm(MemAccessSize::Mem32)?;
+                let mut out = SmallVec::new();
+                match rm.ty {
+                    OperandType::Memory(_) => {
+                        out.push(mov(rm.clone(), self.ctx.undefined_rc()));
+                    }
+                    _ => (),
+                }
+                Ok(out)
+            }
+            // Fstenv
+            6 => {
+                let mem_size = self.mem16_32();
+                let mem_bytes = match mem_size {
+                    MemAccessSize::Mem16 => 2,
+                    _ => 4,
+                };
+                let (rm, _) = self.parse_modrm(mem_size)?;
+                let mut out = SmallVec::new();
+                match rm.ty {
+                    OperandType::Memory(ref mem) => {
+                        out.extend((0..10).map(|i| {
+                            let address =
+                                operand_add(mem.address.clone(), constval(i * mem_bytes));
+                            let dest = mem_variable_rc(mem_size, address);
+                            mov(dest, self.ctx.undefined_rc())
+                        }));
+                    }
+                    _ => (),
+                }
+                Ok(out)
+            }
+            // Fstcw
+            7 => {
+                let (rm, _) = self.parse_modrm(MemAccessSize::Mem16)?;
+                let mut out = SmallVec::new();
+                match rm.ty {
+                    OperandType::Memory(_) => {
+                        out.push(mov(rm.clone(), self.ctx.undefined_rc()));
+                    }
+                    _ => (),
+                }
+                Ok(out)
+            }
+            // Others just touch FPU registers
+            _ => Ok(SmallVec::new()),
+        }
+    }
+
     fn various_fe_ff(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
@@ -1061,6 +1118,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             1 => &ROR_OPS,
             4 | 6 => &LSH_OPS,
             5 => &RSH_OPS,
+            7 => &SAR_OPS,
             _ => return Err(Error::UnknownOpcode(self.data.into())),
         };
         let mut out = SmallVec::new();
