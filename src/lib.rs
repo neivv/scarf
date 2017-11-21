@@ -247,7 +247,7 @@ fn silps_dump_base(
     filename: &OsStr,
     module_base_file: &Path
 ) -> Option<VirtualAddress> {
-    use std::ascii::AsciiExt;
+    #[allow(unused_imports)] use std::ascii::AsciiExt;
     let fun = |filename: &OsStr, module_base_file: &Path| -> Result<_, io::Error> {
         let file = BufReader::new(File::open(module_base_file)?);
         for line in file.lines() {
