@@ -82,12 +82,21 @@ fn apply_constraint_split(constraint: &Rc<Operand>, val: &mut Rc<Operand>) -> bo
             changed |= apply_constraint_split(r, val);
             changed
         }
-        OperandType::Arithmetic(ArithOpType::LogicalNot(ref l)) => {
-            let changed = apply_constraint_split(l, val);
-            if changed {
-                *val = operand_logical_not(val.clone());
+        OperandType::Arithmetic(ArithOpType::Equal(ref l, ref r)) => {
+            let other = match (&l.ty, &r.ty) {
+                (&OperandType::Constant(0), _) => Some(r),
+                (_, &OperandType::Constant(0)) => Some(l),
+                _ => None
+            };
+            if let Some(other) = other {
+                let changed = apply_constraint_split(other, val);
+                if changed {
+                    *val = operand_logical_not(val.clone());
+                }
+                changed
+            } else {
+                apply_constraint_subpart(constraint, val)
             }
-            changed
         }
         _ => {
             apply_constraint_subpart(constraint, val)
@@ -153,7 +162,6 @@ fn apply_constraint_subpart(constraint: &Rc<Operand>, val: &mut Rc<Operand>) -> 
                     apply_constraint_binary!(constraint, l, r, val, SignedMul)
                 }
                 Not(ref l) => apply_constraint_unary!(constraint, l, val, Not),
-                LogicalNot(ref l) => apply_constraint_unary!(constraint, l, val, LogicalNot),
                 Parity(ref l) => apply_constraint_unary!(constraint, l, val, Parity),
             },
             _ => false,
@@ -651,7 +659,6 @@ impl<'a> ExecutionState<'a> {
             RotateLeft(ref l, ref r) => RotateLeft(self.resolve(l, i), self.resolve(r, i)),
             Equal(ref l, ref r) => Equal(self.resolve(l, i), self.resolve(r, i)),
             Not(ref x) => Not(self.resolve(x, i)),
-            LogicalNot(ref x) => LogicalNot(self.resolve(x, i)),
             Parity(ref x) => Parity(self.resolve(x, i)),
             GreaterThan(ref l, ref r) => GreaterThan(self.resolve(l, i), self.resolve(r, i)),
             GreaterThanSigned(ref l, ref r) => {
@@ -815,9 +822,6 @@ impl<'a> ExecutionState<'a> {
                 ));
                 state.last_jump_extra_constraint = Some(Constraint::new(cond));
                 state
-            }
-            (_, &OperandType::Arithmetic(LogicalNot(ref left))) => {
-                self.assume_jump_flag(left, !jump, intern_map)
             }
             (_, _) => self.clone(),
         }

@@ -226,7 +226,6 @@ impl fmt::Display for Operand {
                 GreaterThanSigned(ref l, ref r) => write!(f, "gt_signed({}, {})", l, r),
                 SignedMul(ref l, ref r) => write!(f, "mul_signed({}, {})", l, r),
                 Not(ref l) => write!(f, "~{}", l),
-                LogicalNot(ref l) => write!(f, "!{}", l),
                 Parity(ref l) => write!(f, "parity({})", l),
             },
             OperandType::ArithmeticHigh(ref arith) => {
@@ -273,7 +272,6 @@ pub enum ArithOpType {
     RotateLeft(Rc<Operand>, Rc<Operand>),
     Equal(Rc<Operand>, Rc<Operand>),
     Not(Rc<Operand>),
-    LogicalNot(Rc<Operand>),
     Parity(Rc<Operand>),
     GreaterThan(Rc<Operand>, Rc<Operand>),
     GreaterThanSigned(Rc<Operand>, Rc<Operand>),
@@ -303,7 +301,7 @@ impl ArithOpType {
             {
                 (l, Some(r))
             }
-            Not(ref l) | LogicalNot(ref l) | Parity(ref l) => {
+            Not(ref l) | Parity(ref l) => {
                 (l, None)
             }
         }
@@ -362,7 +360,7 @@ fn iter_variant_next<'a, T: IterVariant<'a>>(s: &mut T) -> Option<&'a Operand> {
                     })),
                 })
             }
-            Not(ref l) | LogicalNot(ref l) | Parity(ref l) => {
+            Not(ref l) | Parity(ref l) => {
                 Some(IterState {
                     pos: l,
                     rhs: inner.rhs,
@@ -512,7 +510,6 @@ impl OperandType {
                 MemAccessSize::Mem32 => 0..32,
             },
             OperandType::Arithmetic(ArithOpType::Equal(_, _)) |
-                OperandType::Arithmetic(ArithOpType::LogicalNot(_)) |
                 OperandType::Arithmetic(ArithOpType::GreaterThan(_, _)) |
                 OperandType::Arithmetic(ArithOpType::GreaterThanSigned(_, _)) => 0..1,
             OperandType::Arithmetic(ArithOpType::Lsh(ref left, ref right)) => {
@@ -1110,18 +1107,6 @@ impl Operand {
                         }
                     }
                 }
-                ArithOpType::LogicalNot(ref op) => {
-                    let op = Operand::simplified(op.clone());
-                    match op.ty {
-                        OperandType::Constant(a) => {
-                            constval(if a == 0 { 1 } else { 0 })
-                        }
-                        _ => {
-                            let ty = OperandType::Arithmetic(ArithOpType::LogicalNot(op));
-                            Operand::new_simplified_rc(ty)
-                        }
-                    }
-                }
                 ArithOpType::RotateLeft(ref left, ref right) => {
                     let left = Operand::simplified(left.clone());
                     let right = Operand::simplified(right.clone());
@@ -1181,7 +1166,6 @@ impl Operand {
                 RotateLeft(ref l, ref r) => RotateLeft(sub(l, f), sub(r, f)),
                 Equal(ref l, ref r) => Equal(sub(l, f), sub(r, f)),
                 Not(ref x) => Not(sub(x, f)),
-                LogicalNot(ref x) => LogicalNot(sub(x, f)),
                 Parity(ref x) => Parity(sub(x, f)),
                 GreaterThan(ref l, ref r) => GreaterThan(sub(l, f), sub(r, f)),
                 GreaterThanSigned(ref l, ref r) => {
@@ -1992,7 +1976,7 @@ pub mod operand_helpers {
     }
 
     pub fn operand_logical_not(lhs: Rc<Operand>) -> Rc<Operand> {
-        Operand::new_not_simplified_rc(OperandType::Arithmetic(LogicalNot(lhs)))
+        Operand::new_not_simplified_rc(OperandType::Arithmetic(Equal(constval(0), lhs)))
     }
 
     pub fn mem32_norc(val: Rc<Operand>) -> Operand {
