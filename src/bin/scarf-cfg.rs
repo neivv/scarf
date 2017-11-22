@@ -31,7 +31,7 @@ fn main() {
     let addr = matches.value_of("addr").unwrap();
     let addr = u32::from_str_radix(&addr, 16).expect("Address wasn't hex");
     let destructive_calls = matches.is_present("destructive_calls");
-    let binary = scarf::parse(file, OsStr::new("asd")).unwrap();
+    let binary = scarf::parse(file).unwrap();
     let ctx = scarf::operand::OperandContext::new();
     let analysis = scarf::analysis::FuncAnalysis::new(&binary, &ctx, VirtualAddress(addr));
     let mut was_called = false;

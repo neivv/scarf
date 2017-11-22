@@ -20,7 +20,7 @@ pub use operand::{Operand, OperandType, operand_helpers};
 
 use std::ffi::{OsString, OsStr};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read, Seek};
+use std::io::{self, BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -111,8 +111,6 @@ quick_error! {
 #[derive(Debug, Clone)]
 pub struct BinaryFile {
     pub base: VirtualAddress,
-    // For "hardcoded" checks that check that return address matches module code section
-    pub dump_code_offset: VirtualAddress,
     sections: Vec<BinarySection>,
 }
 
@@ -171,12 +169,11 @@ impl BinaryFile {
 pub fn raw_bin(base: VirtualAddress, sections: Vec<BinarySection>) -> BinaryFile {
     BinaryFile {
         base,
-        dump_code_offset: base + 0x1000,
         sections: sections,
     }
 }
 
-pub fn parse(filename: &OsStr, silps_path: &OsStr) -> Result<BinaryFile, Error> {
+pub fn parse(filename: &OsStr) -> Result<BinaryFile, Error> {
     use Error::*;
     let mut file = BufReader::new(File::open(filename)?);
     if file.read_u16::<LittleEndian>()? != 0x5a4d {
@@ -224,57 +221,10 @@ pub fn parse(filename: &OsStr, silps_path: &OsStr) -> Result<BinaryFile, Error> 
         virtual_size: header_block_size,
         data: header_data,
     });
-    let dump_code_offset;
-    let code_offset;
-    {
-        let code = sections.iter().find(|s| &s.name[..] == b".text\0\0\0")
-            .ok_or_else(|| InvalidPeFile("No .text found".into()))?;
-
-        code_offset = code.virtual_address;
-        let silps_module_bases = Path::new(silps_path).join("module_bases.txt");
-        dump_code_offset = silps_dump_base(filename, &silps_module_bases)
-            .map(|x| x + (code_offset - base));
-    }
     Ok(BinaryFile {
         base,
-        dump_code_offset: dump_code_offset.unwrap_or(code_offset),
         sections,
     })
-}
-
-fn silps_dump_base(
-    filename: &OsStr,
-    module_base_file: &Path
-) -> Option<VirtualAddress> {
-    #[allow(unused_imports)] use std::ascii::AsciiExt;
-    let fun = |filename: &OsStr, module_base_file: &Path| -> Result<_, io::Error> {
-        let file = BufReader::new(File::open(module_base_file)?);
-        for line in file.lines() {
-            let line = line?;
-            let mut tokens = line.split_whitespace();
-            let ok = tokens.next().and_then(|x| {
-                filename.to_str().map(|f| (f, x))
-            }).map(|(filename, binary_name)| {
-                let filename = filename.to_ascii_lowercase();
-                let binary_name = &binary_name[..binary_name.len() - 1].to_ascii_lowercase();
-                filename.contains(binary_name)
-            }).unwrap_or(false);
-            if ok {
-                return Ok(
-                    tokens.next().and_then(|x| u32::from_str_radix(x, 16).ok())
-                        .map(|x| VirtualAddress(x))
-                );
-            }
-        }
-        Ok(None)
-    };
-    match fun(filename, module_base_file) {
-        Ok(o) => o,
-        Err(e) => {
-            error!("Couldn't read silps module base file: {}", e);
-            None
-        }
-    }
 }
 
 fn read_at_16<R: Read + Seek>(f: &mut R, at: u64) -> Result<u16, io::Error> {

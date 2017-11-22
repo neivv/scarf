@@ -442,7 +442,7 @@ fn initial_exec_state<'e>(
     let return_address = mem32(operand_register(4));
     state.update(disasm::Operation::Move(
         DestOperand::from_oper(&return_address),
-        constval(binary.dump_code_offset.0 + 0x4230),
+        constval(binary.code_section().virtual_address.0 + 0x4230),
         None
     ), interner);
 
