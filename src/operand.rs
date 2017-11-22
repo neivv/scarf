@@ -910,7 +910,11 @@ impl Operand {
                         return constval(const_sum);
                     }
                     if const_sum != 0 {
-                        ops.push((constval(const_sum), false));
+                        if const_sum > 0x80000000 {
+                            ops.push((constval(0u32.wrapping_sub(const_sum)), true));
+                        } else {
+                            ops.push((constval(const_sum), false));
+                        }
                     }
                     // Place non-negated terms last so the simplified result doesn't become
                     // (0 - x) + y
@@ -1949,6 +1953,14 @@ pub mod operand_helpers {
 
     pub fn operand_eq(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         Operand::new_not_simplified_rc(OperandType::Arithmetic(Equal(lhs, rhs)))
+    }
+
+    pub fn operand_gt(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        Operand::new_not_simplified_rc(OperandType::Arithmetic(GreaterThan(lhs, rhs)))
+    }
+
+    pub fn operand_gt_signed(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        Operand::new_not_simplified_rc(OperandType::Arithmetic(GreaterThanSigned(lhs, rhs)))
     }
 
     pub fn operand_or(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
