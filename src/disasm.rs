@@ -864,6 +864,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             2 => {
                 out.push(make_arith_operation(dest_operand(&rm), ArithOpType::Not(rm.into())));
             }
+            4 => {
+                out.push(mov(pair_edx_eax(), operand_mul(operand_register(0), rm)));
+            },
             5 => {
                 out.push(mov(pair_edx_eax(), operand_signed_mul(operand_register(0), rm)));
             },
