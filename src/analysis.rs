@@ -301,14 +301,14 @@ fn initial_exec_state<'e>(
 
     // Set the return address to somewhere in 0x400000 range
     let return_address = mem32(operand_register(4));
-    state.update(disasm::Operation::Move(
+    state.move_to(
         DestOperand::from_oper(&return_address),
         constval(binary.code_section().virtual_address.0 + 0x4230),
-        None
-    ), interner);
+        interner
+    );
 
     // Set the bytes above return address to 'call eax' to make it look like a legitmate call.
-    state.update(disasm::Operation::Move(
+    state.move_to(
         DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
             operand_sub(
                 return_address.clone(),
@@ -316,9 +316,9 @@ fn initial_exec_state<'e>(
             ),
         )),
         constval(0xd0),
-        None,
-    ), interner);
-    state.update(disasm::Operation::Move(
+        interner
+    );
+    state.move_to(
         DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
             operand_sub(
                 return_address,
@@ -326,8 +326,8 @@ fn initial_exec_state<'e>(
             ),
         )),
         constval(0xff),
-        None,
-    ), interner);
+        interner
+    );
     state
 }
 

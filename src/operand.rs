@@ -892,17 +892,13 @@ impl Operand {
                 ArithOpType::Add(_, _) | ArithOpType::Sub(_, _) => {
                     let mut ops = vec![];
                     Operand::collect_add_ops(s, &mut ops, false);
-                    let const_sum = ops.iter().fold(0u32, |sum, &(ref x, neg)| match x.ty {
-                        OperandType::Constant(num) => match neg {
-                            false => sum.wrapping_add(num),
-                            true => sum.wrapping_sub(num),
-                        },
-                        _ => sum,
-                    });
-                    ops.retain(|&(ref x, _)| match x.ty {
-                        OperandType::Constant(_) => false,
-                        _ => true,
-                    });
+                    let const_sum = ops.iter()
+                        .flat_map(|&(ref x, neg)| x.if_constant().map(|x| (x, neg)))
+                        .fold(0u32, |sum, (x, neg)| match neg {
+                            false => sum.wrapping_add(x),
+                            true => sum.wrapping_sub(x),
+                        });
+                    ops.retain(|&(ref x, _)| x.if_constant().is_none());
                     ops.sort();
                     simplify_add_merge_muls(&mut ops);
                     if ops.is_empty() {
@@ -947,17 +943,12 @@ impl Operand {
                 ArithOpType::Mul(_, _) => {
                     let mut ops = vec![];
                     Operand::collect_mul_ops(s, &mut ops);
-                    let const_product = ops.iter().fold(1u32, |product, x| match x.ty {
-                        OperandType::Constant(num) => product.wrapping_mul(num),
-                        _ => product,
-                    });
+                    let const_product = ops.iter().flat_map(|x| x.if_constant())
+                        .fold(1u32, |product, x| product.wrapping_mul(x));
                     if const_product == 0 {
                         return constval(0)
                     }
-                    ops.retain(|x| match x.ty {
-                        OperandType::Constant(_) => false,
-                        _ => true,
-                    });
+                    ops.retain(|x| x.if_constant().is_none());
                     if ops.is_empty() {
                         return constval(const_product);
                     }
@@ -975,17 +966,12 @@ impl Operand {
                 ArithOpType::SignedMul(_, _) => {
                     let mut ops = vec![];
                     Operand::collect_signed_mul_ops(s, &mut ops);
-                    let const_product = ops.iter().fold(1i32, |product, x| match x.ty {
-                        OperandType::Constant(num) => product.wrapping_mul(num as i32),
-                        _ => product,
-                    }) as u32;
+                    let const_product = ops.iter().flat_map(|x| x.if_constant())
+                        .fold(1i32, |product, x| product.wrapping_mul(x as i32)) as u32;
                     if const_product == 0 {
                         return constval(0)
                     }
-                    ops.retain(|x| match x.ty {
-                        OperandType::Constant(_) => false,
-                        _ => true,
-                    });
+                    ops.retain(|x| x.if_constant().is_none());
                     if ops.is_empty() {
                         return constval(const_product);
                     }
@@ -1013,14 +999,9 @@ impl Operand {
                 ArithOpType::Xor(_, _) => {
                     let mut ops = vec![];
                     Operand::collect_xor_ops(s, &mut ops);
-                    let const_val = ops.iter().fold(0u32, |sum, x| match x.ty {
-                        OperandType::Constant(num) => sum ^ num,
-                        _ => sum,
-                    });
-                    ops.retain(|x| match x.ty {
-                        OperandType::Constant(_) => false,
-                        _ => true,
-                    });
+                    let const_val = ops.iter().flat_map(|x| x.if_constant())
+                        .fold(0u32, |sum, x| sum ^ x);
+                    ops.retain(|x| x.if_constant().is_none());
                     ops.sort();
                     simplify_xor_remove_reverting(&mut ops);
                     if ops.is_empty() {
@@ -1192,6 +1173,22 @@ impl Operand {
             false => None,
         })
     }
+
+    /// Returns `Some(c)` if `self.ty` is `OperandType::Constant(c)`
+    pub fn if_constant(&self) -> Option<u32> {
+        match self.ty {
+            OperandType::Constant(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)`
+    pub fn if_memory(&self) -> Option<&MemAccess> {
+        match self.ty {
+            OperandType::Memory(ref mem) => Some(mem),
+            _ => None,
+        }
+    }
 }
 
 // Tries to merge (a & a_mask) | (b & b_mask) to (a_mask | b_mask) & result
@@ -1255,14 +1252,9 @@ fn simplify_and(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
     Operand::collect_and_ops(right, &mut ops);
     let mut const_remain = !0u32;
     loop {
-        const_remain = ops.iter().fold(const_remain, |sum, x| match x.ty {
-            OperandType::Constant(num) => sum & num,
-            _ => sum,
-        });
-        ops.retain(|x| match x.ty {
-            OperandType::Constant(_) => false,
-            _ => true,
-        });
+        const_remain = ops.iter().flat_map(|x| x.if_constant())
+            .fold(const_remain, |sum, x| sum & x);
+        ops.retain(|x| x.if_constant().is_none());
         if ops.is_empty() {
             if const_remain == !0 {
                 return constval(0);
@@ -1324,14 +1316,9 @@ fn simplify_or(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
     let mut ops = vec![];
     Operand::collect_or_ops(left, &mut ops);
     Operand::collect_or_ops(right, &mut ops);
-    let const_val = ops.iter().fold(0u32, |sum, x| match x.ty {
-        OperandType::Constant(num) => sum | num,
-        _ => sum,
-    });
-    ops.retain(|x| match x.ty {
-        OperandType::Constant(_) => false,
-        _ => true,
-    });
+    let const_val = ops.iter().flat_map(|x| x.if_constant())
+        .fold(0u32, |sum, x| sum | x);
+    ops.retain(|x| x.if_constant().is_none());
     if ops.is_empty() {
         return constval(const_val);
     }

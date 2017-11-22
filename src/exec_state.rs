@@ -597,6 +597,11 @@ impl<'a> ExecutionState<'a> {
         };
     }
 
+    /// Equivalent to `self.update(Operation::Move(dest, val, None), i)`
+    pub fn move_to(&mut self, dest: DestOperand, val: Rc<Operand>, i: &mut InternMap) {
+        self.update(Operation::Move(dest, val, None), i);
+    }
+
     fn get_dest_invalidate_constraints(
         &mut self,
         dest: &DestOperand,
@@ -738,12 +743,7 @@ impl<'a> ExecutionState<'a> {
             constraint.apply_to(&mut condition);
         }
         let operand = self.resolve(&condition, i);
-        let simplified = Operand::simplified(operand.clone());
-        //trace!("Resolve const {:#?} -> {:#?}", operand, simplified);
-        match simplified.ty {
-            OperandType::Constant(c) => Some(c),
-            _ => None,
-        }
+        Operand::simplified(operand.clone()).if_constant()
     }
 
     /// Tries to find an register/memory address corresponding to a resolved value.
