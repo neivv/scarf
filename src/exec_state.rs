@@ -592,6 +592,8 @@ impl<'a> ExecutionState<'a> {
             }
             Operation::Return(_) => {
             }
+            Operation::Special(_) => {
+            }
         };
     }
 

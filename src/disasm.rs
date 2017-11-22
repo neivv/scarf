@@ -247,6 +247,12 @@ fn instruction_operations(
                 Ok(out)
             },
             0xa0 ... 0xa3 => s.move_mem_eax(),
+            // rep mov
+            0xa4 ... 0xa5 => {
+                let mut out = SmallVec::new();
+                out.push(Operation::Special(s.data.into()));
+                Ok(out)
+            }
             0xa8 ... 0xa9 => s.eax_imm_cmp(operand_and, zero_carry_oflow, result_flags),
             0xb0 ... 0xbf => s.move_const_to_reg(),
             0xc0 ... 0xc1 => s.bitwise_with_imm_op(),
@@ -1600,6 +1606,9 @@ pub enum Operation {
     Call(Rc<Operand>),
     Jump { condition: Rc<Operand>, to: Rc<Operand> },
     Return(u32),
+    // Special cases like interrupts etc that scarf doesn't want to touch.
+    // Also rep mov for now
+    Special(Vec<u8>),
 }
 
 fn make_arith_operation(dest: DestOperand, arith: ArithOpType) -> Operation {
