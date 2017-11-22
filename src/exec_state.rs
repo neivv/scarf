@@ -281,7 +281,7 @@ struct MemoryIterUntilImm<'a> {
 }
 
 impl Memory {
-    fn new() -> Memory {
+    pub fn new() -> Memory {
         Memory {
             map: HashMap::new(),
             immutable: None,

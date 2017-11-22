@@ -264,7 +264,9 @@ impl<'exec> Cfg<'exec> {
         }
     }
 
-    fn resolve_cond_jump_operands(&mut self, binary: &BinaryFile) {
+    fn resolve_cond_jump_operands<F>(&mut self, binary: &BinaryFile, mut hook: F)
+    where F: FnMut(&Operation, &mut ExecutionState, VirtualAddress, &mut exec_state::InternMap)
+    {
         let ctx = OperandContext::new();
         for &mut (address, ref mut node) in &mut self.nodes {
             if let Some(cond) = node.out_edges.as_mut().and_then(|x| x.cond.as_mut()) {
@@ -273,6 +275,7 @@ impl<'exec> Cfg<'exec> {
                     .expect("New analysis should always have a branch.");
                 let mut ops = branch.operations();
                 while let Some((op, state, address, i)) = ops.next() {
+                    hook(op, state, address, i);
                     let final_op = if address == node.end_address {
                         true
                     } else {
@@ -402,15 +405,26 @@ impl<'a> FuncAnalysis<'a> {
         Some((addr, state))
     }
 
-    pub fn finish(mut self) -> (Cfg<'a>, Vec<(VirtualAddress, Error)>) {
+    pub fn finish(self) -> (Cfg<'a>, Vec<(VirtualAddress, Error)>) {
+        self.finish_with_changes(|_, _, _, _| {})
+    }
+
+    /// As this will run analysis, allows user to manipulate the state during it
+    pub fn finish_with_changes<F>(
+        mut self,
+        mut hook: F
+    ) -> (Cfg<'a>, Vec<(VirtualAddress, Error)>)
+    where F: FnMut(&Operation, &mut ExecutionState, VirtualAddress, &mut exec_state::InternMap)
+    {
         while let Some(mut branch) = self.next_branch() {
             let mut ops = branch.operations();
-            while let Some(_) = ops.next() {
+            while let Some((a, b, c, d)) = ops.next() {
+                hook(a, b, c, d);
             }
         }
         let mut cfg = self.cfg;
         cfg.merge_overlapping_blocks();
-        cfg.resolve_cond_jump_operands(self.binary);
+        cfg.resolve_cond_jump_operands(self.binary, hook);
         (cfg, self.errors)
     }
 }

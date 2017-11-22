@@ -1,3 +1,4 @@
+extern crate clap;
 extern crate scarf;
 
 use std::collections::HashMap;
@@ -8,15 +9,46 @@ use scarf::{Operand, OperandType, VirtualAddress};
 use scarf::operand::ArithOpType;
 
 fn main() {
-    let mut args = std::env::args();
-    args.next();
-    let file = args.next().unwrap();
+    let matches = clap::App::new("scarf-cfg")
+        .arg(clap::Arg::with_name("path")
+            .index(1)
+            .value_name("FILE")
+            .required(true)
+            .help("Selects the binary"))
+        .arg(clap::Arg::with_name("addr")
+            .index(2)
+            .value_name("ADDRESS")
+            .required(true)
+            .help("Function start address (in hex)"))
+        .arg(clap::Arg::with_name("destructive_calls")
+            .long("destructive_calls")
+            .required(false)
+            .takes_value(false)
+            .help("Assumes that calls may write to any pointer passed to them"))
+        .get_matches();
+    let file = matches.value_of_os("path").unwrap();
     // Address is with default base
-    let addr = u32::from_str_radix(&args.next().unwrap(), 16).expect("Address wasn't hex");
-    let binary = scarf::parse(OsStr::new(&file), OsStr::new("asd")).unwrap();
+    let addr = matches.value_of("addr").unwrap();
+    let addr = u32::from_str_radix(&addr, 16).expect("Address wasn't hex");
+    let destructive_calls = matches.is_present("destructive_calls");
+    let binary = scarf::parse(file, OsStr::new("asd")).unwrap();
     let ctx = scarf::operand::OperandContext::new();
     let analysis = scarf::analysis::FuncAnalysis::new(&binary, &ctx, VirtualAddress(addr));
-    let (cfg, errors) = analysis.finish();
+    let mut was_called = false;
+    let (cfg, errors) = analysis.finish_with_changes(|op, state, _, _| {
+        if was_called {
+            was_called = false;
+            if destructive_calls {
+                state.memory = scarf::exec_state::Memory::new();
+            }
+        }
+        match *op {
+            scarf::Operation::Call(..) => {
+                was_called = true;
+            }
+            _ => (),
+        }
+    });
     for (addr, e) in errors {
         eprintln!("{:08x}: {}", addr.0, e);
     }
