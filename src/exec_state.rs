@@ -429,7 +429,7 @@ impl<'a> Destination<'a> {
                 ));
             }
             Destination::Pair(high, low) => {
-                let (val_high, val_low) = value.pair().expect("Assigning non-pair to pair");
+                let (val_high, val_low) = Operand::pair(&value);
                 *high = intern_map.intern(Operand::simplified(val_high));
                 *low = intern_map.intern(Operand::simplified(val_low));
             }
