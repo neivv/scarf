@@ -9,6 +9,8 @@ extern crate smallvec;
 
 pub mod analysis;
 mod bit_misc;
+pub mod cfg;
+pub mod cfg_dot;
 mod disasm;
 pub mod exec_state;
 pub mod operand;
