@@ -62,6 +62,27 @@ fn f6_f7_and_const() {
     ]);
 }
 
+#[test]
+fn movsx_16_self() {
+    test_inline(&[
+        0xb8, 0x94, 0x12, 0x00, 0x00, // mov eax, 1294
+        0x66, 0x0f, 0xbe, 0xc0, // movsx ax, al
+        0x31, 0xc9, // xor ecx, ecx
+        0x31, 0xf6, // xor esi, esi
+        0x66, 0x0f, 0xbe, 0xc8, // movsx cx, al
+        0x88, 0x02, // mov [edx], al
+        0x66, 0x0f, 0xbe, 0x32, // movsx si, [edx]
+        0x66, 0x0f, 0xbe, 0x12, // movsx dx, [edx]
+        0x81, 0xe2, 0xff, 0xff, 0x00, 0x00, // and edx, ffff
+        0xc3, // ret
+    ], &[
+         (operand_register(0), constval(0xff94)),
+         (operand_register(1), constval(0xff94)),
+         (operand_register(2), constval(0xff94)),
+         (operand_register(6), constval(0xff94)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();

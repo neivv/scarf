@@ -728,7 +728,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                     size: op_size,
                 })
             }
-            OperandType::Register(r) => match op_size {
+            OperandType::Register(r) | OperandType::Register16(r) => match op_size {
                 MemAccessSize::Mem8 => OperandType::Register8Low(r),
                 MemAccessSize::Mem16 => OperandType::Register16(r),
                 _ => unreachable!(),
@@ -767,13 +767,14 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             if let Some(mem_size) = mem_size {
                 out.push(mov(r.clone(), rm));
                 // sigh
-                let reg = match r.ty {
-                    OperandType::Register(r) => r.0,
+                let dat = match r.ty {
+                    OperandType::Register(r) | OperandType::Register16(r) => {
+                        match mem_size == MemAccessSize::Mem8 {
+                            true => [0xbe, 0xc0 + r.0 * 9],
+                            false => [0xbf, 0xc0 + r.0 * 9],
+                        }
+                    },
                     _ => panic!("Movsx r, [mem] r is not register? {:?}", r),
-                };
-                let dat = match mem_size == MemAccessSize::Mem8 {
-                    true => [0xbe, 0xc0 + reg * 9],
-                    false => [0xbf, 0xc0 + reg * 9],
                 };
                 let state = InstructionOpsState {
                     address: self.address,
@@ -793,7 +794,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                     OperandType::Arithmetic(ArithOpType::GreaterThan(rm.clone(), signed_max));
                 let rm_cond = Operand::new_not_simplified_rc(compare);
                 let reg = match r.ty {
-                    OperandType::Register(r) => r,
+                    OperandType::Register(r) | OperandType::Register16(r) => r,
                     _ => unreachable!(),
                 };
                 let short_r = match op_size {
@@ -1276,7 +1277,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 fn is_rm_short_r_register(rm: &Rc<Operand>, r: &Rc<Operand>) -> bool {
     use operand::OperandType::*;
     match (&rm.ty, &r.ty) {
-        (&Register8Low(s), &Register(l)) => l == s,
+        (&Register8Low(s), &Register(l)) | (&Register8Low(s), &Register16(l)) => l == s,
         (&Register16(s), &Register(l)) => l == s,
         _ => false,
     }
