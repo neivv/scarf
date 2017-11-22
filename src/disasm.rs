@@ -866,7 +866,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let variant = (self.get(1) >> 3) & 0x7;
         let mut out = SmallVec::new();
         match variant {
-            0 | 1 => return self.generic_arith_with_imm_op(&TEST_OPS, MemAccessSize::Mem8),
+            0 | 1 => return self.generic_arith_with_imm_op(&TEST_OPS, op_size),
             2 => {
                 out.push(make_arith_operation(dest_operand(&rm), ArithOpType::Not(rm.into())));
             }
@@ -1313,7 +1313,7 @@ arith_op_generator!(SUB_OPS, SubOps, sub_flags, sub_ops, result_flags);
 arith_op_generator!(SBB_OPS, SbbOps, sbb_flags, sbb_ops, result_flags);
 arith_op_generator!(XOR_OPS, XorOps, zero_carry_oflow, xor_ops, result_flags);
 arith_op_generator!(CMP_OPS, CmpOps, sub_flags, nop_ops, cmp_result_flags);
-arith_op_generator!(TEST_OPS, TestOps, zero_carry_oflow, nop_ops, cmp_result_flags);
+arith_op_generator!(TEST_OPS, TestOps, zero_carry_oflow, nop_ops, test_result_flags);
 arith_op_generator!(MOV_OPS, MovOps, nop_ops, mov_ops, nop_ops);
 arith_op_generator!(PUSH_OPS, PushOps, nop_ops, push_ops, nop_ops);
 // zero_carry_oflow is wrong but lazy
@@ -1563,6 +1563,10 @@ pub mod operation_helpers {
 
     pub fn cmp_result_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
         result_flags(operand_sub(lhs, rhs), constval(!0), out)
+    }
+
+    pub fn test_result_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+        result_flags(operand_and(lhs, rhs), constval(!0), out)
     }
 
     pub fn esp() -> Rc<Operand> {
