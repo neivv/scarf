@@ -2,7 +2,6 @@ extern crate byteorder;
 extern crate hex_slice;
 extern crate lde;
 #[macro_use] extern crate log;
-extern crate ordermap;
 #[macro_use] extern crate quick_error;
 extern crate serde;
 #[macro_use] extern crate serde_derive;

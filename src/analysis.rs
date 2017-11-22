@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use ordermap::{self, OrderMap};
 
 use disasm::{self, DestOperand, Instruction, Operation};
 use exec_state::{self, ExecutionState};
@@ -179,11 +178,146 @@ pub fn find_relocs(file: &BinaryFile) -> Result<Vec<VirtualAddress>, ::Error> {
     Ok(result)
 }
 
+pub struct Cfg<'exec> {
+    // Sorted
+    nodes: Vec<(VirtualAddress, CfgNode<'exec>)>,
+}
+
+impl<'exec> Cfg<'exec> {
+    fn new() -> Cfg<'exec> {
+        Cfg {
+            nodes: Vec::with_capacity(16),
+        }
+    }
+
+    fn get(&self, address: VirtualAddress) -> Option<&CfgNode<'exec>> {
+        match self.nodes.binary_search_by_key(&address, |x| x.0) {
+            Ok(idx) => Some(&self.nodes[idx].1),
+            _ => None,
+        }
+    }
+
+    fn add_node(&mut self, address: VirtualAddress, node: CfgNode<'exec>) {
+        match self.nodes.binary_search_by_key(&address, |x| x.0) {
+            Ok(idx) => self.nodes[idx] = (address, node),
+            Err(idx) => self.nodes.insert(idx, (address, node)),
+        }
+    }
+
+    pub fn nodes(&self) -> CfgNodeIter {
+        CfgNodeIter(self.nodes.iter())
+    }
+
+    /// Tries to replace a block with a jump to another one which starts in middle of current.
+    fn merge_overlapping_blocks(&mut self) {
+        // TODO: Handle instructions inside instructions
+        for i in 0..self.nodes.len() - 1 {
+            let (left, rest) = self.nodes.split_at_mut(i + 1);
+            let &mut (start_addr, ref mut node) = &mut left[i];
+            let mut current_addr = start_addr + 1;
+            'merge_loop: loop {
+                let &mut (next_addr, ref mut next_node) =
+                    match rest.binary_search_by_key(&current_addr, |x| x.0) {
+                    Ok(o) => &mut rest[o],
+                    Err(e) => {
+                        if e >= rest.len() {
+                            break 'merge_loop;
+                        }
+                        &mut rest[e]
+                    }
+                };
+                if next_addr >= node.end_address {
+                    break 'merge_loop;
+                }
+                match (&mut node.out_edges, &mut next_node.out_edges) {
+                    (&mut Some(ref mut node_out), &mut Some(ref mut next_out)) => {
+                        if node_out.default == next_out.default {
+                            node.end_address = next_addr;
+                            if node_out.cond.is_some() && next_out.cond.is_none() {
+                                next_out.cond = node_out.cond.take();
+                                next_out.default = node_out.default;
+                            }
+                            *node_out = CfgOutEdges {
+                                default: next_addr,
+                                cond: None,
+                            };
+                            break 'merge_loop;
+                        } else {
+                            // Keep the nodes separate
+                        }
+                    }
+                    (out @ &mut None, &mut None) => {
+                        node.end_address = next_addr;
+                        *out = Some(CfgOutEdges {
+                            default: next_addr,
+                            cond: None,
+                        });
+                        break 'merge_loop;
+                    }
+                    _ => {
+                        error!("Logic error: One of {:x}, {:x} has no out edges, \
+                               other one does", start_addr.0, next_addr.0);
+                    }
+                }
+                current_addr = next_addr + 1;
+            }
+        }
+    }
+
+    fn resolve_cond_jump_operands(&mut self, binary: &BinaryFile) {
+        let ctx = OperandContext::new();
+        for &mut (address, ref mut node) in &mut self.nodes {
+            if let Some(cond) = node.out_edges.as_mut().and_then(|x| x.cond.as_mut()) {
+                let mut analysis = FuncAnalysis::new(binary, &ctx, address);
+                let mut branch = analysis.next_branch()
+                    .expect("New analysis should always have a branch.");
+                let mut ops = branch.operations();
+                while let Some((op, state, address, i)) = ops.next() {
+                    let final_op = if address == node.end_address {
+                        true
+                    } else {
+                        match *op {
+                            Operation::Jump { .. } | Operation::Return(_) => true,
+                            _ => false,
+                        }
+                    };
+                    if final_op {
+                        cond.1 = state.resolve(&cond.1, i);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub struct CfgNodeIter<'a>(::std::slice::Iter<'a, (VirtualAddress, CfgNode<'a>)>);
+impl<'a> Iterator for CfgNodeIter<'a> {
+    type Item = (&'a VirtualAddress, &'a CfgNode<'a>);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|x| (&x.0, &x.1))
+    }
+}
+
+pub struct CfgNode<'exec> {
+    pub out_edges: Option<CfgOutEdges>,
+    // The address is to the first instruction of in edge nodes instead of the jump-here address,
+    // obviously so it can be looked up with Cfg::nodes.
+    pub state: ExecutionState<'exec>,
+    pub end_address: VirtualAddress,
+}
+
+pub struct CfgOutEdges {
+    pub default: VirtualAddress,
+    // The operand is unresolved at the state of jump.
+    // Could reanalyse the block and show it resolved (effectively unresolved to start of the
+    // block) when Cfg is publicly available.
+    pub cond: Option<(VirtualAddress, Rc<Operand>)>,
+}
+
 pub struct FuncAnalysis<'a> {
     binary: &'a BinaryFile,
-    /// The value is first byte of each instruction, so instructions
-    /// inside others can be checked.
-    checked_branches: OrderMap<VirtualAddress, ExecutionState<'a>>,
+    cfg: Cfg<'a>,
     unchecked_branches: Vec<(VirtualAddress, ExecutionState<'a>)>,
     operand_ctx: &'a OperandContext,
     pub interner: exec_state::InternMap,
@@ -201,7 +335,7 @@ impl<'a> FuncAnalysis<'a> {
         FuncAnalysis {
             binary,
             errors: Vec::new(),
-            checked_branches: OrderMap::new(),
+            cfg: Cfg::new(),
             unchecked_branches: {
                 let init_state = initial_exec_state(&operand_ctx, binary, &mut interner);
                 vec![(start_address, init_state)]
@@ -221,7 +355,7 @@ impl<'a> FuncAnalysis<'a> {
         FuncAnalysis {
             binary,
             errors: Vec::new(),
-            checked_branches: OrderMap::new(),
+            cfg: Cfg::new(),
             unchecked_branches: {
                 vec![(start_address, state)]
             },
@@ -232,30 +366,19 @@ impl<'a> FuncAnalysis<'a> {
 
     pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a>> {
         while let Some((addr, state)) = self.next_branch_merge_queued() {
-            let state = match self.checked_branches.entry(addr) {
-                ordermap::Entry::Occupied(old_state) => {
-                    let merged = exec_state::merge_states(
-                        old_state.get(),
-                        &state,
-                        &mut self.interner,
-                    );
-                    if let Some(merged) = merged {
-                        old_state.insert(merged.clone());
-                        Some(merged)
-                    } else {
-                        None
-                    }
+            let state = match self.cfg.get(addr) {
+                Some(old_node) => {
+                    exec_state::merge_states(&old_node.state, &state, &mut self.interner)
                 }
-                ordermap::Entry::Vacant(entry) => {
-                    entry.insert(state.clone());
-                    Some(state)
-                }
+                None => Some(state),
             };
             if let Some(state) = state {
                 return Some(Branch {
                     analysis: self,
                     addr,
+                    init_state: Some(state.clone()),
                     state,
+                    cfg_out_edge: None,
                 })
             }
         }
@@ -277,6 +400,18 @@ impl<'a> FuncAnalysis<'a> {
             true
         });
         Some((addr, state))
+    }
+
+    pub fn finish(mut self) -> (Cfg<'a>, Vec<(VirtualAddress, Error)>) {
+        while let Some(mut branch) = self.next_branch() {
+            let mut ops = branch.operations();
+            while let Some(_) = ops.next() {
+            }
+        }
+        let mut cfg = self.cfg;
+        cfg.merge_overlapping_blocks();
+        cfg.resolve_cond_jump_operands(self.binary);
+        (cfg, self.errors)
     }
 }
 
@@ -327,6 +462,8 @@ pub struct Branch<'a, 'exec: 'a> {
     analysis: &'a mut FuncAnalysis<'exec>,
     addr: VirtualAddress,
     state: ExecutionState<'exec>,
+    init_state: Option<ExecutionState<'exec>>,
+    cfg_out_edge: Option<CfgOutEdges>,
 }
 
 pub struct Operations<'a, 'branch: 'a, 'exec: 'branch> {
@@ -359,7 +496,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
         state: ExecutionState<'exec>,
         to: Rc<Operand>,
         address: VirtualAddress
-    ) {
+    ) -> Option<VirtualAddress> {
         match state.try_resolve_const(&to, &mut self.analysis.interner) {
             Some(s) => {
                 let address = VirtualAddress(s);
@@ -371,12 +508,22 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                 } else {
                     trace!("Destination {:x} is out of binary bounds", address.0);
                 }
+                Some(address)
             }
             None => {
                 let simplified = Operand::simplified(to);
                 trace!("Couldnt resolve jump dest @ {:x}: {:?}", address.0, simplified);
+                None
             }
         }
+    }
+
+    fn end_block(&mut self, end_address: VirtualAddress) {
+        self.analysis.cfg.add_node(self.addr, CfgNode {
+            out_edges: self.cfg_out_edge.take(),
+            state: self.init_state.take().expect("end_block called twice"),
+            end_address,
+        });
     }
 
     fn process_operation(&mut self, op: Operation, ins: &Instruction) -> Result<(), Error> {
@@ -388,11 +535,19 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                 match self.state.try_resolve_const(&condition, &mut self.analysis.interner) {
                     Some(0) => {
                         let address = ins.address() + ins.len() as u32;
+                        self.cfg_out_edge = Some(CfgOutEdges {
+                            default: address,
+                            cond: None,
+                        });
                         self.analysis.unchecked_branches.push((address, self.state.clone()));
                     }
                     Some(_) => {
                         let state = self.state.clone();
-                        self.try_add_branch(state, to, ins.address());
+                        let dest = self.try_add_branch(state, to.clone(), ins.address());
+                        self.cfg_out_edge = Some(CfgOutEdges {
+                            default: dest.unwrap_or(VirtualAddress(!0)),
+                            cond: None,
+                        });
                     }
                     None => {
                         let no_jump_addr = ins.address() + ins.len() as u32;
@@ -413,17 +568,23 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                             Some(x) => x < ins.address().0,
                             None => false,
                         };
+                        let dest;
                         if jumps_backwards {
                             self.analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
-                            self.try_add_branch(jump_state, to, ins.address());
+                            dest = self.try_add_branch(jump_state, to, ins.address());
                         } else {
-                            self.try_add_branch(jump_state, to, ins.address());
+                            dest = self.try_add_branch(jump_state, to, ins.address());
                             self.analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
                         }
+                        self.cfg_out_edge = Some(CfgOutEdges {
+                            default: no_jump_addr,
+                            cond: Some((dest.unwrap_or(VirtualAddress(!0)), condition)),
+                        });
                     }
                 }
             }
-            disasm::Operation::Return(_) => {}
+            disasm::Operation::Return(_) => {
+            }
             o => {
                 self.state.update(o, &mut self.analysis.interner);
             }
@@ -448,6 +609,7 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
             let op = &ins.ops()[self.ins_pos];
             if let Err(e) = self.branch.process_operation(op.clone(), ins) {
                 self.branch.analysis.errors.push((ins.address(), e.into()));
+                self.branch.end_block(ins.address());
                 return None;
             }
             self.ins_pos += 1;
@@ -468,10 +630,12 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
             let ins = match self.disasm.next(&self.branch.analysis.operand_ctx) {
                 Ok(o) => o,
                 Err(disasm::Error::Branch(_)) => {
+                    self.branch.end_block(address);
                     return None;
                 }
                 Err(e) => {
                     self.branch.analysis.errors.push((address, e.into()));
+                    self.branch.end_block(address);
                     return None;
                 }
             };
