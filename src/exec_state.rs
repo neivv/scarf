@@ -837,6 +837,8 @@ pub fn merge_states<'a>(
     new: &ExecutionState<'a>,
     interner: &mut InternMap,
 ) -> Option<ExecutionState<'a>> {
+    use operand::operand_helpers::*;
+
     let check_eq = |a: InternedOperand, b: InternedOperand, interner: &mut InternMap| {
         if a == b {
             true
@@ -1028,7 +1030,25 @@ pub fn merge_states<'a>(
                 let eq = old.last_jump_extra_constraint == new.last_jump_extra_constraint;
                 match eq {
                     true => old.last_jump_extra_constraint.clone(),
-                    false => None,
+                    false => match old.last_jump_extra_constraint {
+                        // If old state has no constraint but matches the constrait of the new
+                        // state, the constraint should be kept on merge.
+                        None => {
+                            if let Some(ref new_constraint) = new.last_jump_extra_constraint {
+                                // As long as we're working with flags, limiting to lowest bit
+                                // allows simplifying cases like (undef | 1)
+                                let lowest_bit =
+                                    operand_and(constval(1), new_constraint.0.clone());
+                                match old.try_resolve_const(&lowest_bit, interner) {
+                                    Some(1) => Some(new_constraint.clone()),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        Some(_) => None,
+                    },
                 }
             },
             ctx: old.ctx,
@@ -1043,4 +1063,43 @@ fn contains_undefined(oper: &Operand) -> bool {
         OperandType::Undefined(_) => true,
         _ => false,
     })
+}
+
+#[test]
+fn merge_state_constraints_eq() {
+    use disasm::operation_helpers::*;
+    use operand::operand_helpers::*;
+    let mut i = InternMap::new();
+    let ctx = ::operand::OperandContext::new();
+    let state_a = ExecutionState::new(&ctx, &mut i);
+    let mut state_b = ExecutionState::new(&ctx, &mut i);
+    let sign_eq_overflow_flag = Operand::simplified(operand_eq(
+        flag_o(),
+        flag_s(),
+    ));
+    let state_a = state_a.assume_jump_flag(&sign_eq_overflow_flag, true, &mut i);
+    state_b.move_to(DestOperand::from_oper(&flag_o()), constval(1), &mut i);
+    state_b.move_to(DestOperand::from_oper(&flag_s()), constval(1), &mut i);
+    let merged = merge_states(&state_b, &state_a, &mut i).unwrap();
+    assert!(merged.last_jump_extra_constraint.is_some());
+    assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
+}
+
+#[test]
+fn merge_state_constraints_or() {
+    use disasm::operation_helpers::*;
+    use operand::operand_helpers::*;
+    let mut i = InternMap::new();
+    let ctx = ::operand::OperandContext::new();
+    let state_a = ExecutionState::new(&ctx, &mut i);
+    let mut state_b = ExecutionState::new(&ctx, &mut i);
+    let sign_or_overflow_flag = Operand::simplified(operand_or(
+        flag_o(),
+        flag_s(),
+    ));
+    let state_a = state_a.assume_jump_flag(&sign_or_overflow_flag, true, &mut i);
+    state_b.move_to(DestOperand::from_oper(&flag_s()), constval(1), &mut i);
+    let merged = merge_states(&state_b, &state_a, &mut i).unwrap();
+    assert!(merged.last_jump_extra_constraint.is_some());
+    assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
 }

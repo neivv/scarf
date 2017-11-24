@@ -1265,9 +1265,14 @@ fn simplify_and(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
         ops.sort();
         ops.dedup();
         if const_remain != !0 {
-            for op in &mut ops {
-                *op = simplify_with_and_mask(op, const_remain);
-            }
+            vec_filter_map(&mut ops, |op| {
+                let new = simplify_with_and_mask(&op, const_remain);
+                if let OperandType::Constant(_) = new.ty {
+                    None
+                } else {
+                    Some(new)
+                }
+            });
         }
         for bits in zero_bit_ranges(const_remain) {
             vec_filter_map(&mut ops, |op| simplify_with_zero_bits(op, &bits));
@@ -1548,7 +1553,17 @@ fn simplify_with_and_mask(op: &Rc<Operand>, mask: u32) -> Rc<Operand> {
         }
         OperandType::Arithmetic(ArithOpType::Or(ref left, ref right)) => {
             let simplified_left = simplify_with_and_mask(left, mask);
+            if let OperandType::Constant(c) = simplified_left.ty {
+                if mask & c == mask {
+                    return simplified_left;
+                }
+            }
             let simplified_right = simplify_with_and_mask(right, mask);
+            if let OperandType::Constant(c) = simplified_right.ty {
+                if mask & c == mask {
+                    return simplified_right;
+                }
+            }
             if simplified_left == *left && simplified_right == *right {
                 op.clone()
             } else {
@@ -2939,6 +2954,20 @@ mod test {
             ),
         );
         assert_eq!(Operand::simplified(op), Operand::simplified(eq));
+    }
+
+    #[test]
+    fn simplify_and_or_const() {
+        use super::operand_helpers::*;
+        let op1 = operand_and(
+            operand_or(
+                constval(0x38),
+                operand_register(1),
+            ),
+            constval(0x28),
+        );
+        let eq1 = constval(0x28);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
     #[test]
