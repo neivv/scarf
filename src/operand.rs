@@ -1017,38 +1017,7 @@ impl Operand {
                     }
                     tree
                 }
-                ArithOpType::Equal(ref left, ref right) => {
-                    let mut left = Operand::simplified(left.clone());
-                    let mut right = Operand::simplified(right.clone());
-                    if left > right {
-                        mem::swap(&mut left, &mut right);
-                    }
-
-                    let l = left.clone();
-                    let r = right.clone();
-                    match (&l.ty, &r.ty) {
-                        (&OperandType::Constant(a), &OperandType::Constant(b)) => match a == b {
-                            true => constval(1),
-                            false => constval(0),
-                        },
-                        (&OperandType::Constant(1), &OperandType::Arithmetic(ref arith)) => {
-                            match arith.is_compare_op() {
-                                true => right,
-                                false => s,
-                            }
-                        }
-                        (&OperandType::Arithmetic(ref arith), &OperandType::Constant(1)) => {
-                            match arith.is_compare_op() {
-                                true => left,
-                                false => s,
-                            }
-                        }
-                        _ => {
-                            let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
-                            Operand::new_simplified_rc(ty)
-                        }
-                    }
-                }
+                ArithOpType::Equal(ref left, ref right) => simplify_eq(left, right),
                 ArithOpType::GreaterThan(ref left, ref right) => {
                     let left = Operand::simplified(left.clone());
                     let right = Operand::simplified(right.clone());
@@ -1191,6 +1160,100 @@ impl Operand {
     }
 }
 
+fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    use self::operand_helpers::*;
+    let mut left = Operand::simplified(left.clone());
+    let mut right = Operand::simplified(right.clone());
+    if left > right {
+        mem::swap(&mut left, &mut right);
+    }
+
+    let l = left.clone();
+    let r = right.clone();
+    match (&l.ty, &r.ty) {
+        (&OperandType::Constant(a), &OperandType::Constant(b)) => match a == b {
+            true => constval(1),
+            false => constval(0),
+        },
+        (&OperandType::Constant(1), &OperandType::Arithmetic(ref arith)) => {
+            match arith.is_compare_op() {
+                true => right,
+                false => {
+                    let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
+                    Operand::new_simplified_rc(ty)
+                }
+            }
+        }
+        (&OperandType::Arithmetic(ref arith), &OperandType::Constant(1)) => {
+            match arith.is_compare_op() {
+                true => left,
+                false => {
+                    let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
+                    Operand::new_simplified_rc(ty)
+                }
+            }
+        }
+        (&OperandType::Arithmetic(ArithOpType::And(ref ll, ref lr)),
+         &OperandType::Arithmetic(ArithOpType::And(ref rl, ref rr))) =>
+        {
+            // Try to prove (x & mask) == ((x + c) & mask) true/false.
+            // If c & mask == 0, it's always true
+            // If c & mask == mask, it's unknown, unless mask contains the bit 0x1, in which
+            // case it's false
+            // Otherwise it's false.
+            //
+            // This can be deduced from how binary addition works; for digit to not change, the
+            // added digit needs to either be 0, or 1 with another 1 carried from lower digit's
+            // addition.
+            let left_const = ll.if_constant().map(|x| (x, lr))
+                .or_else(|| lr.if_constant().map(|x| (x, ll)));
+            let right_const = rl.if_constant().map(|x| (x, rr))
+                .or_else(|| rr.if_constant().map(|x| (x, rl)));
+            if let (Some((mask1, l)), Some((mask2, r))) = (left_const, right_const) {
+                if mask1 == mask2 {
+                    let add_const = simplify_eq_masked_add(l).map(|(c, other)| (other, r, c))
+                        .or_else(|| {
+                            simplify_eq_masked_add(r).map(|(c, other)| (other, l, c))
+                        });
+                    if let Some((a, b, added_const)) = add_const {
+                        let a = simplify_with_and_mask(a, mask1);
+                        if a == *b {
+                            match added_const & mask1 {
+                                0 => return constval(1),
+                                x if x == mask1 => match mask1 & 1 {
+                                    1 => return constval(0),
+                                    _ => (),
+                                },
+                                _ => return constval(0),
+                            }
+                        }
+                    }
+                }
+            }
+            let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
+            Operand::new_simplified_rc(ty)
+        }
+        _ => {
+            let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
+            Operand::new_simplified_rc(ty)
+        }
+    }
+}
+
+fn simplify_eq_masked_add(operand: &Rc<Operand>) -> Option<(u32, &Rc<Operand>)> {
+    match operand.ty {
+        OperandType::Arithmetic(ArithOpType::Add(ref a, ref b)) => {
+            a.if_constant().map(|c| (c, b))
+                .or_else(|| b.if_constant().map(|c| (c, a)))
+        }
+        OperandType::Arithmetic(ArithOpType::Sub(ref a, ref b)) => {
+            a.if_constant().map(|c| (0u32.wrapping_sub(c), b))
+                .or_else(|| b.if_constant().map(|c| (0u32.wrapping_sub(c), a)))
+        }
+        _ => None,
+    }
+}
+
 // Tries to merge (a & a_mask) | (b & b_mask) to (a_mask | b_mask) & result
 fn try_merge_ands(
     a: &Rc<Operand>,
@@ -1267,7 +1330,8 @@ fn simplify_and(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
         if const_remain != !0 {
             vec_filter_map(&mut ops, |op| {
                 let new = simplify_with_and_mask(&op, const_remain);
-                if let OperandType::Constant(_) = new.ty {
+                if let OperandType::Constant(c) = new.ty {
+                    const_remain &= c;
                     None
                 } else {
                     Some(new)
@@ -1537,9 +1601,13 @@ fn simplify_with_and_mask(op: &Rc<Operand>, mask: u32) -> Rc<Operand> {
             match (&left.ty, &right.ty) {
                 (&OperandType::Constant(c), _) => if c == mask {
                     return right.clone();
+                } else if c & mask == 0 {
+                    return constval(0);
                 },
                 (_, &OperandType::Constant(c)) => if c == mask {
                     return right.clone();
+                } else if c & mask == 0 {
+                    return constval(0);
                 },
                 _ => (),
             }
@@ -2874,14 +2942,12 @@ mod test {
                 ),
             );
             chain = Operand::simplified(chain);
-            println!("Rsh");
             Operand::simplified(
                 operand_rsh(
                     chain.clone(),
                     constval(1),
                 ),
             );
-            println!("Rsh done");
         }
     }
 
@@ -2967,6 +3033,49 @@ mod test {
             constval(0x28),
         );
         let eq1 = constval(0x28);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_x_eq_x_add() {
+        use super::operand_helpers::*;
+        // The register 2 can be igned as there is no way for the addition to cause lowest
+        // byte to be equal to what it was. If the constant addition were higher than 0xff,
+        // then it couldn't be simplified (effectively the high unknown is able to cause unknown
+        // amount of reduction in the constant's effect, but looping the lowest byte around
+        // requires a multiple of 0x100 to be added)
+        let op1 = operand_eq(
+            operand_and(
+                operand_or(
+                    operand_and(
+                        operand_register(2),
+                        constval(0xffffff00),
+                    ),
+                    operand_and(
+                        operand_register(1),
+                        constval(0xff),
+                    ),
+                ),
+                constval(0xff),
+            ),
+            operand_and(
+                operand_add(
+                    operand_or(
+                        operand_and(
+                            operand_register(2),
+                            constval(0xffffff00),
+                        ),
+                        operand_and(
+                            operand_register(1),
+                            constval(0xff),
+                        ),
+                    ),
+                    constval(1),
+                ),
+                constval(0xff),
+            ),
+        );
+        let eq1 = constval(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
