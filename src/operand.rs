@@ -1193,6 +1193,19 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
                 }
             }
         }
+        (&OperandType::Constant(0), &OperandType::Arithmetic(ref arith)) |
+            (&OperandType::Arithmetic(ref arith), &OperandType::Constant(0)) =>
+        {
+            // Can convert subtractions to eq
+            match *arith {
+                ArithOpType::Sub(ref l, ref r) => simplify_eq(l, r),
+                _ => {
+                    let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
+                    Operand::new_simplified_rc(ty)
+                }
+            }
+
+        }
         (&OperandType::Arithmetic(ArithOpType::And(ref ll, ref lr)),
          &OperandType::Arithmetic(ArithOpType::And(ref rl, ref rr))) =>
         {
@@ -3033,6 +3046,24 @@ mod test {
             constval(0x28),
         );
         let eq1 = constval(0x28);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_sub_eq_zero() {
+        use super::operand_helpers::*;
+        // 0 == (x - y) is same as x == y
+        let op1 = operand_eq(
+            constval(0),
+            operand_sub(
+                operand_register(1),
+                operand_register(2),
+            ),
+        );
+        let eq1 = operand_eq(
+            operand_register(1),
+            operand_register(2),
+        );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 

@@ -163,9 +163,17 @@ fn comparision_from_operand(
             ArithOpType::Or(ref l, ref r) => {
                 if let Some((lc, ll, lr)) = comparision_from_operand(l) {
                     if let Some((rc, rl, rr)) = comparision_from_operand(r) {
-                        if let Some(op1) = signed_less_check(lc, &ll, &lr) {
-                            if let Some(op2) = zero_flag_check(rc, &rl, &rr) {
-                                if op1 == op2 {
+                        let ops = signed_less_check(lc, &ll, &lr)
+                            .and_then(|op1| zero_flag_check(rc, &rl, &rr).map(|op2| (op1, op2)))
+                            .or_else(|| {
+                                signed_less_check(rc, &rl, &rr)
+                                    .and_then(|op1| {
+                                        zero_flag_check(lc, &ll, &lr).map(|op2| (op1, op2))
+                                    })
+                            });
+                        if let Some((op1, op2)) = ops {
+                            if let Some((_left, right)) = op2.decide_with_lhs(&op1.0) {
+                                if op1.1 == right {
                                     return Some((
                                         Comparision::SignedLessOrEqual,
                                         op1.0,
@@ -174,9 +182,17 @@ fn comparision_from_operand(
                                 }
                             }
                         }
-                        if let Some(op1) = unsigned_less_check(lc, &ll, &lr) {
-                            if let Some(op2) = zero_flag_check(rc, &rl, &rr) {
-                                if op1 == op2 {
+                        let ops = unsigned_less_check(lc, &ll, &lr)
+                            .and_then(|op1| zero_flag_check(rc, &rl, &rr).map(|op2| (op1, op2)))
+                            .or_else(|| {
+                                unsigned_less_check(rc, &rl, &rr)
+                                    .and_then(|op1| {
+                                        zero_flag_check(lc, &ll, &lr).map(|op2| (op1, op2))
+                                    })
+                            });
+                        if let Some((op1, op2)) = ops {
+                            if let Some((_left, right)) = op2.decide_with_lhs(&op1.0) {
+                                if op1.1 == right {
                                     return Some((
                                         Comparision::LessOrEqual,
                                         op1.0,
@@ -199,9 +215,21 @@ fn zero_flag_check(
     comp: Comparision,
     l: &Rc<Operand>,
     r: &Rc<Operand>
-) -> Option<(Rc<Operand>, Rc<Operand>)> {
+) -> Option<CompareOperands> {
+    use operand::operand_helpers::*;
     if comp == Comparision::Equal {
-        Some((l.clone(), r.clone()))
+        let mut ops = Vec::new();
+        collect_add_ops(l, &mut ops, false);
+        collect_add_ops(r, &mut ops, true);
+        for &mut (ref mut op, ref mut negate) in &mut ops {
+            if let OperandType::Constant(c) = op.ty {
+                if c > 0x80000000 && *negate == false {
+                    *op = constval(0u32.wrapping_sub(c));
+                    *negate = true;
+                }
+            }
+        }
+        Some(CompareOperands::UncertainEitherWay(ops))
     } else {
         None
     }
@@ -310,6 +338,8 @@ enum CompareOperands {
     Certain(Rc<Operand>, Rc<Operand>),
     // bool negate
     Uncertain(Vec<(Rc<Operand>, bool)>),
+    // bool negate, for symmetric operations like eq
+    UncertainEitherWay(Vec<(Rc<Operand>, bool)>),
 }
 
 impl CompareOperands {
@@ -317,7 +347,9 @@ impl CompareOperands {
         use operand::operand_helpers::*;
         match self {
             CompareOperands::Certain(l, r) => (l, r),
-            CompareOperands::Uncertain(mut opers) => {
+            CompareOperands::Uncertain(mut opers) |
+                CompareOperands::UncertainEitherWay(mut opers) =>
+            {
                 let first_negative = opers.iter().position(|x| x.1 == true);
                 let rhs = match first_negative {
                     Some(s) => opers.remove(s).0,
@@ -354,6 +386,15 @@ impl CompareOperands {
                 }
                 let rhs = add_operands_to_tree(opers);
                 Some((lhs.clone(), rhs))
+            }
+            CompareOperands::UncertainEitherWay(mut opers) => {
+                CompareOperands::Uncertain(opers.clone()).decide_with_lhs(lhs)
+                    .or_else(|| {
+                        for &mut (_, ref mut neg) in &mut opers {
+                            *neg = !*neg;
+                        }
+                        CompareOperands::Uncertain(opers).decide_with_lhs(lhs)
+                    })
             }
         }
     }
