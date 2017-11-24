@@ -374,11 +374,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         }
     }
 
-    fn imm16_32(&self) -> MemAccessSize {
-        // TODO 16-bit override
-        MemAccessSize::Mem32
-    }
-
     /// Returns (rm, r, modrm_size)
     fn parse_modrm_inner(
         &self,
@@ -1175,7 +1170,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         };
         let imm_size = match self.get(0) & 0x3 {
             0 | 2 | 3 => MemAccessSize::Mem8,
-            _ => self.imm16_32(),
+            _ => self.mem16_32(),
         };
         self.generic_arith_with_imm_op(op_gen, imm_size)
     }
