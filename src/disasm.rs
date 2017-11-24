@@ -1612,7 +1612,8 @@ pub enum Operation {
 }
 
 fn make_arith_operation(dest: DestOperand, arith: ArithOpType) -> Operation {
-    Operation::Move(dest, Operand::new_not_simplified_rc(OperandType::Arithmetic(arith)), None)
+    let op = Operand::new_not_simplified_rc(OperandType::Arithmetic(arith));
+    Operation::Move(dest, Operand::simplified(op), None)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
