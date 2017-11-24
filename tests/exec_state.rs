@@ -138,6 +138,7 @@ fn test_inline(code: &[u8], changes: &[(Rc<Operand>, Rc<Operand>)]) {
             x
         },
         virtual_address: VirtualAddress(0x401000),
+        physical_address: ::scarf::PhysicalAddress(0x1000),
         virtual_size: code.len() as u32,
         data: code.into(),
     }]);
@@ -165,6 +166,7 @@ fn raw_bin(filename: &OsStr) -> Result<BinaryFile, scarf::Error> {
             x
         },
         virtual_address: VirtualAddress(0x401000),
+        physical_address: ::scarf::PhysicalAddress(0x1000),
         virtual_size: buf.len() as u32,
         data: buf,
     }]))

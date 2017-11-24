@@ -120,6 +120,7 @@ pub struct BinaryFile {
 pub struct BinarySection {
     pub name: [u8; 8],
     pub virtual_address: VirtualAddress,
+    pub physical_address: PhysicalAddress,
     pub virtual_size: u32,
     pub data: Vec<u8>,
 }
@@ -165,6 +166,14 @@ impl BinaryFile {
             })
             .ok_or_else(|| Error::OutOfBounds)
     }
+
+    pub fn to_physical(&self, addr: VirtualAddress) -> Option<PhysicalAddress> {
+        self.section_by_addr(addr)
+            .map(|s| {
+                let section_relative = addr - s.virtual_address;
+                PhysicalAddress(s.physical_address.0 + section_relative.0)
+            })
+    }
 }
 
 /// Allows loading a BinaryFile from memory buffer(s) representing the binary sections.
@@ -203,6 +212,7 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile, Error> {
         Ok(BinarySection {
             name: name,
             virtual_address: base + rva,
+            physical_address: phys,
             virtual_size,
             data,
         })
@@ -220,6 +230,7 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile, Error> {
             name
         },
         virtual_address: base,
+        physical_address: PhysicalAddress(0),
         virtual_size: header_block_size,
         data: header_data,
     });
