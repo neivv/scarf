@@ -280,6 +280,8 @@ struct MemoryIterUntilImm<'a> {
     in_immutable: bool,
 }
 
+pub struct MemoryIter<'a>(MemoryIterUntilImm<'a>);
+
 impl Memory {
     pub fn new() -> Memory {
         Memory {
@@ -298,6 +300,15 @@ impl Memory {
             },
             None => None,
         }
+    }
+
+    pub fn set(&mut self, address: InternedOperand, value: InternedOperand) {
+        self.map.insert(address, value);
+    }
+
+    /// Returns iterator yielding the interned operands.
+    pub fn iter_interned(&mut self) -> MemoryIter {
+        MemoryIter(self.iter_until_immutable(None))
     }
 
     pub fn len(&self) -> usize {
@@ -396,6 +407,13 @@ impl<'a> Iterator for MemoryIterUntilImm<'a> {
     }
 }
 
+impl<'a> Iterator for MemoryIter<'a> {
+    type Item = (InternedOperand, InternedOperand);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|(&key, &val, _)| (key, val))
+    }
+}
+
 impl<'a> Destination<'a> {
     fn set(self, value: Rc<Operand>, intern_map: &mut InternMap) {
         use operand::operand_helpers::*;
@@ -435,7 +453,7 @@ impl<'a> Destination<'a> {
             }
             Destination::Memory(mem, addr) => {
                 let addr = intern_map.intern(Operand::simplified(addr));
-                mem.map.insert(addr, intern_map.intern(Operand::simplified(value)));
+                mem.set(addr, intern_map.intern(Operand::simplified(value)));
             }
         }
     }
