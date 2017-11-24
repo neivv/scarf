@@ -1206,9 +1206,7 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
             }
 
         }
-        (&OperandType::Arithmetic(ArithOpType::And(ref ll, ref lr)),
-         &OperandType::Arithmetic(ArithOpType::And(ref rl, ref rr))) =>
-        {
+        _ => {
             // Try to prove (x & mask) == ((x + c) & mask) true/false.
             // If c & mask == 0, it's always true
             // If c & mask == mask, it's unknown, unless mask contains the bit 0x1, in which
@@ -1218,10 +1216,24 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
             // This can be deduced from how binary addition works; for digit to not change, the
             // added digit needs to either be 0, or 1 with another 1 carried from lower digit's
             // addition.
-            let left_const = ll.if_constant().map(|x| (x, lr))
-                .or_else(|| lr.if_constant().map(|x| (x, ll)));
-            let right_const = rl.if_constant().map(|x| (x, rr))
-                .or_else(|| rr.if_constant().map(|x| (x, rl)));
+            fn mask_maskee(x: &Rc<Operand>) -> Option<(u32, &Rc<Operand>)> {
+                match x.ty {
+                    OperandType::Arithmetic(ArithOpType::And(ref l, ref r)) => {
+                        l.if_constant().map(|x| (x, r))
+                            .or_else(|| r.if_constant().map(|x| (x, l)))
+                    }
+                    OperandType::Memory(ref mem) => {
+                        match mem.size {
+                            MemAccessSize::Mem8 => Some((0xff, x)),
+                            MemAccessSize::Mem16 => Some((0xffff, x)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            };
+            let left_const = mask_maskee(&l);
+            let right_const = mask_maskee(&r);
             if let (Some((mask1, l)), Some((mask2, r))) = (left_const, right_const) {
                 if mask1 == mask2 {
                     let add_const = simplify_eq_masked_add(l).map(|(c, other)| (other, r, c))
@@ -1243,10 +1255,6 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
                     }
                 }
             }
-            let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
-            Operand::new_simplified_rc(ty)
-        }
-        _ => {
             let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
             Operand::new_simplified_rc(ty)
         }
@@ -3107,7 +3115,26 @@ mod test {
             ),
         );
         let eq1 = constval(0);
+        let mem8 = |x| mem_variable_rc(MemAccessSize::Mem8, x);
+        let op2 = operand_eq(
+            mem8(constval(555)),
+            operand_and(
+                operand_add(
+                    operand_or(
+                        operand_and(
+                            operand_register(2),
+                            constval(0xffffff00),
+                        ),
+                        mem8(constval(555)),
+                    ),
+                    constval(1),
+                ),
+                constval(0xff),
+            ),
+        );
+        let eq2 = constval(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 
     #[test]
