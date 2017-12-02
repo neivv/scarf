@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-use cfg::{Cfg, CfgNode, CfgOutEdges};
+use cfg::{Cfg, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
 use disasm::{self, DestOperand, Instruction, Operation};
 use exec_state::{self, ExecutionState};
 use operand::{Operand, OperandContext};
@@ -398,6 +398,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
             out_edges: self.cfg_out_edge.take(),
             state: self.init_state.take().expect("end_block called twice"),
             end_address,
+            distance: 0,
         });
     }
 
@@ -411,7 +412,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                     Some(0) => {
                         let address = ins.address() + ins.len() as u32;
                         self.cfg_out_edge = Some(CfgOutEdges {
-                            default: address,
+                            default: NodeLink::new(address),
                             cond: None,
                         });
                         self.analysis.unchecked_branches.push((address, self.state.clone()));
@@ -420,7 +421,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                         let state = self.state.clone();
                         let dest = self.try_add_branch(state, to.clone(), ins.address());
                         self.cfg_out_edge = Some(CfgOutEdges {
-                            default: dest.unwrap_or(VirtualAddress(!0)),
+                            default: NodeLink::new(dest.unwrap_or(VirtualAddress(!0))),
                             cond: None,
                         });
                     }
@@ -452,8 +453,11 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                             self.analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
                         }
                         self.cfg_out_edge = Some(CfgOutEdges {
-                            default: no_jump_addr,
-                            cond: Some((dest.unwrap_or(VirtualAddress(!0)), condition)),
+                            default: NodeLink::new(no_jump_addr),
+                            cond: Some(OutEdgeCondition {
+                                node: NodeLink::new(dest.unwrap_or(VirtualAddress(!0))),
+                                condition,
+                            }),
                         });
                     }
                 }

@@ -6,28 +6,36 @@ use cfg::Cfg;
 use operand::{ArithOpType, Operand, OperandType};
 use ::VirtualAddress;
 
-pub fn write<W: Write>(cfg: &Cfg, out: &mut W) -> Result<(), io::Error> {
+pub fn write<W: Write>(cfg: &mut Cfg, out: &mut W) -> Result<(), io::Error> {
     writeln!(out, "digraph func {{")?;
     let mut nodes = HashMap::new();
     let mut node_name_pos = 0;
+    cfg.calculate_distances();
     for (&address, node) in cfg.nodes() {
         let node_name = next_node_name(&mut node_name_pos);
-        writeln!(out, "  {} [label=\"{:08x} -> {:08x}\"];",
-                 node_name, address.0, node.end_address.0)?;
+        writeln!(out, "  {} [label=\"{:08x} -> {:08x}\nDistance: {}\"];",
+                 node_name, address.0, node.end_address.0, node.distance)?;
         nodes.insert(address, node_name);
     }
     for (&address, node) in cfg.nodes() {
         let node_name = nodes.get(&address).expect("Broken graph");
         if let Some(ref out_edges) = node.out_edges {
-            print_out_edge(out, &node_name, out_edges.default, &nodes, &mut node_name_pos, None)?;
-            if let Some((cond_dest, ref cond)) = out_edges.cond {
+            print_out_edge(
+                out,
+                &node_name,
+                out_edges.default.address(),
+                &nodes,
+                &mut node_name_pos,
+                None,
+            )?;
+            if let Some(ref cond) = out_edges.cond {
                 print_out_edge(
                     out,
                     &node_name,
-                    cond_dest,
+                    cond.node.address(),
                     &nodes,
                     &mut node_name_pos,
-                    Some(pretty_print_condition(cond)),
+                    Some(pretty_print_condition(&cond.condition)),
                 )?;
             }
         }

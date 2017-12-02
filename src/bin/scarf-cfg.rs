@@ -30,7 +30,7 @@ fn main() {
     let ctx = scarf::operand::OperandContext::new();
     let analysis = scarf::analysis::FuncAnalysis::new(&binary, &ctx, VirtualAddress(addr));
     let mut was_called = false;
-    let (cfg, errors) = analysis.finish_with_changes(|op, state, _, _| {
+    let (mut cfg, errors) = analysis.finish_with_changes(|op, state, _, _| {
         if was_called {
             was_called = false;
             if destructive_calls {
@@ -47,5 +47,5 @@ fn main() {
     for (addr, e) in errors {
         eprintln!("{:08x}: {}", addr.0, e);
     }
-    scarf::cfg_dot::write(&cfg, &mut std::io::stdout()).unwrap();
+    scarf::cfg_dot::write(&mut cfg, &mut std::io::stdout()).unwrap();
 }
