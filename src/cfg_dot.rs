@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::rc::Rc;
 
+use hex_slice::AsHex;
+
 use cfg::Cfg;
 use operand::{ArithOpType, Operand, OperandType};
 use ::VirtualAddress;
@@ -11,10 +13,22 @@ pub fn write<W: Write>(cfg: &mut Cfg, out: &mut W) -> Result<(), io::Error> {
     let mut nodes = HashMap::new();
     let mut node_name_pos = 0;
     cfg.calculate_distances();
+    let mut cycles = cfg.cycles();
+    cycles.sort();
     for (&address, node) in cfg.nodes() {
         let node_name = next_node_name(&mut node_name_pos);
-        writeln!(out, "  {} [label=\"{:08x} -> {:08x}\nDistance: {}\"];",
-                 node_name, address.0, node.end_address.0, node.distance)?;
+        let mut label = format!(
+            "{:08x} -> {:08x}\nDistance: {}",
+            address.0,
+            node.end_address.0,
+            node.distance,
+        );
+        for cycle in cycles.iter().filter(|x| x[0].address() == address) {
+            use std::fmt::Write;
+            let cycle = cycle.iter().map(|x| x.address().0).collect::<Vec<_>>();
+            write!(label, "\nCycle {:x}", cycle.as_hex()).unwrap();
+        }
+        writeln!(out, "  {} [label=\"{}\"];", node_name, label)?;
         nodes.insert(address, node_name);
     }
     for (&address, node) in cfg.nodes() {
