@@ -1196,9 +1196,32 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
         (&OperandType::Constant(0), &OperandType::Arithmetic(ref arith)) |
             (&OperandType::Arithmetic(ref arith), &OperandType::Constant(0)) =>
         {
-            // Can convert subtractions to eq
+            // Can convert subtractions to eq, x == 0 == 0 to x if x is 1 bit
             match *arith {
                 ArithOpType::Sub(ref l, ref r) => simplify_eq(l, r),
+                ArithOpType::Equal(ref l, ref r) => {
+                    let inner = match (&l.ty, &r.ty) {
+                        (&OperandType::Constant(0), _) => {
+                            match r.relevant_bits() == (0..1) {
+                                true => Some(r),
+                                false => None,
+                            }
+                        }
+                        (_, &OperandType::Constant(0)) => {
+                            match l.relevant_bits() == (0..1) {
+                                true => Some(l),
+                                false => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(inner) = inner {
+                        Operand::simplified(inner.clone())
+                    } else {
+                        let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
+                        Operand::new_simplified_rc(ty)
+                    }
+                }
                 _ => {
                     let ty = OperandType::Arithmetic(ArithOpType::Equal(left, right));
                     Operand::new_simplified_rc(ty)
@@ -2340,8 +2363,18 @@ mod test {
         use super::operand_helpers::*;
         // Simplify (x == y) == 1 to x == y
         let op1 = operand_eq(constval(5), operand_register(2));
-        let op2 = operand_eq(constval(1), operand_eq(constval(5), operand_register(2)));
-        assert_eq!(Operand::simplified(op1), Operand::simplified(op2));
+        let eq1 = operand_eq(constval(1), operand_eq(constval(5), operand_register(2)));
+        // Simplify (x == y) == 0 == 0 to x == y
+        let op2 = operand_eq(
+            constval(0),
+            operand_eq(
+                constval(0),
+                operand_eq(constval(5), operand_register(2)),
+            ),
+        );
+        let eq2 = operand_eq(constval(5), operand_register(2));
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 
     #[test]
