@@ -1514,7 +1514,9 @@ fn simplify_lsh(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
             &OperandType::Constant(lsh_const)) =>
         {
             if let OperandType::Constant(rsh_const) = rsh_right.ty {
-                let diff = (rsh_const & 0x1f) as i8 - (lsh_const & 0x1f) as i8;
+                let lsh_const = lsh_const & 0x1f;
+                let rsh_const = rsh_const & 0x1f;
+                let diff = rsh_const as i8 - lsh_const as i8;
                 let mask = (!0u32 >> rsh_const) << lsh_const;
                 let tmp;
                 let val = match diff {
@@ -1603,7 +1605,9 @@ fn simplify_rsh(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
             &OperandType::Constant(rsh_const)) =>
         {
             if let OperandType::Constant(lsh_const) = lsh_right.ty {
-                let diff = (rsh_const & 0x1f) as i8 - (lsh_const & 0x1f) as i8;
+                let lsh_const = lsh_const & 0x1f;
+                let rsh_const = rsh_const & 0x1f;
+                let diff = rsh_const as i8 - lsh_const as i8;
                 let mask = (!0u32 << lsh_const) >> rsh_const;
                 let tmp;
                 let val = match diff {
@@ -3166,6 +3170,41 @@ mod test {
             ),
         );
         let eq2 = constval(0);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_overflowing_shifts() {
+        use super::operand_helpers::*;
+        let op1 = operand_lsh(
+            operand_rsh(
+                operand_register(1),
+                constval(0x55),
+            ),
+            constval(0x22),
+        );
+        let eq1 = operand_lsh(
+            operand_rsh(
+                operand_register(1),
+                constval(0x15),
+            ),
+            constval(0x2),
+        );
+        let op2 = operand_rsh(
+            operand_lsh(
+                operand_register(1),
+                constval(0x55),
+            ),
+            constval(0x22),
+        );
+        let eq2 = operand_rsh(
+            operand_lsh(
+                operand_register(1),
+                constval(0x15),
+            ),
+            constval(0x2),
+        );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
