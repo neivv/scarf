@@ -94,6 +94,7 @@ pub fn find_functions_conservative(file: &BinaryFile, relocs: &[VirtualAddress])
     funcs
 }
 
+// Sorted by address
 pub fn find_switch_tables(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
     let mut out = Vec::with_capacity(4096);
     let code = file.code_section();
@@ -121,15 +122,19 @@ fn collect_relocs_pointing_to_code(
     sect: &BinarySection,
     out: &mut Vec<FuncPtrPair>,
 ) {
-    let funcs = sect.data.chunks(4)
-        .enumerate()
-        .filter(|&(i, _)| {
-            let addr = sect.virtual_address + i as u32 * 4;
-            relocs.binary_search(&addr).is_ok()
-        })
-        .flat_map(|(i, mut c)| {
-            let addr = sect.virtual_address + i as u32 * 4;
-            c.read_u32::<LittleEndian>().ok().map(|x| (addr, VirtualAddress(x)))
+    let start = match relocs.binary_search(&sect.virtual_address) {
+        Ok(o) => o,
+        Err(e) => e,
+    };
+    let end = match relocs.binary_search(&(sect.virtual_address + sect.data.len() as u32)) {
+        Ok(o) => o,
+        Err(e) => e,
+    };
+    let funcs = relocs[start..end].iter()
+        .flat_map(|&addr| {
+            let offset = (addr - sect.virtual_address).0 as usize;
+            (&sect.data[offset..]).read_u32::<LittleEndian>().ok()
+                .map(|x| (addr, VirtualAddress(x)))
         })
         .filter(|&(_src_addr, func_addr)| {
             let code_size = code.data.len() as u32;
