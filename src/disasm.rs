@@ -389,7 +389,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let (rm, size) = match (modrm >> 6) & 0x3 {
             0 => match rm_val {
                 4 => self.parse_sib(0, op_size)?,
-                5 => (mem32_norc(constval(read_u32(self.slice(2))?)), 6),
+                5 => (mem_variable(op_size, constval(read_u32(self.slice(2))?)), 6),
                 reg => (mem_variable(op_size, operand_register(reg)), 2),
             },
             1 => match rm_val {
@@ -430,6 +430,11 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         use operand::operand_helpers::*;
         let (rm, r, offset) = self.parse_modrm_inner(op_size)?;
         let imm = read_variable_size(self.slice(offset), imm_size)?;
+        let imm = match imm_size {
+            MemAccessSize::Mem8 => imm as i8 as u32,
+            MemAccessSize::Mem16 => imm as i16 as u32,
+            MemAccessSize::Mem32 => imm,
+        };
         Ok((Rc::new(rm), Rc::new(r), constval(imm)))
     }
 

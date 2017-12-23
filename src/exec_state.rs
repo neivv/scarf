@@ -3,7 +3,9 @@ use std::mem;
 use std::rc::Rc;
 
 use disasm::{DestOperand, Operation};
-use operand::{self, ArithOpType, Flag, MemAccess, Operand, OperandContext, OperandType};
+use operand::{
+    self, ArithOpType, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType
+};
 
 /// The constraint is assumed to be something that can be substituted with 1 if met
 /// (so constraint == constval(1))
@@ -270,7 +272,7 @@ enum Destination<'a> {
     Register8High(&'a mut InternedOperand),
     Register8Low(&'a mut InternedOperand),
     Pair(&'a mut InternedOperand, &'a mut InternedOperand),
-    Memory(&'a mut Memory, Rc<Operand>),
+    Memory(&'a mut Memory, Rc<Operand>, MemAccessSize),
 }
 
 struct MemoryIterUntilImm<'a> {
@@ -451,9 +453,14 @@ impl<'a> Destination<'a> {
                 *high = intern_map.intern(Operand::simplified(val_high));
                 *low = intern_map.intern(Operand::simplified(val_low));
             }
-            Destination::Memory(mem, addr) => {
+            Destination::Memory(mem, addr, size) => {
                 let addr = intern_map.intern(Operand::simplified(addr));
-                mem.set(addr, intern_map.intern(Operand::simplified(value)));
+                let value = Operand::simplified(match size {
+                    MemAccessSize::Mem8 => operand_and(value, constval(0xff)),
+                    MemAccessSize::Mem16 => operand_and(value, constval(0xffff)),
+                    MemAccessSize::Mem32 => value,
+                });
+                mem.set(addr, intern_map.intern(value));
             }
         }
     }
@@ -662,7 +669,7 @@ impl<'a> ExecutionState<'a> {
             }),
             DestOperand::Memory(ref mem) => {
                 let address = self.resolve(&mem.address, intern_map);
-                Destination::Memory(&mut self.memory, address)
+                Destination::Memory(&mut self.memory, address, mem.size)
             }
         }
     }

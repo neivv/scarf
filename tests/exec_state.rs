@@ -96,6 +96,17 @@ fn cmp_const_16() {
     ]);
 }
 
+#[test]
+fn add_i8() {
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x83, 0xc0, 0xfb, // add eax, 0xfffffffb
+        0xc3, //ret
+    ], &[
+         (operand_register(0), constval(0xfffffffb)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
