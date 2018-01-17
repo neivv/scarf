@@ -294,6 +294,7 @@ fn instruction_operations(
     } else {
         match first_byte {
             0x10 | 0x11 => s.mov_sse_10_11(),
+            0x12 | 0x13 => s.mov_sse_12_13(),
             // nop
             0x1f => Ok(SmallVec::new()),
             // rdtsc
@@ -927,6 +928,20 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             false => (r, rm),
         };
         Ok((0..length).map(|i| mov(xmm_variant(&dest, i), xmm_variant(&src, i))).collect())
+    }
+
+    fn mov_sse_12_13(&self) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        if !self.has_prefix(0x66) {
+            return Err(Error::UnknownOpcode(self.data.into()));
+        }
+        // movlpd
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (src, dest) = match self.get(1) == 0x12 {
+            true => (rm, r),
+            false => (r, rm),
+        };
+        Ok((0..2).map(|i| mov(xmm_variant(&dest, i), xmm_variant(&src, i))).collect())
     }
 
     fn mov_sse_7e(&self) -> Result<OperationVec, Error> {
