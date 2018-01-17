@@ -310,6 +310,7 @@ fn instruction_operations(
             0x7e => s.mov_sse_7e(),
             0x80 ... 0x8f => s.conditional_jmp(s.mem16_32()),
             0x90 ... 0x9f => s.conditional_set(),
+            0xa4 => s.shld_imm(),
             0xaf => s.imul_normal(),
             0xb6 ... 0xb7 => s.movzx(),
             0xbe ... 0xbf => s.movsx(),
@@ -1170,6 +1171,36 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         // TODO flags, imul only sets c and o on overflow
         let mut out = SmallVec::new();
         out.push(mov(r, operand_signed_mul(rm, imm)));
+        Ok(out)
+    }
+
+    fn shld_imm(&self) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        use operand::operand_helpers::*;
+        let (hi, low, imm) = self.parse_modrm_imm(self.mem16_32(), MemAccessSize::Mem8)?;
+        let mut out = SmallVec::new();
+        let imm = Operand::simplified(operand_and(imm, constval(0x1f)));
+        if imm.ty != OperandType::Constant(0) {
+            // TODO flags
+            out.push(
+                mov(
+                    hi.clone(),
+                    operand_or(
+                        operand_lsh(
+                            hi,
+                            imm.clone(),
+                        ),
+                        operand_rsh(
+                            low,
+                            operand_sub(
+                                constval(32),
+                                imm.clone(),
+                            )
+                        ),
+                    ),
+                ),
+            );
+        }
         Ok(out)
     }
 

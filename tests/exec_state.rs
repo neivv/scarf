@@ -107,6 +107,19 @@ fn add_i8() {
     ]);
 }
 
+#[test]
+fn shld() {
+    test_inline(&[
+        0xb9, 0x23, 0x01, 0x00, 0xff, // mov ecx, 0xff000123
+        0xb8, 0x00, 0x00, 0x00, 0x40, // mov eax, 0x40000000
+        0x0f, 0xa4, 0xc1, 0x04, // shld ecx, eax, 4
+        0xc3, //ret
+    ], &[
+         (operand_register(0), constval(0x40000000)),
+         (operand_register(1), constval(0xf0001234)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
