@@ -180,9 +180,9 @@ fn instruction_operations(
     let first_byte = data[0];
     if !is_ext {
         match first_byte {
-            0x00 ... 0x03 | 0x04 ... 0x05 | 0x08 ... 0x0b | 0x0c ... 0x0d | 0x20 ... 0x23 |
-            0x24 ... 0x25 | 0x28 ... 0x2b | 0x2c ... 0x2d | 0x30 ... 0x33 | 0x34 ... 0x35 |
-            0x88 ... 0x8b | 0x8d => {
+            0x00 ... 0x05 | 0x08 ... 0x0b | 0x0c ... 0x0d | 0x10 ... 0x15 | 0x18 ... 0x1d |
+            0x20 ... 0x25 | 0x28 ... 0x2d | 0x30 ... 0x35 | 0x88 ... 0x8b | 0x8d =>
+            {
                 // Avoid ridiculous generic binary bloat
                 let (ops, flags, flags_post):
                 (
@@ -192,6 +192,8 @@ fn instruction_operations(
                 ) = match first_byte {
                     0x00 ... 0x05 => (add_ops, add_flags, result_flags),
                     0x08 ... 0x0d => (or_ops, zero_carry_oflow, result_flags),
+                    0x10 ... 0x15 => (adc_ops, adc_flags, result_flags),
+                    0x18 ... 0x1d => (sbb_ops, sbb_flags, result_flags),
                     0x20 ... 0x25 => (and_ops, zero_carry_oflow, result_flags),
                     0x28 ... 0x2d => (sub_ops, zero_carry_oflow, result_flags),
                     0x30 ... 0x35 => (xor_ops, zero_carry_oflow, result_flags),
