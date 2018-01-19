@@ -492,6 +492,7 @@ impl OperandType {
                 {
                     min(left.min_zero_bit_simplify_size, right.min_zero_bit_simplify_size)
                 }
+                ArithOpType::Not(ref val) => val.min_zero_bit_simplify_size,
                 _ => {
                     let rel_bits = self.relevant_bits();
                     rel_bits.end - rel_bits.start
@@ -1752,6 +1753,10 @@ fn simplify_with_zero_bits(op: Rc<Operand>, bits: &Range<u8>) -> Option<Rc<Opera
                     }
                 }
             }
+        }
+        OperandType::Arithmetic(ArithOpType::Not(ref val)) => {
+            simplify_with_zero_bits(val.clone(), bits)
+                .map(|x| Operand::simplified(operand_not(x)))
         }
         OperandType::Constant(c) => {
             let low = bits.start;
@@ -3207,6 +3212,25 @@ mod test {
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_and_not_mem32() {
+        use super::operand_helpers::*;
+        let mem16 = |x| mem_variable_rc(MemAccessSize::Mem16, x);
+        let op1 = operand_and(
+            operand_not(
+                mem32(constval(0x123)),
+            ),
+            constval(0xffff),
+        );
+        let eq1 = operand_and(
+            operand_not(
+                mem16(constval(0x123)),
+            ),
+            constval(0xffff),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
     #[test]
