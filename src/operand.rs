@@ -1629,6 +1629,30 @@ fn simplify_rsh(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
                 default()
             }
         }
+        (&OperandType::Memory(ref mem), &OperandType::Constant(rsh_const)) => {
+            match mem.size {
+                MemAccessSize::Mem32 => {
+                    if rsh_const >= 24 {
+                        let addr = operand_add(mem.address.clone(), constval(3));
+                        let c = constval(rsh_const - 24);
+                        return simplify_rsh(&mem_variable_rc(MemAccessSize::Mem8, addr), &c);
+                    } else if rsh_const >= 16 {
+                        let addr = operand_add(mem.address.clone(), constval(2));
+                        let c = constval(rsh_const - 16);
+                        return simplify_rsh(&mem_variable_rc(MemAccessSize::Mem16, addr), &c);
+                    }
+                }
+                MemAccessSize::Mem16 => {
+                    if rsh_const >= 8 {
+                        let addr = operand_add(mem.address.clone(), constval(1));
+                        let c = constval(rsh_const - 8);
+                        return simplify_rsh(&mem_variable_rc(MemAccessSize::Mem8, addr), &c);
+                    }
+                }
+                _ => (),
+            }
+            default()
+        }
         _ => default(),
     }
 }
@@ -3231,6 +3255,27 @@ mod test {
             constval(0xffff),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_mem32_rsh() {
+        use super::operand_helpers::*;
+        let mem16 = |x| mem_variable_rc(MemAccessSize::Mem16, x);
+        let op1 = operand_rsh(
+            mem32(constval(0x123)),
+            constval(0x10),
+        );
+        let eq1 = mem16(constval(0x125));
+        let op2 = operand_rsh(
+            mem32(constval(0x123)),
+            constval(0x11),
+        );
+        let eq2 = operand_rsh(
+            mem16(constval(0x125)),
+            constval(0x1),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 
     #[test]
