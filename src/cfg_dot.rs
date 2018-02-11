@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use hex_slice::AsHex;
 
-use cfg::Cfg;
+use cfg::{Cfg, CfgOutEdges, NodeLink};
 use operand::{ArithOpType, Operand, OperandType};
 use ::VirtualAddress;
 
@@ -33,24 +33,28 @@ pub fn write<W: Write>(cfg: &mut Cfg, out: &mut W) -> Result<(), io::Error> {
     }
     for (&address, node) in cfg.nodes() {
         let node_name = nodes.get(&address).expect("Broken graph");
-        if let Some(ref out_edges) = node.out_edges {
-            print_out_edge(
-                out,
-                &node_name,
-                out_edges.default.address(),
-                &nodes,
-                &mut node_name_pos,
-                None,
-            )?;
-            if let Some(ref cond) = out_edges.cond {
-                print_out_edge(
-                    out,
-                    &node_name,
-                    cond.node.address(),
-                    &nodes,
-                    &mut node_name_pos,
-                    Some(pretty_print_condition(&cond.condition)),
-                )?;
+        let mut print = |node: &NodeLink, cond| print_out_edge(
+            out,
+            &node_name,
+            node.address(),
+            &nodes,
+            &mut node_name_pos,
+            cond
+        );
+
+        match node.out_edges {
+            CfgOutEdges::Single(ref node) => {
+                print(node, None)?;
+            }
+            CfgOutEdges::Branch(ref default, ref cond) => {
+                print(default, None)?;
+                print(&cond.node, Some(pretty_print_condition(&cond.condition)))?;
+            }
+            CfgOutEdges::None => (),
+            CfgOutEdges::Switch(ref cases, _) => {
+                for (i, node) in cases.iter().enumerate() {
+                    print(&node, Some(i.to_string()))?;
+                }
             }
         }
     }

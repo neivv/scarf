@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::mem;
 use std::rc::Rc;
 
 use analysis::FuncAnalysis;
@@ -71,34 +72,39 @@ impl<'exec> Cfg<'exec> {
                 if next_addr >= node.end_address {
                     break 'merge_loop;
                 }
-                match (&mut node.out_edges, &mut next_node.out_edges) {
-                    (&mut Some(ref mut node_out), &mut Some(ref mut next_out)) => {
-                        if node_out.default.address == next_out.default.address {
-                            node.end_address = next_addr;
-                            if node_out.cond.is_some() && next_out.cond.is_none() {
-                                next_out.cond = node_out.cond.take();
-                                next_out.default.address = node_out.default.address;
-                            }
-                            *node_out = CfgOutEdges {
-                                default: NodeLink::new(next_addr),
-                                cond: None,
-                            };
-                            break 'merge_loop;
-                        } else {
-                            // Keep the nodes separate
-                        }
-                    }
-                    (out @ &mut None, &mut None) => {
+                let first_default = node.out_edges.default_address();
+                let next_default = next_node.out_edges.default_address();
+                if let (Some(def1), Some(def2)) = (first_default, next_default) {
+                    if def1 == def2 {
                         node.end_address = next_addr;
-                        *out = Some(CfgOutEdges {
-                            default: NodeLink::new(next_addr),
-                            cond: None,
-                        });
+                        let node_is_superset = match (&node.out_edges, &next_node.out_edges) {
+                            (&CfgOutEdges::Branch(..), &CfgOutEdges::Single(..)) => true,
+                            _ => false,
+                        };
+                        if node_is_superset {
+                            next_node.out_edges = mem::replace(
+                                &mut node.out_edges,
+                                CfgOutEdges::Single(NodeLink::new(next_addr))
+                            );
+                        } else {
+                            node.out_edges = CfgOutEdges::Single(NodeLink::new(next_addr));
+                        }
                         break 'merge_loop;
+                    } else {
+                        // Keep the nodes separate
                     }
-                    _ => {
-                        error!("Logic error: One of {:x}, {:x} has no out edges, \
-                               other one does", start_addr.0, next_addr.0);
+                } else {
+                    match (&mut node.out_edges, &mut next_node.out_edges) {
+                        (out @ &mut CfgOutEdges::None, &mut CfgOutEdges::None) => {
+                            node.end_address = next_addr;
+                            *out = CfgOutEdges::Single(NodeLink::new(next_addr));
+                            break 'merge_loop;
+                        }
+                        (&mut CfgOutEdges::None, _) | (_, &mut CfgOutEdges::None) => {
+                            error!("Logic error: One of {:x}, {:x} has no out edges, \
+                                   other one does", start_addr.0, next_addr.0);
+                        }
+                        _ => (),
                     }
                 }
                 current_addr = next_addr + 1;
@@ -112,7 +118,7 @@ impl<'exec> Cfg<'exec> {
     {
         let ctx = OperandContext::new();
         for &mut (address, ref mut node) in &mut self.nodes {
-            if let Some(cond) = node.out_edges.as_mut().and_then(|x| x.cond.as_mut()) {
+            if let CfgOutEdges::Branch(_, ref mut cond) = node.out_edges {
                 let mut analysis = FuncAnalysis::new(binary, &ctx, address);
                 let mut branch = analysis.next_branch()
                     .expect("New analysis should always have a branch.");
@@ -146,7 +152,8 @@ impl<'exec> Cfg<'exec> {
                 node.1.distance = 0;
             }
         }
-        calculate_node_distance(nodes, self.entry.index(), 1);
+        let mut buf = Vec::with_capacity(0x800);
+        calculate_node_distance(nodes, &mut buf, self.entry.index(), 1);
     }
 
     /// Can only be called on a graph with all node links being addresses of one of
@@ -164,33 +171,51 @@ impl<'exec> Cfg<'exec> {
             };
             let address = node_pair.0;
             let node = &mut node_pair.1;
-            if let Some(ref mut out_edges) = node.out_edges {
-                let default_address = out_edges.default.address;
-                let default_index = if default_address > address {
+            let end_address = node.end_address;
+            let update_node = |link: &mut NodeLink| {
+                if link.is_unknown() {
+                    return;
+                }
+                link.index = if link.address > address {
                     // Common case
-                    if after[0].0 == default_address {
+                    let next = after.get(0)
+                        .unwrap_or_else(|| panic!(
+                            "Broken graph: {:?} -> {:?} linking to invalid node",
+                            end_address,
+                            link.address,
+                        ));
+                    if next.0 == link.address {
                         index + 1
                     } else {
-                        index + 1 + after.binary_search_by_key(&default_address, |x| x.0)
-                            .expect("Broken graph: linking to invalid node")
+                        index + 1 + after.binary_search_by_key(&link.address, |x| x.0)
+                            .unwrap_or_else(|_| panic!(
+                                "Broken graph: {:?} -> {:?} linking to invalid node",
+                                end_address,
+                                link.address,
+                            ))
                     }
-                } else if default_address == address {
+                } else if link.address == address {
                     index
                 } else {
-                    before.binary_search_by_key(&default_address, |x| x.0)
-                        .expect("Broken graph: linking to invalid node")
-                };
-                out_edges.default.index = default_index as u32;
-                if let Some(ref mut cond) = out_edges.cond {
-                    cond.node.index = if cond.node.address > address {
-                        index + 1 + after.binary_search_by_key(&cond.node.address, |x| x.0)
-                            .expect("Broken graph: linking to invalid node")
-                    } else if cond.node.address == address {
-                        index
-                    } else {
-                        before.binary_search_by_key(&cond.node.address, |x| x.0)
-                            .expect("Broken graph: linking to invalid node")
-                    } as u32;
+                    before.binary_search_by_key(&link.address, |x| x.0)
+                        .unwrap_or_else(|_| panic!(
+                            "Broken graph: {:?} -> {:?} linking to invalid node",
+                            end_address,
+                            link.address,
+                        ))
+                } as u32;
+            };
+            match node.out_edges {
+                CfgOutEdges::Single(ref mut n) => update_node(n),
+                CfgOutEdges::Branch(ref mut n, ref mut cond) => {
+                    update_node(n);
+                    update_node(&mut cond.node);
+                }
+                CfgOutEdges::None => (),
+                CfgOutEdges::Switch(ref mut nodes, _) => {
+                    for node in nodes.iter_mut() {
+                        update_node(node);
+                    }
                 }
             }
         }
@@ -244,19 +269,30 @@ impl<'exec> Cfg<'exec> {
                     if chain.len() >= u16::max_value() as usize {
                         return result;
                     }
-                    let (out1, out2) = {
+                    let index_if_not_unkown = |s: &NodeLink| if s.is_unknown() {
+                        None
+                    } else {
+                        Some(s.index())
+                    };
+                    let out1 = {
                         let node = &self.nodes[pos].1;
                         match node.out_edges {
-                            Some(ref out) => (
-                                Some(out.default.index()),
-                                out.cond.as_ref().map(|x| x.node.index()),
-                            ),
-                            None => (None, None),
+                            CfgOutEdges::None => None,
+                            CfgOutEdges::Single(ref s) => index_if_not_unkown(s),
+                            CfgOutEdges::Branch(ref s, ref cond) => {
+                                if !cond.node.is_unknown() {
+                                    forks.push((pos, cond.node.index()));
+                                }
+                                index_if_not_unkown(s)
+                            }
+                            CfgOutEdges::Switch(ref cases, _) => {
+                                for other in cases.iter().skip(1) {
+                                    forks.push((pos, other.index()));
+                                }
+                                cases.first().map(|x| x.index())
+                            }
                         }
                     };
-                    if let Some(out2) = out2 {
-                        forks.push((pos, out2));
-                    }
                     match out1 {
                         Some(out1) => {
                             pos = out1;
@@ -299,27 +335,27 @@ impl<'exec> Cfg<'exec> {
 /// Link indices must be correct.
 fn calculate_node_distance(
     nodes: &mut [(VirtualAddress, CfgNode)],
+    buf: &mut Vec<usize>,
     node_index: usize,
     distance: u32,
 ) {
     let old_dist = nodes[node_index].1.distance;
     if old_dist == 0 || old_dist > distance {
-        let mut default_index = None;
-        let mut cond_index = None;
+        let orig_len = buf.len();
         {
             let node = &mut nodes[node_index].1;
             node.distance = distance;
-            if let Some(ref out_edges) = node.out_edges {
-                default_index = Some(out_edges.default.index());
-                cond_index = out_edges.cond.as_ref().map(|x| x.node.index());
-            }
+            buf.extend(
+                node.out_edges.out_nodes()
+                    .filter(|x| !x.is_unknown())
+                    .map(|x| x.index()));
         }
-        if let Some(default_index) = default_index {
-            calculate_node_distance(nodes, default_index, distance + 1);
+        let end = buf.len();
+        for pos in orig_len..end {
+            let index = buf[pos];
+            calculate_node_distance(nodes, buf, index, distance + 1);
         }
-        if let Some(cond_index) = cond_index {
-            calculate_node_distance(nodes, cond_index, distance + 1);
-        }
+        buf.drain(orig_len..);
     }
 }
 
@@ -333,7 +369,7 @@ impl<'a> Iterator for CfgNodeIter<'a> {
 
 #[derive(Debug, Clone)]
 pub struct CfgNode<'exec> {
-    pub out_edges: Option<CfgOutEdges>,
+    pub out_edges: CfgOutEdges,
     // The address is to the first instruction of in edge nodes instead of the jump-here address,
     // obviously so it can be looked up with Cfg::nodes.
     pub state: ExecutionState<'exec>,
@@ -343,12 +379,53 @@ pub struct CfgNode<'exec> {
 }
 
 #[derive(Debug, Clone)]
-pub struct CfgOutEdges {
-    pub default: NodeLink,
+pub enum CfgOutEdges {
+    None,
+    Single(NodeLink),
     // The operand is unresolved at the state of jump.
     // Could reanalyse the block and show it resolved (effectively unresolved to start of the
     // block) when Cfg is publicly available.
-    pub cond: Option<OutEdgeCondition>,
+    Branch(NodeLink, OutEdgeCondition),
+    // The operand should be a direct, resolved index to the table
+    Switch(Vec<NodeLink>, Rc<Operand>),
+}
+
+impl CfgOutEdges {
+    pub fn default_address(&self) -> Option<VirtualAddress> {
+        match *self {
+            CfgOutEdges::None => None,
+            CfgOutEdges::Single(ref x) => Some(x.address),
+            CfgOutEdges::Branch(ref x, _) => Some(x.address),
+            CfgOutEdges::Switch(..) => None,
+        }
+    }
+
+    pub fn out_nodes(&self) -> CfgOutEdgesNodes {
+        CfgOutEdgesNodes(self, 0)
+    }
+}
+
+pub struct CfgOutEdgesNodes<'a>(&'a CfgOutEdges, usize);
+
+impl<'a> Iterator for CfgOutEdgesNodes<'a> {
+    type Item = &'a NodeLink;
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = match *self.0 {
+            CfgOutEdges::None => None,
+            CfgOutEdges::Single(ref s) => match self.1 {
+                0 => Some(s),
+                _ => None,
+            },
+            CfgOutEdges::Branch(ref node, ref cond) => match self.1 {
+                0 => Some(node),
+                1 => Some(&cond.node),
+                _ => None,
+            },
+            CfgOutEdges::Switch(ref cases, _) => cases.get(self.1),
+        };
+        self.1 += 1;
+        result
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +476,17 @@ impl NodeLink {
         }
     }
 
+    pub fn unknown() -> NodeLink {
+        NodeLink {
+            address: VirtualAddress(!0),
+            index: !0,
+        }
+    }
+
+    pub fn is_unknown(&self) -> bool {
+        *self == NodeLink::unknown()
+    }
+
     pub fn address(&self) -> VirtualAddress {
         self.address
     }
@@ -417,7 +505,7 @@ mod test {
 
     fn node0<'a>(addr: u32, ctx: &'a OperandContext, i: &mut InternMap) -> CfgNode<'a> {
         CfgNode {
-            out_edges: None,
+            out_edges: CfgOutEdges::None,
             state: ::exec_state::ExecutionState::new(ctx, i),
             end_address: VirtualAddress(addr + 1),
             distance: 0,
@@ -426,10 +514,7 @@ mod test {
 
     fn node1<'a>(addr: u32, ctx: &'a OperandContext, out: u32, i: &mut InternMap) -> CfgNode<'a> {
         CfgNode {
-            out_edges: Some(CfgOutEdges {
-                default: NodeLink::new(VirtualAddress(out)),
-                cond: None,
-            }),
+            out_edges: CfgOutEdges::Single(NodeLink::new(VirtualAddress(out))),
             state: ::exec_state::ExecutionState::new(ctx, i),
             end_address: VirtualAddress(addr + 1),
             distance: 0,
@@ -444,13 +529,13 @@ mod test {
         i: &mut InternMap,
     ) -> CfgNode<'a> {
         CfgNode {
-            out_edges: Some(CfgOutEdges {
-                default: NodeLink::new(VirtualAddress(out)),
-                cond: Some(OutEdgeCondition {
+            out_edges: CfgOutEdges::Branch(
+                NodeLink::new(VirtualAddress(out)),
+                OutEdgeCondition {
                     node: NodeLink::new(VirtualAddress(out2)),
                     condition: ::operand_helpers::operand_register(0),
-                }),
-            }),
+                },
+            ),
             state: ::exec_state::ExecutionState::new(ctx, i),
             end_address: VirtualAddress(addr + 1),
             distance: 0,

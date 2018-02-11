@@ -247,7 +247,7 @@ impl<'a> FuncAnalysis<'a> {
                     addr,
                     init_state: Some(state.clone()),
                     state,
-                    cfg_out_edge: None,
+                    cfg_out_edge: CfgOutEdges::None,
                 })
             }
         }
@@ -343,7 +343,7 @@ pub struct Branch<'a, 'exec: 'a> {
     addr: VirtualAddress,
     state: ExecutionState<'exec>,
     init_state: Option<ExecutionState<'exec>>,
-    cfg_out_edge: Option<CfgOutEdges>,
+    cfg_out_edge: CfgOutEdges,
 }
 
 pub struct Operations<'a, 'branch: 'a, 'exec: 'branch> {
@@ -400,7 +400,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
 
     fn end_block(&mut self, end_address: VirtualAddress) {
         self.analysis.cfg.add_node(self.addr, CfgNode {
-            out_edges: self.cfg_out_edge.take(),
+            out_edges: self.cfg_out_edge.clone(),
             state: self.init_state.take().expect("end_block called twice"),
             end_address,
             distance: 0,
@@ -408,6 +408,21 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
     }
 
     fn process_operation(&mut self, op: Operation, ins: &Instruction) -> Result<(), Error> {
+        fn is_switch_jump(to: &Operand) -> Option<(VirtualAddress, &Rc<Operand>)> {
+            to.if_memory()
+                .and_then(|mem| mem.address.if_arithmetic_add())
+                .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul()))
+                .and_then(|((l, r), switch_table)| {
+                    let switch_table = switch_table.if_constant()?;
+                    let (c, index) = Operand::either(l, r, |x| x.if_constant())?;
+                    if c == 4 {
+                        Some((VirtualAddress(switch_table), index))
+                    } else {
+                        None
+                    }
+                })
+        }
+
         match op {
             disasm::Operation::Jump { condition, to } => {
                 // TODO Move simplify to disasm::next
@@ -416,19 +431,40 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                 match self.state.try_resolve_const(&condition, &mut self.analysis.interner) {
                     Some(0) => {
                         let address = ins.address() + ins.len() as u32;
-                        self.cfg_out_edge = Some(CfgOutEdges {
-                            default: NodeLink::new(address),
-                            cond: None,
-                        });
+                        self.cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
                         self.analysis.unchecked_branches.push((address, self.state.clone()));
                     }
                     Some(_) => {
                         let state = self.state.clone();
-                        let dest = self.try_add_branch(state, to.clone(), ins.address());
-                        self.cfg_out_edge = Some(CfgOutEdges {
-                            default: NodeLink::new(dest.unwrap_or(VirtualAddress(!0))),
-                            cond: None,
-                        });
+                        if let Some((switch_table, index)) = is_switch_jump(&to) {
+                            let mut cases = Vec::new();
+                            let code_section = self.analysis.binary.code_section();
+                            let code_section_start = code_section.virtual_address;
+                            let code_section_end =
+                                code_section.virtual_address + code_section.virtual_size;
+                            let binary = self.analysis.binary;
+                            let case_iter = (0u32..)
+                                .map(|x| binary.read_u32(switch_table + x * 4))
+                                .take_while(|x| x.is_ok())
+                                .flat_map(|x| x.ok())
+                                .map(|x| VirtualAddress(x))
+                                .take_while(|&addr| {
+                                    // TODO: Could use relocs instead
+                                    addr > code_section_start && addr < code_section_end
+                                });
+                            for case in case_iter {
+                                self.analysis.unchecked_branches.push((case, self.state.clone()));
+                                cases.push(NodeLink::new(case));
+                            }
+                            if cases.len() != 0 {
+                                self.cfg_out_edge = CfgOutEdges::Switch(cases, index.clone());
+                            }
+                        } else {
+                            let dest = self.try_add_branch(state, to.clone(), ins.address());
+                            self.cfg_out_edge = CfgOutEdges::Single(
+                                dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
+                            );
+                        }
                     }
                     None => {
                         let no_jump_addr = ins.address() + ins.len() as u32;
@@ -457,13 +493,13 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                             dest = self.try_add_branch(jump_state, to, ins.address());
                             self.analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
                         }
-                        self.cfg_out_edge = Some(CfgOutEdges {
-                            default: NodeLink::new(no_jump_addr),
-                            cond: Some(OutEdgeCondition {
-                                node: NodeLink::new(dest.unwrap_or(VirtualAddress(!0))),
+                        self.cfg_out_edge = CfgOutEdges::Branch(
+                            NodeLink::new(no_jump_addr),
+                            OutEdgeCondition {
+                                node: dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown),
                                 condition,
-                            }),
-                        });
+                            },
+                        );
                     }
                 }
             }

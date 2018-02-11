@@ -1159,6 +1159,36 @@ impl Operand {
             _ => None,
         }
     }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Add(left, right))`
+    pub fn if_arithmetic_add(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        match self.ty {
+            OperandType::Arithmetic(ArithOpType::Add(ref l, ref r)) => Some((l, r)),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Mul(left, right))`
+    pub fn if_arithmetic_mul(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        match self.ty {
+            OperandType::Arithmetic(ArithOpType::Mul(ref l, ref r)) => Some((l, r)),
+            _ => None,
+        }
+    }
+
+    /// If either of `a` or `b` matches the filter-map `f`, return the mapped result and the other
+    /// operand.
+    pub fn either<'a, F, T>(
+        a: &'a Rc<Operand>,
+        b: &'a Rc<Operand>,
+        mut f: F,
+    ) -> Option<(T, &'a Rc<Operand>)>
+    where F: FnMut(&'a Rc<Operand>) -> Option<T>
+    {
+        f(a).map(|val| (val, b)).or_else(|| f(b).map(|val| (val, a)))
+    }
 }
 
 fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
