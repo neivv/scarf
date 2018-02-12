@@ -15,6 +15,9 @@ pub struct Cfg<'exec> {
     nodes: Vec<(VirtualAddress, CfgNode<'exec>)>,
     entry: NodeLink,
     node_indices_dirty: bool,
+    // Just to be set once the cfg is available to users,
+    // so they can resolve the states
+    pub interner: InternMap,
 }
 
 impl<'exec> Cfg<'exec> {
@@ -23,6 +26,7 @@ impl<'exec> Cfg<'exec> {
             nodes: Vec::with_capacity(16),
             entry: NodeLink::new(VirtualAddress(!0)),
             node_indices_dirty: false,
+            interner: InternMap::new(),
         }
     }
 

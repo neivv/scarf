@@ -291,6 +291,7 @@ impl<'a> FuncAnalysis<'a> {
         let mut cfg = self.cfg;
         cfg.merge_overlapping_blocks();
         cfg.resolve_cond_jump_operands(self.binary, hook);
+        cfg.interner = self.interner;
         (cfg, self.errors)
     }
 }

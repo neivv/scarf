@@ -1,4 +1,5 @@
 use std::collections::{hash_map, HashMap};
+use std::fmt;
 use std::mem;
 use std::rc::Rc;
 
@@ -477,6 +478,12 @@ impl<'a> Destination<'a> {
 pub struct InternMap {
     pub map: Vec<Rc<Operand>>,
     reverse: HashMap<Rc<Operand>, InternedOperand>,
+}
+
+impl fmt::Debug for InternMap {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "InternMap({} entries)", self.map.len())
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
