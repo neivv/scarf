@@ -241,6 +241,7 @@ impl<'a> FuncAnalysis<'a> {
                 }
                 None => Some(state),
             };
+
             if let Some(state) = state {
                 return Some(Branch {
                     analysis: self,
@@ -525,6 +526,10 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
         VirtualAddress,
         &mut exec_state::InternMap,
     )> {
+        // Already finished
+        if self.branch.init_state.is_none() {
+            return None;
+        }
         let mut yield_ins = false;
         if let Some(ref ins) = self.current_ins  {
             let op = &ins.ops()[self.ins_pos];
@@ -576,5 +581,12 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
 
     pub fn current_address(&self) -> VirtualAddress {
         self.disasm.address()
+    }
+}
+
+impl<'a, 'branch: 'a, 'exec: 'branch> Drop for Operations<'a, 'branch, 'exec> {
+    fn drop(&mut self) {
+        while let Some(_) = self.next() {
+        }
     }
 }
