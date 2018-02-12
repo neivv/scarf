@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::marker::PhantomData;
 use std::mem;
 use std::rc::Rc;
 
@@ -48,7 +49,7 @@ impl<'exec> Cfg<'exec> {
     }
 
     pub fn nodes(&self) -> CfgNodeIter {
-        CfgNodeIter(self.nodes.iter())
+        CfgNodeIter(self.nodes.iter(), 0)
     }
 
     /// Tries to replace a block with a jump to another one which starts in middle of current.
@@ -269,21 +270,16 @@ impl<'exec> Cfg<'exec> {
                     if chain.len() >= u16::max_value() as usize {
                         return result;
                     }
-                    let index_if_not_unkown = |s: &NodeLink| if s.is_unknown() {
-                        None
-                    } else {
-                        Some(s.index())
-                    };
                     let out1 = {
                         let node = &self.nodes[pos].1;
                         match node.out_edges {
                             CfgOutEdges::None => None,
-                            CfgOutEdges::Single(ref s) => index_if_not_unkown(s),
+                            CfgOutEdges::Single(ref s) => s.index_if_not_unkown(),
                             CfgOutEdges::Branch(ref s, ref cond) => {
                                 if !cond.node.is_unknown() {
                                     forks.push((pos, cond.node.index()));
                                 }
-                                index_if_not_unkown(s)
+                                s.index_if_not_unkown()
                             }
                             CfgOutEdges::Switch(ref cases, _) => {
                                 for other in cases.iter().skip(1) {
@@ -330,6 +326,171 @@ impl<'exec> Cfg<'exec> {
             }
         }
     }
+
+    pub fn immediate_postdominator<'a>(&'a self, node: NodeIndex<'a>) -> Option<NodeBorrow<'a>> {
+        // Do one run through one branch, mark the nodes 1.. based on their distance.
+        // Any branches met store the mark they branched off from.
+        // Then run through other branch until mark > 2 is found, keep track of largest
+        // mark > 2 node of each mark's sub branches.
+        // If a branch doesn't reach any marked node, then the branch's original mark and
+        // all marks after it are set !0 "unaccptable"
+        //
+        // Also mark any visited 0-marked nodes 1, and if another branch reaches 1-marked node,
+        // it can just stop that branch.
+        //
+        // Once there are no branches to check, the postdominator is received by the first
+        // mark, for which any smaller mark won't reach another mark larger than it through
+        // its child branches.
+        assert!(!self.node_indices_dirty);
+
+        let mut mark_buf = vec![0u32; self.nodes.len()];
+        let mut forks = Vec::with_capacity(self.nodes.len());
+        let mut pos = node.0 as usize;
+        let mut mark = 1;
+        let mut mark_indices = Vec::with_capacity(32);
+        'first_branch_loop: loop {
+            while mark_buf[pos] != 0 {
+                // We reached a loop, that's not useful.
+                // Switch marks that are larger than last fork to "useless"
+                let (branch, last_good_mark) = match forks.pop() {
+                    None => return None,
+                    Some(s) => s,
+                };
+                while mark > last_good_mark + 1 {
+                    let index = mark_indices.pop().unwrap();
+                    mark_buf[index] = !0;
+                    mark -= 1;
+                }
+                pos = branch;
+            }
+            mark_buf[pos] = mark;
+            mark_indices.push(pos);
+            let index = match self.nodes[pos].1.out_edges {
+                CfgOutEdges::None => None,
+                CfgOutEdges::Single(ref s) => {
+                    let index = s.index_if_not_unkown();
+                    if forks.is_empty() {
+                        if let Some(index) = index.or_else(|| mark_indices.get(1).cloned()) {
+                            // Uh, ok, the postdominator is just the next node then.
+                            // Or if a branch was rewinded to start.
+                            return Some(NodeBorrow {
+                                address: self.nodes[index].0,
+                                node: &self.nodes[index].1,
+                                index: NodeIndex(index as u32, PhantomData),
+                            });
+                        }
+                    }
+                    index
+                }
+                CfgOutEdges::Branch(ref s, ref cond) => {
+                    if !cond.node.is_unknown() {
+                        forks.push((cond.node.index(), mark));
+                    }
+                    s.index_if_not_unkown()
+                }
+                CfgOutEdges::Switch(ref cases, _) => {
+                    for other in cases.iter().skip(1) {
+                        forks.push((other.index(), mark));
+                    }
+                    cases.first().map(|x| x.index())
+                }
+            };
+            mark += 1;
+            pos = match index {
+                None => break 'first_branch_loop,
+                Some(s) => s,
+            };
+        }
+        let mut mark_limits = vec![!0u32; mark as usize - 1];
+        for (i, mark) in mark_limits[..mark as usize - 2].iter_mut().enumerate() {
+            *mark = i as u32 + 2;
+        }
+        let mut current_mark;
+        'other_branches_loop: loop {
+            loop {
+                match forks.pop() {
+                    Some((p, m)) => {
+                        pos = p;
+                        current_mark = m;
+                    }
+                    None => {
+                        let mut end_mark = mark_limits[0];
+                        let mut pos = 2;
+                        while pos < end_mark {
+                            if end_mark == !0 {
+                                return None;
+                            }
+                            if mark_limits[pos as usize - 1] > end_mark {
+                                end_mark = mark_limits[pos as usize - 1];
+                            }
+                            pos += 1;
+                        }
+                        if end_mark == !0 {
+                            return None;
+                        }
+                        let index = mark_indices[end_mark as usize - 1];
+                        return Some(NodeBorrow {
+                            address: self.nodes[index].0,
+                            node: &self.nodes[index].1,
+                            index: NodeIndex(index as u32, PhantomData),
+                        });
+                    }
+                };
+                if mark_limits[current_mark as usize - 1] != !0 {
+                    break;
+                }
+                // The mark was known to not reach any other mark at one branch, so don't bother.
+            }
+            match mark_buf[pos] {
+                0 => {
+                    mark_buf[pos] = 1;
+                    let index = match self.nodes[pos].1.out_edges {
+                        CfgOutEdges::None => None,
+                        CfgOutEdges::Single(ref s) => s.index_if_not_unkown(),
+                        CfgOutEdges::Branch(ref s, ref cond) => {
+                            if cond.node.is_unknown() {
+                                // Effectively an end where we didn't meet any of the marked nodes
+                                for mark in mark_limits[current_mark as usize - 1..].iter_mut() {
+                                    *mark = !0;
+                                }
+                                None
+                            } else {
+                                let cond_index = cond.node.index();
+                                if mark_buf[cond_index] != 1 {
+                                    forks.push((cond_index, current_mark));
+                                }
+                                s.index_if_not_unkown()
+                            }
+                        }
+                        CfgOutEdges::Switch(ref cases, _) => {
+                            for other in cases.iter().skip(1) {
+                                if other.index() != 1 {
+                                    forks.push((other.index(), current_mark));
+                                }
+                            }
+                            cases.first().map(|x| x.index())
+                        }
+                    };
+                    match index {
+                        // If we reach an end without seeing a > 2-node, there is no postdominator
+                        None => {
+                            for mark in mark_limits[current_mark as usize - 1..].iter_mut() {
+                                *mark = !0;
+                            }
+                        }
+                        Some(1) => (),
+                        Some(s) => forks.push((s, current_mark)),
+                    }
+                }
+                1 => (),
+                other => {
+                    if mark_limits[current_mark as usize - 1] < other {
+                        mark_limits[current_mark as usize - 1] = other;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Link indices must be correct.
@@ -359,13 +520,29 @@ fn calculate_node_distance(
     }
 }
 
-pub struct CfgNodeIter<'a>(::std::slice::Iter<'a, (VirtualAddress, CfgNode<'a>)>);
+pub struct CfgNodeIter<'a>(::std::slice::Iter<'a, (VirtualAddress, CfgNode<'a>)>, u32);
 impl<'a> Iterator for CfgNodeIter<'a> {
-    type Item = (&'a VirtualAddress, &'a CfgNode<'a>);
+    type Item = NodeBorrow<'a>;
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|x| (&x.0, &x.1))
+        let index = NodeIndex(self.1, PhantomData);
+        self.1 += 1;
+        self.0.next().map(|x| NodeBorrow {
+            address: x.0,
+            node: &x.1,
+            index,
+        })
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct NodeBorrow<'a> {
+    pub node: &'a CfgNode<'a>,
+    pub index: NodeIndex<'a>,
+    pub address: VirtualAddress,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NodeIndex<'a>(u32, PhantomData<&'a Cfg<'a>>);
 
 #[derive(Debug, Clone)]
 pub struct CfgNode<'exec> {
@@ -494,6 +671,14 @@ impl NodeLink {
     pub fn index(&self) -> usize {
         self.index as usize
     }
+
+    pub fn index_if_not_unkown(&self) -> Option<usize> {
+        if self.is_unknown() {
+            None
+        } else {
+            Some(self.index())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -554,7 +739,7 @@ mod test {
         cfg.add_node(VirtualAddress(103), node1(103, ctx, 104, i));
         cfg.add_node(VirtualAddress(104), node0(104, ctx, i));
         cfg.calculate_distances();
-        let mut iter = cfg.nodes().map(|x| x.1.distance);
+        let mut iter = cfg.nodes().map(|x| x.node.distance);
         assert_eq!(iter.next().unwrap(), 1);
         assert_eq!(iter.next().unwrap(), 2);
         assert_eq!(iter.next().unwrap(), 3);
@@ -586,5 +771,78 @@ mod test {
         assert_eq!(cycles[1], vec![104, 105, 106]);
         assert_eq!(cycles[2], vec![104, 105, 106, 107]);
         assert_eq!(cycles.len(), 3);
+    }
+
+    #[test]
+    fn immediate_postdominator() {
+        let ctx = &::operand::OperandContext::new();
+        let mut interner = ::exec_state::InternMap::new();
+        let i = &mut interner;
+        let mut cfg = Cfg::new();
+        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 102, i));
+        cfg.add_node(VirtualAddress(101), node1(101, ctx, 104, i));
+        cfg.add_node(VirtualAddress(102), node1(102, ctx, 103, i));
+        cfg.add_node(VirtualAddress(103), node2(103, ctx, 110, 106, i));
+        cfg.add_node(VirtualAddress(104), node1(104, ctx, 107, i));
+        cfg.add_node(VirtualAddress(105), node1(105, ctx, 107, i));
+        cfg.add_node(VirtualAddress(106), node1(106, ctx, 102, i));
+        cfg.add_node(VirtualAddress(107), node2(107, ctx, 108, 109, i));
+        cfg.add_node(VirtualAddress(108), node0(108, ctx, i));
+        cfg.add_node(VirtualAddress(109), node2(109, ctx, 111, 112, i));
+        cfg.add_node(VirtualAddress(110), node2(110, ctx, 104, 105, i));
+        cfg.add_node(VirtualAddress(111), node0(111, ctx, i));
+        cfg.add_node(VirtualAddress(112), node1(112, ctx, 109, i));
+        cfg.calculate_node_indices();
+        let node = |i| cfg.nodes().find(|x| x.address.0 == i).unwrap().index;
+        assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 104);
+        assert_eq!(cfg.immediate_postdominator(node(102)).unwrap().address.0, 103);
+        assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 107);
+        assert_eq!(cfg.immediate_postdominator(node(105)).unwrap().address.0, 107);
+        assert!(cfg.immediate_postdominator(node(107)).is_none());
+        assert!(cfg.immediate_postdominator(node(108)).is_none());
+        assert_eq!(cfg.immediate_postdominator(node(109)).unwrap().address.0, 111);
+
+        let mut cfg = Cfg::new();
+        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 102, i));
+        cfg.add_node(VirtualAddress(101), node1(101, ctx, 103, i));
+        cfg.add_node(VirtualAddress(102), node1(102, ctx, 103, i));
+        cfg.add_node(VirtualAddress(103), node2(103, ctx, 104, 105, i));
+        cfg.add_node(VirtualAddress(104), node1(104, ctx, 105, i));
+        cfg.add_node(VirtualAddress(105), node0(105, ctx, i));
+        cfg.calculate_node_indices();
+        assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
+        assert_eq!(cfg.immediate_postdominator(node(102)).unwrap().address.0, 103);
+        assert_eq!(cfg.immediate_postdominator(node(103)).unwrap().address.0, 105);
+        assert_eq!(cfg.immediate_postdominator(node(104)).unwrap().address.0, 105);
+
+        let mut cfg = Cfg::new();
+        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 102, i));
+        cfg.add_node(VirtualAddress(101), node1(101, ctx, 103, i));
+        cfg.add_node(VirtualAddress(102), node1(102, ctx, 103, i));
+        cfg.add_node(VirtualAddress(103), node2(103, ctx, 104, 101, i));
+        cfg.add_node(VirtualAddress(104), node0(104, ctx, i));
+        cfg.calculate_node_indices();
+        assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
+        assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 103);
+        assert_eq!(cfg.immediate_postdominator(node(103)).unwrap().address.0, 104);
+
+        let mut cfg = Cfg::new();
+        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 102, i));
+        cfg.add_node(VirtualAddress(101), node1(101, ctx, 100, i));
+        cfg.add_node(VirtualAddress(102), node0(102, ctx, i));
+        cfg.calculate_node_indices();
+        assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 102);
+        assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 100);
+
+        let mut cfg = Cfg::new();
+        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 104, i));
+        cfg.add_node(VirtualAddress(101), node2(101, ctx, 100, 103, i));
+        cfg.add_node(VirtualAddress(102), node1(102, ctx, 101, i));
+        cfg.add_node(VirtualAddress(103), node0(103, ctx, i));
+        cfg.add_node(VirtualAddress(104), node1(104, ctx, 103, i));
+        cfg.calculate_node_indices();
+        assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
+        assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 103);
+        assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 103);
     }
 }

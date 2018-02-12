@@ -15,24 +15,24 @@ pub fn write<W: Write>(cfg: &mut Cfg, out: &mut W) -> Result<(), io::Error> {
     cfg.calculate_distances();
     let mut cycles = cfg.cycles();
     cycles.sort();
-    for (&address, node) in cfg.nodes() {
+    for n in cfg.nodes() {
         let node_name = next_node_name(&mut node_name_pos);
         let mut label = format!(
             "{:08x} -> {:08x}\nDistance: {}",
-            address.0,
-            node.end_address.0,
-            node.distance,
+            n.address.0,
+            n.node.end_address.0,
+            n.node.distance,
         );
-        for cycle in cycles.iter().filter(|x| x[0].address() == address) {
+        for cycle in cycles.iter().filter(|x| x[0].address() == n.address) {
             use std::fmt::Write;
             let cycle = cycle.iter().map(|x| x.address().0).collect::<Vec<_>>();
             write!(label, "\nCycle {:x}", cycle.as_hex()).unwrap();
         }
         writeln!(out, "  {} [label=\"{}\"];", node_name, label)?;
-        nodes.insert(address, node_name);
+        nodes.insert(n.address, node_name);
     }
-    for (&address, node) in cfg.nodes() {
-        let node_name = nodes.get(&address).expect("Broken graph");
+    for n in cfg.nodes() {
+        let node_name = nodes.get(&n.address).expect("Broken graph");
         let mut print = |node: &NodeLink, cond| print_out_edge(
             out,
             &node_name,
@@ -42,7 +42,7 @@ pub fn write<W: Write>(cfg: &mut Cfg, out: &mut W) -> Result<(), io::Error> {
             cond
         );
 
-        match node.out_edges {
+        match n.node.out_edges {
             CfgOutEdges::Single(ref node) => {
                 print(node, None)?;
             }
