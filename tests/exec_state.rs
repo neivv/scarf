@@ -121,6 +121,23 @@ fn shld() {
     ]);
 }
 
+#[test]
+fn double_jbe() {
+    test_inline(&[
+        0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
+        0x76, 0x03, // jbe _jbe2
+        0x77, 0x09, // ja _end
+        0xcc, // int3
+        // _jbe2:
+        0x76, 0x06, // jbe _end
+        0xb8, 0x04, 0x00, 0x00, 0x00, // mov eax, 4
+        0xcc, // int3
+        0xc3, // ret
+    ], &[
+         (operand_register(0), constval(1)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();

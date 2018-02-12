@@ -864,9 +864,9 @@ impl<'a> ExecutionState<'a> {
 
 /// If `old` and `new` have different fields, and the old field is not undefined,
 /// return `ExecutionState` which has the differing fields replaced with (a separate) undefined.
-pub fn merge_states<'a>(
-    old: &ExecutionState<'a>,
-    new: &ExecutionState<'a>,
+pub fn merge_states<'a: 'r, 'r>(
+    old: &'r ExecutionState<'a>,
+    new: &'r ExecutionState<'a>,
     interner: &mut InternMap,
 ) -> Option<ExecutionState<'a>> {
     use operand::operand_helpers::*;
@@ -1020,13 +1020,34 @@ pub fn merge_states<'a>(
         }
     };
 
+    let merged_ljec = if old.last_jump_extra_constraint != new.last_jump_extra_constraint {
+        let old_lje = &old.last_jump_extra_constraint;
+        let new_lje = &new.last_jump_extra_constraint;
+        Some(match (old_lje, new_lje, old, new) {
+            // If one state has no constraint but matches the constrait of the other
+            // state, the constraint should be kept on merge.
+            (&None, &Some(ref con), state, _) | (&Some(ref con), &None, _, state) => {
+                // As long as we're working with flags, limiting to lowest bit
+                // allows simplifying cases like (undef | 1)
+                let lowest_bit = operand_and(constval(1), con.0.clone());
+                match state.try_resolve_const(&lowest_bit, interner) {
+                    Some(1) => Some(con.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+    } else {
+        None
+    };
     let changed =
         old.registers.iter().zip(new.registers.iter())
             .any(|(&a, &b)| !check_eq(a, b, interner)) ||
         old.xmm_registers.iter().zip(new.xmm_registers.iter())
             .any(|(a, b)| !check_xmm_eq(a, b, interner)) ||
         !check_flags_eq(&old.flags, &new.flags, interner) ||
-        !check_memory_eq(&old.memory, &new.memory, interner);
+        !check_memory_eq(&old.memory, &new.memory, interner) ||
+        merged_ljec.as_ref().map(|x| *x != old.last_jump_extra_constraint).unwrap_or(false);
     if changed {
         Some(ExecutionState {
             registers: [
@@ -1058,31 +1079,10 @@ pub fn merge_states<'a>(
                 direction: merge(old.flags.direction, new.flags.direction, interner),
             },
             memory: merge_memory(&old.memory, &new.memory, interner),
-            last_jump_extra_constraint: {
-                let eq = old.last_jump_extra_constraint == new.last_jump_extra_constraint;
-                match eq {
-                    true => old.last_jump_extra_constraint.clone(),
-                    false => match old.last_jump_extra_constraint {
-                        // If old state has no constraint but matches the constrait of the new
-                        // state, the constraint should be kept on merge.
-                        None => {
-                            if let Some(ref new_constraint) = new.last_jump_extra_constraint {
-                                // As long as we're working with flags, limiting to lowest bit
-                                // allows simplifying cases like (undef | 1)
-                                let lowest_bit =
-                                    operand_and(constval(1), new_constraint.0.clone());
-                                match old.try_resolve_const(&lowest_bit, interner) {
-                                    Some(1) => Some(new_constraint.clone()),
-                                    _ => None,
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        Some(_) => None,
-                    },
-                }
-            },
+            last_jump_extra_constraint: merged_ljec.unwrap_or_else(|| {
+                // They were same, just use one from old
+                old.last_jump_extra_constraint.clone()
+            }),
             ctx: old.ctx,
         })
     } else {
@@ -1129,9 +1129,18 @@ fn merge_state_constraints_or() {
         flag_o(),
         flag_s(),
     ));
-    let state_a = state_a.assume_jump_flag(&sign_or_overflow_flag, true, &mut i);
+    let mut state_a = state_a.assume_jump_flag(&sign_or_overflow_flag, true, &mut i);
     state_b.move_to(DestOperand::from_oper(&flag_s()), constval(1), &mut i);
     let merged = merge_states(&state_b, &state_a, &mut i).unwrap();
+    assert!(merged.last_jump_extra_constraint.is_some());
+    assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
+    // Should also happen other way, though then state_a must have something that is converted
+    // to undef.
+    let merged = merge_states(&state_a, &state_b, &mut i);
+    assert!(merged.is_none());
+
+    state_a.move_to(DestOperand::from_oper(&flag_c()), constval(1), &mut i);
+    let merged = merge_states(&state_a, &state_b, &mut i).unwrap();
     assert!(merged.last_jump_extra_constraint.is_some());
     assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
 }
