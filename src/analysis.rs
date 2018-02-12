@@ -379,7 +379,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
         to: Rc<Operand>,
         address: VirtualAddress
     ) -> Option<VirtualAddress> {
-        match state.try_resolve_const(&to, &mut self.analysis.interner) {
+        match to.if_constant() {
             Some(s) => {
                 let address = VirtualAddress(s);
                 let code_offset = self.analysis.binary.code_section().virtual_address;
@@ -438,6 +438,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                     }
                     Some(_) => {
                         let state = self.state.clone();
+                        let to = state.resolve(&to, &mut self.analysis.interner);
                         if let Some((switch_table, index)) = is_switch_jump(&to) {
                             let mut cases = Vec::new();
                             let code_section = self.analysis.binary.code_section();
@@ -480,10 +481,8 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                             false,
                             &mut self.analysis.interner
                         );
-                        // The branch pushed last is analyzed first; prefer loops first
-                        let jump_dest =
-                            jump_state.try_resolve_const(&to, &mut self.analysis.interner);
-                        let jumps_backwards = match jump_dest {
+                        let to = jump_state.resolve(&to, &mut self.analysis.interner);
+                        let jumps_backwards = match to.if_constant() {
                             Some(x) => x < ins.address().0,
                             None => false,
                         };
