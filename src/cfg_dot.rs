@@ -13,7 +13,11 @@ pub fn write<W: Write>(cfg: &mut Cfg, out: &mut W) -> Result<(), io::Error> {
     let mut nodes = HashMap::new();
     let mut node_name_pos = 0;
     cfg.calculate_distances();
-    let mut cycles = cfg.cycles();
+    let mut cycles = if cfg.nodes().count() < 500 {
+        cfg.cycles()
+    } else {
+        Vec::new()
+    };
     cycles.sort();
     for n in cfg.nodes() {
         let node_name = next_node_name(&mut node_name_pos);
