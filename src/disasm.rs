@@ -187,8 +187,8 @@ fn instruction_operations(
                 let (ops, flags, flags_post):
                 (
                     for<'x> fn(_, _, &'x mut _),
-                    for<'x> fn(_, _, &'x mut _),
-                    for<'x> fn(_, _, &'x mut _),
+                    for<'x, 'y> fn(_, _, &'x mut _, &'y _),
+                    for<'x, 'y> fn(_, _, &'x mut _, &'y _),
                 ) = match first_byte {
                     0x00 ... 0x05 => (add_ops, add_flags, result_flags),
                     0x08 ... 0x0d => (or_ops, zero_carry_oflow, result_flags),
@@ -197,8 +197,8 @@ fn instruction_operations(
                     0x20 ... 0x25 => (and_ops, zero_carry_oflow, result_flags),
                     0x28 ... 0x2d => (sub_ops, zero_carry_oflow, result_flags),
                     0x30 ... 0x35 => (xor_ops, zero_carry_oflow, result_flags),
-                    0x88 ... 0x8b => (mov_ops, |_, _, _| {}, |_, _, _| {}),
-                    0x8d | _ => (lea_ops, |_, _, _| {}, |_, _, _| {}),
+                    0x88 ... 0x8b => (mov_ops, |_, _, _, _| {}, |_, _, _, _| {}),
+                    0x8d | _ => (lea_ops, |_, _, _, _| {}, |_, _, _, _| {}),
                 };
                 let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
                 if eax_imm_arith {
@@ -224,13 +224,13 @@ fn instruction_operations(
             0x98 => {
                 let mut out = SmallVec::new();
                 let eax = operand_register(0);
-                let signed_max = constval(0x7fff);
+                let signed_max = ctx.const_7fff();
                 let compare = ArithOpType::GreaterThan(eax.clone(), signed_max);
                 let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
-                let neg_sign_extend = operand_or(eax.clone(), constval(0xffff0000));
+                let neg_sign_extend = operand_or(eax.clone(), ctx.const_ffff0000());
                 let neg_sign_extend_op =
                     Operation::Move(dest_operand(&eax), neg_sign_extend, Some(cond));
-                out.push(and(eax, constval(0xffff)));
+                out.push(and(eax, ctx.const_ffff()));
                 out.push(neg_sign_extend_op);
                 Ok(out)
             }
@@ -239,12 +239,12 @@ fn instruction_operations(
                 let mut out = SmallVec::new();
                 let eax = operand_register(0);
                 let edx = operand_register(2);
-                let signed_max = constval(0x7fffffff);
+                let signed_max = ctx.const_7fffffff();
                 let compare = ArithOpType::GreaterThan(eax, signed_max);
                 let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
                 let neg_sign_extend_op =
-                    Operation::Move(dest_operand(&edx), constval(!0), Some(cond));
-                out.push(mov(edx, constval(0)));
+                    Operation::Move(dest_operand(&edx), ctx.const_ffffffff(), Some(cond));
+                out.push(mov(edx, ctx.const_0()));
                 out.push(neg_sign_extend_op);
                 Ok(out)
             },
@@ -489,22 +489,21 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         };
         let constant = read_variable_size(self.slice(1), imm_size)?;
         let mut out = SmallVec::new();
-        out.push(sub(esp(), constval(4)));
+        out.push(sub(esp(), self.ctx.const_4()));
         out.push(mov(mem32(esp()), constval(constant)));
         Ok(out)
     }
 
     fn inc_dec_op(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let byte = self.get(0);
         let is_inc = byte < 0x48;
         let reg = byte & 0x7;
         let reg = Rc::new(Operand::reg_variable_size(Register(reg), self.mem16_32()));
         let mut out = SmallVec::new();
         out.push(match is_inc {
-            true => add(reg, constval(1)),
-            false => sub(reg, constval(1)),
+            true => add(reg, self.ctx.const_1()),
+            false => sub(reg, self.ctx.const_1()),
         });
         Ok(out)
     }
@@ -518,12 +517,12 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let mut out = SmallVec::new();
         match is_push {
             true => {
-                out.push(sub(esp(), constval(4)));
+                out.push(sub(esp(), self.ctx.const_4()));
                 out.push(mov(mem32(esp()), operand_register(reg)));
             }
             false => {
                 out.push(mov(operand_register(reg), mem32(esp())));
-                out.push(add(esp(), constval(4)));
+                out.push(add(esp(), self.ctx.const_4()));
             }
         }
         Ok(out)
@@ -542,41 +541,42 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     fn condition(&self) -> Rc<Operand> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
+        let ctx = self.ctx;
         match self.get(0) & 0xf {
             // jo, jno
-            0x0 => operand_logical_not(operand_eq(flag_o(), constval(0))),
-            0x1 => operand_eq(flag_o(), constval(0)),
+            0x0 => operand_logical_not(operand_eq(flag_o(), ctx.const_0())),
+            0x1 => operand_eq(flag_o(), ctx.const_0()),
             // jb, jnb (jae) (jump if carry)
-            0x2 => operand_logical_not(operand_eq(flag_c(), constval(0))),
-            0x3 => operand_eq(flag_c(), constval(0)),
+            0x2 => operand_logical_not(operand_eq(flag_c(), ctx.const_0())),
+            0x3 => operand_eq(flag_c(), ctx.const_0()),
             // je, jne
-            0x4 => operand_logical_not(operand_eq(flag_z(), constval(0))),
-            0x5 => operand_eq(flag_z(), constval(0)),
+            0x4 => operand_logical_not(operand_eq(flag_z(), ctx.const_0())),
+            0x5 => operand_eq(flag_z(), ctx.const_0()),
             // jbe, jnbe (ja)
             0x6 => operand_or(
-                operand_logical_not(operand_eq(flag_z(), constval(0))),
-                operand_logical_not(operand_eq(flag_c(), constval(0))),
+                operand_logical_not(operand_eq(flag_z(), ctx.const_0())),
+                operand_logical_not(operand_eq(flag_c(), ctx.const_0())),
             ),
             0x7 => operand_and(
-                operand_eq(flag_z(), constval(0)),
-                operand_eq(flag_c(), constval(0)),
+                operand_eq(flag_z(), ctx.const_0()),
+                operand_eq(flag_c(), ctx.const_0()),
             ),
             // js, jns
-            0x8 => operand_logical_not(operand_eq(flag_s(), constval(0))),
-            0x9 => operand_eq(flag_s(), constval(0)),
+            0x8 => operand_logical_not(operand_eq(flag_s(), ctx.const_0())),
+            0x9 => operand_eq(flag_s(), ctx.const_0()),
             // jpe, jpo
-            0xa => operand_logical_not(operand_eq(flag_p(), constval(0))),
-            0xb => operand_eq(flag_p(), constval(0)),
+            0xa => operand_logical_not(operand_eq(flag_p(), ctx.const_0())),
+            0xb => operand_eq(flag_p(), ctx.const_0()),
             // jl, jnl (jge)
             0xc => operand_logical_not(operand_eq(flag_s(), flag_o())),
             0xd => operand_eq(flag_s(), flag_o()),
             // jle, jnle (jg)
             0xe => operand_or(
-                operand_logical_not(operand_eq(flag_z(), constval(0))),
+                operand_logical_not(operand_eq(flag_z(), ctx.const_0())),
                 operand_logical_not(operand_eq(flag_s(), flag_o())),
             ),
             0xf => operand_and(
-                operand_eq(flag_z(), constval(0)),
+                operand_eq(flag_z(), ctx.const_0()),
                 operand_eq(flag_s(), flag_o()),
             ),
             _ => unreachable!(),
@@ -614,7 +614,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let offset = read_variable_size_signed(self.slice(1), MemAccessSize::Mem8)?;
         let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
-        out.push(Operation::Jump { condition: constval(1), to });
+        out.push(Operation::Jump { condition: self.ctx.const_1(), to });
         Ok(out)
     }
 
@@ -669,8 +669,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         post_flags: H,
     ) -> Result<OperationVec, Error>
     where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
     {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
@@ -682,9 +682,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let imm = read_variable_size(self.slice(1), op_size)?;
         let val = constval(imm);
         let mut out = SmallVec::new();
-        pre_flags(dest.clone(), val.clone(), &mut out);
+        pre_flags(dest.clone(), val.clone(), &mut out, self.ctx);
         make_arith(dest.clone(), val.clone(), &mut out);
-        post_flags(dest.clone(), val.clone(), &mut out);
+        post_flags(dest.clone(), val.clone(), &mut out, self.ctx);
         Ok(out)
     }
 
@@ -697,8 +697,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         post_flags: H,
     ) -> Result<OperationVec, Error>
     where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
     {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
@@ -711,9 +711,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             true => (rm, r),
             false => (r, rm),
         };
-        pre_flags(left.clone(), right.clone(), &mut out);
+        pre_flags(left.clone(), right.clone(), &mut out, self.ctx);
         make_arith(left.clone(), right.clone(), &mut out);
-        post_flags(left, right, &mut out);
+        post_flags(left, right, &mut out, self.ctx);
         Ok(out)
     }
 
@@ -744,18 +744,18 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let mut out = SmallVec::new();
         if is_rm_short_r_register(&rm, &r) {
             let keep_mask = match op_size {
-                MemAccessSize::Mem8 => and(r.clone(), constval(0xff)),
-                MemAccessSize::Mem16 => and(r.clone(), constval(0xffff)),
+                MemAccessSize::Mem8 => and(r.clone(), self.ctx.const_ff()),
+                MemAccessSize::Mem16 => and(r.clone(), self.ctx.const_ffff()),
                 _ => unreachable!(),
             };
             let signed_max = match op_size {
-                MemAccessSize::Mem8 => constval(0x7f),
-                MemAccessSize::Mem16 => constval(0x7fff),
+                MemAccessSize::Mem8 => self.ctx.const_7f(),
+                MemAccessSize::Mem16 => self.ctx.const_7fff(),
                 _ => unreachable!(),
             };
             let high_const = match op_size {
-                MemAccessSize::Mem8 => operand_or(constval(0xffffff00), r.clone()),
-                MemAccessSize::Mem16 => operand_or(constval(0xffff0000), r.clone()),
+                MemAccessSize::Mem8 => operand_or(self.ctx.const_ffffff00(), r.clone()),
+                MemAccessSize::Mem16 => operand_or(self.ctx.const_ffff0000(), r.clone()),
                 _ => unreachable!(),
             };
 
@@ -790,8 +790,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 out.extend(state.movsx()?.into_iter());
             } else {
                 let signed_max = match op_size {
-                    MemAccessSize::Mem8 => constval(0x7f),
-                    MemAccessSize::Mem16 => constval(0x7fff),
+                    MemAccessSize::Mem8 => self.ctx.const_7f(),
+                    MemAccessSize::Mem16 => self.ctx.const_7fff(),
                     _ => unreachable!(),
                 };
                 let compare =
@@ -806,8 +806,12 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                     MemAccessSize::Mem16 => OperandType::Register16(reg),
                     _ => unreachable!(),
                 };
-                out.push(mov(r.clone(), constval(0)));
-                out.push(Operation::Move(dest_operand(&r), constval(!0), Some(rm_cond)));
+                out.push(mov(r.clone(), self.ctx.const_0()));
+                out.push(Operation::Move(
+                    dest_operand(&r),
+                    self.ctx.const_ffffffff(),
+                    Some(rm_cond),
+                ));
                 out.push(mov(Operand::new_simplified_rc(short_r), rm));
             }
         }
@@ -816,7 +820,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn movzx(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
 
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
@@ -841,8 +844,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let mut out = SmallVec::new();
         if is_rm_short_r_register(&rm, &r) {
             out.push(match op_size {
-                MemAccessSize::Mem8 => and(r, constval(0xff)),
-                MemAccessSize::Mem16 => and(r, constval(0xffff)),
+                MemAccessSize::Mem8 => and(r, self.ctx.const_ff()),
+                MemAccessSize::Mem16 => and(r, self.ctx.const_ffff()),
                 _ => unreachable!(),
             });
         } else {
@@ -853,7 +856,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             if is_mem {
                 out.push(mov(r, rm));
             } else {
-                out.push(mov(r.clone(), constval(0)));
+                out.push(mov(r.clone(), self.ctx.const_0()));
                 out.push(mov(r, rm));
             }
         }
@@ -899,16 +902,15 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn mov_sse_6e(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         if !self.has_prefix(0x66) {
             return Err(Error::UnknownOpcode(self.data.into()));
         }
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
         let mut out = SmallVec::new();
         out.push(mov(xmm_variant(&r, 0), rm));
-        out.push(mov(xmm_variant(&r, 1), constval(0)));
-        out.push(mov(xmm_variant(&r, 2), constval(0)));
-        out.push(mov(xmm_variant(&r, 3), constval(0)));
+        out.push(mov(xmm_variant(&r, 1), self.ctx.const_0()));
+        out.push(mov(xmm_variant(&r, 2), self.ctx.const_0()));
+        out.push(mov(xmm_variant(&r, 3), self.ctx.const_0()));
         Ok(out)
     }
 
@@ -961,7 +963,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn mov_sse_d6(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         if !self.has_prefix(0x66) {
             return Err(Error::UnknownOpcode(self.data.into()));
         }
@@ -970,8 +971,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         out.push(mov(xmm_variant(&rm, 0), xmm_variant(&src, 0)));
         out.push(mov(xmm_variant(&rm, 1), xmm_variant(&src, 1)));
         if let OperandType::Xmm(_, _) = rm.ty {
-            out.push(mov(xmm_variant(&rm, 2), constval(0)));
-            out.push(mov(xmm_variant(&rm, 3), constval(0)));
+            out.push(mov(xmm_variant(&rm, 2), self.ctx.const_0()));
+            out.push(mov(xmm_variant(&rm, 3), self.ctx.const_0()));
         }
         Ok(out)
     }
@@ -996,7 +997,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 dest_operand(&low),
                 ArithOpType::Or(
                     operand_rsh(low, rm.clone()),
-                    operand_lsh(high, operand_sub(constval(32), rm)),
+                    operand_lsh(high, operand_sub(self.ctx.const_20(), rm)),
                 ),
             )
         });
@@ -1012,7 +1013,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 dest_operand(&low),
                 ArithOpType::Or(
                     operand_rsh(low, rm.clone()),
-                    operand_lsh(high, operand_sub(constval(32), rm)),
+                    operand_lsh(high, operand_sub(self.ctx.const_20(), rm)),
                 ),
             )
         });
@@ -1024,8 +1025,12 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         for i in 0..4 {
             let dest = Operand::to_xmm_32(&dest, i);
             let (_, high) = Operand::to_xmm_64(&rm, 0);
-            let high_u32_set = operand_logical_not(operand_eq(high, constval(0)));
-            out.push(Operation::Move(dest_operand(&dest), constval(0), Some(high_u32_set)));
+            let high_u32_set = operand_logical_not(operand_eq(high, self.ctx.const_0()));
+            out.push(Operation::Move(
+                dest_operand(&dest),
+                self.ctx.const_0(),
+                Some(high_u32_set),
+            ));
         }
         Ok(out)
     }
@@ -1088,7 +1093,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn various_fe_ff(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let variant = (self.get(1) >> 3) & 0x7;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
@@ -1100,14 +1104,14 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             0 | 1 => {
                 let is_inc = variant == 0;
                 out.push(match is_inc {
-                    true => add(rm, constval(1)),
-                    false => sub(rm, constval(1)),
+                    true => add(rm, self.ctx.const_1()),
+                    false => sub(rm, self.ctx.const_1()),
                 });
             }
             2 | 3 => out.push(Operation::Call(rm.into())),
-            4 | 5 => out.push(Operation::Jump { condition: constval(1), to: rm.into() }),
+            4 | 5 => out.push(Operation::Jump { condition: self.ctx.const_1(), to: rm.into() }),
             6 => {
-                PUSH_OPS.operation(rm.into(), constval(!0), &mut out);
+                PUSH_OPS.operation(rm.into(), self.ctx.const_ffffffff(), &mut out);
             }
             _ => return Err(Error::UnknownOpcode(self.data.into())),
         }
@@ -1135,14 +1139,13 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn bitwise_compact_op(&self) -> Result<OperationVec, Error> {
-        use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
         let (rm, _) = self.parse_modrm(op_size)?;
         let shift_count = match self.get(0) & 2 {
-            0 => constval(1),
+            0 => self.ctx.const_1(),
             _ => Rc::new(Operand::reg_variable_size(Register(1), MemAccessSize::Mem8)),
         };
         let op_gen: &ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
@@ -1154,9 +1157,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             _ => return Err(Error::UnknownOpcode(self.data.into())),
         };
         let mut out = SmallVec::new();
-        op_gen.pre_flags(rm.clone(), shift_count.clone(), &mut out);
+        op_gen.pre_flags(rm.clone(), shift_count.clone(), &mut out, self.ctx);
         op_gen.operation(rm.clone(), shift_count.clone(), &mut out);
-        op_gen.post_flags(rm, shift_count, &mut out);
+        op_gen.post_flags(rm, shift_count, &mut out, self.ctx);
         Ok(out)
     }
 
@@ -1179,7 +1182,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         use operand::operand_helpers::*;
         let (hi, low, imm) = self.parse_modrm_imm(self.mem16_32(), MemAccessSize::Mem8)?;
         let mut out = SmallVec::new();
-        let imm = Operand::simplified(operand_and(imm, constval(0x1f)));
+        let imm = Operand::simplified(operand_and(imm, self.ctx.const_1f()));
         if imm.ty != OperandType::Constant(0) {
             // TODO flags
             out.push(
@@ -1193,7 +1196,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                         operand_rsh(
                             low,
                             operand_sub(
-                                constval(32),
+                                self.ctx.const_20(),
                                 imm.clone(),
                             )
                         ),
@@ -1243,9 +1246,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         };
         let (rm, _, imm) = self.parse_modrm_imm(op_size, imm_size)?;
         let mut out = SmallVec::new();
-        op_gen.pre_flags(rm.clone(), imm.clone(), &mut out);
+        op_gen.pre_flags(rm.clone(), imm.clone(), &mut out, self.ctx);
         op_gen.operation(rm.clone(), imm.clone(), &mut out);
-        op_gen.post_flags(rm, imm, &mut out);
+        op_gen.post_flags(rm, imm, &mut out, self.ctx);
         Ok(out)
     }
 
@@ -1256,8 +1259,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         post_flags: H,
     ) -> Result<OperationVec, Error>
     where F: FnOnce(Rc<Operand>, Rc<Operand>) -> Rc<Operand>,
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
     {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
@@ -1269,9 +1272,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let imm = read_variable_size(self.slice(1), op_size)?;
         let val = constval(imm);
         let mut out = SmallVec::new();
-        pre_flags(eax.clone(), val.clone(), &mut out);
+        pre_flags(eax.clone(), val.clone(), &mut out, self.ctx);
         let operand = make_arith(eax, val);
-        post_flags(operand, constval(!0), &mut out);
+        post_flags(operand, self.ctx.const_ffffffff(), &mut out, self.ctx);
         Ok(out)
     }
 
@@ -1283,10 +1286,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         post_flags: H,
     ) -> Result<OperationVec, Error>
     where F: FnOnce(Rc<Operand>, Rc<Operand>) -> Rc<Operand>,
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
     {
-        use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
@@ -1298,9 +1300,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             false =>  (r, rm),
         };
         let mut out = SmallVec::new();
-        pre_flags(left.clone(), right.clone(), &mut out);
+        pre_flags(left.clone(), right.clone(), &mut out, self.ctx);
         let operand = make_arith(left, right);
-        post_flags(operand, constval(!0), &mut out);
+        post_flags(operand, self.ctx.const_ffffffff(), &mut out, self.ctx);
         Ok(out)
     }
 
@@ -1320,7 +1322,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let offset = read_u32(self.slice(1))?;
         let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
-        out.push(Operation::Jump { condition: constval(1), to });
+        out.push(Operation::Jump { condition: self.ctx.const_1(), to });
         Ok(out)
     }
 }
@@ -1337,8 +1339,8 @@ fn is_rm_short_r_register(rm: &Rc<Operand>, r: &Rc<Operand>) -> bool {
 
 trait ArithOperationGenerator {
     fn operation(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec);
-    fn pre_flags(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec);
-    fn post_flags(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec);
+    fn pre_flags(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext);
+    fn post_flags(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext);
 }
 
 macro_rules! arith_op_generator {
@@ -1348,11 +1350,23 @@ macro_rules! arith_op_generator {
             fn operation(&self, a: Rc<Operand>, b: Rc<Operand>, c: &mut OperationVec) {
                 self::operation_helpers::$op(a, b, c)
             }
-            fn pre_flags(&self, a: Rc<Operand>, b: Rc<Operand>, c: &mut OperationVec) {
-                self::operation_helpers::$pre(a, b, c)
+            fn pre_flags(
+                &self,
+                a: Rc<Operand>,
+                b: Rc<Operand>,
+                c: &mut OperationVec,
+                d: &OperandContext,
+            ) {
+                self::operation_helpers::$pre(a, b, c, d)
             }
-            fn post_flags(&self, a: Rc<Operand>, b: Rc<Operand>, c :&mut OperationVec) {
-                self::operation_helpers::$post(a, b, c)
+            fn post_flags(
+                &self,
+                a: Rc<Operand>,
+                b: Rc<Operand>,
+                c: &mut OperationVec,
+                d: &OperandContext,
+            ) {
+                self::operation_helpers::$post(a, b, c, d)
             }
         }
         static $stname: $name = $name;
@@ -1367,8 +1381,8 @@ arith_op_generator!(SBB_OPS, SbbOps, sbb_flags, sbb_ops, result_flags);
 arith_op_generator!(XOR_OPS, XorOps, zero_carry_oflow, xor_ops, result_flags);
 arith_op_generator!(CMP_OPS, CmpOps, sub_flags, nop_ops, cmp_result_flags);
 arith_op_generator!(TEST_OPS, TestOps, zero_carry_oflow, nop_ops, test_result_flags);
-arith_op_generator!(MOV_OPS, MovOps, nop_ops, mov_ops, nop_ops);
-arith_op_generator!(PUSH_OPS, PushOps, nop_ops, push_ops, nop_ops);
+arith_op_generator!(MOV_OPS, MovOps, nop_flags, mov_ops, nop_flags);
+arith_op_generator!(PUSH_OPS, PushOps, nop_flags, push_ops, nop_flags);
 // zero_carry_oflow is wrong but lazy
 arith_op_generator!(ROL_OPS, RolOps, zero_carry_oflow, rol_ops, result_flags);
 arith_op_generator!(ROR_OPS, RorOps, zero_carry_oflow, ror_ops, result_flags);
@@ -1383,7 +1397,7 @@ pub mod operation_helpers {
 
     use operand::ArithOpType::*;
     use operand::MemAccessSize::*;
-    use operand::{Flag, MemAccessSize, Operand, OperandType};
+    use operand::{Flag, MemAccessSize, Operand, OperandType, OperandContext};
     use operand::operand_helpers::*;
     use super::{dest_operand, make_arith_operation, DestOperand, Error, Operation, OperationVec};
 
@@ -1550,7 +1564,20 @@ pub mod operation_helpers {
     pub fn nop_ops(_dest: Rc<Operand>, _rhs: Rc<Operand>, _out: &mut OperationVec) {
     }
 
-    pub fn add_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+    pub fn nop_flags(
+        _dest: Rc<Operand>,
+        _rhs: Rc<Operand>,
+        _out: &mut OperationVec,
+        _ctx: &OperandContext,
+    ) {
+    }
+
+    pub fn add_flags(
+        lhs: Rc<Operand>,
+        rhs: Rc<Operand>,
+        out: &mut OperationVec,
+        _ctx: &OperandContext,
+    ) {
         let add = operand_add(lhs.clone(), rhs.clone());
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
@@ -1562,7 +1589,12 @@ pub mod operation_helpers {
         ));
     }
 
-    pub fn adc_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+    pub fn adc_flags(
+        lhs: Rc<Operand>,
+        rhs: Rc<Operand>,
+        out: &mut OperationVec,
+        _ctx: &OperandContext,
+    ) {
         let add = operand_add(operand_add(lhs.clone(), rhs), flag_c());
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
@@ -1574,7 +1606,12 @@ pub mod operation_helpers {
         ));
     }
 
-    pub fn sub_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+    pub fn sub_flags(
+        lhs: Rc<Operand>,
+        rhs: Rc<Operand>,
+        out: &mut OperationVec,
+        _ctx: &OperandContext,
+    ) {
         let sub = operand_sub(lhs.clone(), rhs);
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
@@ -1586,7 +1623,12 @@ pub mod operation_helpers {
         ));
     }
 
-    pub fn sbb_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+    pub fn sbb_flags(
+        lhs: Rc<Operand>,
+        rhs: Rc<Operand>,
+        out: &mut OperationVec,
+        _ctx: &OperandContext,
+    ) {
         let sub = operand_sub(operand_sub(lhs.clone(), rhs), flag_c());
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
@@ -1598,28 +1640,51 @@ pub mod operation_helpers {
         ));
     }
 
-    pub fn zero_carry_oflow(_lhs: Rc<Operand>, _rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(mov(flag_c(), constval(0)));
-        out.push(mov(flag_o(), constval(0)));
+    pub fn zero_carry_oflow(
+        _lhs: Rc<Operand>,
+        _rhs: Rc<Operand>,
+        out: &mut OperationVec,
+        ctx: &OperandContext,
+    ) {
+        out.push(mov(flag_c(), ctx.const_0()));
+        out.push(mov(flag_o(), ctx.const_0()));
     }
 
-    pub fn result_flags(lhs: Rc<Operand>, _: Rc<Operand>, out: &mut OperationVec) {
+    pub fn result_flags(
+        lhs: Rc<Operand>,
+        _: Rc<Operand>,
+        out: &mut OperationVec,
+        ctx: &OperandContext,
+    ) {
         out.push(
-            make_arith_operation(DestOperand::Flag(Flag::Zero), Equal(lhs.clone(), constval(0)))
+            make_arith_operation(
+                DestOperand::Flag(Flag::Zero),
+                Equal(lhs.clone(), ctx.const_0()),
+            )
         );
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Sign),
-            GreaterThan(lhs.clone(), constval(0x7fffffff)),
+            GreaterThan(lhs.clone(), ctx.const_7fffffff()),
         ));
         out.push(make_arith_operation(DestOperand::Flag(Flag::Parity), Parity(lhs)));
     }
 
-    pub fn cmp_result_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        result_flags(operand_sub(lhs, rhs), constval(!0), out)
+    pub fn cmp_result_flags(
+        lhs: Rc<Operand>,
+        rhs: Rc<Operand>,
+        out: &mut OperationVec,
+        ctx: &OperandContext,
+    ) {
+        result_flags(operand_sub(lhs, rhs), ctx.const_ffffffff(), out, ctx)
     }
 
-    pub fn test_result_flags(lhs: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        result_flags(operand_and(lhs, rhs), constval(!0), out)
+    pub fn test_result_flags(
+        lhs: Rc<Operand>,
+        rhs: Rc<Operand>,
+        out: &mut OperationVec,
+        ctx: &OperandContext,
+    ) {
+        result_flags(operand_and(lhs, rhs), ctx.const_ffffffff(), out, ctx)
     }
 
     pub fn esp() -> Rc<Operand> {

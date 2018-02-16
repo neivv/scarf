@@ -418,7 +418,7 @@ impl<'a> Iterator for MemoryIter<'a> {
 }
 
 impl<'a> Destination<'a> {
-    fn set(self, value: Rc<Operand>, intern_map: &mut InternMap) {
+    fn set(self, value: Rc<Operand>, intern_map: &mut InternMap, ctx: &OperandContext) {
         use operand::operand_helpers::*;
         match self {
             Destination::Oper(o) => {
@@ -428,24 +428,24 @@ impl<'a> Destination<'a> {
                 let old = intern_map.operand(*o);
                 *o = intern_map.intern(Operand::simplified(
                     operand_or(
-                        operand_and(old, constval(0xffff0000)),
-                        operand_and(value, constval(0xffff)),
+                        operand_and(old, ctx.const_ffff0000()),
+                        operand_and(value, ctx.const_ffff()),
                     )
                 ));
             }
             Destination::Register8High(o) => {
                 let old = intern_map.operand(*o);
                 *o = intern_map.intern(Operand::simplified(operand_or(
-                    operand_and(old, constval(0xffff00ff)),
-                    operand_and(operand_lsh(value, constval(8)), constval(0xff00)),
+                    operand_and(old, ctx.const_ffff00ff()),
+                    operand_and(operand_lsh(value, ctx.const_8()), ctx.const_ff00()),
                 )));
             }
             Destination::Register8Low(o) => {
                 let old = intern_map.operand(*o);
                 *o = intern_map.intern(Operand::simplified(
                     operand_or(
-                        operand_and(old, constval(0xffffff00)),
-                        operand_and(value, constval(0xff)),
+                        operand_and(old, ctx.const_ffffff00()),
+                        operand_and(value, ctx.const_ff()),
                     )
                 ));
             }
@@ -457,8 +457,8 @@ impl<'a> Destination<'a> {
             Destination::Memory(mem, addr, size) => {
                 let addr = intern_map.intern(Operand::simplified(addr));
                 let value = Operand::simplified(match size {
-                    MemAccessSize::Mem8 => operand_and(value, constval(0xff)),
-                    MemAccessSize::Mem16 => operand_and(value, constval(0xffff)),
+                    MemAccessSize::Mem8 => operand_and(value, ctx.const_ff()),
+                    MemAccessSize::Mem16 => operand_and(value, ctx.const_ffff()),
                     MemAccessSize::Mem32 => value,
                 });
                 mem.set(addr, intern_map.intern(value));
@@ -543,7 +543,7 @@ impl Flags {
             overflow: undef(interner),
             sign: undef(interner),
             parity: undef(interner),
-            direction: interner.intern(operand::operand_helpers::constval(0)),
+            direction: interner.intern(ctx.const_0()),
         }
     }
 }
@@ -591,17 +591,17 @@ impl<'a> ExecutionState<'a> {
                         Some(_) => {
                             let resolved = self.resolve(&value, intern_map);
                             let dest = self.get_dest_invalidate_constraints(&dest, intern_map);
-                            dest.set(resolved, intern_map);
+                            dest.set(resolved, intern_map, self.ctx);
                         }
                         None => {
                             self.get_dest_invalidate_constraints(&dest, intern_map)
-                                .set(self.ctx.undefined_rc(), intern_map)
+                                .set(self.ctx.undefined_rc(), intern_map, self.ctx)
                         }
                     }
                 } else {
                     let resolved = self.resolve(&value, intern_map);
                     let dest = self.get_dest_invalidate_constraints(&dest, intern_map);
-                    dest.set(resolved, intern_map);
+                    dest.set(resolved, intern_map, self.ctx);
                 }
             }
             Operation::Swap(left, right) => {
@@ -609,9 +609,9 @@ impl<'a> ExecutionState<'a> {
                 let left_res = self.resolve(&left.clone().into(), intern_map);
                 let right_res = self.resolve(&right.clone().into(), intern_map);
                 self.get_dest_invalidate_constraints(&left, intern_map)
-                    .set(right_res, intern_map);
+                    .set(right_res, intern_map, self.ctx);
                 self.get_dest_invalidate_constraints(&right, intern_map)
-                    .set(left_res, intern_map);
+                    .set(left_res, intern_map, self.ctx);
             }
             Operation::Call(_) => {
                 self.registers[0] = intern_map.new_undef(self.ctx);
@@ -712,21 +712,24 @@ impl<'a> ExecutionState<'a> {
         match value.ty {
             OperandType::Register(reg) => interner.operand(self.registers[reg.0 as usize]),
             OperandType::Register16(reg) => {
-                operand_and(interner.operand(self.registers[reg.0 as usize]), constval(0xffff))
+                operand_and(
+                    interner.operand(self.registers[reg.0 as usize]),
+                    self.ctx.const_ffff(),
+                )
             }
             OperandType::Register8High(reg) => {
                 operand_rsh(
                     operand_and(
                         interner.operand(self.registers[reg.0 as usize]),
-                        constval(0xff00)
+                        self.ctx.const_ff00(),
                     ),
-                    constval(0x8),
+                    self.ctx.const_8(),
                 )
             },
             OperandType::Register8Low(reg) => {
                 operand_and(
                     interner.operand(self.registers[reg.0 as usize].clone()),
-                    constval(0xff)
+                    self.ctx.const_ff(),
                 )
             },
             OperandType::Pair(ref high, ref low) => {
@@ -826,7 +829,7 @@ impl<'a> ExecutionState<'a> {
                 };
                 let flag_operand = Operand::new_simplified_rc(OperandType::Flag(flag));
                 state.get_dest(&DestOperand::from_oper(&flag_operand), intern_map)
-                    .set(constval(flag_state), intern_map);
+                    .set(constval(flag_state), intern_map, self.ctx);
                 state
             }
             (false, &OperandType::Arithmetic(Or(ref left, ref right))) => {
@@ -1029,7 +1032,7 @@ pub fn merge_states<'a: 'r, 'r>(
             (&None, &Some(ref con), state, _) | (&Some(ref con), &None, _, state) => {
                 // As long as we're working with flags, limiting to lowest bit
                 // allows simplifying cases like (undef | 1)
-                let lowest_bit = operand_and(constval(1), con.0.clone());
+                let lowest_bit = operand_and(old.ctx.const_1(), con.0.clone());
                 match state.try_resolve_const(&lowest_bit, interner) {
                     Some(1) => Some(con.clone()),
                     _ => None,

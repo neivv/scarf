@@ -319,7 +319,7 @@ fn initial_exec_state<'e>(
         DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
             operand_sub(
                 return_address.clone(),
-                constval(1),
+                operand_ctx.const_1(),
             ),
         )),
         constval(0xd0),
@@ -329,10 +329,10 @@ fn initial_exec_state<'e>(
         DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
             operand_sub(
                 return_address,
-                constval(2),
+                operand_ctx.const_2(),
             ),
         )),
-        constval(0xff),
+        operand_ctx.const_ff(),
         interner
     );
     state
