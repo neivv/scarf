@@ -321,6 +321,7 @@ pub struct OperandContext {
 #[derive(Debug)]
 struct OperandCtxGlobals {
     constants: OperandCtxConstants,
+    registers: [Rc<Operand>; 8],
     flag_z: Rc<Operand>,
     flag_c: Rc<Operand>,
     flag_o: Rc<Operand>,
@@ -490,6 +491,16 @@ impl OperandCtxGlobals {
             flag_p: Operand::new_simplified_rc(OperandType::Flag(Flag::Parity)),
             flag_z: Operand::new_simplified_rc(OperandType::Flag(Flag::Zero)),
             flag_s: Operand::new_simplified_rc(OperandType::Flag(Flag::Sign)),
+            registers: [
+                Operand::new_simplified_rc(OperandType::Register(Register(0))),
+                Operand::new_simplified_rc(OperandType::Register(Register(1))),
+                Operand::new_simplified_rc(OperandType::Register(Register(2))),
+                Operand::new_simplified_rc(OperandType::Register(Register(3))),
+                Operand::new_simplified_rc(OperandType::Register(Register(4))),
+                Operand::new_simplified_rc(OperandType::Register(Register(5))),
+                Operand::new_simplified_rc(OperandType::Register(Register(6))),
+                Operand::new_simplified_rc(OperandType::Register(Register(7))),
+            ],
         }
     }
 }
@@ -533,6 +544,10 @@ impl OperandContext {
 
     pub fn flag_p(&self) -> Rc<Operand> {
         self.globals.flag_p.clone()
+    }
+
+    pub fn register(&self, index: u8) -> Rc<Operand> {
+        self.globals.registers[index as usize].clone()
     }
 
     pub fn new() -> OperandContext {

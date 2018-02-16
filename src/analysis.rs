@@ -307,7 +307,7 @@ fn initial_exec_state<'e>(
     let mut state = ExecutionState::new(operand_ctx, interner);
 
     // Set the return address to somewhere in 0x400000 range
-    let return_address = mem32(operand_register(4));
+    let return_address = mem32(operand_ctx.register(4));
     state.move_to(
         DestOperand::from_oper(&return_address),
         constval(binary.code_section().virtual_address.0 + 0x4230),

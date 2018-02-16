@@ -553,14 +553,14 @@ impl<'a> ExecutionState<'a> {
     pub fn new<'b>(ctx: &'b OperandContext, interner: &mut InternMap) -> ExecutionState<'b> {
         ExecutionState {
             registers: [
-                interner.intern(operand::operand_helpers::operand_register(0)),
-                interner.intern(operand::operand_helpers::operand_register(1)),
-                interner.intern(operand::operand_helpers::operand_register(2)),
-                interner.intern(operand::operand_helpers::operand_register(3)),
-                interner.intern(operand::operand_helpers::operand_register(4)),
-                interner.intern(operand::operand_helpers::operand_register(5)),
-                interner.intern(operand::operand_helpers::operand_register(6)),
-                interner.intern(operand::operand_helpers::operand_register(7)),
+                interner.intern(ctx.register(0)),
+                interner.intern(ctx.register(1)),
+                interner.intern(ctx.register(2)),
+                interner.intern(ctx.register(3)),
+                interner.intern(ctx.register(4)),
+                interner.intern(ctx.register(5)),
+                interner.intern(ctx.register(6)),
+                interner.intern(ctx.register(7)),
             ],
             xmm_registers: [
                 XmmOperand::undefined(ctx, interner),
@@ -783,13 +783,11 @@ impl<'a> ExecutionState<'a> {
 
     /// Tries to find an register/memory address corresponding to a resolved value.
     pub fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
-        use operand::operand_helpers::*;
-
         // TODO: Could also check xmm but who honestly uses it for unique storage
         let interned = i.intern(val.clone());
         for (reg, &val) in self.registers.iter().enumerate() {
             if interned == val {
-                return Some(operand_register(reg as u8));
+                return Some(self.ctx.register(reg as u8));
             }
         }
         for (&key, &val) in self.memory.map.iter() {

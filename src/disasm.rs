@@ -223,7 +223,7 @@ fn instruction_operations(
             // Cwde
             0x98 => {
                 let mut out = SmallVec::new();
-                let eax = operand_register(0);
+                let eax = ctx.register(0);
                 let signed_max = ctx.const_7fff();
                 let compare = ArithOpType::GreaterThan(eax.clone(), signed_max);
                 let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
@@ -237,8 +237,8 @@ fn instruction_operations(
             // Cdq
             0x99 => {
                 let mut out = SmallVec::new();
-                let eax = operand_register(0);
-                let edx = operand_register(2);
+                let eax = ctx.register(0);
+                let edx = ctx.register(2);
                 let signed_max = ctx.const_7fffffff();
                 let compare = ArithOpType::GreaterThan(eax, signed_max);
                 let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
@@ -300,8 +300,8 @@ fn instruction_operations(
             // rdtsc
             0x31 => {
                 let mut out = SmallVec::new();
-                out.push(mov(operand_register(0), s.ctx.undefined_rc()));
-                out.push(mov(operand_register(2), s.ctx.undefined_rc()));
+                out.push(mov(ctx.register(0), s.ctx.undefined_rc()));
+                out.push(mov(ctx.register(2), s.ctx.undefined_rc()));
                 Ok(out)
             }
             0x40 ... 0x4f => s.cmov(),
@@ -394,14 +394,14 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             0 => match rm_val {
                 4 => self.parse_sib(0, op_size)?,
                 5 => (mem_variable(op_size, constval(read_u32(self.slice(2))?)), 6),
-                reg => (mem_variable(op_size, operand_register(reg)), 2),
+                reg => (mem_variable(op_size, self.ctx.register(reg)), 2),
             },
             1 => match rm_val {
                 4 => self.parse_sib(1, op_size)?,
                 reg => {
                     let offset = read_u8(self.slice(2))? as i8 as u32;
                     let addition =
-                        operand_add(operand_register(reg), constval(offset));
+                        operand_add(self.ctx.register(reg), constval(offset));
                     (mem_variable(op_size, addition), 3)
                 }
             },
@@ -410,7 +410,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 reg => {
                     let offset = read_u32(self.slice(2))?;
                     let addition =
-                        operand_add(operand_register(reg), constval(offset));
+                        operand_add(self.ctx.register(reg), constval(offset));
                     (mem_variable(op_size, addition), 6)
                 }
             },
@@ -453,14 +453,14 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let mul = 1 << ((sib >> 6) & 0x3);
         let (base_reg, size) = match (sib & 0x7, variation) {
             (5, 0) => (constval(read_u32(self.slice(3))?), 7),
-            (reg, _) => (operand_register(reg), 3),
+            (reg, _) => (self.ctx.register(reg), 3),
         };
         let reg = (sib >> 3) & 0x7;
         let full_mem_op = if reg != 4 {
             let scale_reg = if mul != 1 {
-                operand_mul(operand_register(reg), constval(mul))
+                operand_mul(self.ctx.register(reg), constval(mul))
             } else {
-                operand_register(reg)
+                self.ctx.register(reg)
             };
             operand_add(scale_reg, base_reg)
         } else {
@@ -518,10 +518,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         match is_push {
             true => {
                 out.push(sub(esp(), self.ctx.const_4()));
-                out.push(mov(mem32(esp()), operand_register(reg)));
+                out.push(mov(mem32(esp()), self.ctx.register(reg)));
             }
             false => {
-                out.push(mov(operand_register(reg), mem32(esp())));
+                out.push(mov(self.ctx.register(reg), mem32(esp())));
                 out.push(add(esp(), self.ctx.const_4()));
             }
         }
@@ -638,7 +638,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let constant = read_variable_size(self.slice(1), op_size)?;
         let mem = mem_variable(op_size, constval(constant)).into();
         let eax_left = self.get(0) & 0x2 == 0;
-        let eax = operand_register(0);
+        let eax = self.ctx.register(0);
         let mut out = SmallVec::new();
         out.push(match eax_left {
             true => mov(eax, mem),
@@ -657,7 +657,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let register = self.get(0) & 0x7;
         let constant = read_variable_size(self.slice(1), op_size)?;
         let mut out = SmallVec::new();
-        out.push(mov(operand_register(register), constval(constant)));
+        out.push(mov(self.ctx.register(register), constval(constant)));
         Ok(out)
     }
 
@@ -878,10 +878,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 out.push(make_arith_operation(dest_operand(&rm), ArithOpType::Not(rm.into())));
             }
             4 => {
-                out.push(mov(pair_edx_eax(), operand_mul(operand_register(0), rm)));
+                out.push(mov(pair_edx_eax(), operand_mul(self.ctx.register(0), rm)));
             },
             5 => {
-                out.push(mov(pair_edx_eax(), operand_signed_mul(operand_register(0), rm)));
+                out.push(mov(pair_edx_eax(), operand_signed_mul(self.ctx.register(0), rm)));
             },
             6 => {
                 let div = operand_div(pair_edx_eax(), rm.clone());
@@ -1735,7 +1735,6 @@ impl DestOperand {
 }
 
 fn dest_operand(val: &Operand) -> DestOperand {
-    use operand::operand_helpers::*;
     use operand::OperandType::*;
     match val.ty {
         Register(x) => DestOperand::Register(x),
@@ -1743,8 +1742,8 @@ fn dest_operand(val: &Operand) -> DestOperand {
         Register8High(x) => DestOperand::Register8High(x),
         Register8Low(x) => DestOperand::Register8Low(x),
         Pair(ref hi, ref low) => {
-            assert_eq!(*hi, operand_register(1));
-            assert_eq!(*low, operand_register(0));
+            assert_eq!(hi.ty, Register(::operand::Register(1)));
+            assert_eq!(low.ty, Register(::operand::Register(0)));
             DestOperand::PairEdxEax
         }
         Xmm(x, y) => DestOperand::Xmm(x, y),
