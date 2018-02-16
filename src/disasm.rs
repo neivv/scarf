@@ -393,7 +393,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let (rm, size) = match (modrm >> 6) & 0x3 {
             0 => match rm_val {
                 4 => self.parse_sib(0, op_size)?,
-                5 => (mem_variable(op_size, constval(read_u32(self.slice(2))?)), 6),
+                5 => (mem_variable(op_size, self.ctx.constant(read_u32(self.slice(2))?)), 6),
                 reg => (mem_variable(op_size, self.ctx.register(reg)), 2),
             },
             1 => match rm_val {
@@ -401,7 +401,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 reg => {
                     let offset = read_u8(self.slice(2))? as i8 as u32;
                     let addition =
-                        operand_add(self.ctx.register(reg), constval(offset));
+                        operand_add(self.ctx.register(reg), self.ctx.constant(offset));
                     (mem_variable(op_size, addition), 3)
                 }
             },
@@ -410,7 +410,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 reg => {
                     let offset = read_u32(self.slice(2))?;
                     let addition =
-                        operand_add(self.ctx.register(reg), constval(offset));
+                        operand_add(self.ctx.register(reg), self.ctx.constant(offset));
                     (mem_variable(op_size, addition), 6)
                 }
             },
@@ -431,7 +431,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         imm_size: MemAccessSize,
     ) -> Result<(Rc<Operand>, Rc<Operand>, Rc<Operand>), Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let (rm, r, offset) = self.parse_modrm_inner(op_size)?;
         let imm = read_variable_size(self.slice(offset), imm_size)?;
         let imm = match imm_size {
@@ -439,7 +438,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             MemAccessSize::Mem16 => imm as i16 as u32,
             MemAccessSize::Mem32 => imm,
         };
-        Ok((Rc::new(rm), Rc::new(r), constval(imm)))
+        Ok((Rc::new(rm), Rc::new(r), self.ctx.constant(imm)))
     }
 
     fn parse_sib(
@@ -452,13 +451,13 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let sib = self.get(2);
         let mul = 1 << ((sib >> 6) & 0x3);
         let (base_reg, size) = match (sib & 0x7, variation) {
-            (5, 0) => (constval(read_u32(self.slice(3))?), 7),
+            (5, 0) => (self.ctx.constant(read_u32(self.slice(3))?), 7),
             (reg, _) => (self.ctx.register(reg), 3),
         };
         let reg = (sib >> 3) & 0x7;
         let full_mem_op = if reg != 4 {
             let scale_reg = if mul != 1 {
-                operand_mul(self.ctx.register(reg), constval(mul))
+                operand_mul(self.ctx.register(reg), self.ctx.constant(mul))
             } else {
                 self.ctx.register(reg)
             };
@@ -469,11 +468,11 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         match variation {
             0 => Ok((mem_variable(op_size, full_mem_op), size)),
             1 => {
-                let constant = constval(read_u8(self.slice(size))? as i8 as u32);
+                let constant = self.ctx.constant(read_u8(self.slice(size))? as i8 as u32);
                 Ok((mem_variable(op_size, operand_add(full_mem_op, constant)), size + 1))
             }
             2 => {
-                let constant = constval(read_u32(self.slice(size))?);
+                let constant = self.ctx.constant(read_u32(self.slice(size))?);
                 Ok((mem_variable(op_size, operand_add(full_mem_op, constant)), size + 4))
             }
             _ => unreachable!(),
@@ -490,7 +489,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let constant = read_variable_size(self.slice(1), imm_size)?;
         let mut out = SmallVec::new();
         out.push(sub(esp(), self.ctx.const_4()));
-        out.push(mov(mem32(esp()), constval(constant)));
+        out.push(mov(mem32(esp()), self.ctx.constant(constant)));
         Ok(out)
     }
 
@@ -530,10 +529,12 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn flag_set(&self, flag: Flag, value: bool) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let mut out = SmallVec::new();
         out.push(
-            mov(Operand::new_simplified_rc(OperandType::Flag(flag)), constval(value as u32))
+            mov(
+                Operand::new_simplified_rc(OperandType::Flag(flag)),
+                self.ctx.constant(value as u32),
+            )
         );
         Ok(out)
     }
@@ -591,9 +592,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn conditional_jmp(&self, op_size: MemAccessSize) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let offset = read_variable_size_signed(self.slice(1), op_size)?;
-        let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
+        let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
         out.push(Operation::Jump { condition: self.condition(), to });
         Ok(out)
@@ -609,9 +609,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn short_jmp(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let offset = read_variable_size_signed(self.slice(1), MemAccessSize::Mem8)?;
-        let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
+        let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
         out.push(Operation::Jump { condition: self.ctx.const_1(), to });
         Ok(out)
@@ -636,7 +635,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             _ => self.mem16_32(),
         };
         let constant = read_variable_size(self.slice(1), op_size)?;
-        let mem = mem_variable(op_size, constval(constant)).into();
+        let mem = mem_variable(op_size, self.ctx.constant(constant)).into();
         let eax_left = self.get(0) & 0x2 == 0;
         let eax = self.ctx.register(0);
         let mut out = SmallVec::new();
@@ -649,7 +648,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn move_const_to_reg(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x8 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
@@ -657,7 +655,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let register = self.get(0) & 0x7;
         let constant = read_variable_size(self.slice(1), op_size)?;
         let mut out = SmallVec::new();
-        out.push(mov(self.ctx.register(register), constval(constant)));
+        out.push(mov(self.ctx.register(register), self.ctx.constant(constant)));
         Ok(out)
     }
 
@@ -672,14 +670,13 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
           H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
     {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
         let dest = Rc::new(Operand::reg_variable_size(Register(0), op_size));
         let imm = read_variable_size(self.slice(1), op_size)?;
-        let val = constval(imm);
+        let val = self.ctx.constant(imm);
         let mut out = SmallVec::new();
         pre_flags(dest.clone(), val.clone(), &mut out, self.ctx);
         make_arith(dest.clone(), val.clone(), &mut out);
@@ -1063,8 +1060,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 match rm.ty {
                     OperandType::Memory(ref mem) => {
                         out.extend((0..10).map(|i| {
-                            let address =
-                                operand_add(mem.address.clone(), constval(i * mem_bytes));
+                            let address = operand_add(
+                                mem.address.clone(),
+                                self.ctx.constant(i * mem_bytes),
+                            );
                             let dest = mem_variable_rc(mem_size, address);
                             mov(dest, self.ctx.undefined_rc())
                         }));
@@ -1262,14 +1261,13 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
           H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
     {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
         let eax = Rc::new(Operand::reg_variable_size(Register(0), op_size));
         let imm = read_variable_size(self.slice(1), op_size)?;
-        let val = constval(imm);
+        let val = self.ctx.constant(imm);
         let mut out = SmallVec::new();
         pre_flags(eax.clone(), val.clone(), &mut out, self.ctx);
         let operand = make_arith(eax, val);
@@ -1307,9 +1305,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn call_op(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let offset = read_u32(self.slice(1))?;
-        let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
+        let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
         out.push(Operation::Call(to));
         Ok(out)
@@ -1317,9 +1314,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn jump_op(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
         let offset = read_u32(self.slice(1))?;
-        let to = constval((self.address.0 + self.len() as u32).wrapping_add(offset));
+        let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
         out.push(Operation::Jump { condition: self.ctx.const_1(), to });
         Ok(out)

@@ -310,7 +310,7 @@ fn initial_exec_state<'e>(
     let return_address = mem32(operand_ctx.register(4));
     state.move_to(
         DestOperand::from_oper(&return_address),
-        constval(binary.code_section().virtual_address.0 + 0x4230),
+        operand_ctx.constant(binary.code_section().virtual_address.0 + 0x4230),
         interner
     );
 
@@ -322,7 +322,7 @@ fn initial_exec_state<'e>(
                 operand_ctx.const_1(),
             ),
         )),
-        constval(0xd0),
+        operand_ctx.constant(0xd0),
         interner
     );
     state.move_to(
