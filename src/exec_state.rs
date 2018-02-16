@@ -1102,19 +1102,18 @@ fn contains_undefined(oper: &Operand) -> bool {
 
 #[test]
 fn merge_state_constraints_eq() {
-    use disasm::operation_helpers::*;
     use operand::operand_helpers::*;
     let mut i = InternMap::new();
     let ctx = ::operand::OperandContext::new();
     let state_a = ExecutionState::new(&ctx, &mut i);
     let mut state_b = ExecutionState::new(&ctx, &mut i);
     let sign_eq_overflow_flag = Operand::simplified(operand_eq(
-        flag_o(),
-        flag_s(),
+        ctx.flag_o(),
+        ctx.flag_s(),
     ));
     let state_a = state_a.assume_jump_flag(&sign_eq_overflow_flag, true, &mut i);
-    state_b.move_to(DestOperand::from_oper(&flag_o()), constval(1), &mut i);
-    state_b.move_to(DestOperand::from_oper(&flag_s()), constval(1), &mut i);
+    state_b.move_to(DestOperand::from_oper(&ctx.flag_o()), constval(1), &mut i);
+    state_b.move_to(DestOperand::from_oper(&ctx.flag_s()), constval(1), &mut i);
     let merged = merge_states(&state_b, &state_a, &mut i).unwrap();
     assert!(merged.last_jump_extra_constraint.is_some());
     assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
@@ -1122,18 +1121,17 @@ fn merge_state_constraints_eq() {
 
 #[test]
 fn merge_state_constraints_or() {
-    use disasm::operation_helpers::*;
     use operand::operand_helpers::*;
     let mut i = InternMap::new();
     let ctx = ::operand::OperandContext::new();
     let state_a = ExecutionState::new(&ctx, &mut i);
     let mut state_b = ExecutionState::new(&ctx, &mut i);
     let sign_or_overflow_flag = Operand::simplified(operand_or(
-        flag_o(),
-        flag_s(),
+        ctx.flag_o(),
+        ctx.flag_s(),
     ));
     let mut state_a = state_a.assume_jump_flag(&sign_or_overflow_flag, true, &mut i);
-    state_b.move_to(DestOperand::from_oper(&flag_s()), constval(1), &mut i);
+    state_b.move_to(DestOperand::from_oper(&ctx.flag_s()), constval(1), &mut i);
     let merged = merge_states(&state_b, &state_a, &mut i).unwrap();
     assert!(merged.last_jump_extra_constraint.is_some());
     assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
@@ -1142,7 +1140,7 @@ fn merge_state_constraints_or() {
     let merged = merge_states(&state_a, &state_b, &mut i);
     assert!(merged.is_none());
 
-    state_a.move_to(DestOperand::from_oper(&flag_c()), constval(1), &mut i);
+    state_a.move_to(DestOperand::from_oper(&ctx.flag_c()), constval(1), &mut i);
     let merged = merge_states(&state_a, &state_b, &mut i).unwrap();
     assert!(merged.last_jump_extra_constraint.is_some());
     assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);

@@ -539,45 +539,44 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn condition(&self) -> Rc<Operand> {
-        use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let ctx = self.ctx;
         match self.get(0) & 0xf {
             // jo, jno
-            0x0 => operand_logical_not(operand_eq(flag_o(), ctx.const_0())),
-            0x1 => operand_eq(flag_o(), ctx.const_0()),
+            0x0 => operand_logical_not(operand_eq(ctx.flag_o(), ctx.const_0())),
+            0x1 => operand_eq(ctx.flag_o(), ctx.const_0()),
             // jb, jnb (jae) (jump if carry)
-            0x2 => operand_logical_not(operand_eq(flag_c(), ctx.const_0())),
-            0x3 => operand_eq(flag_c(), ctx.const_0()),
+            0x2 => operand_logical_not(operand_eq(ctx.flag_c(), ctx.const_0())),
+            0x3 => operand_eq(ctx.flag_c(), ctx.const_0()),
             // je, jne
-            0x4 => operand_logical_not(operand_eq(flag_z(), ctx.const_0())),
-            0x5 => operand_eq(flag_z(), ctx.const_0()),
+            0x4 => operand_logical_not(operand_eq(ctx.flag_z(), ctx.const_0())),
+            0x5 => operand_eq(ctx.flag_z(), ctx.const_0()),
             // jbe, jnbe (ja)
             0x6 => operand_or(
-                operand_logical_not(operand_eq(flag_z(), ctx.const_0())),
-                operand_logical_not(operand_eq(flag_c(), ctx.const_0())),
+                operand_logical_not(operand_eq(ctx.flag_z(), ctx.const_0())),
+                operand_logical_not(operand_eq(ctx.flag_c(), ctx.const_0())),
             ),
             0x7 => operand_and(
-                operand_eq(flag_z(), ctx.const_0()),
-                operand_eq(flag_c(), ctx.const_0()),
+                operand_eq(ctx.flag_z(), ctx.const_0()),
+                operand_eq(ctx.flag_c(), ctx.const_0()),
             ),
             // js, jns
-            0x8 => operand_logical_not(operand_eq(flag_s(), ctx.const_0())),
-            0x9 => operand_eq(flag_s(), ctx.const_0()),
+            0x8 => operand_logical_not(operand_eq(ctx.flag_s(), ctx.const_0())),
+            0x9 => operand_eq(ctx.flag_s(), ctx.const_0()),
             // jpe, jpo
-            0xa => operand_logical_not(operand_eq(flag_p(), ctx.const_0())),
-            0xb => operand_eq(flag_p(), ctx.const_0()),
+            0xa => operand_logical_not(operand_eq(ctx.flag_p(), ctx.const_0())),
+            0xb => operand_eq(ctx.flag_p(), ctx.const_0()),
             // jl, jnl (jge)
-            0xc => operand_logical_not(operand_eq(flag_s(), flag_o())),
-            0xd => operand_eq(flag_s(), flag_o()),
+            0xc => operand_logical_not(operand_eq(ctx.flag_s(), ctx.flag_o())),
+            0xd => operand_eq(ctx.flag_s(), ctx.flag_o()),
             // jle, jnle (jg)
             0xe => operand_or(
-                operand_logical_not(operand_eq(flag_z(), ctx.const_0())),
-                operand_logical_not(operand_eq(flag_s(), flag_o())),
+                operand_logical_not(operand_eq(ctx.flag_z(), ctx.const_0())),
+                operand_logical_not(operand_eq(ctx.flag_s(), ctx.flag_o())),
             ),
             0xf => operand_and(
-                operand_eq(flag_z(), ctx.const_0()),
-                operand_eq(flag_s(), flag_o()),
+                operand_eq(ctx.flag_z(), ctx.const_0()),
+                operand_eq(ctx.flag_s(), ctx.flag_o()),
             ),
             _ => unreachable!(),
         }
@@ -1593,9 +1592,9 @@ pub mod operation_helpers {
         lhs: Rc<Operand>,
         rhs: Rc<Operand>,
         out: &mut OperationVec,
-        _ctx: &OperandContext,
+        ctx: &OperandContext,
     ) {
-        let add = operand_add(operand_add(lhs.clone(), rhs), flag_c());
+        let add = operand_add(operand_add(lhs.clone(), rhs), ctx.flag_c());
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
             GreaterThan(lhs.clone(), add.clone()),
@@ -1627,9 +1626,9 @@ pub mod operation_helpers {
         lhs: Rc<Operand>,
         rhs: Rc<Operand>,
         out: &mut OperationVec,
-        _ctx: &OperandContext,
+        ctx: &OperandContext,
     ) {
-        let sub = operand_sub(operand_sub(lhs.clone(), rhs), flag_c());
+        let sub = operand_sub(operand_sub(lhs.clone(), rhs), ctx.flag_c());
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
             GreaterThan(sub.clone(), lhs.clone()),
@@ -1646,8 +1645,8 @@ pub mod operation_helpers {
         out: &mut OperationVec,
         ctx: &OperandContext,
     ) {
-        out.push(mov(flag_c(), ctx.const_0()));
-        out.push(mov(flag_o(), ctx.const_0()));
+        out.push(mov(ctx.flag_c(), ctx.const_0()));
+        out.push(mov(ctx.flag_o(), ctx.const_0()));
     }
 
     pub fn result_flags(
@@ -1692,32 +1691,11 @@ pub mod operation_helpers {
     }
 
     thread_local! {
-        static FLAG_Z: Rc<Operand> = Operand::new_simplified_rc(OperandType::Flag(Flag::Zero));
         static FLAG_C: Rc<Operand> = Operand::new_simplified_rc(OperandType::Flag(Flag::Carry));
-        static FLAG_O: Rc<Operand> =
-            Operand::new_simplified_rc(OperandType::Flag(Flag::Overflow));
-        static FLAG_S: Rc<Operand> = Operand::new_simplified_rc(OperandType::Flag(Flag::Sign));
-        static FLAG_P: Rc<Operand> = Operand::new_simplified_rc(OperandType::Flag(Flag::Parity));
     }
 
-    pub fn flag_z() -> Rc<Operand> {
-        FLAG_Z.with(|x| x.clone())
-    }
-
-    pub fn flag_c() -> Rc<Operand> {
+    pub(crate) fn flag_c() -> Rc<Operand> {
         FLAG_C.with(|x| x.clone())
-    }
-
-    pub fn flag_o() -> Rc<Operand> {
-        FLAG_O.with(|x| x.clone())
-    }
-
-    pub fn flag_s() -> Rc<Operand> {
-        FLAG_S.with(|x| x.clone())
-    }
-
-    pub fn flag_p() -> Rc<Operand> {
-        FLAG_P.with(|x| x.clone())
     }
 }
 

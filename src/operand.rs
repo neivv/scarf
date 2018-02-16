@@ -315,7 +315,17 @@ pub struct UndefinedId(pub u32);
 #[derive(Debug)]
 pub struct OperandContext {
     next_undefined: Cell<u32>,
-    constants: Rc<OperandCtxConstants>,
+    globals: Rc<OperandCtxGlobals>,
+}
+
+#[derive(Debug)]
+struct OperandCtxGlobals {
+    constants: OperandCtxConstants,
+    flag_z: Rc<Operand>,
+    flag_c: Rc<Operand>,
+    flag_o: Rc<Operand>,
+    flag_s: Rc<Operand>,
+    flag_p: Rc<Operand>,
 }
 
 pub struct Iter<'a>(Option<IterState<'a>>);
@@ -421,7 +431,7 @@ macro_rules! operand_context_const_methods {
     ($($name:ident, $field:ident,)*) => {
         $(
             pub fn $name(&self) -> Rc<Operand> {
-                self.constants.$field.clone()
+                self.globals.constants.$field.clone()
             }
         )*
     }
@@ -468,7 +478,20 @@ operand_ctx_constants! {
     c_ffffffff: 0xffffffff,
 }
 thread_local! {
-    static OPERAND_CTX_CONSTS: Rc<OperandCtxConstants> = Rc::new(OperandCtxConstants::new());
+    static OPERAND_CTX_GLOBALS: Rc<OperandCtxGlobals> = Rc::new(OperandCtxGlobals::new());
+}
+
+impl OperandCtxGlobals {
+    fn new() -> OperandCtxGlobals {
+        OperandCtxGlobals {
+            constants: OperandCtxConstants::new(),
+            flag_c: Operand::new_simplified_rc(OperandType::Flag(Flag::Carry)),
+            flag_o: Operand::new_simplified_rc(OperandType::Flag(Flag::Overflow)),
+            flag_p: Operand::new_simplified_rc(OperandType::Flag(Flag::Parity)),
+            flag_z: Operand::new_simplified_rc(OperandType::Flag(Flag::Zero)),
+            flag_s: Operand::new_simplified_rc(OperandType::Flag(Flag::Sign)),
+        }
+    }
 }
 
 impl OperandContext {
@@ -492,10 +515,30 @@ impl OperandContext {
         const_ffffffff, c_ffffffff,
     }
 
+    pub fn flag_z(&self) -> Rc<Operand> {
+        self.globals.flag_z.clone()
+    }
+
+    pub fn flag_c(&self) -> Rc<Operand> {
+        self.globals.flag_c.clone()
+    }
+
+    pub fn flag_o(&self) -> Rc<Operand> {
+        self.globals.flag_o.clone()
+    }
+
+    pub fn flag_s(&self) -> Rc<Operand> {
+        self.globals.flag_s.clone()
+    }
+
+    pub fn flag_p(&self) -> Rc<Operand> {
+        self.globals.flag_p.clone()
+    }
+
     pub fn new() -> OperandContext {
         OperandContext {
             next_undefined: Cell::new(0),
-            constants: OPERAND_CTX_CONSTS.with(|x| x.clone()),
+            globals: OPERAND_CTX_GLOBALS.with(|x| x.clone()),
         }
     }
 
