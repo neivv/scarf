@@ -2260,27 +2260,10 @@ pub mod operand_helpers {
 
     use super::ArithOpType::*;
     use super::MemAccessSize::*;
-    use super::{MemAccess, MemAccessSize, Operand, OperandType, Register};
-
-    thread_local! {
-        static REGISTERS: [Rc<Operand>; 8] = [
-            Operand::new_simplified_rc(OperandType::Register(Register(0))),
-            Operand::new_simplified_rc(OperandType::Register(Register(1))),
-            Operand::new_simplified_rc(OperandType::Register(Register(2))),
-            Operand::new_simplified_rc(OperandType::Register(Register(3))),
-            Operand::new_simplified_rc(OperandType::Register(Register(4))),
-            Operand::new_simplified_rc(OperandType::Register(Register(5))),
-            Operand::new_simplified_rc(OperandType::Register(Register(6))),
-            Operand::new_simplified_rc(OperandType::Register(Register(7))),
-        ];
-        static PAIR_EDX_EAX: Rc<Operand> = Operand::new_simplified_rc(OperandType::Pair(
-            Operand::new_simplified_rc(OperandType::Register(Register(1))),
-            Operand::new_simplified_rc(OperandType::Register(Register(0))),
-        ));
-    }
+    use super::{MemAccess, MemAccessSize, Operand, OperandContext, OperandType, Register};
 
     pub fn operand_register(num: u8) -> Rc<Operand> {
-        REGISTERS.with(|x| x[num as usize].clone())
+        OperandContext::new().register(num)
     }
 
     pub fn operand_xmm(num: u8, word: u8) -> Rc<Operand> {
@@ -2374,23 +2357,15 @@ pub mod operand_helpers {
         mem_variable(size, val).into()
     }
 
-    const CONST_AMT: u32 = 0x20;
-    thread_local! {
-        static CONSTANTS: Vec<Rc<Operand>> = {
-            (0..CONST_AMT).map(|i| Operand::new_simplified_rc(OperandType::Constant(i))).collect()
-        };
-    }
-
     pub fn constval(num: u32) -> Rc<Operand> {
-        if num < CONST_AMT {
-            CONSTANTS.with(|x| x[num as usize].clone())
-        } else {
-            Operand::new_simplified_rc(OperandType::Constant(num))
-        }
+        OperandContext::new().constant(num)
     }
 
     pub fn pair_edx_eax() -> Rc<Operand> {
-        PAIR_EDX_EAX.with(|x| x.clone())
+        Operand::new_simplified_rc(OperandType::Pair(
+            Operand::new_simplified_rc(OperandType::Register(Register(1))),
+            Operand::new_simplified_rc(OperandType::Register(Register(0))),
+        ))
     }
 
     pub fn pair(high: Rc<Operand>, low: Rc<Operand>) -> Rc<Operand> {
