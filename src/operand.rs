@@ -1340,6 +1340,15 @@ impl Operand {
         }
     }
 
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Equal(left, right))`
+    pub fn if_arithmetic_eq(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        match self.ty {
+            OperandType::Arithmetic(ArithOpType::Equal(ref l, ref r)) => Some((l, r)),
+            _ => None,
+        }
+    }
+
     /// If either of `a` or `b` matches the filter-map `f`, return the mapped result and the other
     /// operand.
     pub fn either<'a, F, T>(
