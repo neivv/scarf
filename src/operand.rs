@@ -1472,8 +1472,10 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
                     // Check for (x == 0) == 0
                     if let Some((c, other)) = Operand::either(l, r, |x| x.if_constant()) {
                         if c == 0 {
-                            if let OperandType::Arithmetic(ArithOpType::Equal(..)) = other.ty {
-                                return other.clone();
+                            if let OperandType::Arithmetic(ref arith) = other.ty {
+                                if arith.is_compare_op() {
+                                    return other.clone();
+                                }
                             }
                         }
                     }
@@ -3599,6 +3601,26 @@ mod test {
                 operand_register(0),
                 constval(12),
             ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_bool_oper() {
+        use super::operand_helpers::*;
+        let op1 = operand_eq(
+            constval(0),
+            operand_eq(
+                operand_gt(
+                    operand_register(0),
+                    operand_register(1),
+                ),
+                constval(0),
+            ),
+        );
+        let eq1 = operand_gt(
+            operand_register(0),
+            operand_register(1),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
