@@ -1198,30 +1198,46 @@ impl Operand {
                     let r = right.clone();
                     match (&l.ty, &r.ty) {
                         (&OperandType::Constant(a), &OperandType::Constant(b)) => match a > b {
-                            true => ctx.const_1(),
-                            false => ctx.const_0(),
+                            true => return ctx.const_1(),
+                            false => return ctx.const_0(),
                         },
-                        _ => {
-                            let ty = OperandType::Arithmetic(ArithOpType::GreaterThan(left, right));
-                            Operand::new_simplified_rc(ty)
+                        (&OperandType::Arithmetic(ArithOpType::Sub(ref l2, ref r2)), _) => {
+                            if *l2 == r {
+                                let ty = OperandType::Arithmetic(
+                                    ArithOpType::GreaterThan(r2.clone(), r.clone())
+                                );
+                                return Operand::new_simplified_rc(ty);
+                            }
                         }
+                        _ => (),
                     }
+                    let ty = OperandType::Arithmetic(ArithOpType::GreaterThan(left, right));
+                    Operand::new_simplified_rc(ty)
                 }
                 ArithOpType::GreaterThanSigned(ref left, ref right) => {
                     let left = Operand::simplified(left.clone());
                     let right = Operand::simplified(right.clone());
-                    match (&left.ty, &right.ty) {
+                    let l = left.clone();
+                    let r = right.clone();
+                    match (&l.ty, &r.ty) {
                         (&OperandType::Constant(a), &OperandType::Constant(b)) => {
                             match a as i32 > b as i32 {
-                                true => ctx.const_1(),
-                                false => ctx.const_0(),
+                                true => return ctx.const_1(),
+                                false => return ctx.const_0(),
                             }
                         }
-                        _ => {
-                            let ty = OperandType::Arithmetic(ArithOpType::GreaterThanSigned(left, right));
-                            Operand::new_simplified_rc(ty)
+                        (&OperandType::Arithmetic(ArithOpType::Sub(ref l2, ref r2)), _) => {
+                            if *l2 == r {
+                                let ty = OperandType::Arithmetic(
+                                    ArithOpType::GreaterThanSigned(r2.clone(), r.clone())
+                                );
+                                return Operand::new_simplified_rc(ty);
+                            }
                         }
+                        _ => (),
                     }
+                    let ty = OperandType::Arithmetic(ArithOpType::GreaterThanSigned(left, right));
+                    Operand::new_simplified_rc(ty)
                 }
                 ArithOpType::Not(ref op) => {
                     let op = Operand::simplified(op.clone());
@@ -3623,6 +3639,35 @@ mod test {
             operand_register(1),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_gt2() {
+        use super::operand_helpers::*;
+        let op1 = operand_gt(
+            operand_sub(
+                operand_register(5),
+                operand_register(2),
+            ),
+            operand_register(5),
+        );
+        let eq1 = operand_gt(
+            operand_register(2),
+            operand_register(5),
+        );
+        let op2 = operand_gt_signed(
+            operand_sub(
+                operand_register(5),
+                operand_register(2),
+            ),
+            operand_register(5),
+        );
+        let eq2 = operand_gt_signed(
+            operand_register(2),
+            operand_register(5),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 
     #[test]
