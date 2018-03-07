@@ -109,7 +109,9 @@ fn find_funcptrs(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<FuncPtrPai
     let mut out = Vec::with_capacity(4096);
     let code = file.code_section();
     for sect in file.sections.iter().filter(|sect| {
-        &sect.name[..] == b".data\0\0\0" || &sect.name[..] == b".rdata\0\0"
+        &sect.name[..] == b".data\0\0\0" ||
+            &sect.name[..] == b".rdata\0\0" ||
+            &sect.name[..] == b".text\0\0\0"
     }) {
         collect_relocs_pointing_to_code(code, relocs, sect, &mut out);
     }
