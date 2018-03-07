@@ -1226,14 +1226,6 @@ impl Operand {
                                 false => return ctx.const_0(),
                             }
                         }
-                        (&OperandType::Arithmetic(ArithOpType::Sub(ref l2, ref r2)), _) => {
-                            if *l2 == r {
-                                let ty = OperandType::Arithmetic(
-                                    ArithOpType::GreaterThanSigned(r2.clone(), r.clone())
-                                );
-                                return Operand::new_simplified_rc(ty);
-                            }
-                        }
                         _ => (),
                     }
                     let ty = OperandType::Arithmetic(ArithOpType::GreaterThanSigned(left, right));
@@ -3655,6 +3647,8 @@ mod test {
             operand_register(2),
             operand_register(5),
         );
+        // Checking for signed gt requires sign == overflow, unlike
+        // unsigned where it's just carry == 1
         let op2 = operand_gt_signed(
             operand_sub(
                 operand_register(5),
@@ -3662,12 +3656,12 @@ mod test {
             ),
             operand_register(5),
         );
-        let eq2 = operand_gt_signed(
+        let ne2 = operand_gt_signed(
             operand_register(2),
             operand_register(5),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
-        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+        assert_ne!(Operand::simplified(op2), Operand::simplified(ne2));
     }
 
     #[test]
