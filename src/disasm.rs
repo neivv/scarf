@@ -317,6 +317,7 @@ fn instruction_operations(
             0xbe ... 0xbf => s.movsx(),
             0xd3 => s.packed_shift_right(),
             0xd6 => s.mov_sse_d6(),
+            0xf3 => s.packed_shift_left(),
             _ => {
                 let mut bytes = vec![0xf];
                 bytes.extend(s.data);
@@ -974,6 +975,64 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         Ok(out)
     }
 
+    fn packed_shift_left(&self) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        use operand::operand_helpers::*;
+        if !self.has_prefix(0x66) {
+            return Err(Error::UnknownOpcode(self.data.into()));
+        }
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        // dest.1 = (dest.1 << rm.0) | (dest.0 >> (32 - rm.0))
+        // shl dest.0, rm.0
+        // dest.3 = (dest.3 << rm.0) | (dest.2 >> (32 - rm.0))
+        // shl dest.2, rm.0
+        // Zero everything if rm.1 is set
+        let mut out = SmallVec::new();
+        out.push({
+            let (low, high) = Operand::to_xmm_64(&dest, 0);
+            let rm = Operand::to_xmm_32(&rm, 0);
+            make_arith_operation(
+                dest_operand(&low),
+                ArithOpType::Or(
+                    operand_lsh(high, rm.clone()),
+                    operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
+                ),
+            )
+        });
+        out.push({
+            let (low, _) = Operand::to_xmm_64(&dest, 0);
+            let rm = Operand::to_xmm_32(&rm, 0);
+            lsh(low, rm)
+        });
+        out.push({
+            let (low, high) = Operand::to_xmm_64(&dest, 1);
+            let rm = Operand::to_xmm_32(&rm, 0);
+            make_arith_operation(
+                dest_operand(&low),
+                ArithOpType::Or(
+                    operand_lsh(high, rm.clone()),
+                    operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
+                ),
+            )
+        });
+        out.push({
+            let (low, _) = Operand::to_xmm_64(&dest, 1);
+            let rm = Operand::to_xmm_32(&rm, 0);
+            lsh(low, rm)
+        });
+        let (_, high) = Operand::to_xmm_64(&rm, 0);
+        let high_u32_set = operand_logical_not(operand_eq(high, self.ctx.const_0()));
+        for i in 0..4 {
+            let dest = Operand::to_xmm_32(&dest, i);
+            out.push(Operation::Move(
+                dest_operand(&dest),
+                self.ctx.const_0(),
+                Some(high_u32_set.clone()),
+            ));
+        }
+        Ok(out)
+    }
+
     fn packed_shift_right(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
@@ -982,9 +1041,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         }
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
         // dest.0 = (dest.0 >> rm.0) | (dest.1 << (32 - rm.0))
-        // shl dest.1, rm.0
+        // shr dest.1, rm.0
         // dest.2 = (dest.2 >> rm.0) | (dest.3 << (32 - rm.0))
-        // shl dest.3, rm.0
+        // shr dest.3, rm.0
         // Zero everything if rm.1 is set
         let mut out = SmallVec::new();
         out.push({
@@ -1019,14 +1078,14 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             let rm = Operand::to_xmm_32(&rm, 0);
             rsh(high, rm)
         });
+        let (_, high) = Operand::to_xmm_64(&rm, 0);
+        let high_u32_set = operand_logical_not(operand_eq(high, self.ctx.const_0()));
         for i in 0..4 {
             let dest = Operand::to_xmm_32(&dest, i);
-            let (_, high) = Operand::to_xmm_64(&rm, 0);
-            let high_u32_set = operand_logical_not(operand_eq(high, self.ctx.const_0()));
             out.push(Operation::Move(
                 dest_operand(&dest),
                 self.ctx.const_0(),
-                Some(high_u32_set),
+                Some(high_u32_set.clone()),
             ));
         }
         Ok(out)
@@ -1531,6 +1590,13 @@ pub mod operation_helpers {
             dest_operand(&dest),
             RotateLeft(dest, operand_sub(constval(32), rhs))
         ));
+    }
+
+    pub fn lsh(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
+        make_arith_operation(
+            dest_operand(&dest),
+            Lsh(dest, rhs),
+        )
     }
 
     pub fn lsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
