@@ -311,6 +311,7 @@ fn instruction_operations(
             0x80 ... 0x8f => s.conditional_jmp(s.mem16_32()),
             0x90 ... 0x9f => s.conditional_set(),
             0xa4 => s.shld_imm(),
+            0xac => s.shrd_imm(),
             0xaf => s.imul_normal(),
             0xb6 ... 0xb7 => s.movzx(),
             0xbe ... 0xbf => s.movsx(),
@@ -1193,6 +1194,36 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                         ),
                         operand_rsh(
                             low,
+                            operand_sub(
+                                self.ctx.const_20(),
+                                imm.clone(),
+                            )
+                        ),
+                    ),
+                ),
+            );
+        }
+        Ok(out)
+    }
+
+    fn shrd_imm(&self) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        use operand::operand_helpers::*;
+        let (low, hi, imm) = self.parse_modrm_imm(self.mem16_32(), MemAccessSize::Mem8)?;
+        let mut out = SmallVec::new();
+        let imm = Operand::simplified(operand_and(imm, self.ctx.const_1f()));
+        if imm.ty != OperandType::Constant(0) {
+            // TODO flags
+            out.push(
+                mov(
+                    low.clone(),
+                    operand_or(
+                        operand_rsh(
+                            low,
+                            imm.clone(),
+                        ),
+                        operand_lsh(
+                            hi,
                             operand_sub(
                                 self.ctx.const_20(),
                                 imm.clone(),
