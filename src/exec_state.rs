@@ -672,8 +672,8 @@ impl<'a> ExecutionState<'a> {
             }
             Operation::Swap(left, right) => {
                 // Shouldn't have to clone
-                let left_res = self.resolve(&left.clone().into(), intern_map);
-                let right_res = self.resolve(&right.clone().into(), intern_map);
+                let left_res = self.resolve(&Rc::new(left.clone().into()), intern_map);
+                let right_res = self.resolve(&Rc::new(right.clone().into()), intern_map);
                 self.get_dest_invalidate_constraints(&left, intern_map)
                     .set(right_res, intern_map, self.ctx);
                 self.get_dest_invalidate_constraints(&right, intern_map)
@@ -846,7 +846,7 @@ impl<'a> ExecutionState<'a> {
             .unwrap_or_else(|| mem_variable_rc(mem.size, address))
     }
 
-    fn resolve_no_simplify(&self, value: &Operand, interner: &mut InternMap) -> Rc<Operand> {
+    fn resolve_no_simplify(&self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
         use operand::operand_helpers::*;
 
         match value.ty {
@@ -894,25 +894,24 @@ impl<'a> ExecutionState<'a> {
                 let ty = OperandType::ArithmeticHigh(self.resolve_arith(op, interner));
                 Operand::new_not_simplified_rc(ty)
             }
-            OperandType::Constant(x) => Operand::new_simplified_rc(OperandType::Constant(x)),
+            OperandType::Constant(_) => value.clone(),
             OperandType::Memory(ref mem) => {
                 self.resolve_mem(mem, interner)
             }
-            OperandType::Undefined(x) => Operand::new_simplified_rc(OperandType::Undefined(x))
+            OperandType::Undefined(_) => value.clone(),
         }
     }
 
-    pub fn resolve(&self, value: &Operand, interner: &mut InternMap) -> Rc<Operand> {
+    pub fn resolve(&self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
         Operand::simplified(self.resolve_no_simplify(value, interner))
     }
 
-    pub fn try_resolve_const(&self, condition: &Operand, i: &mut InternMap) -> Option<u32> {
-        let mut condition = Rc::new(condition.clone());
+    pub fn try_resolve_const(&self, condition: &Rc<Operand>, i: &mut InternMap) -> Option<u32> {
+        let mut condition = condition.clone();
         if let Some(ref constraint) = self.last_jump_extra_constraint {
             constraint.apply_to(&mut condition);
         }
-        let operand = self.resolve(&condition, i);
-        Operand::simplified(operand.clone()).if_constant()
+        self.resolve(&condition, i).if_constant()
     }
 
     /// Tries to find an register/memory address corresponding to a resolved value.
