@@ -675,6 +675,8 @@ impl OperandType {
                     min(left.min_zero_bit_simplify_size, right.min_zero_bit_simplify_size)
                 }
                 ArithOpType::Not(ref val) => val.min_zero_bit_simplify_size,
+                ArithOpType::Rsh(ref l, _) => l.min_zero_bit_simplify_size,
+                ArithOpType::Lsh(ref l, _) => l.min_zero_bit_simplify_size,
                 _ => {
                     let rel_bits = self.relevant_bits();
                     rel_bits.end - rel_bits.start
@@ -1007,7 +1009,6 @@ impl Operand {
     // "Simplify bitwise or: merge child ands"
     // Converts things like [x & const1, x & const2] to [x & (const1 | const2)]
     fn simplify_or_merge_child_ands(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
-        use self::operand_helpers::*;
         fn and_const(op: &Rc<Operand>) -> Option<(&Rc<Operand>, u32)> {
             match op.ty {
                 OperandType::Arithmetic(ArithOpType::And(ref left, ref right)) => {
@@ -1056,11 +1057,169 @@ impl Operand {
                         other_op.remove();
                     }
                 }
-                new = Some(Operand::simplified(operand_and(new_val, ctx.constant(constant))));
+                new = Some(simplify_and(&new_val, &ctx.constant(constant), ctx));
             }
             if let Some(new) = new {
                 *op = new;
             }
+        }
+    }
+
+    // Simplify or: merge memory
+    // Converts (Mem32[x] >> 8) | (Mem32[x + 4] << 18) to Mem32[x + 1]
+    fn simplify_or_merge_mem(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
+        use self::operand_helpers::*;
+
+        // Return (offset, len, value_offset)
+        fn is_offset_mem(
+            op: &Rc<Operand>,
+            ctx: &OperandContext,
+        ) -> Option<(Rc<Operand>, (u32, u32, u32))> {
+            match op.ty {
+                OperandType::Arithmetic(ArithOpType::Lsh(ref left, ref right)) => {
+                    if let Some(c) = right.if_constant() {
+                        if c & 0x7 == 0 && c < 0x20 {
+                            let bytes = c / 8;
+                            return is_offset_mem(left, ctx).and_then(|(x, (off, len, val_off))| {
+                                Some((x, (off, len, val_off + bytes)))
+                            });
+                        }
+                    }
+                    None
+                }
+                OperandType::Arithmetic(ArithOpType::Rsh(ref left, ref right)) => {
+                    if let Some(c) = right.if_constant() {
+                        if c & 0x7 == 0 && c < 0x20 {
+                            let bytes = c / 8;
+                            return is_offset_mem(left, ctx).and_then(|(x, (off, len, val_off))| {
+                                if bytes < len {
+                                    Some((x, (off + bytes, len - bytes, val_off)))
+                                } else {
+                                    None
+                                }
+                            });
+                        }
+                    }
+                    None
+                }
+                OperandType::Memory(ref mem) => {
+                    let len = match mem.size {
+                        MemAccessSize::Mem32 => 4,
+                        MemAccessSize::Mem16 => 2,
+                        MemAccessSize::Mem8 => 1,
+                    };
+                    Operand::const_offset(&mem.address, ctx)
+                        .map(|(val, off)| (val, (off, len, 0)))
+                }
+                _ => None,
+            }
+        }
+
+        fn try_merge(
+            val: &Rc<Operand>,
+            shift: (u32, u32, u32),
+            other_shift: (u32, u32, u32),
+            ctx: &OperandContext,
+        ) -> Option<Rc<Operand>> {
+            let (shift, other_shift) = match (shift.2, other_shift.2) {
+                (0, 0) => return None,
+                (0, _) => (shift, other_shift),
+                (_, 0) => (other_shift, shift),
+                _ => return None,
+            };
+            let (off1, len1, _) = shift;
+            let (off2, len2, val_off2) = other_shift;
+            if off1 + len1 != off2 || len1 != val_off2 {
+                return None;
+            }
+            let addr = operand_add(val.clone(), ctx.constant(off1));
+            let oper = match (len1 + len2).min(4) {
+                1 => mem_variable_rc(MemAccessSize::Mem8, addr),
+                2 => mem_variable_rc(MemAccessSize::Mem16, addr),
+                3 => operand_and(
+                    mem_variable_rc(MemAccessSize::Mem32, addr),
+                    ctx.constant(0xffffff),
+                ),
+                4 => mem_variable_rc(MemAccessSize::Mem32, addr),
+                _ => return None,
+            };
+            Some(oper)
+        }
+
+        let mut iter = VecDropIter::new(ops);
+        while let Some(mut op) = iter.next() {
+            let mut new = None;
+            if let Some((val, shift)) = is_offset_mem(&op, ctx) {
+                let mut second = iter.duplicate();
+                while let Some(other_op) = second.next_removable() {
+                    let mut remove = false;
+                    if let Some((other_val, other_shift)) = is_offset_mem(&other_op, ctx) {
+                        if val == other_val {
+                            let result = try_merge(&val, other_shift, shift, ctx);
+                            if let Some(merged) = result {
+                                new = Some(merged);
+                                remove = true;
+                            }
+                        }
+                    }
+                    if remove {
+                        other_op.remove();
+                        break;
+                    }
+                }
+            }
+            if let Some(new) = new {
+                *op = new;
+            }
+        }
+    }
+
+    pub fn const_offset(oper: &Rc<Operand>, ctx: &OperandContext) -> Option<(Rc<Operand>, u32)> {
+        use operand::operand_helpers::*;
+
+        fn recurse(oper: &Rc<Operand>) -> Option<u32> {
+            // ehhh
+            match oper.ty {
+                OperandType::Arithmetic(ArithOpType::Add(ref l, ref r)) => {
+                    if let Some(c) = l.if_constant() {
+                        Some(recurse(r).unwrap_or(0).wrapping_add(c))
+                    } else if let Some(c) = r.if_constant() {
+                        Some(recurse(l).unwrap_or(0).wrapping_add(c))
+                    } else {
+                        if let Some(c) = recurse(l) {
+                            Some(recurse(r).unwrap_or(0).wrapping_add(c))
+                        } else if let Some(c) = recurse(r) {
+                            Some(recurse(l).unwrap_or(0).wrapping_add(c))
+                        } else {
+                            None
+                        }
+                    }
+
+                }
+                OperandType::Arithmetic(ArithOpType::Sub(ref l, ref r)) => {
+                    if let Some(c) = l.if_constant() {
+                        Some(c.wrapping_sub(recurse(r).unwrap_or(0)))
+                    } else if let Some(c) = r.if_constant() {
+                        Some(recurse(l).unwrap_or(0).wrapping_sub(c))
+                    } else {
+                        if let Some(c) = recurse(l) {
+                            Some(c.wrapping_sub(recurse(r).unwrap_or(0)))
+                        } else if let Some(c) = recurse(r) {
+                            Some(recurse(l).unwrap_or(0).wrapping_sub(c))
+                        } else {
+                            None
+                        }
+                    }
+
+                }
+                _ => None,
+            }
+        }
+        if let Some(offset) = recurse(oper) {
+            let base = Operand::simplified(operand_sub(oper.clone(), ctx.constant(offset)));
+            Some((base, offset))
+        } else {
+            None
         }
     }
 
@@ -1776,6 +1935,7 @@ fn simplify_or(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
         vec_filter_map(&mut ops, |op| simplify_with_one_bits(op, &bits, ctx));
     }
     Operand::simplify_or_merge_child_ands(&mut ops, ctx);
+    Operand::simplify_or_merge_mem(&mut ops, ctx);
     if const_val != 0 {
         ops.push(ctx.constant(const_val));
     }
@@ -2113,6 +2273,34 @@ fn simplify_with_zero_bits(
                         Some(Operand::simplified(operand_xor(l, r)))
                     }
                 }
+            }
+        }
+        OperandType::Arithmetic(ArithOpType::Lsh(ref left, ref right)) => {
+            if let Some(c) = right.if_constant() {
+                if bits.end >= 0x20 && bits.start <= c as u8 {
+                    None
+                } else {
+                    let low = bits.start.saturating_sub(c as u8);
+                    let high = bits.end.saturating_sub(c as u8);
+                    simplify_with_zero_bits(left.clone(), &(low..high), ctx)
+                        .map(|x| simplify_lsh(&x, right, ctx))
+                }
+            } else {
+                Some(op)
+            }
+        }
+        OperandType::Arithmetic(ArithOpType::Rsh(ref left, ref right)) => {
+            if let Some(c) = right.if_constant() {
+                if bits.start == 0 && c as u8 >= (0x20 - bits.end) {
+                    None
+                } else {
+                    let low = bits.start.saturating_add(c as u8).min(0x20);
+                    let high = bits.end.saturating_add(c as u8).min(0x20);
+                    simplify_with_zero_bits(left.clone(), &(low..high), ctx)
+                        .map(|x| simplify_rsh(&x, right, ctx))
+                }
+            } else {
+                Some(op)
             }
         }
         OperandType::Arithmetic(ArithOpType::Not(ref val)) => {
@@ -3683,6 +3871,124 @@ mod test {
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_mem_or() {
+        use super::operand_helpers::*;
+        let mem16 = |x| mem_variable_rc(MemAccessSize::Mem16, x);
+        let op1 = operand_or(
+            operand_rsh(
+                mem32(
+                    operand_add(
+                        operand_register(0),
+                        constval(0x120),
+                    ),
+                ),
+                constval(0x8),
+            ),
+            operand_lsh(
+                mem32(
+                    operand_add(
+                        operand_register(0),
+                        constval(0x124),
+                    ),
+                ),
+                constval(0x18),
+            ),
+        );
+        let eq1 = mem32(
+            operand_add(
+                operand_register(0),
+                constval(0x121),
+            ),
+        );
+        let op2 = operand_or(
+            mem16(
+                operand_add(
+                    operand_register(0),
+                    constval(0x122),
+                ),
+            ),
+            operand_lsh(
+                mem16(
+                    operand_add(
+                        operand_register(0),
+                        constval(0x124),
+                    ),
+                ),
+                constval(0x10),
+            ),
+        );
+        let eq2 = mem32(
+            operand_add(
+                operand_register(0),
+                constval(0x122),
+            ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_rsh_and() {
+        use super::operand_helpers::*;
+        let op1 = operand_and(
+            constval(0xffff),
+            operand_rsh(
+                operand_or(
+                    constval(0x123400),
+                    operand_and(
+                        operand_register(1),
+                        constval(0xff000000),
+                    ),
+                ),
+                constval(8),
+            ),
+        );
+        let eq1 = constval(0x1234);
+        let op2 = operand_and(
+            constval(0xffff0000),
+            operand_lsh(
+                operand_or(
+                    constval(0x123400),
+                    operand_and(
+                        operand_register(1),
+                        constval(0xff),
+                    ),
+                ),
+                constval(8),
+            ),
+        );
+        let eq2 = constval(0x12340000);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_mem32_or() {
+        use super::operand_helpers::*;
+        let op1 = operand_and(
+            operand_or(
+                operand_lsh(
+                    operand_register(2),
+                    constval(0x18),
+                ),
+                operand_rsh(
+                    operand_or(
+                        constval(0x123400),
+                        operand_and(
+                            mem32(operand_register(1)),
+                            constval(0xff000000),
+                        ),
+                    ),
+                    constval(8),
+                ),
+            ),
+            constval(0xffff),
+        );
+        let eq1 = constval(0x1234);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
     #[test]

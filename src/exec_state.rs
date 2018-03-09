@@ -455,6 +455,72 @@ impl<'a> Destination<'a> {
                 *low = intern_map.intern(Operand::simplified(val_low));
             }
             Destination::Memory(mem, addr, size) => {
+                if let Some((base, offset)) = Operand::const_offset(&addr, ctx) {
+                    let offset_4 = offset & 3;
+                    let offset_rest = offset & !3;
+                    if offset_4 != 0 {
+                        let size_bits = match size {
+                            MemAccessSize::Mem32 => 32,
+                            MemAccessSize::Mem16 => 16,
+                            MemAccessSize::Mem8 => 8,
+                        };
+                        let low_base = Operand::simplified(
+                            operand_add(base.clone(), ctx.constant(offset_rest))
+                        );
+                        let low_i = intern_map.intern(low_base.clone());
+                        let low_old = mem.get(low_i)
+                            .map(|x| intern_map.operand(x))
+                            .unwrap_or_else(|| mem32(low_base));
+
+                        let mask_low = offset_4 * 8;
+                        let mask_high = (mask_low + size_bits).min(0x20);
+                        let mask = !0 >> mask_low << mask_low <<
+                            (0x20 - mask_high) >> (0x20 - mask_high);
+                        let low_value = Operand::simplified(operand_or(
+                            operand_and(
+                                operand_lsh(
+                                    value.clone(),
+                                    ctx.constant(8 * offset_4),
+                                ),
+                                ctx.constant(mask),
+                            ),
+                            operand_and(
+                                low_old,
+                                ctx.constant(!mask),
+                            ),
+                        ));
+                        mem.set(low_i, intern_map.intern(low_value));
+                        let needs_high = mask_low + size_bits > 0x20;
+                        if needs_high {
+                            let high_base = Operand::simplified(
+                                operand_add(
+                                    base.clone(),
+                                    ctx.constant(offset_rest.wrapping_add(4)),
+                                )
+                            );
+                            let high_i = intern_map.intern(high_base.clone());
+                            let high_old = mem.get(high_i)
+                                .map(|x| intern_map.operand(x))
+                                .unwrap_or_else(|| mem32(high_base));
+                            let mask = !0 >> (0x20 - (mask_low + size_bits - 0x20));
+                            let high_value = Operand::simplified(operand_or(
+                                operand_and(
+                                    operand_rsh(
+                                        value,
+                                        ctx.constant(0x20 - 8 * offset_4),
+                                    ),
+                                    ctx.constant(mask),
+                                ),
+                                operand_and(
+                                    high_old,
+                                    ctx.constant(!mask),
+                                ),
+                            ));
+                            mem.set(high_i, intern_map.intern(high_value));
+                        }
+                        return;
+                    }
+                }
                 let addr = intern_map.intern(Operand::simplified(addr));
                 let value = Operand::simplified(match size {
                     MemAccessSize::Mem8 => operand_and(value, ctx.const_ff()),
@@ -706,6 +772,52 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
+    pub fn resolve_mem(&self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
+        use operand::operand_helpers::*;
+
+        let address = Operand::simplified(self.resolve(&mem.address, i));
+        // Use 4-aligned addresses if there's a const offset
+        if let Some((base, offset)) = Operand::const_offset(&address, self.ctx) {
+            let offset_4 = offset & 3;
+            let offset_rest = offset & !3;
+            if offset_4 != 0 {
+                let low_base = Operand::simplified(
+                    operand_add(base.clone(), self.ctx.constant(offset_rest))
+                );
+                let low = self.memory.get(i.intern(low_base.clone()))
+                    .map(|x| i.operand(x))
+                    .unwrap_or_else(|| mem32(low_base));
+                let low = operand_rsh(low, self.ctx.constant(offset_4 * 8));
+                let size = match mem.size {
+                    MemAccessSize::Mem8 => 1,
+                    MemAccessSize::Mem16 => 2,
+                    MemAccessSize::Mem32 => 4,
+                };
+                let combined = if offset_4 + size > 4 || true {
+                    let high_base = Operand::simplified(
+                        operand_add(base.clone(), self.ctx.constant(offset_rest.wrapping_add(4)))
+                    );
+                    let high = self.memory.get(i.intern(high_base.clone()))
+                        .map(|x| i.operand(x))
+                        .unwrap_or_else(|| mem32(high_base));
+                    let high = operand_lsh(high, self.ctx.constant(0x20 - offset_4 * 8));
+                    operand_or(low, high)
+                } else {
+                    low
+                };
+                let masked = match mem.size {
+                    MemAccessSize::Mem8 => operand_and(combined, self.ctx.const_ff()),
+                    MemAccessSize::Mem16 => operand_and(combined, self.ctx.const_ffff()),
+                    MemAccessSize::Mem32 => combined,
+                };
+                return Operand::simplified(masked);
+            }
+        }
+        self.memory.get(i.intern(address.clone()))
+            .map(|interned| i.operand(interned))
+            .unwrap_or_else(|| Operand::simplified(mem_variable_rc(mem.size, address)))
+    }
+
     pub fn resolve(&self, value: &Operand, interner: &mut InternMap) -> Rc<Operand> {
         use operand::operand_helpers::*;
 
@@ -756,17 +868,7 @@ impl<'a> ExecutionState<'a> {
             }
             OperandType::Constant(x) => Operand::new_simplified_rc(OperandType::Constant(x)),
             OperandType::Memory(ref mem) => {
-                let address = Operand::simplified(self.resolve(&mem.address, interner));
-                self.memory.get(interner.intern(address.clone()))
-                    .map(|interned| interner.operand(interned))
-                    .unwrap_or_else(|| {
-                        Operand::simplified(
-                            Operand::new_not_simplified_rc(OperandType::Memory(MemAccess {
-                                address: address,
-                                size: mem.size,
-                            }))
-                        )
-                    })
+                self.resolve_mem(mem, interner)
             }
             OperandType::Undefined(x) => Operand::new_simplified_rc(OperandType::Undefined(x))
         }

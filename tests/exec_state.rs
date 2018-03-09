@@ -138,6 +138,31 @@ fn double_jbe() {
     ]);
 }
 
+#[test]
+fn shr_mem_10() {
+    test_inline(&[
+        0xc7, 0x45, 0xf4, 0x78, 0x56, 0x34, 0x12, // mov [ebp - 0xc], 0x12345678
+        0xc1, 0x6d, 0xf4, 0x10, // shr [ebp - 0xc], 0x10
+        0x8b, 0x45, 0xf4, // mov eax, [ebp - 0xc]
+        0xc3, //ret
+    ], &[
+         (operand_register(0), constval(0x1234)),
+    ]);
+}
+
+#[test]
+fn shr_mem_10_b() {
+    // Memory address (base + ffffffff)
+    test_inline(&[
+        0xc7, 0x45, 0xff, 0x78, 0x56, 0x34, 0x12, // mov [ebp - 0x1], 0x12345678
+        0xc1, 0x6d, 0xff, 0x10, // shr [ebp - 0x1], 0x10
+        0x8b, 0x45, 0xff, // mov eax, [ebp - 0x1]
+        0xc3, //ret
+    ], &[
+         (operand_register(0), constval(0x1234)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
@@ -153,7 +178,7 @@ fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, 
     while let Some(mut branch) = analysis.next_branch() {
         let mut ops = branch.operations();
         while let Some((op, state, addr, i)) = ops.next() {
-            println!("@ {:x} {:?}", addr.0, op);
+            println!("@ {:x} {:#?}", addr.0, op);
             if let Operation::Return(_) = *op {
                 end_state = Some((state.clone(), i.clone()));
             }
@@ -165,7 +190,7 @@ fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, 
     for i in 0..8 {
         let expected = expected_state.resolve(&operand_register(i), &mut interner);
         let end = end_state.resolve(&operand_register(i), &mut end_i);
-        assert_eq!(expected, end, "Register {}", i);
+        assert_eq!(expected, end, "Register {}: {:#?}", i, end);
     }
 }
 
