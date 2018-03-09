@@ -322,6 +322,10 @@ pub struct OperandContext {
 struct OperandCtxGlobals {
     constants: OperandCtxConstants,
     registers: [Rc<Operand>; 8],
+    registers16: [Rc<Operand>; 8],
+    // Contains the nonexisting esp/ebp/esi/edi low ones for simplicity
+    registers8_low: [Rc<Operand>; 8],
+    registers8_high: [Rc<Operand>; 4],
     flag_z: Rc<Operand>,
     flag_c: Rc<Operand>,
     flag_o: Rc<Operand>,
@@ -507,6 +511,32 @@ impl OperandCtxGlobals {
                 Operand::new_simplified_rc(OperandType::Register(Register(6))),
                 Operand::new_simplified_rc(OperandType::Register(Register(7))),
             ],
+            registers16: [
+                Operand::new_simplified_rc(OperandType::Register16(Register(0))),
+                Operand::new_simplified_rc(OperandType::Register16(Register(1))),
+                Operand::new_simplified_rc(OperandType::Register16(Register(2))),
+                Operand::new_simplified_rc(OperandType::Register16(Register(3))),
+                Operand::new_simplified_rc(OperandType::Register16(Register(4))),
+                Operand::new_simplified_rc(OperandType::Register16(Register(5))),
+                Operand::new_simplified_rc(OperandType::Register16(Register(6))),
+                Operand::new_simplified_rc(OperandType::Register16(Register(7))),
+            ],
+            registers8_low: [
+                Operand::new_simplified_rc(OperandType::Register8Low(Register(0))),
+                Operand::new_simplified_rc(OperandType::Register8Low(Register(1))),
+                Operand::new_simplified_rc(OperandType::Register8Low(Register(2))),
+                Operand::new_simplified_rc(OperandType::Register8Low(Register(3))),
+                Operand::new_simplified_rc(OperandType::Register8Low(Register(4))),
+                Operand::new_simplified_rc(OperandType::Register8Low(Register(5))),
+                Operand::new_simplified_rc(OperandType::Register8Low(Register(6))),
+                Operand::new_simplified_rc(OperandType::Register8Low(Register(7))),
+            ],
+            registers8_high: [
+                Operand::new_simplified_rc(OperandType::Register8High(Register(0))),
+                Operand::new_simplified_rc(OperandType::Register8High(Register(1))),
+                Operand::new_simplified_rc(OperandType::Register8High(Register(2))),
+                Operand::new_simplified_rc(OperandType::Register8High(Register(3))),
+            ],
         }
     }
 }
@@ -562,6 +592,30 @@ impl OperandContext {
 
     pub fn register(&self, index: u8) -> Rc<Operand> {
         self.globals.registers[index as usize].clone()
+    }
+
+    pub fn register16(&self, index: u8) -> Rc<Operand> {
+        self.globals.registers16[index as usize].clone()
+    }
+
+    pub fn register8_low(&self, index: u8) -> Rc<Operand> {
+        self.globals.registers8_low[index as usize].clone()
+    }
+
+    pub fn register8_high(&self, index: u8) -> Rc<Operand> {
+        self.globals.registers8_high[index as usize].clone()
+    }
+
+    pub fn reg_variable_size(&self, reg: Register, size: MemAccessSize) -> Rc<Operand> {
+        match size {
+            MemAccessSize::Mem32 => self.register(reg.0),
+            MemAccessSize::Mem16 => self.register16(reg.0),
+            MemAccessSize::Mem8 => if reg.0 >= 4 {
+                self.register8_high(reg.0 - 4)
+            } else {
+                self.register8_low(reg.0)
+            },
+        }
     }
 
     pub fn const_0(&self) -> Rc<Operand> {
@@ -819,18 +873,6 @@ impl Operand {
 
     pub fn new_not_simplified_rc(ty: OperandType) -> Rc<Operand> {
         Self::new_not_simplified(ty).into()
-    }
-
-    pub fn reg_variable_size(reg: Register, size: MemAccessSize) -> Operand {
-        match size {
-            MemAccessSize::Mem32 => Operand::new_simplified(OperandType::Register(reg)),
-            MemAccessSize::Mem16 => Operand::new_simplified(OperandType::Register16(reg)),
-            MemAccessSize::Mem8 => if reg.0 > 4 {
-                Operand::new_simplified(OperandType::Register8High(Register(reg.0 - 4)))
-            } else {
-                Operand::new_simplified(OperandType::Register8Low(reg))
-            },
-        }
     }
 
     pub fn pair(s: &Rc<Operand>) -> (Rc<Operand>, Rc<Operand>) {

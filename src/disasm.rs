@@ -391,19 +391,19 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     fn parse_modrm_inner(
         &self,
         op_size: MemAccessSize
-    ) -> Result<(Operand, Operand, usize), Error> {
+    ) -> Result<(Rc<Operand>, Rc<Operand>, usize), Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
 
         let modrm = self.get(1);
         let register = (modrm >> 3) & 0x7;
         let rm_val = modrm & 0x7;
-        let r = Operand::reg_variable_size(Register(register), op_size);
+        let r = self.ctx.reg_variable_size(Register(register), op_size);
         let (rm, size) = match (modrm >> 6) & 0x3 {
             0 => match rm_val {
                 4 => self.parse_sib(0, op_size)?,
-                5 => (mem_variable(op_size, self.ctx.constant(read_u32(self.slice(2))?)), 6),
-                reg => (mem_variable(op_size, self.ctx.register(reg)), 2),
+                5 => (mem_variable_rc(op_size, self.ctx.constant(read_u32(self.slice(2))?)), 6),
+                reg => (mem_variable_rc(op_size, self.ctx.register(reg)), 2),
             },
             1 => match rm_val {
                 4 => self.parse_sib(1, op_size)?,
@@ -411,7 +411,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                     let offset = read_u8(self.slice(2))? as i8 as u32;
                     let addition =
                         operand_add(self.ctx.register(reg), self.ctx.constant(offset));
-                    (mem_variable(op_size, addition), 3)
+                    (mem_variable_rc(op_size, addition), 3)
                 }
             },
             2 => match rm_val {
@@ -420,10 +420,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                     let offset = read_u32(self.slice(2))?;
                     let addition =
                         operand_add(self.ctx.register(reg), self.ctx.constant(offset));
-                    (mem_variable(op_size, addition), 6)
+                    (mem_variable_rc(op_size, addition), 6)
                 }
             },
-            3 => (Operand::reg_variable_size(Register(rm_val), op_size), 2),
+            3 => (self.ctx.reg_variable_size(Register(rm_val), op_size), 2),
             _ => unreachable!(),
         };
         Ok((rm, r, size))
@@ -431,7 +431,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn parse_modrm(&self, op_size: MemAccessSize) -> Result<(Rc<Operand>, Rc<Operand>), Error> {
         let (rm, r, _) = self.parse_modrm_inner(op_size)?;
-        Ok((Rc::new(rm), Rc::new(r)))
+        Ok((rm, r))
     }
 
     fn parse_modrm_imm(
@@ -447,14 +447,14 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             MemAccessSize::Mem16 => imm as i16 as u32,
             MemAccessSize::Mem32 => imm,
         };
-        Ok((Rc::new(rm), Rc::new(r), self.ctx.constant(imm)))
+        Ok((rm, r, self.ctx.constant(imm)))
     }
 
     fn parse_sib(
         &self,
         variation: u8,
         op_size: MemAccessSize
-    ) -> Result<(Operand, usize), Error> {
+    ) -> Result<(Rc<Operand>, usize), Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
         let sib = self.get(2);
@@ -475,14 +475,14 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             base_reg
         };
         match variation {
-            0 => Ok((mem_variable(op_size, full_mem_op), size)),
+            0 => Ok((mem_variable_rc(op_size, full_mem_op), size)),
             1 => {
                 let constant = self.ctx.constant(read_u8(self.slice(size))? as i8 as u32);
-                Ok((mem_variable(op_size, operand_add(full_mem_op, constant)), size + 1))
+                Ok((mem_variable_rc(op_size, operand_add(full_mem_op, constant)), size + 1))
             }
             2 => {
                 let constant = self.ctx.constant(read_u32(self.slice(size))?);
-                Ok((mem_variable(op_size, operand_add(full_mem_op, constant)), size + 4))
+                Ok((mem_variable_rc(op_size, operand_add(full_mem_op, constant)), size + 4))
             }
             _ => unreachable!(),
         }
@@ -507,7 +507,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let byte = self.get(0);
         let is_inc = byte < 0x48;
         let reg = byte & 0x7;
-        let reg = Rc::new(Operand::reg_variable_size(Register(reg), self.mem16_32()));
+        let reg = self.ctx.reg_variable_size(Register(reg), self.mem16_32());
         let mut out = SmallVec::new();
         out.push(match is_inc {
             true => add(reg, self.ctx.const_1()),
@@ -537,14 +537,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn flag_set(&self, flag: Flag, value: bool) -> Result<OperationVec, Error> {
-        use self::operation_helpers::*;
         let mut out = SmallVec::new();
-        out.push(
-            mov(
-                Operand::new_simplified_rc(OperandType::Flag(flag)),
-                self.ctx.constant(value as u32),
-            )
-        );
+        out.push(Operation::Move(DestOperand::Flag(flag), self.ctx.constant(value as u32), None));
         Ok(out)
     }
 
@@ -683,7 +677,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let dest = Rc::new(Operand::reg_variable_size(Register(0), op_size));
+        let dest = self.ctx.reg_variable_size(Register(0), op_size);
         let imm = read_variable_size(self.slice(1), op_size)?;
         let val = self.ctx.constant(imm);
         let mut out = SmallVec::new();
@@ -722,6 +716,37 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         Ok(out)
     }
 
+    fn movsx_short(
+        &self,
+        out: &mut OperationVec,
+        r: Rc<Operand>,
+        rm: Rc<Operand>,
+        op_size: MemAccessSize,
+    ) {
+        use self::operation_helpers::*;
+        use operand::operand_helpers::*;
+        let keep_mask = match op_size {
+            MemAccessSize::Mem8 => and(r.clone(), self.ctx.const_ff()),
+            MemAccessSize::Mem16 => and(r.clone(), self.ctx.const_ffff()),
+            _ => unreachable!(),
+        };
+        let signed_max = match op_size {
+            MemAccessSize::Mem8 => self.ctx.const_7f(),
+            MemAccessSize::Mem16 => self.ctx.const_7fff(),
+            _ => unreachable!(),
+        };
+        let high_const = match op_size {
+            MemAccessSize::Mem8 => operand_or(self.ctx.const_ffffff00(), r.clone()),
+            MemAccessSize::Mem16 => operand_or(self.ctx.const_ffff0000(), r.clone()),
+            _ => unreachable!(),
+        };
+
+        let compare = OperandType::Arithmetic(ArithOpType::GreaterThan(rm, signed_max));
+        let rm_cond = Operand::new_not_simplified_rc(compare);
+        out.push(keep_mask);
+        out.push(Operation::Move(dest_operand(&r), high_const, Some(rm_cond)));
+    }
+
     fn movsx(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use operand::operand_helpers::*;
@@ -729,70 +754,41 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             0 => MemAccessSize::Mem8,
             _ => MemAccessSize::Mem16,
         };
-        let (rm, r) = self.parse_modrm(self.mem16_32())?;
-        let actual_rm_ty = match rm.ty {
-            OperandType::Memory(ref mem) => {
-                OperandType::Memory(MemAccess {
-                    address: mem.address.clone(),
-                    size: op_size,
-                })
-            }
+        let dest_size = self.mem16_32();
+        let (rm, r) = self.parse_modrm(dest_size)?;
+        let rm = match rm.ty {
+            OperandType::Memory(ref mem) => mem_variable_rc(op_size, mem.address.clone()),
             OperandType::Register(r) | OperandType::Register16(r) => match op_size {
-                MemAccessSize::Mem8 => OperandType::Register8Low(r),
-                MemAccessSize::Mem16 => OperandType::Register16(r),
+                MemAccessSize::Mem8 => match r.0 >= 4 {
+                    false => self.ctx.register8_low(r.0),
+                    true => self.ctx.register8_high(r.0 - 4),
+                },
+                MemAccessSize::Mem16 => self.ctx.register16(r.0),
                 _ => unreachable!(),
             },
-            ref x => x.clone(),
+            _ => rm.clone(),
         };
-        let rm = Operand::new_not_simplified_rc(actual_rm_ty);
 
         let mut out = SmallVec::new();
         if is_rm_short_r_register(&rm, &r) {
-            let keep_mask = match op_size {
-                MemAccessSize::Mem8 => and(r.clone(), self.ctx.const_ff()),
-                MemAccessSize::Mem16 => and(r.clone(), self.ctx.const_ffff()),
-                _ => unreachable!(),
-            };
-            let signed_max = match op_size {
-                MemAccessSize::Mem8 => self.ctx.const_7f(),
-                MemAccessSize::Mem16 => self.ctx.const_7fff(),
-                _ => unreachable!(),
-            };
-            let high_const = match op_size {
-                MemAccessSize::Mem8 => operand_or(self.ctx.const_ffffff00(), r.clone()),
-                MemAccessSize::Mem16 => operand_or(self.ctx.const_ffff0000(), r.clone()),
-                _ => unreachable!(),
-            };
-
-            let compare = OperandType::Arithmetic(ArithOpType::GreaterThan(rm, signed_max));
-            let rm_cond = Operand::new_not_simplified_rc(compare);
-            out.push(keep_mask);
-            out.push(Operation::Move(dest_operand(&r), high_const, Some(rm_cond)));
+            self.movsx_short(&mut out, r, rm, op_size)
         } else {
+            let reg = match r.ty {
+                OperandType::Register(r) | OperandType::Register16(r) => r,
+                _ => unreachable!(),
+            };
+            let short_r = match op_size {
+                MemAccessSize::Mem8 => self.ctx.register8_low(reg.0),
+                MemAccessSize::Mem16 => self.ctx.register16(reg.0),
+                _ => unreachable!(),
+            };
             let mem_size = match rm.ty {
                 OperandType::Memory(ref mem) => Some(mem.size),
                 _ => None,
             };
-            if let Some(mem_size) = mem_size {
+            if let Some(_) = mem_size {
                 out.push(mov(r.clone(), rm));
-                // sigh
-                let dat = match r.ty {
-                    OperandType::Register(r) | OperandType::Register16(r) => {
-                        match mem_size == MemAccessSize::Mem8 {
-                            true => [0xbe, 0xc0 + r.0 * 9],
-                            false => [0xbf, 0xc0 + r.0 * 9],
-                        }
-                    },
-                    _ => panic!("Movsx r, [mem] r is not register? {:?}", r),
-                };
-                let state = InstructionOpsState {
-                    address: self.address,
-                    data: &dat[..],
-                    prefixes: self.prefixes,
-                    len: 3,
-                    ctx: self.ctx,
-                };
-                out.extend(state.movsx()?.into_iter());
+                self.movsx_short(&mut out, r, short_r, op_size)
             } else {
                 let signed_max = match op_size {
                     MemAccessSize::Mem8 => self.ctx.const_7f(),
@@ -802,22 +798,13 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 let compare =
                     OperandType::Arithmetic(ArithOpType::GreaterThan(rm.clone(), signed_max));
                 let rm_cond = Operand::new_not_simplified_rc(compare);
-                let reg = match r.ty {
-                    OperandType::Register(r) | OperandType::Register16(r) => r,
-                    _ => unreachable!(),
-                };
-                let short_r = match op_size {
-                    MemAccessSize::Mem8 => OperandType::Register8Low(reg),
-                    MemAccessSize::Mem16 => OperandType::Register16(reg),
-                    _ => unreachable!(),
-                };
                 out.push(mov(r.clone(), self.ctx.const_0()));
                 out.push(Operation::Move(
                     dest_operand(&r),
                     self.ctx.const_ffffffff(),
                     Some(rm_cond),
                 ));
-                out.push(mov(Operand::new_simplified_rc(short_r), rm));
+                out.push(mov(short_r, rm));
             }
         }
         Ok(out)
@@ -825,27 +812,25 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn movzx(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
+        use operand::operand_helpers::*;
 
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => MemAccessSize::Mem16,
         };
         let (rm, r) = self.parse_modrm(self.mem16_32())?;
-        let actual_rm_ty = match rm.ty {
-            OperandType::Memory(ref mem) => {
-                OperandType::Memory(MemAccess {
-                    address: mem.address.clone(),
-                    size: op_size,
-                })
-            }
+        let rm = match rm.ty {
+            OperandType::Memory(ref mem) => mem_variable_rc(op_size, mem.address.clone()),
             OperandType::Register(r) => match op_size {
-                MemAccessSize::Mem8 => OperandType::Register8Low(r),
-                MemAccessSize::Mem16 => OperandType::Register16(r),
+                MemAccessSize::Mem8 => match r.0 >= 4 {
+                    false => self.ctx.register8_low(r.0),
+                    true => self.ctx.register8_high(r.0 - 4),
+                },
+                MemAccessSize::Mem16 => self.ctx.register16(r.0),
                 _ => unreachable!(),
             },
-            ref x => x.clone(),
+            _ => rm.clone(),
         };
-        let rm = Operand::new_not_simplified_rc(actual_rm_ty);
         let mut out = SmallVec::new();
         if is_rm_short_r_register(&rm, &r) {
             out.push(match op_size {
@@ -1211,7 +1196,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let (rm, _) = self.parse_modrm(op_size)?;
         let shift_count = match self.get(0) & 2 {
             0 => self.ctx.const_1(),
-            _ => Rc::new(Operand::reg_variable_size(Register(1), MemAccessSize::Mem8)),
+            _ => self.ctx.reg_variable_size(Register(1), MemAccessSize::Mem8),
         };
         let op_gen: &ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
             0 => &ROL_OPS,
@@ -1362,7 +1347,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let eax = Rc::new(Operand::reg_variable_size(Register(0), op_size));
+        let eax = self.ctx.reg_variable_size(Register(0), op_size);
         let imm = read_variable_size(self.slice(1), op_size)?;
         let val = self.ctx.constant(imm);
         let mut out = SmallVec::new();
