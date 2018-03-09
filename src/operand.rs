@@ -327,6 +327,7 @@ struct OperandCtxGlobals {
     flag_o: Rc<Operand>,
     flag_s: Rc<Operand>,
     flag_p: Rc<Operand>,
+    flag_d: Rc<Operand>,
 }
 
 pub struct Iter<'a>(Option<IterState<'a>>);
@@ -495,6 +496,7 @@ impl OperandCtxGlobals {
             flag_p: Operand::new_simplified_rc(OperandType::Flag(Flag::Parity)),
             flag_z: Operand::new_simplified_rc(OperandType::Flag(Flag::Zero)),
             flag_s: Operand::new_simplified_rc(OperandType::Flag(Flag::Sign)),
+            flag_d: Operand::new_simplified_rc(OperandType::Flag(Flag::Direction)),
             registers: [
                 Operand::new_simplified_rc(OperandType::Register(Register(0))),
                 Operand::new_simplified_rc(OperandType::Register(Register(1))),
@@ -541,6 +543,21 @@ impl OperandContext {
 
     pub fn flag_p(&self) -> Rc<Operand> {
         self.globals.flag_p.clone()
+    }
+
+    pub fn flag_d(&self) -> Rc<Operand> {
+        self.globals.flag_d.clone()
+    }
+
+    pub fn flag(&self, flag: Flag) -> Rc<Operand> {
+        match flag {
+            Flag::Zero => self.flag_z(),
+            Flag::Carry => self.flag_c(),
+            Flag::Overflow => self.flag_o(),
+            Flag::Parity => self.flag_p(),
+            Flag::Sign => self.flag_s(),
+            Flag::Direction => self.flag_d(),
+        }
     }
 
     pub fn register(&self, index: u8) -> Rc<Operand> {

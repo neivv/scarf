@@ -958,7 +958,7 @@ impl<'a> ExecutionState<'a> {
                         return state;
                     }
                 };
-                let flag_operand = Operand::new_simplified_rc(OperandType::Flag(flag));
+                let flag_operand = self.ctx.flag(flag);
                 state.get_dest(&DestOperand::from_oper(&flag_operand), intern_map)
                     .set(self.ctx.constant(flag_state), intern_map, self.ctx);
                 state
