@@ -1108,8 +1108,9 @@ impl Operand {
                         MemAccessSize::Mem16 => 2,
                         MemAccessSize::Mem8 => 1,
                     };
-                    Operand::const_offset(&mem.address, ctx)
+                    Some(Operand::const_offset(&mem.address, ctx)
                         .map(|(val, off)| (val, (off, len, 0)))
+                        .unwrap_or_else(|| (mem.address.clone(), (0, len, 0))))
                 }
                 _ => None,
             }
@@ -1129,7 +1130,7 @@ impl Operand {
             };
             let (off1, len1, _) = shift;
             let (off2, len2, val_off2) = other_shift;
-            if off1 + len1 != off2 || len1 != val_off2 {
+            if off1.wrapping_add(len1) != off2 || len1 != val_off2 {
                 return None;
             }
             let addr = operand_add(val.clone(), ctx.constant(off1));
@@ -1157,7 +1158,7 @@ impl Operand {
                         if val == other_val {
                             let result = try_merge(&val, other_shift, shift, ctx);
                             if let Some(merged) = result {
-                                new = Some(merged);
+                                new = Some(Operand::simplified(merged));
                                 remove = true;
                             }
                         }
@@ -4034,6 +4035,60 @@ mod test {
         );
         let eq1 = constval(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_mem_misalign2() {
+        use super::operand_helpers::*;
+        let mem8 = |x| mem_variable_rc(MemAccessSize::Mem8, x);
+        let op1 = operand_or(
+            operand_rsh(
+                mem32(
+                    operand_register(1),
+                ),
+                constval(0x8),
+            ),
+            operand_lsh(
+                mem8(
+                    operand_add(
+                        constval(0x4),
+                        operand_register(1),
+                    ),
+                ),
+                constval(0x18),
+            ),
+        );
+        let eq1 = mem32(
+            operand_add(
+                operand_register(1),
+                constval(1),
+            ),
+        );
+        let op2 = operand_or(
+            operand_rsh(
+                mem32(
+                    operand_sub(
+                        operand_register(1),
+                        constval(0x4),
+                    ),
+                ),
+                constval(0x8),
+            ),
+            operand_lsh(
+                mem8(
+                    operand_register(1),
+                ),
+                constval(0x18),
+            ),
+        );
+        let eq2 = mem32(
+            operand_sub(
+                operand_register(1),
+                constval(3),
+            ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 
     #[test]
