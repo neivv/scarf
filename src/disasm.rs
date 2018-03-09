@@ -142,6 +142,7 @@ fn instruction_operations(
         0x65 => true, // TODO gs segment is not handled
         0x66 => true,
         0x67 => true,
+        0xf0 => true, // TODO lock prefix not handled
         0xf2 => true,
         0xf3 => true,
         _ => false,
@@ -313,6 +314,12 @@ fn instruction_operations(
             0xa4 => s.shld_imm(),
             0xac => s.shrd_imm(),
             0xaf => s.imul_normal(),
+            0xb1 => {
+                // Cmpxchg
+                let mut out = SmallVec::new();
+                out.push(Operation::Special(s.data.into()));
+                Ok(out)
+            }
             0xb6 ... 0xb7 => s.movzx(),
             0xbe ... 0xbf => s.movsx(),
             0xd3 => s.packed_shift_right(),
