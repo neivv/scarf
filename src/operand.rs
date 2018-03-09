@@ -1025,7 +1025,7 @@ impl Operand {
                 }
                 _ => {
                     let bits = op.relevant_bits();
-                    if bits != (0..32) {
+                    if bits != (0..32) && bits.start < bits.end {
                         let low = bits.start;
                         let high = 32 - bits.end;
                         Some((op, !0 >> low << low << high >> high))
@@ -1959,8 +1959,10 @@ fn simplify_lsh(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
     if let OperandType::Constant(c) = right.ty {
         if c == 0 {
             return left.clone();
+        } else if c >= 0x20 {
+            return ctx.const_0();
         } else {
-            let zero_bits = (0x20 - (c & 0x1f) as u8)..32;
+            let zero_bits = (0x20 - c as u8)..32;
             match simplify_with_zero_bits(left.clone(), &zero_bits, ctx) {
                 None => return ctx.const_0(),
                 Some(s) => {
@@ -1976,7 +1978,7 @@ fn simplify_lsh(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
             ctx.constant(a << (b & 0x1f))
         }
         (&OperandType::Arithmetic(And(_, _)), &OperandType::Constant(c)) => {
-            let zero_bits = (0x20 - (c & 0x1f) as u8)..32;
+            let zero_bits = (0x20 - c as u8)..32;
             let mut ops = vec![];
             Operand::collect_and_ops(&left, &mut ops);
             let low = zero_bits.start;
@@ -2004,13 +2006,28 @@ fn simplify_lsh(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
                 Operand::new_simplified_rc(ty)
             }
         }
+        (&OperandType::Arithmetic(Lsh(ref inner_left, ref inner_right)),
+            &OperandType::Constant(lsh_const)) =>
+        {
+            if let OperandType::Constant(inner_const) = inner_right.ty {
+                let sum = inner_const.saturating_add(lsh_const);
+                if sum < 0x20 {
+                    simplify_lsh(inner_left, &ctx.constant(sum), ctx)
+                } else {
+                    ctx.const_0()
+                }
+            } else {
+                default()
+            }
+        }
         (&OperandType::Arithmetic(Rsh(ref rsh_left, ref rsh_right)),
             &OperandType::Constant(lsh_const)) =>
         {
             if let OperandType::Constant(rsh_const) = rsh_right.ty {
-                let lsh_const = lsh_const & 0x1f;
-                let rsh_const = rsh_const & 0x1f;
                 let diff = rsh_const as i8 - lsh_const as i8;
+                if rsh_const >= 0x20 {
+                    return ctx.const_0();
+                }
                 let mask = (!0u32 >> rsh_const) << lsh_const;
                 let tmp;
                 let val = match diff {
@@ -2049,6 +2066,8 @@ fn simplify_rsh(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
     if let OperandType::Constant(c) = right.ty {
         if c == 0 {
             return left.clone();
+        } else if c >= 0x20 {
+            return ctx.const_0();
         } else {
             let zero_bits = 0..((c & 0x1f) as u8);
             match simplify_with_zero_bits(left.clone(), &zero_bits, ctx) {
@@ -2064,10 +2083,10 @@ fn simplify_rsh(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
 
     match (&left.ty, &right.ty) {
         (&OperandType::Constant(a), &OperandType::Constant(b)) => {
-            ctx.constant(a >> (b & 0x1f))
+            ctx.constant(a >> b)
         }
         (&OperandType::Arithmetic(And(_, _)), &OperandType::Constant(c)) => {
-            let zero_bits = 0..((c & 0x1f) as u8);
+            let zero_bits = 0..(c as u8);
             let mut ops = vec![];
             Operand::collect_and_ops(&left, &mut ops);
             let low = zero_bits.start;
@@ -2099,8 +2118,9 @@ fn simplify_rsh(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
             &OperandType::Constant(rsh_const)) =>
         {
             if let OperandType::Constant(lsh_const) = lsh_right.ty {
-                let lsh_const = lsh_const & 0x1f;
-                let rsh_const = rsh_const & 0x1f;
+                if lsh_const >= 0x20 {
+                    return ctx.const_0();
+                }
                 let diff = rsh_const as i8 - lsh_const as i8;
                 let mask = (!0u32 << lsh_const) >> rsh_const;
                 let tmp;
@@ -2118,6 +2138,20 @@ fn simplify_rsh(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
                     }
                 };
                 simplify_and(val, &ctx.constant(mask), ctx)
+            } else {
+                default()
+            }
+        }
+        (&OperandType::Arithmetic(Rsh(ref inner_left, ref inner_right)),
+            &OperandType::Constant(rsh_const)) =>
+        {
+            if let OperandType::Constant(inner_const) = inner_right.ty {
+                let sum = inner_const.saturating_add(rsh_const);
+                if sum < 0x20 {
+                    simplify_rsh(inner_left, &ctx.constant(sum), ctx)
+                } else {
+                    ctx.const_0()
+                }
             } else {
                 default()
             }
@@ -3717,13 +3751,7 @@ mod test {
             ),
             constval(0x22),
         );
-        let eq1 = operand_lsh(
-            operand_rsh(
-                operand_register(1),
-                constval(0x15),
-            ),
-            constval(0x2),
-        );
+        let eq1 = constval(0);
         let op2 = operand_rsh(
             operand_lsh(
                 operand_register(1),
@@ -3731,13 +3759,7 @@ mod test {
             ),
             constval(0x22),
         );
-        let eq2 = operand_rsh(
-            operand_lsh(
-                operand_register(1),
-                constval(0x15),
-            ),
-            constval(0x2),
-        );
+        let eq2 = constval(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
@@ -3988,6 +4010,29 @@ mod test {
             constval(0xffff),
         );
         let eq1 = constval(0x1234);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_or_mem_bug() {
+        use super::operand_helpers::*;
+        let op1 = operand_or(
+            operand_rsh(
+                constval(0),
+                constval(0x10),
+            ),
+            operand_lsh(
+                operand_lsh(
+                    operand_add(
+                        constval(0x20),
+                        operand_register(4),
+                    ),
+                    constval(0x10),
+                ),
+                constval(0x10),
+            ),
+        );
+        let eq1 = constval(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
