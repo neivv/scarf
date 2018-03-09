@@ -750,29 +750,57 @@ impl<'a> ExecutionState<'a> {
     fn resolve_arith(&self, op: &ArithOpType, i: &mut InternMap) -> ArithOpType {
         use operand::ArithOpType::*;
         match *op {
-            Add(ref l, ref r) => Add(self.resolve(l, i), self.resolve(r, i)),
-            Sub(ref l, ref r) => Sub(self.resolve(l, i), self.resolve(r, i)),
-            Mul(ref l, ref r) => Mul(self.resolve(l, i), self.resolve(r, i)),
-            SignedMul(ref l, ref r) => SignedMul(self.resolve(l, i), self.resolve(r, i)),
-            Div(ref l, ref r) => Div(self.resolve(l, i), self.resolve(r, i)),
-            Modulo(ref l, ref r) => Modulo(self.resolve(l, i), self.resolve(r, i)),
-            And(ref l, ref r) => And(self.resolve(l, i), self.resolve(r, i)),
-            Or(ref l, ref r) => Or(self.resolve(l, i), self.resolve(r, i)),
-            Xor(ref l, ref r) => Xor(self.resolve(l, i), self.resolve(r, i)),
-            Lsh(ref l, ref r) => Lsh(self.resolve(l, i), self.resolve(r, i)),
-            Rsh(ref l, ref r) => Rsh(self.resolve(l, i), self.resolve(r, i)),
-            RotateLeft(ref l, ref r) => RotateLeft(self.resolve(l, i), self.resolve(r, i)),
-            Equal(ref l, ref r) => Equal(self.resolve(l, i), self.resolve(r, i)),
-            Not(ref x) => Not(self.resolve(x, i)),
-            Parity(ref x) => Parity(self.resolve(x, i)),
-            GreaterThan(ref l, ref r) => GreaterThan(self.resolve(l, i), self.resolve(r, i)),
+            Add(ref l, ref r) => {
+                Add(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Sub(ref l, ref r) => {
+                Sub(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Mul(ref l, ref r) => {
+                Mul(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            SignedMul(ref l, ref r) => {
+                SignedMul(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Div(ref l, ref r) => {
+                Div(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Modulo(ref l, ref r) => {
+                Modulo(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            And(ref l, ref r) => {
+                And(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Or(ref l, ref r) => {
+                Or(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Xor(ref l, ref r) => {
+                Xor(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Lsh(ref l, ref r) => {
+                Lsh(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Rsh(ref l, ref r) => {
+                Rsh(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            RotateLeft(ref l, ref r) => {
+                RotateLeft(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Equal(ref l, ref r) => {
+                Equal(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
+            Not(ref x) => Not(self.resolve_no_simplify(x, i)),
+            Parity(ref x) => Parity(self.resolve_no_simplify(x, i)),
+            GreaterThan(ref l, ref r) => {
+                GreaterThan(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
+            }
             GreaterThanSigned(ref l, ref r) => {
-                GreaterThanSigned(self.resolve(l, i), self.resolve(r, i))
+                GreaterThanSigned(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
             }
         }
     }
 
-    pub fn resolve_mem(&self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
+    fn resolve_mem(&self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
         use operand::operand_helpers::*;
 
         let address = Operand::simplified(self.resolve(&mem.address, i));
@@ -810,15 +838,15 @@ impl<'a> ExecutionState<'a> {
                     MemAccessSize::Mem16 => operand_and(combined, self.ctx.const_ffff()),
                     MemAccessSize::Mem32 => combined,
                 };
-                return Operand::simplified(masked);
+                return masked;
             }
         }
         self.memory.get(i.intern(address.clone()))
             .map(|interned| i.operand(interned))
-            .unwrap_or_else(|| Operand::simplified(mem_variable_rc(mem.size, address)))
+            .unwrap_or_else(|| mem_variable_rc(mem.size, address))
     }
 
-    pub fn resolve(&self, value: &Operand, interner: &mut InternMap) -> Rc<Operand> {
+    fn resolve_no_simplify(&self, value: &Operand, interner: &mut InternMap) -> Rc<Operand> {
         use operand::operand_helpers::*;
 
         match value.ty {
@@ -860,11 +888,11 @@ impl<'a> ExecutionState<'a> {
             }).clone(),
             OperandType::Arithmetic(ref op) => {
                 let ty = OperandType::Arithmetic(self.resolve_arith(op, interner));
-                Operand::simplified(Operand::new_not_simplified_rc(ty))
+                Operand::new_not_simplified_rc(ty)
             }
             OperandType::ArithmeticHigh(ref op) => {
                 let ty = OperandType::ArithmeticHigh(self.resolve_arith(op, interner));
-                Operand::simplified(Operand::new_not_simplified_rc(ty))
+                Operand::new_not_simplified_rc(ty)
             }
             OperandType::Constant(x) => Operand::new_simplified_rc(OperandType::Constant(x)),
             OperandType::Memory(ref mem) => {
@@ -872,6 +900,10 @@ impl<'a> ExecutionState<'a> {
             }
             OperandType::Undefined(x) => Operand::new_simplified_rc(OperandType::Undefined(x))
         }
+    }
+
+    pub fn resolve(&self, value: &Operand, interner: &mut InternMap) -> Rc<Operand> {
+        Operand::simplified(self.resolve_no_simplify(value, interner))
     }
 
     pub fn try_resolve_const(&self, condition: &Operand, i: &mut InternMap) -> Option<u32> {
