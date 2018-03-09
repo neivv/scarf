@@ -1879,7 +1879,13 @@ fn simplify_and(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
             });
         }
         for bits in zero_bit_ranges(const_remain) {
-            vec_filter_map(&mut ops, |op| simplify_with_zero_bits(op, &bits, ctx));
+            vec_filter_map(&mut ops, |op| {
+                simplify_with_zero_bits(op, &bits, ctx)
+                    .and_then(|x| match x.if_constant() {
+                        Some(0) => None,
+                        _ => Some(x),
+                    })
+            });
         }
         let mut new_ops = vec![];
         for op in &ops {
@@ -4089,6 +4095,57 @@ mod test {
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_and_shift_overflow_bug() {
+        use super::operand_helpers::*;
+        let mem8 = |x| mem_variable_rc(MemAccessSize::Mem8, x);
+        let op1 = operand_and(
+            operand_or(
+                operand_rsh(
+                    operand_or(
+                        operand_rsh(
+                            mem8(operand_register(1)),
+                            constval(7),
+                        ),
+                        operand_and(
+                            constval(0xff000000),
+                            operand_lsh(
+                                mem8(operand_register(2)),
+                                constval(0x11),
+                            ),
+                        ),
+                    ),
+                    constval(0x10),
+                ),
+                operand_lsh(
+                    mem32(operand_register(4)),
+                    constval(0x10),
+                ),
+            ),
+            constval(0xff),
+        );
+        let eq1 = operand_and(
+            operand_rsh(
+                operand_or(
+                    operand_rsh(
+                        mem8(operand_register(1)),
+                        constval(7),
+                    ),
+                    operand_and(
+                        constval(0xff000000),
+                        operand_lsh(
+                            mem8(operand_register(2)),
+                            constval(0x11),
+                        ),
+                    ),
+                ),
+                constval(0x10),
+            ),
+            constval(0xff),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
     #[test]
