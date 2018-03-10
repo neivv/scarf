@@ -20,6 +20,8 @@ pub struct Operand {
     hash: u64,
     #[serde(skip_serializing)]
     min_zero_bit_simplify_size: u8,
+    #[serde(skip_serializing)]
+    relevant_bits: Range<u8>,
 }
 
 impl<'de> Deserialize<'de> for Operand {
@@ -103,6 +105,7 @@ impl Hash for Operand {
             ty: _,
             simplified: _,
             min_zero_bit_simplify_size: _,
+            relevant_bits: _,
             hash,
         } = *self;
         hash.hash(state)
@@ -121,6 +124,7 @@ impl PartialEq for Operand {
                 ref ty,
                 min_zero_bit_simplify_size: _,
                 simplified: _,
+                relevant_bits: _,
                 hash: _,
             } = *self;
             ty.eq(&other.ty)
@@ -138,6 +142,7 @@ impl Ord for Operand {
                 ref ty,
                 min_zero_bit_simplify_size: _,
                 simplified: _,
+                relevant_bits: _,
                 hash: _,
             } = *self;
             ty.cmp(&other.ty)
@@ -749,7 +754,7 @@ impl OperandType {
                 ArithOpType::Rsh(ref l, _) => l.min_zero_bit_simplify_size,
                 ArithOpType::Lsh(ref l, _) => l.min_zero_bit_simplify_size,
                 _ => {
-                    let rel_bits = self.relevant_bits();
+                    let rel_bits = self.calculate_relevant_bits();
                     rel_bits.end - rel_bits.start
                 }
             }
@@ -758,7 +763,7 @@ impl OperandType {
     }
 
     /// Returns which bits the operand will use at most.
-    fn relevant_bits(&self) -> Range<u8> {
+    fn calculate_relevant_bits(&self) -> Range<u8> {
         match *self {
             OperandType::Memory(ref mem) => match mem.size {
                 MemAccessSize::Mem8 => 0..8,
@@ -850,6 +855,7 @@ impl Operand {
             simplified,
             hash: hasher.finish(),
             min_zero_bit_simplify_size: ty.min_zero_bit_simplify_size(),
+            relevant_bits: ty.calculate_relevant_bits(),
             ty,
         }
     }
@@ -944,7 +950,7 @@ impl Operand {
 
     /// Returns which bits the operand will use at most.
     pub fn relevant_bits(&self) -> Range<u8> {
-        self.ty.relevant_bits()
+        self.relevant_bits.clone()
     }
 
     fn collect_add_ops(s: Rc<Operand>, ops: &mut Vec<(Rc<Operand>, bool)>, negate: bool) {
