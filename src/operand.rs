@@ -1342,12 +1342,17 @@ impl Operand {
                     }
                     ops.sort();
                     if const_product != 1 {
-                        if ops.len() == 1 && simplify_mul_should_apply_constant(&ops[0]) {
-                            let op = ops.swap_remove(0);
-                            return simplify_mul_apply_constant(op, const_product, ctx);
-                        } else {
-                            ops.push(ctx.constant(const_product));
+                        if ops.len() == 1 {
+                            if simplify_mul_should_apply_constant(&ops[0]) {
+                                let op = ops.swap_remove(0);
+                                return simplify_mul_apply_constant(op, const_product, ctx);
+                            }
+                            let new = simplify_mul_try_mul_constants(&ops[0], const_product, ctx);
+                            if let Some(new) = new {
+                                return new;
+                            }
                         }
+                        ops.push(ctx.constant(const_product));
                     }
                     let mut tree = ops.pop().map(mark_self_simplified)
                         .unwrap_or_else(|| ctx.const_1());
@@ -1374,12 +1379,17 @@ impl Operand {
                     // size operands is sketchy.
                     let all_32bit = ops.iter().all(|x| x.ty.expr_size() == MemAccessSize::Mem32);
                     if const_product != 1 {
-                        if ops.len() == 1 && simplify_mul_should_apply_constant(&ops[0]) {
-                            let op = ops.swap_remove(0);
-                            return simplify_mul_apply_constant(op, const_product, ctx);
-                        } else {
-                            ops.push(ctx.constant(const_product));
+                        if ops.len() == 1 {
+                            if simplify_mul_should_apply_constant(&ops[0]) {
+                                let op = ops.swap_remove(0);
+                                return simplify_mul_apply_constant(op, const_product, ctx);
+                            }
+                            let new = simplify_mul_try_mul_constants(&ops[0], const_product, ctx);
+                            if let Some(new) = new {
+                                return new;
+                            }
                         }
+                        ops.push(ctx.constant(const_product));
                     }
                     let mut tree = ops.pop().map(mark_self_simplified)
                         .unwrap_or_else(|| ctx.const_1());
@@ -1647,6 +1657,27 @@ fn simplify_mul_apply_constant(op: Rc<Operand>, val: u32, ctx: &OperandContext) 
     }
     let new = inner(&op, &constant);
     Operand::simplified(new)
+}
+
+// For converting c * (c2 + y) to (c_mul_c2 + c * y)
+fn simplify_mul_try_mul_constants(
+    op: &Operand,
+    c: u32,
+    ctx: &OperandContext,
+) -> Option<Rc<Operand>> {
+    use self::operand_helpers::*;
+    match op.ty {
+        OperandType::Arithmetic(ArithOpType::Add(ref l, ref r)) |
+            OperandType::Arithmetic(ArithOpType::Sub(ref l, ref r)) =>
+        {
+            Operand::either(l, r, |x| x.if_constant())
+                .map(|(c2, other)| {
+                    let multiplied = ctx.constant(c2.wrapping_mul(c));
+                    operand_add(multiplied, operand_mul(ctx.constant(c), other.clone()))
+                })
+        }
+        _ => None,
+    }
 }
 
 fn simplify_add_sub_ops(
@@ -4209,6 +4240,26 @@ mod test {
                 constval(0x10),
             ),
             constval(0xff),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_mul_add() {
+        use super::operand_helpers::*;
+        let op1 = operand_mul(
+            constval(0xc),
+            operand_add(
+                constval(0xc),
+                operand_register(1),
+            ),
+        );
+        let eq1 = operand_add(
+            constval(0x90),
+            operand_mul(
+                constval(0xc),
+                operand_register(1),
+            ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
