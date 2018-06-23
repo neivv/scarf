@@ -13,6 +13,7 @@ required-features = ["binaries"]
 
 [dependencies]
 byteorder = "1.1.0"
+fxhash = "0.2"
 hex-slice = "0.1.0"
 lde = "0.2.0"
 log = "0.3.8"

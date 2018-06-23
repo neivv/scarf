@@ -1,11 +1,15 @@
 use std::collections::{hash_map, HashMap};
 use std::fmt;
+use std::hash::BuildHasherDefault;
 use std::mem;
 use std::rc::Rc;
 
+use fxhash::FxBuildHasher;
+
 use disasm::{DestOperand, Operation};
 use operand::{
-    self, ArithOpType, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType
+    self, ArithOpType, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType,
+    OperandDummyHasher,
 };
 
 /// The constraint is assumed to be something that can be substituted with 1 if met
@@ -259,7 +263,7 @@ pub struct Flags {
 
 #[derive(Debug, Clone)]
 pub struct Memory {
-    map: HashMap<InternedOperand, InternedOperand>,
+    map: HashMap<InternedOperand, InternedOperand, FxBuildHasher>,
     /// Optimization for cases where memory gets large.
     /// The existing mapping can be moved to Rc, where cloning it is effectively free.
     immutable: Option<Rc<Memory>>,
@@ -288,7 +292,7 @@ pub struct MemoryIter<'a>(MemoryIterUntilImm<'a>);
 impl Memory {
     pub fn new() -> Memory {
         Memory {
-            map: HashMap::new(),
+            map: HashMap::with_hasher(Default::default()),
             immutable: None,
         }
     }
@@ -375,7 +379,7 @@ impl Memory {
 
     pub fn maybe_convert_immutable(&mut self) {
         if self.map.len() >= 64 {
-            let map = mem::replace(&mut self.map, HashMap::new());
+            let map = mem::replace(&mut self.map, HashMap::with_hasher(Default::default()));
             let old_immutable = self.immutable.take();
             self.immutable = Some(Rc::new(Memory {
                 map,
@@ -543,7 +547,7 @@ impl<'a> Destination<'a> {
 #[derive(Clone)]
 pub struct InternMap {
     pub map: Vec<Rc<Operand>>,
-    reverse: HashMap<Rc<Operand>, InternedOperand>,
+    reverse: HashMap<Rc<Operand>, InternedOperand, BuildHasherDefault<OperandDummyHasher>>,
 }
 
 impl fmt::Debug for InternMap {
@@ -565,7 +569,7 @@ impl InternMap {
     pub fn new() -> InternMap {
         InternMap {
             map: Vec::new(),
-            reverse: HashMap::new(),
+            reverse: HashMap::with_hasher(Default::default()),
         }
     }
 
@@ -1064,7 +1068,7 @@ pub fn merge_states<'a: 'r, 'r>(
         if b.len() == 0 {
             return a.clone();
         }
-        let mut result = HashMap::new();
+        let mut result = HashMap::with_hasher(Default::default());
         let imm_eq = a.immutable.as_ref().map(|x| &**x as *const Memory) ==
             b.immutable.as_ref().map(|x| &**x as *const Memory);
         if imm_eq {

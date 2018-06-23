@@ -1,4 +1,5 @@
 extern crate byteorder;
+extern crate fxhash;
 extern crate hex_slice;
 extern crate lde;
 #[macro_use] extern crate log;

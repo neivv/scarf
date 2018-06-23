@@ -6,6 +6,7 @@ use std::mem;
 use std::ops::Range;
 use std::rc::Rc;
 
+use fxhash;
 use serde::{Deserialize, Deserializer};
 
 use bit_misc::{bits_overlap, one_bit_ranges, zero_bit_ranges};
@@ -109,6 +110,29 @@ impl Hash for Operand {
             hash,
         } = *self;
         hash.hash(state)
+    }
+}
+
+/// Horrible hasher that relies on data being hashed already being well-spread data
+/// (Like Operands with their cached hash)
+#[derive(Default)]
+pub struct OperandDummyHasher {
+    value: u64,
+}
+
+impl Hasher for OperandDummyHasher {
+    fn finish(&self) -> u64 {
+        self.value
+    }
+
+    fn write(&mut self, data: &[u8]) {
+        for &x in data.iter().take(8) {
+            self.value = (self.value << 8) | x as u64;
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.value = value;
     }
 }
 
@@ -848,12 +872,10 @@ impl OperandType {
 
 impl Operand {
     fn new(ty: OperandType, simplified: bool) -> Operand {
-        use std::collections::hash_map::DefaultHasher;
-        let mut hasher = DefaultHasher::new();
-        ty.hash(&mut hasher);
+        let hash = fxhash::hash64(&ty);
         Operand {
             simplified,
-            hash: hasher.finish(),
+            hash,
             min_zero_bit_simplify_size: ty.min_zero_bit_simplify_size(),
             relevant_bits: ty.calculate_relevant_bits(),
             ty,
