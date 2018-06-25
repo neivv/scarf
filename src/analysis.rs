@@ -186,6 +186,42 @@ pub fn find_relocs(file: &BinaryFile) -> Result<Vec<VirtualAddress>, ::Error> {
     Ok(result)
 }
 
+pub struct RelocValues {
+    pub address: VirtualAddress,
+    pub value: VirtualAddress,
+}
+
+/// The returned array is sorted by value
+pub fn relocs_with_values(
+    file: &BinaryFile,
+    mut relocs: &[VirtualAddress],
+) -> Result<Vec<RelocValues>, ::Error> {
+    let mut result = Vec::with_capacity(relocs.len());
+    'outer: while !relocs.is_empty() {
+        let (section, reloc_count, start_address) = {
+            if let Some(section) = file.section_by_addr(relocs[0]) {
+                let end = section.virtual_address + section.data.len() as u32;
+                let count = relocs.binary_search(&end).unwrap_or_else(|x| x);
+                (&section.data, count, section.virtual_address)
+            } else {
+                relocs = &relocs[1..];
+                continue 'outer;
+            }
+        };
+        for &address in &relocs[..reloc_count] {
+            let relative = (address.0 - start_address.0) as usize;
+            let value = (&section[relative..]).read_u32::<LittleEndian>().unwrap_or(0);
+            result.push(RelocValues {
+                address,
+                value: VirtualAddress(value),
+            });
+        }
+        relocs = &relocs[reloc_count..];
+    }
+    result.sort_by_key(|x| x.value);
+    Ok(result)
+}
+
 pub struct FuncAnalysis<'a> {
     binary: &'a BinaryFile,
     cfg: Cfg<'a>,
