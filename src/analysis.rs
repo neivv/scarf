@@ -176,7 +176,7 @@ pub fn find_relocs(file: &BinaryFile) -> Result<Vec<VirtualAddress>, ::Error> {
         for mut reloc in block_relocs.chunks(2) {
             if let Ok(c) = reloc.read_u16::<LittleEndian>() {
                 if c & 0xf000 == 0x3000 {
-                    result.push(base + (c & 0xfff) as u32);
+                    result.push(base + u32::from(c & 0xfff));
                 }
             }
         }
@@ -497,7 +497,7 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
                                 self.analysis.unchecked_branches.push((case, self.state.clone()));
                                 cases.push(NodeLink::new(case));
                             }
-                            if cases.len() != 0 {
+                            if !cases.is_empty() {
                                 self.cfg_out_edge = CfgOutEdges::Switch(cases, index.clone());
                             }
                         } else {
@@ -571,7 +571,7 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
         if let Some(ref ins) = self.current_ins  {
             let op = &ins.ops()[self.ins_pos];
             if let Err(e) = self.branch.process_operation(op.clone(), ins) {
-                self.branch.analysis.errors.push((ins.address(), e.into()));
+                self.branch.analysis.errors.push((ins.address(), e));
                 self.branch.end_block(ins.address());
                 return None;
             }
@@ -602,7 +602,7 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
                     return None;
                 }
             };
-            if ins.ops().len() != 0 {
+            if !ins.ops().is_empty() {
                 instruction = ins;
                 break;
             }

@@ -95,7 +95,7 @@ fn next_node_name(pos: &mut u32) -> String {
     let mut val = *pos;
     let mut out = String::new();
     while val != 0 || out.is_empty() {
-        out.insert(0, ('a' as u8 + ((val - 1) % 25) as u8) as char);
+        out.insert(0, (b'a' + ((val - 1) % 25) as u8) as char);
         val = (val - 1) / 25;
     }
     out
@@ -169,13 +169,13 @@ fn comparision_from_operand(
             }
             ArithOpType::GreaterThan(ref l, ref r) => {
                 if let Some(op) = carry_flag_check(Comparision::GreaterThan, l, r) {
-                    if op.0.ty == OperandType::Constant(0x7fffffff) {
+                    if op.0.ty == OperandType::Constant(0x7fff_ffff) {
                         Some((Comparision::SignedLessThan, op.1, constval(0)))
                     } else {
                         Some((Comparision::LessThan, op.0, op.1))
                     }
                 } else {
-                    if r.ty == OperandType::Constant(0x7fffffff) {
+                    if r.ty == OperandType::Constant(0x7fff_ffff) {
                         // yes, using SignedLessThan here as well
                         Some((Comparision::SignedLessThan, l.clone(), constval(0)))
                     } else {
@@ -253,7 +253,7 @@ fn zero_flag_check(
         collect_add_ops(r, &mut ops, true);
         for &mut (ref mut op, ref mut negate) in &mut ops {
             if let OperandType::Constant(c) = op.ty {
-                if c > 0x80000000 && *negate == false {
+                if c > 0x8000_0000 && *negate == false {
                     *op = constval(0u32.wrapping_sub(c));
                     *negate = true;
                 }
@@ -271,10 +271,10 @@ fn sign_flag_check(
     r: &Rc<Operand>
 ) -> Option<CompareOperands> {
     match (comp, &l.ty, &r.ty) {
-        (Comparision::GreaterThan, _, &OperandType::Constant(0x7fffffff)) => {
+        (Comparision::GreaterThan, _, &OperandType::Constant(0x7fff_ffff)) => {
             Some(compare_base_op(l))
         }
-        (Comparision::LessThan, &OperandType::Constant(0x7fffffff), _) => {
+        (Comparision::LessThan, &OperandType::Constant(0x7fff_ffff), _) => {
             Some(compare_base_op(r))
         }
         (Comparision::SignedLessThan, _, &OperandType::Constant(0)) => {
@@ -461,7 +461,7 @@ fn compare_base_op(op: &Rc<Operand>) -> CompareOperands {
             collect_add_ops(r, &mut ops, negate);
             for &mut (ref mut op, ref mut negate) in &mut ops {
                 if let OperandType::Constant(c) = op.ty {
-                    if c > 0x80000000 && *negate == false {
+                    if c > 0x8000_0000 && *negate == false {
                         *op = constval(0u32.wrapping_sub(c));
                         *negate = true;
                     }
@@ -519,7 +519,7 @@ fn recognize_compare_operands() {
                     operand_register(2),
                     operand_register(4),
                 ),
-                constval(0x7fffffff),
+                constval(0x7fff_ffff),
             ),
             operand_gt_signed(
                 operand_sub(
@@ -542,7 +542,7 @@ fn recognize_compare_operands() {
         operand_eq(
             operand_gt(
                 operand_register(2),
-                constval(0x7fffffff),
+                constval(0x7fff_ffff),
             ),
             operand_gt_signed(
                 operand_register(2),
@@ -567,7 +567,7 @@ fn recognize_compare_operands() {
                         constval(123),
                     ),
                 ),
-                constval(0x7fffffff),
+                constval(0x7fff_ffff),
             ),
             operand_gt_signed(
                 operand_sub(

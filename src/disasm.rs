@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
+
 use std::rc::Rc;
 
 use hex_slice::AsHex;
@@ -49,7 +51,7 @@ impl<'a> Disassembler<'a> {
         }
     }
 
-    pub fn next<'b, 'c>(&'b mut self, ctx: &'c OperandContext) -> Result<Instruction, Error> {
+    pub fn next(&mut self, ctx: &OperandContext) -> Result<Instruction, Error> {
         if let Some(finishing_instruction_pos) = self.finishing_instruction_pos {
             return Err(Error::Branch(self.virtual_address + finishing_instruction_pos as u32));
         }
@@ -80,7 +82,7 @@ impl<'a> Disassembler<'a> {
     }
 
     pub fn address(&self) -> VirtualAddress {
-        return self.virtual_address + self.pos as u32
+        self.virtual_address + self.pos as u32
     }
 }
 
@@ -263,7 +265,7 @@ fn instruction_operations(
                 let stack_pop_size = match data[0] {
                     0xc2 => match read_u16(&data[1..]) {
                         Err(_) => 0,
-                        Ok(o) => o as u32,
+                        Ok(o) => u32::from(o),
                     },
                     _ => 0,
                 };
@@ -347,7 +349,7 @@ fn xmm_variant(op: &Rc<Operand>, i: u8) -> Rc<Operand> {
             };
             mem_variable_rc(
                 mem.size,
-                operand_add(mem.address.clone(), constval(bytes * i as u32))
+                operand_add(mem.address.clone(), constval(bytes * u32::from(i))),
             )
         }
         _ => panic!("Cannot xmm {:?}", op),
@@ -719,7 +721,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     fn movsx_short(
         &self,
         out: &mut OperationVec,
-        r: Rc<Operand>,
+        r: &Rc<Operand>,
         rm: Rc<Operand>,
         op_size: MemAccessSize,
     ) {
@@ -771,7 +773,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
         let mut out = SmallVec::new();
         if is_rm_short_r_register(&rm, &r) {
-            self.movsx_short(&mut out, r, rm, op_size)
+            self.movsx_short(&mut out, &r, rm, op_size)
         } else {
             let reg = match r.ty {
                 OperandType::Register(r) | OperandType::Register16(r) => r,
@@ -786,9 +788,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 OperandType::Memory(ref mem) => Some(mem.size),
                 _ => None,
             };
-            if let Some(_) = mem_size {
+            if mem_size.is_some() {
                 out.push(mov(r.clone(), rm));
-                self.movsx_short(&mut out, r, short_r, op_size)
+                self.movsx_short(&mut out, &r, short_r, op_size)
             } else {
                 let signed_max = match op_size {
                     MemAccessSize::Mem8 => self.ctx.const_7f(),
@@ -866,7 +868,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         match variant {
             0 | 1 => return self.generic_arith_with_imm_op(&TEST_OPS, op_size),
             2 => {
-                out.push(make_arith_operation(dest_operand(&rm), ArithOpType::Not(rm.into())));
+                out.push(make_arith_operation(dest_operand(&rm), ArithOpType::Not(rm)));
             }
             4 => {
                 out.push(mov(pair_edx_eax(), operand_mul(self.ctx.register(0), rm)));
@@ -1092,11 +1094,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             2 | 3 => {
                 let (rm, _) = self.parse_modrm(MemAccessSize::Mem32)?;
                 let mut out = SmallVec::new();
-                match rm.ty {
-                    OperandType::Memory(_) => {
-                        out.push(mov(rm.clone(), self.ctx.undefined_rc()));
-                    }
-                    _ => (),
+                if rm.if_memory().is_some() {
+                    out.push(mov(rm.clone(), self.ctx.undefined_rc()));
                 }
                 Ok(out)
             }
@@ -1109,18 +1108,15 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                 };
                 let (rm, _) = self.parse_modrm(mem_size)?;
                 let mut out = SmallVec::new();
-                match rm.ty {
-                    OperandType::Memory(ref mem) => {
-                        out.extend((0..10).map(|i| {
-                            let address = operand_add(
-                                mem.address.clone(),
-                                self.ctx.constant(i * mem_bytes),
-                            );
-                            let dest = mem_variable_rc(mem_size, address);
-                            mov(dest, self.ctx.undefined_rc())
-                        }));
-                    }
-                    _ => (),
+                if let Some(mem) = rm.if_memory() {
+                    out.extend((0..10).map(|i| {
+                        let address = operand_add(
+                            mem.address.clone(),
+                            self.ctx.constant(i * mem_bytes),
+                        );
+                        let dest = mem_variable_rc(mem_size, address);
+                        mov(dest, self.ctx.undefined_rc())
+                    }));
                 }
                 Ok(out)
             }
@@ -1128,11 +1124,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             7 => {
                 let (rm, _) = self.parse_modrm(MemAccessSize::Mem16)?;
                 let mut out = SmallVec::new();
-                match rm.ty {
-                    OperandType::Memory(_) => {
-                        out.push(mov(rm.clone(), self.ctx.undefined_rc()));
-                    }
-                    _ => (),
+                if rm.if_memory().is_some() {
+                    out.push(mov(rm.clone(), self.ctx.undefined_rc()));
                 }
                 Ok(out)
             }
@@ -1158,10 +1151,10 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                     false => sub(rm, self.ctx.const_1()),
                 });
             }
-            2 | 3 => out.push(Operation::Call(rm.into())),
-            4 | 5 => out.push(Operation::Jump { condition: self.ctx.const_1(), to: rm.into() }),
+            2 | 3 => out.push(Operation::Call(rm)),
+            4 | 5 => out.push(Operation::Jump { condition: self.ctx.const_1(), to: rm }),
             6 => {
-                PUSH_OPS.operation(rm.into(), self.ctx.const_ffffffff(), &mut out);
+                PUSH_OPS.operation(rm, self.ctx.const_ffffffff(), &mut out);
             }
             _ => return Err(Error::UnknownOpcode(self.data.into())),
         }
@@ -1493,8 +1486,8 @@ pub mod operation_helpers {
     pub fn read_variable_size(val: &[u8], size: MemAccessSize) -> Result<u32, Error> {
         match size {
             Mem32 => read_u32(val),
-            Mem16 => read_u16(val).map(|x| x as u32),
-            Mem8 => read_u8(val).map(|x| x as u32),
+            Mem16 => read_u16(val).map(|x| u32::from(x)),
+            Mem8 => read_u8(val).map(|x| u32::from(x)),
         }
     }
 
@@ -1608,12 +1601,12 @@ pub mod operation_helpers {
 
     pub fn sar_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
         let is_positive = operand_eq(
-            operand_and(constval(0x80000000), dest.clone()),
+            operand_and(constval(0x8000_0000), dest.clone()),
             constval(0),
         );
         out.push(Operation::Move(
             dest_operand(&dest),
-            operand_or(operand_rsh(dest.clone(), rhs.clone()), constval(0x80000000)),
+            operand_or(operand_rsh(dest.clone(), rhs.clone()), constval(0x8000_0000)),
             Some(operand_logical_not(is_positive.clone())),
         ));
         out.push(Operation::Move(

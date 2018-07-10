@@ -17,7 +17,7 @@ impl Iterator for ZeroBitRanges {
             let amt = min(32 - self.1, self.0.trailing_zeros() as u8);
             let range = self.1..self.1 + amt;
             self.1 += amt;
-            self.0 = self.0.checked_shr(amt as u32).unwrap_or(0);
+            self.0 = self.0.checked_shr(u32::from(amt)).unwrap_or(0);
             Some(range)
         }
     }

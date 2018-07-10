@@ -347,153 +347,185 @@ impl<'exec> Cfg<'exec> {
         // its child branches.
         assert!(!self.node_indices_dirty);
 
-        let mut mark_buf = vec![0u32; self.nodes.len()];
-        let mut forks = Vec::with_capacity(self.nodes.len());
-        let mut pos = node.0 as usize;
-        let mut mark = 1;
-        let mut mark_indices = Vec::with_capacity(32);
-        'first_branch_loop: loop {
-            while mark_buf[pos] != 0 {
-                // We reached a loop, that's not useful.
-                // Switch marks that are larger than last fork to "useless"
-                let (branch, last_good_mark) = match forks.pop() {
-                    None => return None,
+        struct State<'exec> {
+            mark_buf: Vec<u32>,
+            forks: Vec<(usize, u32)>,
+            mark_indices: Vec<usize>,
+            nodes: &'exec [(VirtualAddress, CfgNode<'exec>)],
+        }
+        let mut state = State {
+            mark_buf: vec![0u32; self.nodes.len()],
+            forks: Vec::with_capacity(self.nodes.len()),
+            mark_indices: Vec::with_capacity(32),
+            nodes: &self.nodes,
+        };
+
+        // Return Err on quick exit, Ok for continuing to rest of branches
+        fn traverse_first_branch<'a>(
+            state: &mut State<'a>,
+            node: NodeIndex<'a>,
+        ) -> Result<Vec<u32>, Option<NodeBorrow<'a>>> {
+            let mut pos = node.0 as usize;
+            let mut mark = 1;
+            loop {
+                while state.mark_buf[pos] != 0 {
+                    // We reached a loop, that's not useful.
+                    // Switch marks that are larger than last fork to "useless"
+                    let (branch, last_good_mark) = match state.forks.pop() {
+                        None => return Err(None),
+                        Some(s) => s,
+                    };
+                    while mark > last_good_mark + 1 {
+                        let index = state.mark_indices.pop().unwrap();
+                        state.mark_buf[index] = !0;
+                        mark -= 1;
+                    }
+                    pos = branch;
+                }
+                state.mark_buf[pos] = mark;
+                state.mark_indices.push(pos);
+                let index = match state.nodes[pos].1.out_edges {
+                    CfgOutEdges::None => None,
+                    CfgOutEdges::Single(ref s) => {
+                        let index = s.index_if_not_unkown();
+                        if state.forks.is_empty() {
+                            if let Some(index) = index.or_else(|| state.mark_indices.get(1).cloned()) {
+                                // Uh, ok, the postdominator is just the next node then.
+                                // Or if a branch was rewinded to start.
+                                return Err(Some(NodeBorrow {
+                                    address: state.nodes[index].0,
+                                    node: &state.nodes[index].1,
+                                    index: NodeIndex(index as u32, PhantomData),
+                                }));
+                            }
+                        }
+                        index
+                    }
+                    CfgOutEdges::Branch(ref s, ref cond) => {
+                        if !cond.node.is_unknown() {
+                            state.forks.push((cond.node.index(), mark));
+                        }
+                        s.index_if_not_unkown()
+                    }
+                    CfgOutEdges::Switch(ref cases, _) => {
+                        for other in cases.iter().skip(1) {
+                            state.forks.push((other.index(), mark));
+                        }
+                        cases.first().map(|x| x.index())
+                    }
+                };
+                mark += 1;
+                pos = match index {
+                    None => {
+                        let mut mark_limits = vec![!0u32; mark as usize - 1];
+                        for (i, mark) in mark_limits[..mark as usize - 2].iter_mut().enumerate() {
+                            *mark = i as u32 + 2;
+                        }
+                        return Ok(mark_limits);
+                    }
                     Some(s) => s,
                 };
-                while mark > last_good_mark + 1 {
-                    let index = mark_indices.pop().unwrap();
-                    mark_buf[index] = !0;
-                    mark -= 1;
-                }
-                pos = branch;
             }
-            mark_buf[pos] = mark;
-            mark_indices.push(pos);
-            let index = match self.nodes[pos].1.out_edges {
-                CfgOutEdges::None => None,
-                CfgOutEdges::Single(ref s) => {
-                    let index = s.index_if_not_unkown();
-                    if forks.is_empty() {
-                        if let Some(index) = index.or_else(|| mark_indices.get(1).cloned()) {
-                            // Uh, ok, the postdominator is just the next node then.
-                            // Or if a branch was rewinded to start.
-                            return Some(NodeBorrow {
-                                address: self.nodes[index].0,
-                                node: &self.nodes[index].1,
-                                index: NodeIndex(index as u32, PhantomData),
-                            });
-                        }
-                    }
-                    index
-                }
-                CfgOutEdges::Branch(ref s, ref cond) => {
-                    if !cond.node.is_unknown() {
-                        forks.push((cond.node.index(), mark));
-                    }
-                    s.index_if_not_unkown()
-                }
-                CfgOutEdges::Switch(ref cases, _) => {
-                    for other in cases.iter().skip(1) {
-                        forks.push((other.index(), mark));
-                    }
-                    cases.first().map(|x| x.index())
-                }
-            };
-            mark += 1;
-            pos = match index {
-                None => break 'first_branch_loop,
-                Some(s) => s,
-            };
         }
-        let mut mark_limits = vec![!0u32; mark as usize - 1];
-        for (i, mark) in mark_limits[..mark as usize - 2].iter_mut().enumerate() {
-            *mark = i as u32 + 2;
-        }
-        let mut current_mark;
-        'other_branches_loop: loop {
+
+        fn traverse_rest<'a>(
+            state: &mut State<'a>,
+            mark_limits: &mut [u32],
+        ) -> Option<NodeBorrow<'a>> {
             loop {
-                match forks.pop() {
-                    Some((p, m)) => {
-                        pos = p;
-                        current_mark = m;
-                    }
-                    None => {
-                        let mut end_mark = mark_limits[0];
-                        let mut pos = 2;
-                        while pos < end_mark {
+                let mut current_mark;
+                let mut pos;
+                loop {
+                    match state.forks.pop() {
+                        Some((p, m)) => {
+                            pos = p;
+                            current_mark = m;
+                        }
+                        None => {
+                            let mut end_mark = mark_limits[0];
+                            let mut pos = 2;
+                            while pos < end_mark {
+                                if end_mark == !0 {
+                                    return None;
+                                }
+                                if mark_limits[pos as usize - 1] > end_mark {
+                                    end_mark = mark_limits[pos as usize - 1];
+                                }
+                                pos += 1;
+                            }
                             if end_mark == !0 {
                                 return None;
                             }
-                            if mark_limits[pos as usize - 1] > end_mark {
-                                end_mark = mark_limits[pos as usize - 1];
-                            }
-                            pos += 1;
+                            let index = state.mark_indices[end_mark as usize - 1];
+                            return Some(NodeBorrow {
+                                address: state.nodes[index].0,
+                                node: &state.nodes[index].1,
+                                index: NodeIndex(index as u32, PhantomData),
+                            });
                         }
-                        if end_mark == !0 {
-                            return None;
-                        }
-                        let index = mark_indices[end_mark as usize - 1];
-                        return Some(NodeBorrow {
-                            address: self.nodes[index].0,
-                            node: &self.nodes[index].1,
-                            index: NodeIndex(index as u32, PhantomData),
-                        });
+                    };
+                    if mark_limits[current_mark as usize - 1] != !0 {
+                        break;
                     }
-                };
-                if mark_limits[current_mark as usize - 1] != !0 {
-                    break;
+                    // The mark was known to not reach any other mark at one branch,
+                    // so don't bother.
                 }
-                // The mark was known to not reach any other mark at one branch, so don't bother.
-            }
-            match mark_buf[pos] {
-                0 => {
-                    mark_buf[pos] = 1;
-                    let index = match self.nodes[pos].1.out_edges {
-                        CfgOutEdges::None => None,
-                        CfgOutEdges::Single(ref s) => s.index_if_not_unkown(),
-                        CfgOutEdges::Branch(ref s, ref cond) => {
-                            if cond.node.is_unknown() {
-                                // Effectively an end where we didn't meet any of the marked nodes
+                match state.mark_buf[pos] {
+                    0 => {
+                        state.mark_buf[pos] = 1;
+                        let index = match state.nodes[pos].1.out_edges {
+                            CfgOutEdges::None => None,
+                            CfgOutEdges::Single(ref s) => s.index_if_not_unkown(),
+                            CfgOutEdges::Branch(ref s, ref cond) => {
+                                if cond.node.is_unknown() {
+                                    // Effectively an end where we didn't meet any of the marked nodes
+                                    for mark in mark_limits[current_mark as usize - 1..].iter_mut() {
+                                        *mark = !0;
+                                    }
+                                    None
+                                } else {
+                                    let cond_index = cond.node.index();
+                                    if state.mark_buf[cond_index] != 1 {
+                                        state.forks.push((cond_index, current_mark));
+                                    }
+                                    s.index_if_not_unkown()
+                                }
+                            }
+                            CfgOutEdges::Switch(ref cases, _) => {
+                                for other in cases.iter().skip(1) {
+                                    if other.index() != 1 {
+                                        state.forks.push((other.index(), current_mark));
+                                    }
+                                }
+                                cases.first().map(|x| x.index())
+                            }
+                        };
+                        match index {
+                            // If we reach an end without seeing a > 2-node, there is no postdominator
+                            None => {
                                 for mark in mark_limits[current_mark as usize - 1..].iter_mut() {
                                     *mark = !0;
                                 }
-                                None
-                            } else {
-                                let cond_index = cond.node.index();
-                                if mark_buf[cond_index] != 1 {
-                                    forks.push((cond_index, current_mark));
-                                }
-                                s.index_if_not_unkown()
                             }
+                            Some(1) => (),
+                            Some(s) => state.forks.push((s, current_mark)),
                         }
-                        CfgOutEdges::Switch(ref cases, _) => {
-                            for other in cases.iter().skip(1) {
-                                if other.index() != 1 {
-                                    forks.push((other.index(), current_mark));
-                                }
-                            }
-                            cases.first().map(|x| x.index())
-                        }
-                    };
-                    match index {
-                        // If we reach an end without seeing a > 2-node, there is no postdominator
-                        None => {
-                            for mark in mark_limits[current_mark as usize - 1..].iter_mut() {
-                                *mark = !0;
-                            }
-                        }
-                        Some(1) => (),
-                        Some(s) => forks.push((s, current_mark)),
                     }
-                }
-                1 => (),
-                other => {
-                    if mark_limits[current_mark as usize - 1] < other {
-                        mark_limits[current_mark as usize - 1] = other;
+                    1 => (),
+                    other => {
+                        if mark_limits[current_mark as usize - 1] < other {
+                            mark_limits[current_mark as usize - 1] = other;
+                        }
                     }
                 }
             }
         }
+
+        let mut mark_limits = match traverse_first_branch(&mut state, node) {
+            Ok(o) => o,
+            Err(e) => return e,
+        };
+        traverse_rest(&mut state, &mut mark_limits)
     }
 }
 

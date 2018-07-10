@@ -1,3 +1,10 @@
+#![cfg_attr(feature = "cargo-clippy", allow(
+    match_bool, trivially_copy_pass_by_ref, new_without_default, unneeded_field_pattern,
+    redundant_closure, new_without_default_derive, len_without_is_empty, many_single_char_names,
+    collapsible_if, verbose_bit_mask, wrong_self_convention, type_complexity, bool_comparison,
+    assign_op_pattern, question_mark, should_implement_trait,
+))]
+
 extern crate byteorder;
 extern crate fxhash;
 extern crate hex_slice;
@@ -133,7 +140,7 @@ impl BinaryFile {
     }
 
     pub fn section(&self, name: &[u8; 0x8]) -> Option<&BinarySection> {
-        self.sections.iter().find(|x| &x.name[..] == &name[..])
+        self.sections.iter().find(|x| x.name[..] == name[..])
     }
 
     /// Returns a section containing the address, if it exists
@@ -181,7 +188,7 @@ impl BinaryFile {
 pub fn raw_bin(base: VirtualAddress, sections: Vec<BinarySection>) -> BinaryFile {
     BinaryFile {
         base,
-        sections: sections,
+        sections,
     }
 }
 
@@ -191,27 +198,27 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile, Error> {
     if file.read_u16::<LittleEndian>()? != 0x5a4d {
         return Err(InvalidPeFile("Missing DOS magic".into()));
     }
-    let pe_offset = read_at_32(&mut file, 0x3c)? as u64;
-    if read_at_32(&mut file, pe_offset)? != 0x00004550 {
+    let pe_offset = u64::from(read_at_32(&mut file, 0x3c)?);
+    if read_at_32(&mut file, pe_offset)? != 0x0000_4550 {
         return Err(InvalidPeFile("Missing PE magic".into()));
     }
     let section_count = read_at_16(&mut file, pe_offset + 6)?;
     let base = VirtualAddress(read_at_32(&mut file, pe_offset + 0x34)?);
-    let mut sections = (0..section_count).map(|i| {
+    let mut sections = (0..u64::from(section_count)).map(|i| {
         let mut name = [0; 8];
-        file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i as u64))?;
+        file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i))?;
         file.read_exact(&mut name)?;
-        file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i as u64 + 0x8))?;
+        file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i + 0x8))?;
         let virtual_size = file.read_u32::<LittleEndian>()?;
         let rva = Rva(file.read_u32::<LittleEndian>()?);
         let phys_size = file.read_u32::<LittleEndian>()?;
         let phys = PhysicalAddress(file.read_u32::<LittleEndian>()?);
 
-        file.seek(io::SeekFrom::Start(phys.0 as u64))?;
+        file.seek(io::SeekFrom::Start(u64::from(phys.0)))?;
         let mut data = vec![0; phys_size as usize];
         file.read_exact(&mut data)?;
         Ok(BinarySection {
-            name: name,
+            name,
             virtual_address: base + rva,
             physical_address: phys,
             virtual_size,
@@ -289,7 +296,7 @@ pub fn load_section_dumps(
 }
 
 impl SectionDumps {
-    pub fn resolve_mem_accesses(&self, val: Rc<Operand>) -> (Rc<Operand>, Vec<VirtualAddress>) {
+    pub fn resolve_mem_accesses(&self, val: &Rc<Operand>) -> (Rc<Operand>, Vec<VirtualAddress>) {
         use operand::ArithOpType::*;
         let mut addresses = vec![];
         let val = match val.ty {
@@ -317,15 +324,15 @@ impl SectionDumps {
                         Div(ref mut l, ref mut r) | Modulo(ref mut l, ref mut r) |
                         GreaterThanSigned(ref mut l, ref mut r) =>
                     {
-                        let (l_resolved, l_addresses) = self.resolve_mem_accesses(l.clone());
-                        let (r_resolved, r_addresses) = self.resolve_mem_accesses(r.clone());
+                        let (l_resolved, l_addresses) = self.resolve_mem_accesses(l);
+                        let (r_resolved, r_addresses) = self.resolve_mem_accesses(r);
                         *l = l_resolved;
                         *r = r_resolved;
                         addresses.extend(l_addresses);
                         addresses.extend(r_addresses);
                     }
                     Not(ref mut l) | Parity(ref mut l) => {
-                        let (l_resolved, l_addresses) = self.resolve_mem_accesses(l.clone());
+                        let (l_resolved, l_addresses) = self.resolve_mem_accesses(l);
                         *l = l_resolved;
                         addresses.extend(l_addresses);
                     }
@@ -344,8 +351,10 @@ impl SectionDumps {
             let offset = (address.0 - sect.address.0) as usize;
             let mut sliced = &sect.data[offset..];
             match size {
-                MemAccessSize::Mem8 => sliced.read_u8().ok().map(|x| x as u32),
-                MemAccessSize::Mem16 => sliced.read_u16::<LittleEndian>().ok().map(|x| x as u32),
+                MemAccessSize::Mem8 => sliced.read_u8().ok().map(|x| u32::from(x)),
+                MemAccessSize::Mem16 => {
+                    sliced.read_u16::<LittleEndian>().ok().map(|x| u32::from(x))
+                }
                 MemAccessSize::Mem32 => sliced.read_u32::<LittleEndian>().ok(),
             }
         })

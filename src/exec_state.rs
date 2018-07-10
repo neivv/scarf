@@ -224,14 +224,14 @@ impl<'a> Clone for ExecutionState<'a> {
     fn clone(&self) -> ExecutionState<'a> {
         ExecutionState {
             registers: [
-                self.registers[0].clone(),
-                self.registers[1].clone(),
-                self.registers[2].clone(),
-                self.registers[3].clone(),
-                self.registers[4].clone(),
-                self.registers[5].clone(),
-                self.registers[6].clone(),
-                self.registers[7].clone(),
+                self.registers[0],
+                self.registers[1],
+                self.registers[2],
+                self.registers[3],
+                self.registers[4],
+                self.registers[5],
+                self.registers[6],
+                self.registers[7],
             ],
             xmm_registers: [
                 self.xmm_registers[0].clone(),
@@ -246,7 +246,7 @@ impl<'a> Clone for ExecutionState<'a> {
             flags: self.flags.clone(),
             memory: self.memory.clone(),
             last_jump_extra_constraint: self.last_jump_extra_constraint.clone(),
-            ctx: self.ctx.clone(),
+            ctx: self.ctx,
         }
     }
 }
@@ -561,7 +561,7 @@ pub struct InternedOperand(u32);
 
 impl InternedOperand {
     pub fn is_undefined(&self) -> bool {
-        self.0 > 0x80000000
+        self.0 > 0x8000_0000
     }
 }
 
@@ -825,7 +825,7 @@ impl<'a> ExecutionState<'a> {
                     MemAccessSize::Mem16 => 2,
                     MemAccessSize::Mem32 => 4,
                 };
-                let combined = if offset_4 + size > 4 || true {
+                let combined = if offset_4 + size > 4 {
                     let high_base = Operand::simplified(
                         operand_add(base.clone(), self.ctx.constant(offset_rest.wrapping_add(4)))
                     );
@@ -872,7 +872,7 @@ impl<'a> ExecutionState<'a> {
             },
             OperandType::Register8Low(reg) => {
                 operand_and(
-                    interner.operand(self.registers[reg.0 as usize].clone()),
+                    interner.operand(self.registers[reg.0 as usize]),
                     self.ctx.const_ff(),
                 )
             },
@@ -883,12 +883,12 @@ impl<'a> ExecutionState<'a> {
                 interner.operand(self.xmm_registers[reg as usize].word(word))
             }
             OperandType::Flag(flag) => interner.operand(match flag {
-                Flag::Zero => self.flags.zero.clone(),
-                Flag::Carry => self.flags.carry.clone(),
-                Flag::Overflow => self.flags.overflow.clone(),
-                Flag::Sign => self.flags.sign.clone(),
-                Flag::Parity => self.flags.parity.clone(),
-                Flag::Direction => self.flags.direction.clone(),
+                Flag::Zero => self.flags.zero,
+                Flag::Carry => self.flags.carry,
+                Flag::Overflow => self.flags.overflow,
+                Flag::Sign => self.flags.sign,
+                Flag::Parity => self.flags.parity,
+                Flag::Direction => self.flags.direction,
             }).clone(),
             OperandType::Arithmetic(ref op) => {
                 let ty = OperandType::Arithmetic(self.resolve_arith(op, interner));
@@ -927,7 +927,7 @@ impl<'a> ExecutionState<'a> {
                 return Some(self.ctx.register(reg as u8));
             }
         }
-        for (&key, &val) in self.memory.map.iter() {
+        for (&key, &val) in &self.memory.map {
             if interned == val {
                 return Some(i.operand(key));
             }
@@ -1073,9 +1073,9 @@ pub fn merge_states<'a: 'r, 'r>(
             b.immutable.as_ref().map(|x| &**x as *const Memory);
         if imm_eq {
             // Allows just checking a.map.iter() instead of a.iter()
-            for (&key, &a_val) in a.map.iter() {
-                match b.get_with_immutable_info(key) {
-                    Some((b_val, is_imm)) => match a_val == b_val {
+            for (&key, &a_val) in &a.map {
+                if let Some((b_val, is_imm)) = b.get_with_immutable_info(key) {
+                    match a_val == b_val {
                         true => {
                             if !is_imm {
                                 result.insert(key, a_val);
@@ -1086,9 +1086,8 @@ pub fn merge_states<'a: 'r, 'r>(
                                 result.insert(key, i.new_undef(old.ctx));
                             }
                         }
-                    },
-                    None => (),
-                };
+                    }
+                }
             }
             Memory {
                 map: result,
@@ -1103,8 +1102,8 @@ pub fn merge_states<'a: 'r, 'r>(
             // inserted to the result instead.
             let common = a.common_immutable(b);
             for (&key, &b_val, _is_imm) in b.iter_until_immutable(common) {
-                match a.get_with_immutable_info(key) {
-                    Some((a_val, is_imm)) => match a_val == b_val {
+                if let Some((a_val, is_imm)) = a.get_with_immutable_info(key) {
+                    match a_val == b_val {
                         true => {
                             if !is_imm {
                                 result.insert(key, a_val);
@@ -1115,9 +1114,8 @@ pub fn merge_states<'a: 'r, 'r>(
                                 result.insert(key, i.new_undef(old.ctx));
                             }
                         }
-                    },
-                    None => (),
-                };
+                    }
+                }
             }
             // The result contains now anything that was in b's unique branch of the memory and
             // matched something in a.
@@ -1133,8 +1131,8 @@ pub fn merge_states<'a: 'r, 'r>(
             if let Some(common) = common {
                 for (&key, &a_val, is_imm) in a.iter_until_immutable(Some(common)) {
                     if !b.has_before_immutable(key, common) {
-                        match common.get(key) {
-                            Some(b_val) => match a_val == b_val {
+                        if let Some(b_val) = common.get(key) {
+                            match a_val == b_val {
                                 true => {
                                     if !is_imm {
                                         result.insert(key, a_val);
@@ -1146,7 +1144,6 @@ pub fn merge_states<'a: 'r, 'r>(
                                     }
                                 }
                             }
-                            None => (),
                         }
                     }
                 }
