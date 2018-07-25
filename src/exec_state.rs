@@ -43,7 +43,8 @@ impl Constraint {
     }
 
     fn apply_to(&self, oper: &mut Rc<Operand>) {
-        apply_constraint_split(&self.0, oper);
+        let new = apply_constraint_split(&self.0, oper, true);
+        *oper = Operand::simplified(new);
     }
 }
 
@@ -81,13 +82,16 @@ where F: FnMut(&OperandType) -> bool,
 
 /// Splits the constraint at ands that can be applied separately
 /// Also can handle logical nots
-fn apply_constraint_split(constraint: &Rc<Operand>, val: &mut Rc<Operand>) -> bool {
+fn apply_constraint_split(
+    constraint: &Rc<Operand>,
+    val: &Rc<Operand>,
+    with: bool,
+) -> Rc<Operand>{
     use operand::operand_helpers::*;
     match constraint.ty {
         OperandType::Arithmetic(ArithOpType::And(ref l, ref r)) => {
-            let mut changed = apply_constraint_split(l, val);
-            changed |= apply_constraint_split(r, val);
-            changed
+            let new = apply_constraint_split(l, val, with);
+            apply_constraint_split(r, &new, with)
         }
         OperandType::Arithmetic(ArithOpType::Equal(ref l, ref r)) => {
             let other = match (&l.ty, &r.ty) {
@@ -96,82 +100,16 @@ fn apply_constraint_split(constraint: &Rc<Operand>, val: &mut Rc<Operand>) -> bo
                 _ => None
             };
             if let Some(other) = other {
-                let changed = apply_constraint_split(other, val);
-                if changed {
-                    *val = operand_logical_not(val.clone());
-                }
-                changed
+                apply_constraint_split(other, val, !with)
             } else {
-                apply_constraint_subpart(constraint, val)
+                // TODO OperandContext
+                let subst_val = constval(if with { 1 } else { 0 });
+                Operand::substitute(val, constraint, &subst_val)
             }
         }
         _ => {
-            apply_constraint_subpart(constraint, val)
-        }
-    }
-}
-
-macro_rules! apply_constraint_unary{
-    ($constraint:expr, $val:expr, $out:expr, $fun:ident) => {{
-        let mut inner = $val.clone();
-        let changed = apply_constraint_subpart($constraint, &mut inner);
-        if changed {
-            *$out = Operand::new_not_simplified_rc(OperandType::Arithmetic($fun(inner)));
-        }
-        changed
-    }}
-}
-
-macro_rules! apply_constraint_binary{
-    ($constraint:expr, $l:expr, $r:expr, $out:expr, $fun:ident) => {{
-        let mut left = $l.clone();
-        let mut right = $r.clone();
-        let mut changed = apply_constraint_subpart($constraint, &mut left);
-        changed |= apply_constraint_subpart($constraint, &mut right);
-        if changed {
-            *$out = Operand::new_not_simplified_rc(OperandType::Arithmetic($fun(left, right)));
-        }
-        changed
-    }}
-}
-
-fn apply_constraint_subpart(constraint: &Rc<Operand>, val: &mut Rc<Operand>) -> bool {
-    use operand::ArithOpType::*;
-    use operand::operand_helpers::*;
-
-    if val == constraint {
-        *val = constval(1);
-        true
-    } else {
-        match val.ty.clone() {
-            OperandType::Arithmetic(ref arith) => match *arith {
-                Add(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Add),
-                Sub(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Sub),
-                Mul(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Mul),
-                Div(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Div),
-                Modulo(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Modulo),
-                And(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, And),
-                Or(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Or),
-                Xor(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Xor),
-                Lsh(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Lsh),
-                Rsh(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Rsh),
-                RotateLeft(ref l, ref r) => {
-                    apply_constraint_binary!(constraint, l, r, val, RotateLeft)
-                }
-                Equal(ref l, ref r) => apply_constraint_binary!(constraint, l, r, val, Equal),
-                GreaterThan(ref l, ref r) => {
-                    apply_constraint_binary!(constraint, l, r, val, GreaterThan)
-                }
-                GreaterThanSigned(ref l, ref r) => {
-                    apply_constraint_binary!(constraint, l, r, val, GreaterThanSigned)
-                }
-                SignedMul(ref l, ref r) => {
-                    apply_constraint_binary!(constraint, l, r, val, SignedMul)
-                }
-                Not(ref l) => apply_constraint_unary!(constraint, l, val, Not),
-                Parity(ref l) => apply_constraint_unary!(constraint, l, val, Parity),
-            },
-            _ => false,
+            let subst_val = constval(if with { 1 } else { 0 });
+            Operand::substitute(val, constraint, &subst_val)
         }
     }
 }
@@ -907,7 +845,10 @@ impl<'a> ExecutionState<'a> {
     }
 
     pub fn resolve(&self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
-        Operand::simplified(self.resolve_no_simplify(value, interner))
+        Operand::simplified({
+            let x = self.resolve_no_simplify(value, interner);
+            x
+        })
     }
 
     pub fn try_resolve_const(&self, condition: &Rc<Operand>, i: &mut InternMap) -> Option<u32> {
@@ -956,7 +897,9 @@ impl<'a> ExecutionState<'a> {
                     _ => {
                         let cond = match jump {
                             true => condition.clone().into(),
-                            false => operand_logical_not(condition.clone().into()),
+                            false => Operand::simplified(
+                                operand_logical_not(condition.clone().into())
+                            ),
                         };
                         state.last_jump_extra_constraint = Some(Constraint::new(cond));
                         return state;
@@ -968,8 +911,12 @@ impl<'a> ExecutionState<'a> {
                 state
             }
             (false, &OperandType::Arithmetic(Or(ref left, ref right))) => {
-                let mut state = self.assume_jump_flag(left, false, intern_map);
-                state = state.assume_jump_flag(right, false, intern_map);
+                let mut state = self.clone();
+                let cond = Operand::simplified(operand_and(
+                    operand_logical_not(left.clone()),
+                    operand_logical_not(right.clone()),
+                ));
+                state.last_jump_extra_constraint = Some(Constraint::new(cond));
                 state
             }
             (true, &OperandType::Arithmetic(Or(ref left, ref right))) => {
@@ -982,8 +929,12 @@ impl<'a> ExecutionState<'a> {
                 state
             }
             (true, &OperandType::Arithmetic(And(ref left, ref right))) => {
-                let mut state = self.assume_jump_flag(left, true, intern_map);
-                state = state.assume_jump_flag(right, true, intern_map);
+                let mut state = self.clone();
+                let cond = Operand::simplified(operand_and(
+                    left.clone(),
+                    right.clone(),
+                ));
+                state.last_jump_extra_constraint = Some(Constraint::new(cond));
                 state
             }
             (false, &OperandType::Arithmetic(And(ref left, ref right))) => {
@@ -1276,4 +1227,47 @@ fn merge_state_constraints_or() {
     let merged = merge_states(&state_a, &state_b, &mut i).unwrap();
     assert!(merged.last_jump_extra_constraint.is_some());
     assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
+}
+
+#[test]
+fn apply_constraint() {
+    use operand::operand_helpers::*;
+    let ctx = ::operand::OperandContext::new();
+    let constraint = Constraint(operand_eq(
+        constval(0),
+        operand_eq(
+            operand_eq(
+                ctx.flag_z(),
+                constval(0),
+            ),
+            constval(0),
+        ),
+    ));
+    let mut val = operand_or(
+        operand_eq(
+            operand_eq(
+                ctx.flag_c(),
+                constval(0),
+            ),
+            constval(0),
+        ),
+        operand_eq(
+            operand_eq(
+                ctx.flag_z(),
+                constval(0),
+            ),
+            constval(0),
+        ),
+    );
+    let old = val.clone();
+    constraint.apply_to(&mut val);
+    let eq = operand_eq(
+        operand_eq(
+            ctx.flag_c(),
+            constval(0),
+        ),
+        constval(0),
+    );
+    assert_ne!(Operand::simplified(val.clone()), Operand::simplified(old));
+    assert_eq!(Operand::simplified(val), Operand::simplified(eq));
 }

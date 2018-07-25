@@ -3096,6 +3096,26 @@ mod test {
     }
 
     #[test]
+    fn simplify_eq2() {
+        use super::operand_helpers::*;
+        // Simplify (x == y) == 0 == 0 == 0 to (x == y) == 0
+        let op1 = operand_eq(
+            constval(0),
+            operand_eq(
+                constval(0),
+                operand_eq(
+                    constval(0),
+                    operand_eq(constval(5), operand_register(2)),
+                ),
+            ),
+        );
+        let eq1 = operand_eq(operand_eq(constval(5), operand_register(2)), constval(0));
+        let ne1 = operand_eq(constval(5), operand_register(2));
+        assert_eq!(Operand::simplified(op1.clone()), Operand::simplified(eq1));
+        assert_ne!(Operand::simplified(op1), Operand::simplified(ne1));
+    }
+
+    #[test]
     fn simplify_gt() {
         use super::operand_helpers::*;
         use super::ArithOpType::*;
