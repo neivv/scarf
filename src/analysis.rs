@@ -227,6 +227,41 @@ pub struct FuncAnalysis<'a> {
     pub errors: Vec<(VirtualAddress, Error)>,
 }
 
+pub struct Control<'exec: 'b, 'b> {
+    exec_state: &'b mut ExecutionState<'exec>,
+    analysis: &'b mut FuncAnalysis<'exec>,
+    // Set by Analyzer callback if it wants an early exit
+    end: Option<End>,
+    address: VirtualAddress,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum End {
+    Function,
+}
+
+impl<'exec: 'b, 'b> Control<'exec, 'b> {
+    pub fn end_analysis(&mut self) {
+        if self.end.is_none() {
+            self.end = Some(End::Function);
+        }
+    }
+
+    pub fn resolve(&mut self, val: &Rc<Operand>) -> Rc<Operand> {
+        self.exec_state.resolve(val, &mut self.analysis.interner)
+    }
+
+    pub fn try_resolve_const(&mut self, val: &Rc<Operand>) -> Option<u32> {
+        self.exec_state.try_resolve_const(val, &mut self.analysis.interner)
+    }
+}
+
+pub trait Analyzer {
+    fn branch_start(&mut self, _control: &mut Control) { }
+    fn branch_end(&mut self, _control: &mut Control) { }
+    fn operation(&mut self, _control: &mut Control, _op: &Operation) { }
+}
+
 impl<'a> FuncAnalysis<'a> {
     pub fn new<'b>(
         binary: &'b BinaryFile,
@@ -264,6 +299,106 @@ impl<'a> FuncAnalysis<'a> {
             operand_ctx,
             interner,
         }
+    }
+
+    pub fn analyze<A: Analyzer>(&mut self, analyzer: &mut A) {
+        while let Some((addr, state)) = self.next_branch_merge_queued() {
+            let state = match self.cfg.get(addr) {
+                Some(old_node) => {
+                    exec_state::merge_states(&old_node.state, &state, &mut self.interner)
+                }
+                None => Some(state),
+            };
+            if let Some(mut state) = state {
+                let end = self.analyze_branch(analyzer, addr, &mut state);
+                if end == Some(End::Function) {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn analyze_branch<'b, A: Analyzer>(
+        &mut self,
+        analyzer: &mut A,
+        addr: VirtualAddress,
+        state: &'b mut ExecutionState<'a>,
+    ) -> Option<End> {
+        let binary = self.binary;
+        let section = match binary.section_by_addr(addr) {
+            Some(s) => s,
+            None => return None,
+        };
+
+        let operand_ctx = self.operand_ctx;
+        let mut control = Control {
+            analysis: self,
+            address: addr,
+            exec_state: state,
+            end: None,
+        };
+        analyzer.branch_start(&mut control);
+        if control.end.is_some() {
+            return control.end;
+        }
+
+        let rva = (addr - section.virtual_address).0 as usize;
+        let mut disasm = disasm::Disassembler::new(&section.data, rva, section.virtual_address);
+
+        let init_state = control.exec_state.clone();
+        let mut cfg_out_edge = CfgOutEdges::None;
+        'branch_loop: loop {
+            let instruction = loop {
+                let address = disasm.address();
+                control.address = address;
+                let ins = match disasm.next(operand_ctx) {
+                    Ok(o) => o,
+                    Err(disasm::Error::Branch(_)) => {
+                        break 'branch_loop;
+                    }
+                    Err(_) => {
+                        // TODO ERROR?
+                        //self.branch.analysis.errors.push((address, e.into()));
+                        break 'branch_loop;
+                    }
+                };
+                if !ins.ops().is_empty() {
+                    break ins;
+                }
+            };
+            for op in instruction.ops() {
+                analyzer.operation(&mut control, op);
+                if control.end.is_some() {
+                    return control.end;
+                }
+                match op {
+                    disasm::Operation::Jump { condition, to } => {
+                        update_analysis_for_jump(
+                            control.analysis,
+                            control.exec_state,
+                            binary,
+                            condition.clone(),
+                            to.clone(),
+                            &instruction,
+                            &mut cfg_out_edge,
+                        );
+                    }
+                    disasm::Operation::Return(_) => (),
+                    o => {
+                        control.exec_state.update(o.clone(), &mut control.analysis.interner);
+                    }
+                }
+            }
+        }
+        control.analysis.cfg.add_node(addr, CfgNode {
+            out_edges: cfg_out_edge,
+            state: init_state,
+            end_address: control.address, // Is this correct?
+            distance: 0,
+        });
+
+        analyzer.branch_end(&mut control);
+        control.end
     }
 
     pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a>> {
@@ -406,33 +541,6 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
         }
     }
 
-    fn try_add_branch<'b>(
-        &'b mut self,
-        state: ExecutionState<'exec>,
-        to: Rc<Operand>,
-        address: VirtualAddress
-    ) -> Option<VirtualAddress> {
-        match to.if_constant() {
-            Some(s) => {
-                let address = VirtualAddress(s);
-                let code_offset = self.analysis.binary.code_section().virtual_address;
-                let code_len = self.analysis.binary.code_section().data.len() as u32;
-                let invalid_dest = address < code_offset || address >= code_offset + code_len;
-                if !invalid_dest {
-                    self.analysis.unchecked_branches.push((address, state));
-                } else {
-                    trace!("Destination {:x} is out of binary bounds", address.0);
-                }
-                Some(address)
-            }
-            None => {
-                let simplified = Operand::simplified(to);
-                trace!("Couldnt resolve jump dest @ {:x}: {:?}", address.0, simplified);
-                None
-            }
-        }
-    }
-
     fn end_block(&mut self, end_address: VirtualAddress) {
         self.analysis.cfg.add_node(self.addr, CfgNode {
             out_edges: self.cfg_out_edge.clone(),
@@ -443,104 +551,24 @@ impl<'a, 'exec: 'a> Branch<'a, 'exec> {
     }
 
     fn process_operation(&mut self, op: Operation, ins: &Instruction) -> Result<(), Error> {
-        fn is_switch_jump(to: &Operand) -> Option<(VirtualAddress, &Rc<Operand>)> {
-            to.if_memory()
-                .and_then(|mem| mem.address.if_arithmetic_add())
-                .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul()))
-                .and_then(|((l, r), switch_table)| {
-                    let switch_table = switch_table.if_constant()?;
-                    let (c, index) = Operand::either(l, r, |x| x.if_constant())?;
-                    if c == 4 {
-                        Some((VirtualAddress(switch_table), index))
-                    } else {
-                        None
-                    }
-                })
-        }
+        let state = &mut self.state;
+        let binary = self.analysis.binary;
 
         match op {
             disasm::Operation::Jump { condition, to } => {
-                // TODO Move simplify to disasm::next
-                let condition = Operand::simplified(condition);
-                self.state.memory.maybe_convert_immutable();
-                match self.state.try_resolve_const(&condition, &mut self.analysis.interner) {
-                    Some(0) => {
-                        let address = ins.address() + ins.len() as u32;
-                        self.cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
-                        self.analysis.unchecked_branches.push((address, self.state.clone()));
-                    }
-                    Some(_) => {
-                        let state = self.state.clone();
-                        let to = state.resolve(&to, &mut self.analysis.interner);
-                        if let Some((switch_table, index)) = is_switch_jump(&to) {
-                            let mut cases = Vec::new();
-                            let code_section = self.analysis.binary.code_section();
-                            let code_section_start = code_section.virtual_address;
-                            let code_section_end =
-                                code_section.virtual_address + code_section.virtual_size;
-                            let binary = self.analysis.binary;
-                            let case_iter = (0u32..)
-                                .map(|x| binary.read_u32(switch_table + x * 4))
-                                .take_while(|x| x.is_ok())
-                                .flat_map(|x| x.ok())
-                                .map(|x| VirtualAddress(x))
-                                .take_while(|&addr| {
-                                    // TODO: Could use relocs instead
-                                    addr > code_section_start && addr < code_section_end
-                                });
-                            for case in case_iter {
-                                self.analysis.unchecked_branches.push((case, self.state.clone()));
-                                cases.push(NodeLink::new(case));
-                            }
-                            if !cases.is_empty() {
-                                self.cfg_out_edge = CfgOutEdges::Switch(cases, index.clone());
-                            }
-                        } else {
-                            let dest = self.try_add_branch(state, to.clone(), ins.address());
-                            self.cfg_out_edge = CfgOutEdges::Single(
-                                dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
-                            );
-                        }
-                    }
-                    None => {
-                        let no_jump_addr = ins.address() + ins.len() as u32;
-                        let jump_state = self.state.assume_jump_flag(
-                            &condition,
-                            true,
-                            &mut self.analysis.interner
-                        );
-                        let no_jump_state = self.state.assume_jump_flag(
-                            &condition,
-                            false,
-                            &mut self.analysis.interner
-                        );
-                        let to = jump_state.resolve(&to, &mut self.analysis.interner);
-                        let jumps_backwards = match to.if_constant() {
-                            Some(x) => x < ins.address().0,
-                            None => false,
-                        };
-                        let dest;
-                        if jumps_backwards {
-                            self.analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
-                            dest = self.try_add_branch(jump_state, to, ins.address());
-                        } else {
-                            dest = self.try_add_branch(jump_state, to, ins.address());
-                            self.analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
-                        }
-                        self.cfg_out_edge = CfgOutEdges::Branch(
-                            NodeLink::new(no_jump_addr),
-                            OutEdgeCondition {
-                                node: dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown),
-                                condition,
-                            },
-                        );
-                    }
-                }
+                update_analysis_for_jump(
+                    &mut self.analysis,
+                    state,
+                    binary,
+                    condition,
+                    to,
+                    ins,
+                    &mut self.cfg_out_edge,
+                );
             }
-            disasm::Operation::Return(_) => {
-            }
+            disasm::Operation::Return(_) => (),
             o => {
-                self.state.update(o, &mut self.analysis.interner);
+                state.update(o, &mut self.analysis.interner);
             }
         }
         Ok(())
@@ -619,6 +647,126 @@ impl<'a, 'branch, 'exec: 'a> Operations<'a, 'branch, 'exec> {
 impl<'a, 'branch: 'a, 'exec: 'branch> Drop for Operations<'a, 'branch, 'exec> {
     fn drop(&mut self) {
         while let Some(_) = self.next() {
+        }
+    }
+}
+
+fn try_add_branch<'exec>(
+    analysis: &mut FuncAnalysis<'exec>,
+    state: ExecutionState<'exec>,
+    to: Rc<Operand>,
+    address: VirtualAddress,
+) -> Option<VirtualAddress> {
+    match to.if_constant() {
+        Some(s) => {
+            let address = VirtualAddress(s);
+            let code_offset = analysis.binary.code_section().virtual_address;
+            let code_len = analysis.binary.code_section().data.len() as u32;
+            let invalid_dest = address < code_offset || address >= code_offset + code_len;
+            if !invalid_dest {
+                analysis.unchecked_branches.push((address, state));
+            } else {
+                trace!("Destination {:x} is out of binary bounds", address.0);
+            }
+            Some(address)
+        }
+        None => {
+            let simplified = Operand::simplified(to);
+            trace!("Couldnt resolve jump dest @ {:x}: {:?}", address.0, simplified);
+            None
+        }
+    }
+}
+
+fn update_analysis_for_jump<'exec>(
+    analysis: &mut FuncAnalysis<'exec>,
+    state: &mut ExecutionState<'exec>,
+    binary: &BinaryFile,
+    condition: Rc<Operand>,
+    to: Rc<Operand>,
+    ins: &Instruction,
+    cfg_out_edge: &mut CfgOutEdges,
+) {
+    fn is_switch_jump(to: &Operand) -> Option<(VirtualAddress, &Rc<Operand>)> {
+        to.if_memory()
+            .and_then(|mem| mem.address.if_arithmetic_add())
+            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul()))
+            .and_then(|((l, r), switch_table)| {
+                let switch_table = switch_table.if_constant()?;
+                let (c, index) = Operand::either(l, r, |x| x.if_constant())?;
+                if c == 4 {
+                    Some((VirtualAddress(switch_table), index))
+                } else {
+                    None
+                }
+            })
+    }
+
+    // TODO Move simplify to disasm::next
+    let condition = Operand::simplified(condition);
+    state.memory.maybe_convert_immutable();
+    match state.try_resolve_const(&condition, &mut analysis.interner) {
+        Some(0) => {
+            let address = ins.address() + ins.len() as u32;
+            *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
+            analysis.unchecked_branches.push((address, state.clone()));
+        }
+        Some(_) => {
+            let state = state.clone();
+            let to = state.resolve(&to, &mut analysis.interner);
+            if let Some((switch_table, index)) = is_switch_jump(&to) {
+                let mut cases = Vec::new();
+                let code_section = binary.code_section();
+                let code_section_start = code_section.virtual_address;
+                let code_section_end =
+                    code_section.virtual_address + code_section.virtual_size;
+                let case_iter = (0u32..)
+                    .map(|x| binary.read_u32(switch_table + x * 4))
+                    .take_while(|x| x.is_ok())
+                    .flat_map(|x| x.ok())
+                    .map(|x| VirtualAddress(x))
+                    .take_while(|&addr| {
+                        // TODO: Could use relocs instead
+                        addr > code_section_start && addr < code_section_end
+                    });
+                for case in case_iter {
+                    analysis.unchecked_branches.push((case, state.clone()));
+                    cases.push(NodeLink::new(case));
+                }
+                if !cases.is_empty() {
+                    *cfg_out_edge = CfgOutEdges::Switch(cases, index.clone());
+                }
+            } else {
+                let dest = try_add_branch(analysis, state, to.clone(), ins.address());
+                *cfg_out_edge = CfgOutEdges::Single(
+                    dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
+                );
+            }
+        }
+        None => {
+            let no_jump_addr = ins.address() + ins.len() as u32;
+            let jump_state = state.assume_jump_flag(&condition, true, &mut analysis.interner);
+            let no_jump_state = state.assume_jump_flag(&condition, false, &mut analysis.interner);
+            let to = jump_state.resolve(&to, &mut analysis.interner);
+            let jumps_backwards = match to.if_constant() {
+                Some(x) => x < ins.address().0,
+                None => false,
+            };
+            let dest;
+            if jumps_backwards {
+                analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
+                dest = try_add_branch(analysis, jump_state, to, ins.address());
+            } else {
+                dest = try_add_branch(analysis, jump_state, to, ins.address());
+                analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
+            }
+            *cfg_out_edge = CfgOutEdges::Branch(
+                NodeLink::new(no_jump_addr),
+                OutEdgeCondition {
+                    node: dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown),
+                    condition,
+                },
+            );
         }
     }
 }
