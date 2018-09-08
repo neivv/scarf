@@ -6,7 +6,7 @@ use cfg::{Cfg, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
 use disasm::{self, DestOperand, Instruction, Operation};
 use exec_state::{self, ExecutionState};
 use operand::{Operand, OperandContext};
-use ::{BinaryFile, BinarySection, Rva, VirtualAddress};
+use ::{BinaryFile, BinarySection, VirtualAddress};
 
 quick_error! {
     #[derive(Debug)]
@@ -20,86 +20,81 @@ quick_error! {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct FuncCallPair {
-    pub caller: Rva,
-    pub callee: Rva,
+    pub caller: VirtualAddress,
+    pub callee: VirtualAddress,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct FuncPtrPair {
     pub address: VirtualAddress,
-    pub callee: Rva,
+    pub callee: VirtualAddress,
 }
 
 /// Sorted by callee, so looking up callers can be done with bsearch
 pub fn find_functions_with_callers(file: &BinaryFile) -> Vec<FuncCallPair> {
-    let code = &file.code_section().data;
-    let mut called_functions = code.iter().enumerate()
-        .filter(|&(_, &x)| x == 0xe8 || x == 0xe9)
-        .flat_map(|(idx, _)| {
-            code.get(idx + 1..).and_then(|mut x| x.read_u32::<LittleEndian>().ok())
-                .map(|relative| FuncCallPair {
-                    caller: Rva(idx as u32),
-                    callee: Rva((idx as u32 + 5).wrapping_add(relative)),
+    let mut out = Vec::with_capacity(800);
+    for code in file.code_sections() {
+        let data = &code.data;
+        out.extend(
+            data.iter().enumerate()
+                .filter(|&(_, &x)| x == 0xe8 || x == 0xe9)
+                .flat_map(|(idx, _)| {
+                    data.get(idx + 1..).and_then(|mut x| x.read_u32::<LittleEndian>().ok())
+                        .map(|relative| FuncCallPair {
+                            caller: code.virtual_address + idx as u32,
+                            callee: VirtualAddress(
+                                code.virtual_address.0
+                                    .wrapping_add((idx as u32 + 5).wrapping_add(relative))
+                            ),
+                        })
                 })
-        })
-        .filter(|pair| {
-            (pair.callee.0 as usize) < code.len() - 5
-        })
-        .collect::<Vec<_>>();
-    called_functions.sort_by_key(|x| (x.callee, x.caller));
-    called_functions
+                .filter(|pair| {
+                    (pair.callee.0 as usize) < data.len() - 5
+                })
+        );
+    }
+    out.sort_by_key(|x| (x.callee, x.caller));
+    out
 }
 
-fn find_functions_from_calls(file: &BinaryFile) -> Vec<Rva> {
-    let code = &file.code_section().data;
-    let mut called_functions = code.iter().enumerate()
-        .filter(|&(_, &x)| x == 0xe8 || x == 0xe9)
-        .flat_map(|(idx, _)| {
-            code.get(idx + 1..).and_then(|mut x| x.read_u32::<LittleEndian>().ok())
-                .map(|relative| (idx as u32 + 5).wrapping_add(relative))
-        })
-        .filter(|&target| {
-            (target as usize) < code.len() - 5
-        })
-        .map(|x| Rva(x))
-        .collect::<Vec<_>>();
-    called_functions.sort();
-    called_functions.dedup();
-    called_functions
+fn find_functions_from_calls(
+    code: &[u8],
+    section_base: VirtualAddress,
+    out: &mut Vec<VirtualAddress>,
+) {
+    out.extend({
+        code.iter().enumerate()
+            .filter(|&(_, &x)| x == 0xe8 || x == 0xe9)
+            .flat_map(|(idx, _)| {
+                code.get(idx + 1..).and_then(|mut x| x.read_u32::<LittleEndian>().ok())
+                    .map(|relative| (idx as u32 + 5).wrapping_add(relative))
+            })
+            .filter(|&target| {
+                (target as usize) < code.len() - 5
+            })
+            .map(|x| section_base + x)
+    });
 }
 
 /// Attempts to find functions of a binary, accepting ones that are called/long jumped to
 /// from somewhere.
 /// Returns addresses relative to start of code section.
-pub fn find_functions(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<Rva> {
-    let mut called_functions = find_functions_from_calls(file);
+pub fn find_functions(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<VirtualAddress> {
+    let mut called_functions = Vec::new();
+    for section in file.code_sections() {
+        find_functions_from_calls(&section.data, section.virtual_address, &mut called_functions);
+    }
     called_functions.extend(find_funcptrs(file, relocs).iter().map(|x| x.callee));
     called_functions.sort();
     called_functions.dedup();
     called_functions
 }
 
-fn conservative_function_filter(code: &[u8], func: Rva) -> bool {
-    match code.get(func.0 as usize) {
-        Some(&first_byte) => first_byte >= 0x50 && first_byte < 0x58,
-        _ => false,
-    }
-}
-
-/// Like find_functions, but requires the function to start with "push"
-pub fn find_functions_conservative(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<Rva> {
-    let code = &file.code_section().data;
-    let mut funcs = find_functions(file, relocs);
-    funcs.retain(|&rva| conservative_function_filter(code, rva));
-    funcs
-}
-
 // Sorted by address
 pub fn find_switch_tables(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
     let mut out = Vec::with_capacity(4096);
-    let code = file.code_section();
-    for sect in file.sections.iter().filter(|sect| &sect.name[..] == b".text\0\0\0") {
-        collect_relocs_pointing_to_code(code, relocs, sect, &mut out);
+    for sect in file.code_sections() {
+        collect_relocs_pointing_to_code(sect, relocs, sect, &mut out);
     }
     out
 }
@@ -144,7 +139,7 @@ fn collect_relocs_pointing_to_code(
         })
         .map(|(src_addr, func_addr)| FuncPtrPair {
             address: src_addr,
-            callee: func_addr - code.virtual_address,
+            callee: func_addr,
         });
     out.extend(funcs);
 }

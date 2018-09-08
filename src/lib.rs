@@ -134,9 +134,14 @@ pub struct BinarySection {
 }
 
 impl BinaryFile {
-    /// Panics if code section for some reason would not exist
+    /// Panics if code section for some reason would not exist.
+    /// Also bad since assumes only one
     pub fn code_section(&self) -> &BinarySection {
         self.section(b".text\0\0\0").unwrap()
+    }
+
+    pub fn code_sections<'a>(&'a self) -> impl Iterator<Item = &'a BinarySection> + 'a {
+        self.sections.iter().filter(|x| &x.name[..] == &b".text\0\0\0"[..])
     }
 
     pub fn section(&self, name: &[u8; 0x8]) -> Option<&BinarySection> {
