@@ -49,7 +49,8 @@ pub fn find_functions_with_callers(file: &BinaryFile) -> Vec<FuncCallPair> {
                         })
                 })
                 .filter(|pair| {
-                    (pair.callee.0 as usize) < data.len() - 5
+                    pair.callee >= code.virtual_address &&
+                        pair.callee < code.virtual_address + data.len() as u32
                 })
         );
     }
