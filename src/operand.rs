@@ -2018,6 +2018,9 @@ fn simplify_and(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
                 }
             });
         }
+        if ops.is_empty() {
+            break;
+        }
         for bits in zero_bit_ranges(const_remain) {
             vec_filter_map(&mut ops, |op| {
                 simplify_with_zero_bits(&op, &bits, ctx)
@@ -2026,6 +2029,13 @@ fn simplify_and(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
                         _ => Some(x),
                     })
             });
+            // Unlike the other is_empty check above this returns 0, since if zero bit filter
+            // removes all remaining ops, the result is 0 even with const_remain != 0
+            // (simplify_with_zero_bits is defined to return None instead of Some(const(0)),
+            // and obviously constant & 0 == 0)
+            if ops.is_empty() {
+                return ctx.const_0();
+            }
         }
         let mut new_ops = vec![];
         for op in &ops {
@@ -4197,6 +4207,26 @@ mod test {
                     constval(0x10),
                 ),
                 constval(0x10),
+            ),
+        );
+        let eq1 = constval(0);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_or_rsh() {
+        use super::operand_helpers::*;
+        let op1 = operand_and(
+            constval(0xffffff00),
+            operand_or(
+                operand_rsh(
+                    operand_register(1),
+                    constval(0x18),
+                ),
+                operand_rsh(
+                    operand_register(4),
+                    constval(0x18),
+                ),
             ),
         );
         let eq1 = constval(0);
