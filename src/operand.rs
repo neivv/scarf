@@ -2020,7 +2020,7 @@ fn simplify_and(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
         }
         for bits in zero_bit_ranges(const_remain) {
             vec_filter_map(&mut ops, |op| {
-                simplify_with_zero_bits(op, &bits, ctx)
+                simplify_with_zero_bits(&op, &bits, ctx)
                     .and_then(|x| match x.if_constant() {
                         Some(0) => None,
                         _ => Some(x),
@@ -2110,7 +2110,7 @@ fn simplify_lsh(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
             return ctx.const_0();
         } else {
             let zero_bits = (0x20 - c as u8)..32;
-            match simplify_with_zero_bits(left.clone(), &zero_bits, ctx) {
+            match simplify_with_zero_bits(&left, &zero_bits, ctx) {
                 None => return ctx.const_0(),
                 Some(s) => {
                     if s != left {
@@ -2217,7 +2217,7 @@ fn simplify_rsh(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
             return ctx.const_0();
         } else {
             let zero_bits = 0..((c & 0x1f) as u8);
-            match simplify_with_zero_bits(left.clone(), &zero_bits, ctx) {
+            match simplify_with_zero_bits(&left, &zero_bits, ctx) {
                 None => return ctx.const_0(),
                 Some(s) => {
                     if s != left {
@@ -2402,54 +2402,54 @@ fn simplify_with_and_mask(op: &Rc<Operand>, mask: u32, ctx: &OperandContext) -> 
 /// Returning `None` is considered same as `Some(constval(0))` (The value gets optimized out in
 /// bitwise and).
 fn simplify_with_zero_bits(
-    op: Rc<Operand>,
+    op: &Rc<Operand>,
     bits: &Range<u8>,
     ctx: &OperandContext,
 ) -> Option<Rc<Operand>> {
     use self::operand_helpers::*;
     if op.min_zero_bit_simplify_size > bits.end - bits.start || bits.start >= bits.end {
-        return Some(op);
+        return Some(op.clone());
     }
     match op.clone().ty {
         OperandType::Arithmetic(ArithOpType::And(ref left, ref right)) => {
-            let simplified_left = simplify_with_zero_bits(left.clone(), bits, ctx);
-            let simplified_right = simplify_with_zero_bits(right.clone(), bits, ctx);
+            let simplified_left = simplify_with_zero_bits(left, bits, ctx);
+            let simplified_right = simplify_with_zero_bits(right, bits, ctx);
             match (simplified_left, simplified_right) {
                 (None, None) => None,
                 (None, Some(_)) | (Some(_), None) => None,
                 (Some(l), Some(r)) => {
                     if l == *left && r == *right {
-                        Some(op)
+                        Some(op.clone())
                     } else {
-                        Some(Operand::simplified(operand_and(l, r)))
+                        Some(simplify_and(&l, &r, ctx))
                     }
                 }
             }
         }
         OperandType::Arithmetic(ArithOpType::Or(ref left, ref right)) => {
-            let simplified_left = simplify_with_zero_bits(left.clone(), bits, ctx);
-            let simplified_right = simplify_with_zero_bits(right.clone(), bits, ctx);
+            let simplified_left = simplify_with_zero_bits(left, bits, ctx);
+            let simplified_right = simplify_with_zero_bits(right, bits, ctx);
             match (simplified_left, simplified_right) {
                 (None, None) => None,
                 (None, Some(s)) | (Some(s), None) => Some(s),
                 (Some(l), Some(r)) => {
                     if l == *left && r == *right {
-                        Some(op)
+                        Some(op.clone())
                     } else {
-                        Some(Operand::simplified(operand_or(l, r)))
+                        Some(simplify_or(&l, &r, ctx))
                     }
                 }
             }
         }
         OperandType::Arithmetic(ArithOpType::Xor(ref left, ref right)) => {
-            let simplified_left = simplify_with_zero_bits(left.clone(), bits, ctx);
-            let simplified_right = simplify_with_zero_bits(right.clone(), bits, ctx);
+            let simplified_left = simplify_with_zero_bits(left, bits, ctx);
+            let simplified_right = simplify_with_zero_bits(right, bits, ctx);
             match (simplified_left, simplified_right) {
                 (None, None) => None,
                 (None, Some(s)) | (Some(s), None) => Some(s),
                 (Some(l), Some(r)) => {
                     if l == *left && r == *right {
-                        Some(op)
+                        Some(op.clone())
                     } else {
                         Some(Operand::simplified(operand_xor(l, r)))
                     }
@@ -2463,11 +2463,11 @@ fn simplify_with_zero_bits(
                 } else {
                     let low = bits.start.saturating_sub(c as u8);
                     let high = bits.end.saturating_sub(c as u8);
-                    simplify_with_zero_bits(left.clone(), &(low..high), ctx)
+                    simplify_with_zero_bits(left, &(low..high), ctx)
                         .map(|x| simplify_lsh(&x, right, ctx))
                 }
             } else {
-                Some(op)
+                Some(op.clone())
             }
         }
         OperandType::Arithmetic(ArithOpType::Rsh(ref left, ref right)) => {
@@ -2477,15 +2477,15 @@ fn simplify_with_zero_bits(
                 } else {
                     let low = bits.start.saturating_add(c as u8).min(0x20);
                     let high = bits.end.saturating_add(c as u8).min(0x20);
-                    simplify_with_zero_bits(left.clone(), &(low..high), ctx)
+                    simplify_with_zero_bits(left, &(low..high), ctx)
                         .map(|x| simplify_rsh(&x, right, ctx))
                 }
             } else {
-                Some(op)
+                Some(op.clone())
             }
         }
         OperandType::Arithmetic(ArithOpType::Not(ref val)) => {
-            simplify_with_zero_bits(val.clone(), bits, ctx)
+            simplify_with_zero_bits(val, bits, ctx)
                 .map(|x| Operand::simplified(operand_not(x)))
         }
         OperandType::Constant(c) => {
@@ -2508,17 +2508,17 @@ fn simplify_with_zero_bits(
                 } else if bits.start <= 16 && max_bits.end > 16 {
                     Some(mem_variable_rc(MemAccessSize::Mem16, mem.address.clone()))
                 } else {
-                    Some(op)
+                    Some(op.clone())
                 }
             } else {
-                Some(op)
+                Some(op.clone())
             }
         }
         _ => {
             let relevant_bits = op.relevant_bits();
             match relevant_bits.start >= bits.start && relevant_bits.end <= bits.end {
                 true => None,
-                false => Some(op),
+                false => Some(op.clone()),
             }
         }
     }
