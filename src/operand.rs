@@ -762,8 +762,8 @@ impl OperandType {
     fn min_zero_bit_simplify_size(&self) -> u8 {
         match *self {
             OperandType::Constant(_) => 0,
-            OperandType::Memory(_) | OperandType::Register(_) => 8,
-            OperandType::Flag(_) | OperandType::Undefined(_) => 32,
+            OperandType::Memory(_) => 8,
+            OperandType::Register(_) | OperandType::Flag(_) | OperandType::Undefined(_) => 32,
             OperandType::Arithmetic(ref arith) => match *arith {
                 ArithOpType::And(ref left, ref right) | ArithOpType::Or(ref left, ref right) |
                     ArithOpType::Xor(ref left, ref right) =>
@@ -771,8 +771,13 @@ impl OperandType {
                     min(left.min_zero_bit_simplify_size, right.min_zero_bit_simplify_size)
                 }
                 ArithOpType::Not(ref val) => val.min_zero_bit_simplify_size,
-                ArithOpType::Rsh(ref l, _) => l.min_zero_bit_simplify_size,
-                ArithOpType::Lsh(ref l, _) => l.min_zero_bit_simplify_size,
+                ArithOpType::Lsh(ref l, ref r) | ArithOpType::Rsh(ref l, ref r) => {
+                    let right_bits = match r.if_constant() {
+                        Some(s) => 32u32.saturating_sub(s),
+                        None => 32,
+                    } as u8;
+                    l.min_zero_bit_simplify_size.min(right_bits)
+                }
                 _ => {
                     let rel_bits = self.calculate_relevant_bits();
                     rel_bits.end - rel_bits.start
@@ -4230,6 +4235,26 @@ mod test {
             ),
         );
         let eq1 = constval(0);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_or_rsh_mul() {
+        use super::operand_helpers::*;
+        let op1 = operand_and(
+            constval(0xff000000),
+            operand_or(
+                constval(0xfe000000),
+                operand_rsh(
+                    operand_mul(
+                        operand_register(2),
+                        operand_register(1),
+                    ),
+                    constval(0x18),
+                ),
+            ),
+        );
+        let eq1 = constval(0xfe000000);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
