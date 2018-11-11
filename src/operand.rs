@@ -862,10 +862,31 @@ impl OperandType {
                     min(rel_left.start, rel_right.start)..(higher_end + 1)
                 }
             }
+            OperandType::Arithmetic(ArithOpType::Mul(ref left, ref right)) => {
+                Operand::either(left, right, |x| x.if_constant())
+                    .map(|(c, other)| {
+                        if c == 0 {
+                            0..0
+                        } else {
+                            let other_bits = other.relevant_bits();
+                            let high = other_bits.end + (32 - c.leading_zeros() as u8 - 1);
+                            if high > 32 {
+                                0..32
+                            } else {
+                                other_bits.start..high
+                            }
+                        }
+                    })
+                    .unwrap_or(0..32)
+            }
             OperandType::Constant(c) => {
                 let trailing = c.trailing_zeros() as u8;
                 let leading = c.leading_zeros() as u8;
-                trailing..(32 - leading)
+                if 32 - leading < trailing {
+                    0..0
+                } else {
+                    trailing..(32 - leading)
+                }
             }
             _ => 0..32,
         }
@@ -2445,6 +2466,41 @@ fn simplify_with_zero_bits(
     bits: &Range<u8>,
     ctx: &OperandContext,
 ) -> Option<Rc<Operand>> {
+    fn try_remove_const_and_mask<'a>(
+        op: &'a Rc<Operand>,
+        bits: &Range<u8>,
+    ) -> Option<&'a Rc<Operand>> {
+        op.if_arithmetic_and()
+            .and_then(|(l, r)| Operand::either(l, r, |x| {
+                x.if_constant().and_then(|constant| {
+                    let rel_bits = x.relevant_bits();
+                    let low = rel_bits.start;
+                    let high = 32 - rel_bits.end;
+                    let mask = !0 >> low << low << high >> high;
+                    if constant == mask {
+                        Some(())
+                    } else {
+                        None
+                    }
+                })
+            }))
+            .and_then(|((), other)| {
+                let other_bits = other.relevant_bits();
+                // Can remove the constant mask if the addition won't overflow
+                // without it. Any bits the const mask would clear will be cleared
+                // since `bits` are zero.
+                let can_remove_const = bits.end == 32 &&
+                    other_bits.end < 32 &&
+                    other_bits.end > bits.start &&
+                    other_bits.start <= bits.start;
+                if can_remove_const {
+                    Some(other)
+                } else {
+                    None
+                }
+            })
+    }
+
     use self::operand_helpers::*;
     if op.min_zero_bit_simplify_size > bits.end - bits.start || bits.start >= bits.end {
         return Some(op.clone());
@@ -2524,40 +2580,6 @@ fn simplify_with_zero_bits(
             }
         }
         OperandType::Arithmetic(ArithOpType::Add(ref left, ref right)) => {
-            fn try_remove_const_and_mask<'a>(
-                op: &'a Rc<Operand>,
-                bits: &Range<u8>,
-            ) -> Option<&'a Rc<Operand>> {
-                op.if_arithmetic_and()
-                    .and_then(|(l, r)| Operand::either(l, r, |x| {
-                        x.if_constant().and_then(|constant| {
-                            let rel_bits = x.relevant_bits();
-                            let low = rel_bits.start;
-                            let high = 32 - rel_bits.end;
-                            let mask = !0 >> low << low << high >> high;
-                            if constant == mask {
-                                Some(())
-                            } else {
-                                None
-                            }
-                        })
-                    }))
-                    .and_then(|((), other)| {
-                        let other_bits = other.relevant_bits();
-                        // Can remove the constant mask if the addition won't overflow
-                        // without it. Any bits the const mask would clear will be cleared
-                        // since `bits` are zero.
-                        let can_remove_const = bits.end == 32 &&
-                            other_bits.end < 32 &&
-                            other_bits.end > bits.start &&
-                            other_bits.start <= bits.start;
-                        if can_remove_const {
-                            Some(other)
-                        } else {
-                            None
-                        }
-                    })
-            };
             let new_left = try_remove_const_and_mask(left, bits);
             let new_right = try_remove_const_and_mask(right, bits);
             if new_left.is_some() || new_right.is_some() {
@@ -2565,7 +2587,11 @@ fn simplify_with_zero_bits(
                 let new_right = new_right.unwrap_or(&right);
                 Some(simplify_add_sub(new_left, new_right, false, ctx))
             } else {
-                Some(op.clone())
+                let relevant_bits = op.relevant_bits();
+                match relevant_bits.start >= bits.start && relevant_bits.end <= bits.end {
+                    true => None,
+                    false => Some(op.clone()),
+                }
             }
         }
         OperandType::Arithmetic(ArithOpType::Not(ref val)) => {
@@ -4650,6 +4676,98 @@ mod test {
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1b));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
         assert_ne!(Operand::simplified(op3), Operand::simplified(ne3));
+    }
+
+    #[test]
+    fn simplify_and_masks2() {
+        use super::operand_helpers::*;
+        // One and can be removed since zext(u8) + zext(u8) won't overflow u32
+        let op1 = operand_and(
+            constval(0xff),
+            operand_add(
+                operand_mul(
+                    constval(2),
+                    operand_and(
+                        constval(0xff),
+                        operand_register(1),
+                    ),
+                ),
+                operand_and(
+                    constval(0xff),
+                    operand_add(
+                        operand_mul(
+                            constval(2),
+                            operand_and(
+                                constval(0xff),
+                                operand_register(1),
+                            ),
+                        ),
+                        operand_and(
+                            constval(0xff),
+                            operand_add(
+                                operand_register(4),
+                                operand_and(
+                                    constval(0xff),
+                                    operand_register(1),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+
+        let eq1 = operand_and(
+            constval(0xff),
+            operand_add(
+                operand_mul(
+                    constval(4),
+                    operand_and(
+                        constval(0xff),
+                        operand_register(1),
+                    ),
+                ),
+                operand_and(
+                    constval(0xff),
+                    operand_add(
+                        operand_register(4),
+                        operand_and(
+                            constval(0xff),
+                            operand_register(1),
+                        ),
+                    ),
+                ),
+            ),
+        );
+
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_panic() {
+        use super::operand_helpers::*;
+        let mem8 = |x| mem_variable_rc(MemAccessSize::Mem8, x);
+        let op1 = operand_and(
+            constval(0xff),
+            operand_rsh(
+                operand_add(
+                    constval(0x1d),
+                    operand_eq(
+                        operand_eq(
+                            operand_and(
+                                constval(1),
+                                mem8(operand_register(3)),
+                            ),
+                            constval(0),
+                        ),
+                        constval(0),
+                    ),
+                ),
+                constval(8),
+            ),
+        );
+        let eq1 = constval(0);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
     #[test]
