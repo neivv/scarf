@@ -745,7 +745,7 @@ impl<'a> ExecutionState<'a> {
     fn resolve_mem(&self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
         use operand::operand_helpers::*;
 
-        let address = Operand::simplified(self.resolve(&mem.address, i));
+        let address = self.resolve(&mem.address, i);
         // Use 4-aligned addresses if there's a const offset
         if let Some((base, offset)) = Operand::const_offset(&address, self.ctx) {
             let offset_4 = offset & 3;
