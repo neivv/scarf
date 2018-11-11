@@ -778,6 +778,8 @@ impl OperandType {
                     } as u8;
                     l.min_zero_bit_simplify_size.min(right_bits)
                 }
+                // Could this be better than 0?
+                ArithOpType::Add(..) => 0,
                 _ => {
                     let rel_bits = self.calculate_relevant_bits();
                     rel_bits.end - rel_bits.start
@@ -846,6 +848,19 @@ impl OperandType {
                 }
                 let rel_right = right.relevant_bits();
                 min(rel_left.start, rel_right.start)..max(rel_left.end, rel_right.end)
+            }
+            OperandType::Arithmetic(ArithOpType::Add(ref left, ref right)) => {
+                // Add will only increase nonzero bits by one at most
+                let rel_left = left.relevant_bits();
+                let rel_right = right.relevant_bits();
+                let higher_end = max(rel_left.end, rel_right.end);
+                if higher_end >= 32 {
+                    // Can overflow, so first bit can be nonzero
+                    0..32
+                } else {
+                    // Otherwise the highest nonzero bit is just one greater than before.
+                    min(rel_left.start, rel_right.start)..(higher_end + 1)
+                }
             }
             OperandType::Constant(c) => {
                 let trailing = c.trailing_zeros() as u8;
@@ -1525,6 +1540,15 @@ impl Operand {
     pub fn if_arithmetic_eq(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         match self.ty {
             OperandType::Arithmetic(ArithOpType::Equal(ref l, ref r)) => Some((l, r)),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::And(left, right))`
+    pub fn if_arithmetic_and(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        match self.ty {
+            OperandType::Arithmetic(ArithOpType::And(ref l, ref r)) => Some((l, r)),
             _ => None,
         }
     }
@@ -2495,6 +2519,51 @@ fn simplify_with_zero_bits(
                     simplify_with_zero_bits(left, &(low..high), ctx)
                         .map(|x| simplify_rsh(&x, right, ctx))
                 }
+            } else {
+                Some(op.clone())
+            }
+        }
+        OperandType::Arithmetic(ArithOpType::Add(ref left, ref right)) => {
+            fn try_remove_const_and_mask<'a>(
+                op: &'a Rc<Operand>,
+                bits: &Range<u8>,
+            ) -> Option<&'a Rc<Operand>> {
+                op.if_arithmetic_and()
+                    .and_then(|(l, r)| Operand::either(l, r, |x| {
+                        x.if_constant().and_then(|constant| {
+                            let rel_bits = x.relevant_bits();
+                            let low = rel_bits.start;
+                            let high = 32 - rel_bits.end;
+                            let mask = !0 >> low << low << high >> high;
+                            if constant == mask {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                    }))
+                    .and_then(|((), other)| {
+                        let other_bits = other.relevant_bits();
+                        // Can remove the constant mask if the addition won't overflow
+                        // without it. Any bits the const mask would clear will be cleared
+                        // since `bits` are zero.
+                        let can_remove_const = bits.end == 32 &&
+                            other_bits.end < 32 &&
+                            other_bits.end > bits.start &&
+                            other_bits.start <= bits.start;
+                        if can_remove_const {
+                            Some(other)
+                        } else {
+                            None
+                        }
+                    })
+            };
+            let new_left = try_remove_const_and_mask(left, bits);
+            let new_right = try_remove_const_and_mask(right, bits);
+            if new_left.is_some() || new_right.is_some() {
+                let new_left = new_left.unwrap_or(&left);
+                let new_right = new_right.unwrap_or(&right);
+                Some(simplify_add_sub(new_left, new_right, false, ctx))
             } else {
                 Some(op.clone())
             }
@@ -4381,6 +4450,206 @@ mod test {
             ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_masks() {
+        use super::operand_helpers::*;
+        // One and can be removed since zext(u8) + zext(u8) won't overflow u32
+        let op1 = operand_and(
+            constval(0xff),
+            operand_add(
+                operand_and(
+                    constval(0xff),
+                    operand_register(1),
+                ),
+                operand_and(
+                    constval(0xff),
+                    operand_add(
+                        operand_and(
+                            constval(0xff),
+                            operand_register(1),
+                        ),
+                        operand_and(
+                            constval(0xff),
+                            operand_add(
+                                operand_register(4),
+                                operand_and(
+                                    constval(0xff),
+                                    operand_register(1),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+
+        let eq1 = operand_and(
+            constval(0xff),
+            operand_add(
+                operand_and(
+                    constval(0xff),
+                    operand_register(1),
+                ),
+                operand_add(
+                    operand_and(
+                        constval(0xff),
+                        operand_register(1),
+                    ),
+                    operand_and(
+                        constval(0xff),
+                        operand_add(
+                            operand_register(4),
+                            operand_and(
+                                constval(0xff),
+                                operand_register(1),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+
+        let eq1b = operand_and(
+            constval(0xff),
+            operand_add(
+                operand_mul(
+                    constval(2),
+                    operand_and(
+                        constval(0xff),
+                        operand_register(1),
+                    ),
+                ),
+                operand_and(
+                    constval(0xff),
+                    operand_add(
+                        operand_register(4),
+                        operand_and(
+                            constval(0xff),
+                            operand_register(1),
+                        ),
+                    ),
+                ),
+            ),
+        );
+
+        let op2 = operand_and(
+            constval(0x3fffffff),
+            operand_add(
+                operand_and(
+                    constval(0x3fffffff),
+                    operand_register(1),
+                ),
+                operand_and(
+                    constval(0x3fffffff),
+                    operand_add(
+                        operand_and(
+                            constval(0x3fffffff),
+                            operand_register(1),
+                        ),
+                        operand_and(
+                            constval(0x3fffffff),
+                            operand_add(
+                                operand_register(4),
+                                operand_and(
+                                    constval(0x3fffffff),
+                                    operand_register(1),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+
+        let eq2 = operand_and(
+            constval(0x3fffffff),
+            operand_add(
+                operand_and(
+                    constval(0x3fffffff),
+                    operand_register(1),
+                ),
+                operand_add(
+                    operand_and(
+                        constval(0x3fffffff),
+                        operand_register(1),
+                    ),
+                    operand_and(
+                        constval(0x3fffffff),
+                        operand_add(
+                            operand_register(4),
+                            operand_and(
+                                constval(0x3fffffff),
+                                operand_register(1),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+
+        // This cannot be simplified since it would change behaviour if, say
+        // reg(1) == 0x7000_0000 and reg(4) == 0, if the mask is removed, it would become
+        // 0x5000_0001
+        let op3 = operand_and(
+            constval(0x7fffffff),
+            operand_add(
+                operand_and(
+                    constval(0x7fffffff),
+                    operand_register(1),
+                ),
+                operand_and(
+                    constval(0x7fffffff),
+                    operand_add(
+                        operand_and(
+                            constval(0x7fffffff),
+                            operand_register(1),
+                        ),
+                        operand_and(
+                            constval(0x7fffffff),
+                            operand_add(
+                                operand_register(4),
+                                operand_and(
+                                    constval(0x7fffffff),
+                                    operand_register(1),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+
+        let ne3 = operand_and(
+            constval(0x7fffffff),
+            operand_add(
+                operand_and(
+                    constval(0x7fffffff),
+                    operand_register(1),
+                ),
+                operand_add(
+                    operand_and(
+                        constval(0x7fffffff),
+                        operand_register(1),
+                    ),
+                    operand_and(
+                        constval(0x7fffffff),
+                        operand_add(
+                            operand_register(4),
+                            operand_and(
+                                constval(0x7fffffff),
+                                operand_register(1),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+        assert_eq!(Operand::simplified(op1.clone()), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1b));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+        assert_ne!(Operand::simplified(op3), Operand::simplified(ne3));
     }
 
     #[test]
