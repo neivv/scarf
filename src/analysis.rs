@@ -234,6 +234,7 @@ pub struct Control<'exec: 'b, 'b> {
     // Set by Analyzer callback if it wants an early exit
     end: Option<End>,
     address: VirtualAddress,
+    instruction_length: u32,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -257,20 +258,30 @@ impl<'exec: 'b, 'b> Control<'exec, 'b> {
     }
 
     /// Takes current analysis' state as starting state for a function.
+    /// ("Calls the function")
     /// However, this does not update the state to what this function changes it to.
     pub fn analyze_with_current_state<A: Analyzer>(
         &mut self,
         analyzer: &mut A,
         entry: VirtualAddress,
     ) {
-        let state = self.exec_state.clone();
-        let mut analysis = FuncAnalysis::with_state(
-            self.analysis.binary,
-            self.analysis.operand_ctx,
-            entry,
-            state,
-            self.analysis.interner.clone(),
+        use crate::operand_helpers::*;
+
+        let mut state = self.exec_state.clone();
+        let ctx = self.analysis.operand_ctx;
+        let esp = ctx.register(4);
+        let mut i = self.analysis.interner.clone();
+        state.move_to(
+            DestOperand::from_oper(&esp),
+            operand_sub(esp.clone(), ctx.const_4()),
+            &mut i,
         );
+        state.move_to(
+            DestOperand::from_oper(&mem32(esp)),
+            ctx.constant(self.address().0.wrapping_add(self.instruction_length)),
+            &mut i,
+        );
+        let mut analysis = FuncAnalysis::with_state(self.analysis.binary, ctx, entry, state, i);
         analysis.analyze(analyzer);
     }
 
@@ -357,6 +368,7 @@ impl<'a> FuncAnalysis<'a> {
         let mut control = Control {
             analysis: self,
             address: addr,
+            instruction_length: 0,
             exec_state: state,
             end: None,
         };
@@ -385,6 +397,7 @@ impl<'a> FuncAnalysis<'a> {
                         break 'branch_loop;
                     }
                 };
+                control.instruction_length = ins.len() as u32;
                 if !ins.ops().is_empty() {
                     break ins;
                 }
