@@ -255,6 +255,28 @@ impl<'exec: 'b, 'b> Control<'exec, 'b> {
     pub fn try_resolve_const(&mut self, val: &Rc<Operand>) -> Option<u32> {
         self.exec_state.try_resolve_const(val, &mut self.analysis.interner)
     }
+
+    /// Takes current analysis' state as starting state for a function.
+    /// However, this does not update the state to what this function changes it to.
+    pub fn analyze_with_current_state<A: Analyzer>(
+        &mut self,
+        analyzer: &mut A,
+        entry: VirtualAddress,
+    ) {
+        let state = self.exec_state.clone();
+        let mut analysis = FuncAnalysis::with_state(
+            self.analysis.binary,
+            self.analysis.operand_ctx,
+            entry,
+            state,
+            self.analysis.interner.clone(),
+        );
+        analysis.analyze(analyzer);
+    }
+
+    pub fn address(&self) -> VirtualAddress {
+        self.address
+    }
 }
 
 pub trait Analyzer {

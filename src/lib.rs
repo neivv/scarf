@@ -24,9 +24,10 @@ pub mod exec_state;
 pub mod operand;
 mod vec_drop_iter;
 
+pub use analysis::{Analyzer};
 pub use disasm::{DestOperand, Operation, operation_helpers};
 pub use exec_state::{ExecutionState};
-pub use operand::{Operand, OperandType, operand_helpers};
+pub use operand::{MemAccessSize, Operand, OperandType, OperandContext, operand_helpers};
 
 use std::ffi::{OsString, OsStr};
 use std::fs::File;
@@ -35,8 +36,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-
-use operand::MemAccessSize;
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Rva(pub u32);

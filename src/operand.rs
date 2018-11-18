@@ -2948,6 +2948,14 @@ pub mod operand_helpers {
         mem32_norc(val).into()
     }
 
+    pub fn mem16(val: Rc<Operand>) -> Rc<Operand> {
+        mem_variable_rc(Mem16, val)
+    }
+
+    pub fn mem8(val: Rc<Operand>) -> Rc<Operand> {
+        mem_variable_rc(Mem8, val)
+    }
+
     pub fn mem_variable(size: MemAccessSize, val: Rc<Operand>) -> Operand {
         Operand::new_not_simplified(OperandType::Memory(MemAccess {
             address: val,
