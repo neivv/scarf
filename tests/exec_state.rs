@@ -163,10 +163,34 @@ fn shr_mem_10_b() {
     ]);
 }
 
+#[test]
+fn read_ffffffff() {
+    test_inline(&[
+        0xa1, 0xff, 0xff, 0xff, 0xff, // mov eax, [ffffffff]
+        0xc3, //ret
+    ], &[
+         (operand_register(0), mem32(constval(0xffff_ffff))),
+    ]);
+}
+
+#[test]
+fn read_this() {
+    test_inline(&[
+        0xa1, 0x00, 0x10, 0x40, 0x00, // mov eax, [401000]
+        0x8b, 0x0d, 0x0e, 0x10, 0x40, 0x00, // mov ecx, [40100e]
+        0x8b, 0x15, 0x0f, 0x10, 0x40, 0x00, // mov edx, [40100f]
+        0xc3, //ret
+    ], &[
+         (operand_register(0), constval(0x4010_00a1)),
+         (operand_register(1), constval(0xc300_4010)),
+         (operand_register(2), mem32(constval(0x0040_100f))),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
-    let state = ExecutionState::new(&ctx, &mut interner);
+    let state = ExecutionState::with_binary(file, &ctx, &mut interner);
     let mut expected_state = state.clone();
     for &(ref op, ref val) in changes {
         let op = Operation::Move(DestOperand::from_oper(op), val.clone(), None);

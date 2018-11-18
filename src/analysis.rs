@@ -490,12 +490,12 @@ impl<'a> FuncAnalysis<'a> {
 
 fn initial_exec_state<'e>(
     operand_ctx: &'e OperandContext,
-    binary: &BinaryFile,
+    binary: &'e BinaryFile,
     interner: &mut exec_state::InternMap,
 ) -> ExecutionState<'e> {
     use operand::MemAccessSize;
     use operand::operand_helpers::*;
-    let mut state = ExecutionState::new(operand_ctx, interner);
+    let mut state = ExecutionState::with_binary(binary, operand_ctx, interner);
 
     // Set the return address to somewhere in 0x400000 range
     let return_address = mem32(operand_ctx.register(4));

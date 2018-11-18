@@ -4,6 +4,7 @@ use std::hash::BuildHasherDefault;
 use std::mem;
 use std::rc::Rc;
 
+use byteorder::{ReadBytesExt, LE};
 use fxhash::FxBuildHasher;
 
 use disasm::{DestOperand, Operation};
@@ -122,6 +123,7 @@ pub struct ExecutionState<'a> {
     pub memory: Memory,
     last_jump_extra_constraint: Option<Constraint>,
     ctx: &'a OperandContext,
+    code_sections: Vec<&'a crate::BinarySection>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +187,7 @@ impl<'a> Clone for ExecutionState<'a> {
             memory: self.memory.clone(),
             last_jump_extra_constraint: self.last_jump_extra_constraint.clone(),
             ctx: self.ctx,
+            code_sections: self.code_sections.clone(),
         }
     }
 }
@@ -558,7 +561,10 @@ impl Flags {
 
 
 impl<'a> ExecutionState<'a> {
-    pub fn new<'b>(ctx: &'b OperandContext, interner: &mut InternMap) -> ExecutionState<'b> {
+    pub fn new<'b>(
+        ctx: &'b OperandContext,
+        interner: &mut InternMap,
+    ) -> ExecutionState<'b> {
         ExecutionState {
             registers: [
                 interner.intern(ctx.register(0)),
@@ -584,6 +590,41 @@ impl<'a> ExecutionState<'a> {
             memory: Memory::new(),
             last_jump_extra_constraint: None,
             ctx,
+            code_sections: Vec::new(),
+        }
+    }
+
+    pub fn with_binary<'b>(
+        binary: &'b crate::BinaryFile,
+        ctx: &'b OperandContext,
+        interner: &mut InternMap,
+    ) -> ExecutionState<'b> {
+        ExecutionState {
+            registers: [
+                interner.intern(ctx.register(0)),
+                interner.intern(ctx.register(1)),
+                interner.intern(ctx.register(2)),
+                interner.intern(ctx.register(3)),
+                interner.intern(ctx.register(4)),
+                interner.intern(ctx.register(5)),
+                interner.intern(ctx.register(6)),
+                interner.intern(ctx.register(7)),
+            ],
+            xmm_registers: [
+                XmmOperand::undefined(ctx, interner),
+                XmmOperand::undefined(ctx, interner),
+                XmmOperand::undefined(ctx, interner),
+                XmmOperand::undefined(ctx, interner),
+                XmmOperand::undefined(ctx, interner),
+                XmmOperand::undefined(ctx, interner),
+                XmmOperand::undefined(ctx, interner),
+                XmmOperand::undefined(ctx, interner),
+            ],
+            flags: Flags::undefined(ctx, interner),
+            memory: Memory::new(),
+            last_jump_extra_constraint: None,
+            ctx,
+            code_sections: binary.code_sections().collect(),
         }
     }
 
@@ -746,6 +787,33 @@ impl<'a> ExecutionState<'a> {
         use operand::operand_helpers::*;
 
         let address = self.resolve(&mem.address, i);
+        let size_bytes = match mem.size {
+            MemAccessSize::Mem8 => 1,
+            MemAccessSize::Mem16 => 2,
+            MemAccessSize::Mem32 => 4,
+        };
+        if let Some(c) = address.if_constant() {
+            // Simplify constants stored in code section (constant switch jumps etc)
+            if let Some(end) = c.checked_add(size_bytes) {
+                let section = self.code_sections.iter().find(|s| {
+                    s.virtual_address.0 <= c && s.virtual_address.0 + s.virtual_size >= end
+                });
+                if let Some(section) = section {
+                    let offset = (c - section.virtual_address.0) as usize;
+                    let val = match mem.size {
+                        MemAccessSize::Mem8 => section.data[offset] as u32,
+                        MemAccessSize::Mem16 => {
+                            (&section.data[offset..]).read_u16::<LE>().unwrap_or(0) as u32
+                        }
+                        MemAccessSize::Mem32 => {
+                            (&section.data[offset..]).read_u32::<LE>().unwrap_or(0)
+                        }
+                    };
+                    return self.ctx.constant(val);
+                }
+            }
+        }
+
         // Use 4-aligned addresses if there's a const offset
         if let Some((base, offset)) = Operand::const_offset(&address, self.ctx) {
             let offset_4 = offset & 3;
@@ -758,12 +826,7 @@ impl<'a> ExecutionState<'a> {
                     .map(|x| i.operand(x))
                     .unwrap_or_else(|| mem32(low_base));
                 let low = operand_rsh(low, self.ctx.constant(offset_4 * 8));
-                let size = match mem.size {
-                    MemAccessSize::Mem8 => 1,
-                    MemAccessSize::Mem16 => 2,
-                    MemAccessSize::Mem32 => 4,
-                };
-                let combined = if offset_4 + size > 4 {
+                let combined = if offset_4 + size_bytes > 4 {
                     let high_base = Operand::simplified(
                         operand_add(base.clone(), self.ctx.constant(offset_rest.wrapping_add(4)))
                     );
@@ -1170,6 +1233,7 @@ pub fn merge_states<'a: 'r, 'r>(
                 old.last_jump_extra_constraint.clone()
             }),
             ctx: old.ctx,
+            code_sections: old.code_sections.clone(),
         })
     } else {
         None
