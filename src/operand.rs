@@ -1538,6 +1538,42 @@ impl Operand {
         }
     }
 
+    /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// `mem.size == MemAccessSize::Mem32`
+    pub fn if_mem32(&self) -> Option<&Rc<Operand>> {
+        match self.ty {
+            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem32 {
+                true => Some(&mem.address),
+                false => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// `mem.size == MemAccessSize::Mem16`
+    pub fn if_mem16(&self) -> Option<&Rc<Operand>> {
+        match self.ty {
+            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem16 {
+                true => Some(&mem.address),
+                false => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// `mem.size == MemAccessSize::Mem8`
+    pub fn if_mem8(&self) -> Option<&Rc<Operand>> {
+        match self.ty {
+            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem8 {
+                true => Some(&mem.address),
+                false => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Add(left, right))`
     pub fn if_arithmetic_add(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
