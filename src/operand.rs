@@ -701,21 +701,22 @@ impl OperandContext {
         }
     }
 
-    fn undefined(&self) -> Operand {
-        let id = self.new_undefined_id();
-        Operand::new_simplified(OperandType::Undefined(UndefinedId(id)))
-    }
-
-    pub fn new_undefined_id(&self) -> u32 {
+    /// Returns first id allocated.
+    pub fn alloc_undefined_ids(&self, count: u32) -> u32 {
         let id = self.next_undefined.get();
         // exec_state InternMap relies on this.
-        assert!(id < u32::max_value() / 2);
-        self.next_undefined.set(id + 1);
+        assert!(id < u32::max_value() / 2 - count);
+        self.next_undefined.set(id + count);
         id
     }
 
+    pub fn new_undefined_id(&self) -> u32 {
+        self.alloc_undefined_ids(1)
+    }
+
     pub fn undefined_rc(&self) -> Rc<Operand> {
-        self.undefined().into()
+        let id = self.new_undefined_id();
+        Operand::new_simplified_rc(OperandType::Undefined(UndefinedId(id)))
     }
 }
 

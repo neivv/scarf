@@ -539,6 +539,14 @@ impl InternMap {
         InternedOperand(!ctx.new_undefined_id())
     }
 
+    fn many_undef(&self, ctx: &OperandContext, count: u32) -> ManyInternedUndef {
+        let pos = ctx.alloc_undefined_ids(count);
+        ManyInternedUndef {
+            pos,
+            limit: pos + count,
+        }
+    }
+
     pub fn operand(&self, val: InternedOperand) -> Rc<Operand> {
         if val.is_undefined() {
             let ty = OperandType::Undefined(operand::UndefinedId(!val.0));
@@ -549,19 +557,21 @@ impl InternMap {
     }
 }
 
-impl Flags {
-    fn undefined(ctx: &OperandContext, interner: &mut InternMap) -> Flags {
-        let undef = |interner: &mut InternMap| interner.new_undef(ctx);
-        Flags {
-            zero: undef(interner),
-            carry: undef(interner),
-            overflow: undef(interner),
-            sign: undef(interner),
-            parity: undef(interner),
-            direction: interner.intern(ctx.const_0()),
-        }
-    }
+struct ManyInternedUndef {
+    pos: u32,
+    limit: u32,
+}
 
+impl ManyInternedUndef {
+    pub fn next(&mut self) -> InternedOperand {
+        assert!(self.pos < self.limit);
+        let val = InternedOperand(!self.pos);
+        self.pos += 1;
+        val
+    }
+}
+
+impl Flags {
     fn initial(ctx: &OperandContext, interner: &mut InternMap) -> Flags {
         Flags {
             zero: interner.intern(ctx.flag_z()),
@@ -654,11 +664,19 @@ impl<'a> ExecutionState<'a> {
                     .set(left_res, intern_map, self.ctx);
             }
             Operation::Call(_) => {
-                self.registers[0] = intern_map.new_undef(self.ctx);
-                self.registers[1] = intern_map.new_undef(self.ctx);
-                self.registers[2] = intern_map.new_undef(self.ctx);
-                self.registers[4] = intern_map.new_undef(self.ctx);
-                self.flags = Flags::undefined(self.ctx, intern_map);
+                let mut ids = intern_map.many_undef(self.ctx, 9);
+                self.registers[0] = ids.next();
+                self.registers[1] = ids.next();
+                self.registers[2] = ids.next();
+                self.registers[4] = ids.next();
+                self.flags = Flags {
+                    zero: ids.next(),
+                    carry: ids.next(),
+                    overflow: ids.next(),
+                    sign: ids.next(),
+                    parity: ids.next(),
+                    direction: intern_map.intern(self.ctx.const_0()),
+                };
             }
             Operation::Jump { .. } => {
             }
