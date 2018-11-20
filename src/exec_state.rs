@@ -134,12 +134,12 @@ pub struct ExecutionState<'a> {
 pub struct XmmOperand(InternedOperand, InternedOperand, InternedOperand, InternedOperand);
 
 impl XmmOperand {
-    fn undefined(ctx: &OperandContext, interner: &mut InternMap) -> XmmOperand {
+    fn initial(register: u8, interner: &mut InternMap) -> XmmOperand {
         XmmOperand(
-            interner.new_undef(ctx),
-            interner.new_undef(ctx),
-            interner.new_undef(ctx),
-            interner.new_undef(ctx),
+            interner.intern(Rc::new(Operand::new_xmm(register, 0))),
+            interner.intern(Rc::new(Operand::new_xmm(register, 1))),
+            interner.intern(Rc::new(Operand::new_xmm(register, 2))),
+            interner.intern(Rc::new(Operand::new_xmm(register, 3))),
         )
     }
 
@@ -561,6 +561,17 @@ impl Flags {
             direction: interner.intern(ctx.const_0()),
         }
     }
+
+    fn initial(ctx: &OperandContext, interner: &mut InternMap) -> Flags {
+        Flags {
+            zero: interner.intern(ctx.flag_z()),
+            carry: interner.intern(ctx.flag_c()),
+            overflow: interner.intern(ctx.flag_o()),
+            sign: interner.intern(ctx.flag_s()),
+            parity: interner.intern(ctx.flag_p()),
+            direction: interner.intern(ctx.const_0()),
+        }
+    }
 }
 
 
@@ -581,16 +592,16 @@ impl<'a> ExecutionState<'a> {
                 interner.intern(ctx.register(7)),
             ],
             xmm_registers: [
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
+                XmmOperand::initial(0, interner),
+                XmmOperand::initial(1, interner),
+                XmmOperand::initial(2, interner),
+                XmmOperand::initial(3, interner),
+                XmmOperand::initial(4, interner),
+                XmmOperand::initial(5, interner),
+                XmmOperand::initial(6, interner),
+                XmmOperand::initial(7, interner),
             ],
-            flags: Flags::undefined(ctx, interner),
+            flags: Flags::initial(ctx, interner),
             memory: Memory::new(),
             last_jump_extra_constraint: None,
             ctx,
@@ -603,33 +614,9 @@ impl<'a> ExecutionState<'a> {
         ctx: &'b OperandContext,
         interner: &mut InternMap,
     ) -> ExecutionState<'b> {
-        ExecutionState {
-            registers: [
-                interner.intern(ctx.register(0)),
-                interner.intern(ctx.register(1)),
-                interner.intern(ctx.register(2)),
-                interner.intern(ctx.register(3)),
-                interner.intern(ctx.register(4)),
-                interner.intern(ctx.register(5)),
-                interner.intern(ctx.register(6)),
-                interner.intern(ctx.register(7)),
-            ],
-            xmm_registers: [
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-                XmmOperand::undefined(ctx, interner),
-            ],
-            flags: Flags::undefined(ctx, interner),
-            memory: Memory::new(),
-            last_jump_extra_constraint: None,
-            ctx,
-            code_sections: binary.code_sections().collect(),
-        }
+        let mut result = ExecutionState::new(ctx, interner);
+        result.code_sections = binary.code_sections().collect();
+        result
     }
 
     pub fn update(&mut self, operation: Operation, intern_map: &mut InternMap) {
@@ -1288,8 +1275,9 @@ fn merge_state_constraints_or() {
     assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
     // Should also happen other way, though then state_a must have something that is converted
     // to undef.
-    let merged = merge_states(&state_a, &state_b, &mut i);
-    assert!(merged.is_none());
+    let merged = merge_states(&state_a, &state_b, &mut i).unwrap();
+    assert!(merged.last_jump_extra_constraint.is_some());
+    assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
 
     state_a.move_to(DestOperand::from_oper(&ctx.flag_c()), constval(1), &mut i);
     let merged = merge_states(&state_a, &state_b, &mut i).unwrap();
