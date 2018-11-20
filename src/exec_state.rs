@@ -38,7 +38,11 @@ impl Constraint {
                 remove_matching_ands(&self.0, &mut |x| *x == OperandType::Flag(flag))
             },
             DestOperand::Memory(_) => {
-                None
+                // Assuming that everything may alias with memory
+                remove_matching_ands(&self.0, &mut |x| match x {
+                    OperandType::Memory(..) => true,
+                    _ => false,
+                })
             }
         }.map(Constraint::new)
     }

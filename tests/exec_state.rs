@@ -187,6 +187,22 @@ fn read_this() {
     ]);
 }
 
+#[test]
+fn je_jne_with_memory_write() {
+    test_inline(&[
+        0x8b, 0x03, // mov eax, [ebx]
+        0x01, 0xc8, // add eax, ecx
+        0x74, 0x05, // je ret
+        0x89, 0x01, // mov [ecx], eax
+        0x75, 0x01, // jne ret
+        0xcc, // int3
+        0x31, 0xc0, // xor eax, eax
+        0xc3, //ret
+    ], &[
+        (operand_register(0), constval(0)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
