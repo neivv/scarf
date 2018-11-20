@@ -442,6 +442,10 @@ impl<'a> FuncAnalysis<'a> {
         control.end
     }
 
+    fn add_unchecked_branch(&mut self, addr: VirtualAddress, state: ExecutionState<'a>) {
+        self.unchecked_branches.push((addr, state));
+    }
+
     pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a>> {
         while let Some((addr, state)) = self.next_branch_merge_queued() {
             let state = match self.cfg.get(addr) {
@@ -705,7 +709,7 @@ fn try_add_branch<'exec>(
             let code_len = analysis.binary.code_section().data.len() as u32;
             let invalid_dest = address < code_offset || address >= code_offset + code_len;
             if !invalid_dest {
-                analysis.unchecked_branches.push((address, state));
+                analysis.add_unchecked_branch(address, state);
             } else {
                 trace!("Destination {:x} is out of binary bounds", address.0);
             }
@@ -750,7 +754,7 @@ fn update_analysis_for_jump<'exec>(
         Some(0) => {
             let address = ins.address() + ins.len() as u32;
             *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
-            analysis.unchecked_branches.push((address, state.clone()));
+            analysis.add_unchecked_branch(address, state.clone());
         }
         Some(_) => {
             let state = state.clone();
@@ -771,7 +775,7 @@ fn update_analysis_for_jump<'exec>(
                         addr > code_section_start && addr < code_section_end
                     });
                 for case in case_iter {
-                    analysis.unchecked_branches.push((case, state.clone()));
+                    analysis.add_unchecked_branch(case, state.clone());
                     cases.push(NodeLink::new(case));
                 }
                 if !cases.is_empty() {
@@ -795,11 +799,11 @@ fn update_analysis_for_jump<'exec>(
             };
             let dest;
             if jumps_backwards {
-                analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
+                analysis.add_unchecked_branch(no_jump_addr, no_jump_state);
                 dest = try_add_branch(analysis, jump_state, to, ins.address());
             } else {
                 dest = try_add_branch(analysis, jump_state, to, ins.address());
-                analysis.unchecked_branches.push((no_jump_addr, no_jump_state));
+                analysis.add_unchecked_branch(no_jump_addr, no_jump_state);
             }
             *cfg_out_edge = CfgOutEdges::Branch(
                 NodeLink::new(no_jump_addr),
