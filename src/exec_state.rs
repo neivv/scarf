@@ -130,7 +130,7 @@ pub struct ExecutionState<'a> {
     code_sections: Vec<&'a crate::BinarySection>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct XmmOperand(InternedOperand, InternedOperand, InternedOperand, InternedOperand);
 
 impl XmmOperand {
@@ -1032,30 +1032,22 @@ pub fn merge_states<'a: 'r, 'r>(
 ) -> Option<ExecutionState<'a>> {
     use operand::operand_helpers::*;
 
-    let check_eq = |a: InternedOperand, b: InternedOperand, interner: &mut InternMap| {
-        if a == b {
-            true
-        } else {
-            let a = interner.operand(a);
-            match a.ty {
-                OperandType::Undefined(_) => true,
-                _ => false,
-            }
-        }
+    let check_eq = |a: InternedOperand, b: InternedOperand| {
+        a == b || a.is_undefined()
     };
-    let check_xmm_eq = |a: &XmmOperand, b: &XmmOperand, interner: &mut InternMap| {
-        check_eq(a.0, b.0, interner) &&
-            check_eq(a.1, b.1, interner) &&
-            check_eq(a.2, b.2, interner) &&
-            check_eq(a.3, b.3, interner)
+    let check_xmm_eq = |a: &XmmOperand, b: &XmmOperand| {
+        check_eq(a.0, b.0) &&
+            check_eq(a.1, b.1) &&
+            check_eq(a.2, b.2) &&
+            check_eq(a.3, b.3)
     };
-    let check_flags_eq = |a: &Flags, b: &Flags, interner: &mut InternMap| {
-        check_eq(a.zero, b.zero, interner) &&
-            check_eq(a.carry, b.carry, interner) &&
-            check_eq(a.overflow, b.overflow, interner) &&
-            check_eq(a.sign, b.sign, interner) &&
-            check_eq(a.parity, b.parity, interner) &&
-            check_eq(a.direction, b.direction, interner)
+    let check_flags_eq = |a: &Flags, b: &Flags| {
+        check_eq(a.zero, b.zero) &&
+            check_eq(a.carry, b.carry) &&
+            check_eq(a.overflow, b.overflow) &&
+            check_eq(a.sign, b.sign) &&
+            check_eq(a.parity, b.parity) &&
+            check_eq(a.direction, b.direction)
     };
     let check_memory_eq = |a: &Memory, b: &Memory, interner: &mut InternMap| {
         a.map.iter().all(|(&key, val)| {
@@ -1063,7 +1055,7 @@ pub fn merge_states<'a: 'r, 'r>(
             match contains_undefined(&oper) {
                 true => true,
                 false => match b.get(key) {
-                    Some(b_val) => check_eq(*val, b_val, interner),
+                    Some(b_val) => check_eq(*val, b_val),
                     None => true,
                 },
             }
@@ -1200,42 +1192,50 @@ pub fn merge_states<'a: 'r, 'r>(
     };
     let changed =
         old.registers.iter().zip(new.registers.iter())
-            .any(|(&a, &b)| !check_eq(a, b, interner)) ||
+            .any(|(&a, &b)| !check_eq(a, b)) ||
         old.xmm_registers.iter().zip(new.xmm_registers.iter())
-            .any(|(a, b)| !check_xmm_eq(a, b, interner)) ||
-        !check_flags_eq(&old.flags, &new.flags, interner) ||
+            .any(|(a, b)| !check_xmm_eq(a, b)) ||
+        !check_flags_eq(&old.flags, &new.flags) ||
         !check_memory_eq(&old.memory, &new.memory, interner) ||
         merged_ljec.as_ref().map(|x| *x != old.last_jump_extra_constraint).unwrap_or(false);
     if changed {
+        let mut registers = [InternedOperand(0); 8];
+        let mut xmm_registers = [XmmOperand(
+            InternedOperand(0),
+            InternedOperand(0),
+            InternedOperand(0),
+            InternedOperand(0),
+        ); 8];
+        let mut flags = Flags {
+            zero: InternedOperand(0),
+            carry: InternedOperand(0),
+            overflow: InternedOperand(0),
+            sign: InternedOperand(0),
+            parity: InternedOperand(0),
+            direction: InternedOperand(0),
+        };
+        {
+            for i in 0..8 {
+                registers[i] = merge(old.registers[i], new.registers[i], interner);
+                xmm_registers[i] =
+                    merge_xmm(&old.xmm_registers[i], &new.xmm_registers[i], interner);
+            }
+            let mut flags = [
+                (&mut flags.zero, old.flags.zero, new.flags.zero),
+                (&mut flags.carry, old.flags.carry, new.flags.carry),
+                (&mut flags.overflow, old.flags.overflow, new.flags.overflow),
+                (&mut flags.sign, old.flags.sign, new.flags.sign),
+                (&mut flags.parity, old.flags.parity, new.flags.parity),
+                (&mut flags.direction, old.flags.direction, new.flags.direction),
+            ];
+            for &mut (ref mut out, old, new) in &mut flags {
+                **out = merge(old, new, interner);
+            }
+        }
         Some(ExecutionState {
-            registers: [
-                merge(old.registers[0], new.registers[0], interner),
-                merge(old.registers[1], new.registers[1], interner),
-                merge(old.registers[2], new.registers[2], interner),
-                merge(old.registers[3], new.registers[3], interner),
-                merge(old.registers[4], new.registers[4], interner),
-                merge(old.registers[5], new.registers[5], interner),
-                merge(old.registers[6], new.registers[6], interner),
-                merge(old.registers[7], new.registers[7], interner),
-            ],
-            xmm_registers: [
-                merge_xmm(&old.xmm_registers[0], &new.xmm_registers[0], interner),
-                merge_xmm(&old.xmm_registers[1], &new.xmm_registers[1], interner),
-                merge_xmm(&old.xmm_registers[2], &new.xmm_registers[2], interner),
-                merge_xmm(&old.xmm_registers[3], &new.xmm_registers[3], interner),
-                merge_xmm(&old.xmm_registers[4], &new.xmm_registers[4], interner),
-                merge_xmm(&old.xmm_registers[5], &new.xmm_registers[5], interner),
-                merge_xmm(&old.xmm_registers[6], &new.xmm_registers[6], interner),
-                merge_xmm(&old.xmm_registers[7], &new.xmm_registers[7], interner),
-            ],
-            flags: Flags {
-                zero: merge(old.flags.zero, new.flags.zero, interner),
-                carry: merge(old.flags.carry, new.flags.carry, interner),
-                overflow: merge(old.flags.overflow, new.flags.overflow, interner),
-                sign: merge(old.flags.sign, new.flags.sign, interner),
-                parity: merge(old.flags.parity, new.flags.parity, interner),
-                direction: merge(old.flags.direction, new.flags.direction, interner),
-            },
+            registers,
+            xmm_registers,
+            flags,
             memory: merge_memory(&old.memory, &new.memory, interner),
             last_jump_extra_constraint: merged_ljec.unwrap_or_else(|| {
                 // They were same, just use one from old
