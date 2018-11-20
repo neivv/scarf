@@ -278,7 +278,7 @@ impl<'exec: 'b, 'b> Control<'exec, 'b> {
         );
         state.move_to(
             DestOperand::from_oper(&mem32(esp)),
-            ctx.constant(self.address().0.wrapping_add(self.instruction_length)),
+            ctx.constant(self.current_instruction_end().0),
             &mut i,
         );
         let mut analysis = FuncAnalysis::with_state(self.analysis.binary, ctx, entry, state, i);
@@ -287,6 +287,11 @@ impl<'exec: 'b, 'b> Control<'exec, 'b> {
 
     pub fn address(&self) -> VirtualAddress {
         self.address
+    }
+
+    /// Can be used for determining address for a branch when jump isn't followed and such.
+    pub fn current_instruction_end(&self) -> VirtualAddress {
+        VirtualAddress(self.address.0.wrapping_add(self.instruction_length))
     }
 }
 
