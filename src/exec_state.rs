@@ -590,27 +590,20 @@ impl<'a> ExecutionState<'a> {
         ctx: &'b OperandContext,
         interner: &mut InternMap,
     ) -> ExecutionState<'b> {
+        let mut registers = [InternedOperand(0); 8];
+        let mut xmm_registers = [XmmOperand(
+            InternedOperand(0),
+            InternedOperand(0),
+            InternedOperand(0),
+            InternedOperand(0),
+        ); 8];
+        for i in 0..8 {
+            registers[i] = interner.intern(ctx.register(i as u8));
+            xmm_registers[i] = XmmOperand::initial(i as u8, interner);
+        }
         ExecutionState {
-            registers: [
-                interner.intern(ctx.register(0)),
-                interner.intern(ctx.register(1)),
-                interner.intern(ctx.register(2)),
-                interner.intern(ctx.register(3)),
-                interner.intern(ctx.register(4)),
-                interner.intern(ctx.register(5)),
-                interner.intern(ctx.register(6)),
-                interner.intern(ctx.register(7)),
-            ],
-            xmm_registers: [
-                XmmOperand::initial(0, interner),
-                XmmOperand::initial(1, interner),
-                XmmOperand::initial(2, interner),
-                XmmOperand::initial(3, interner),
-                XmmOperand::initial(4, interner),
-                XmmOperand::initial(5, interner),
-                XmmOperand::initial(6, interner),
-                XmmOperand::initial(7, interner),
-            ],
+            registers,
+            xmm_registers,
             flags: Flags::initial(ctx, interner),
             memory: Memory::new(),
             last_jump_extra_constraint: None,
