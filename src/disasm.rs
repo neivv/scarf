@@ -1569,14 +1569,23 @@ pub mod operation_helpers {
     }
 
     pub fn rol_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(make_arith_operation(dest_operand(&dest), RotateLeft(dest, rhs)));
+        // rol(x, y) == (x << y) | (x >> (32 - y))
+        let dest_operand = dest_operand(&dest);
+        let arith = Or(
+            operand_lsh(dest.clone(), rhs.clone()),
+            operand_rsh(dest, operand_sub(constval(32), rhs)),
+        );
+        out.push(make_arith_operation(dest_operand, arith));
     }
 
     pub fn ror_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(make_arith_operation(
-            dest_operand(&dest),
-            RotateLeft(dest, operand_sub(constval(32), rhs))
-        ));
+        // ror(x, y) == (x >> y) | (x << (32 - y))
+        let dest_operand = dest_operand(&dest);
+        let arith = Or(
+            operand_rsh(dest.clone(), rhs.clone()),
+            operand_lsh(dest, operand_sub(constval(32), rhs)),
+        );
+        out.push(make_arith_operation(dest_operand, arith));
     }
 
     pub fn lsh(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {

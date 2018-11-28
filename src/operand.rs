@@ -249,7 +249,6 @@ impl fmt::Display for Operand {
                 Xor(ref l, ref r) => write!(f, "({} ^ {})", l, r),
                 Lsh(ref l, ref r) => write!(f, "({} << {})", l, r),
                 Rsh(ref l, ref r) => write!(f, "({} >> {})", l, r),
-                RotateLeft(ref l, ref r) => write!(f, "rotl({}, {})", l, r),
                 Equal(ref l, ref r) => write!(f, "({} == {})", l, r),
                 GreaterThan(ref l, ref r) => write!(f, "({} > {})", l, r),
                 GreaterThanSigned(ref l, ref r) => write!(f, "gt_signed({}, {})", l, r),
@@ -297,7 +296,6 @@ pub enum ArithOpType {
     Xor(Rc<Operand>, Rc<Operand>),
     Lsh(Rc<Operand>, Rc<Operand>),
     Rsh(Rc<Operand>, Rc<Operand>),
-    RotateLeft(Rc<Operand>, Rc<Operand>),
     Equal(Rc<Operand>, Rc<Operand>),
     Parity(Rc<Operand>),
     GreaterThan(Rc<Operand>, Rc<Operand>),
@@ -318,7 +316,7 @@ impl ArithOpType {
         match *self {
             Add(ref l, ref r) | Sub(ref l, ref r) | Mul(ref l, ref r) | And(ref l, ref r) |
                 Or(ref l, ref r) | Xor(ref l, ref r) | Lsh(ref l, ref r) |
-                Rsh(ref l, ref r) | RotateLeft(ref l, ref r) | Equal(ref l, ref r) |
+                Rsh(ref l, ref r) | Equal(ref l, ref r) |
                 GreaterThan(ref l, ref r) | GreaterThanSigned(ref l, ref r) |
                 SignedMul(ref l, ref r) | Div(ref l, ref r) | Modulo(ref l, ref r) =>
             {
@@ -389,7 +387,7 @@ fn iter_variant_next<'a, T: IterVariant<'a>>(s: &mut T) -> Option<&'a Operand> {
         Arithmetic(ref arith) | ArithmeticHigh(ref arith) => match *arith {
             Add(ref l, ref r) | Sub(ref l, ref r) | Mul(ref l, ref r) | And(ref l, ref r) |
                 Or(ref l, ref r) | Xor(ref l, ref r) | Lsh(ref l, ref r) |
-                Rsh(ref l, ref r) | RotateLeft(ref l, ref r) | Equal(ref l, ref r) |
+                Rsh(ref l, ref r) | Equal(ref l, ref r) |
                 GreaterThan(ref l, ref r) | GreaterThanSigned(ref l, ref r) |
                 SignedMul(ref l, ref r) | Div(ref l, ref r) | Modulo(ref l, ref r) => {
                 Some(IterState {
@@ -1406,19 +1404,6 @@ impl Operand {
                     let ty = OperandType::Arithmetic(ArithOpType::GreaterThanSigned(left, right));
                     Operand::new_simplified_rc(ty)
                 }
-                ArithOpType::RotateLeft(ref left, ref right) => {
-                    let left = Operand::simplified(left.clone());
-                    let right = Operand::simplified(right.clone());
-                    match (&left.ty, &right.ty) {
-                        (&OperandType::Constant(a), &OperandType::Constant(b)) => {
-                            ctx.constant(a.rotate_left(b))
-                        }
-                        _ => {
-                            let ty = OperandType::Arithmetic(ArithOpType::RotateLeft(left, right));
-                            Operand::new_simplified_rc(ty)
-                        }
-                    }
-                }
                 ArithOpType::Lsh(ref left, ref right) => simplify_lsh(left, right, ctx),
                 ArithOpType::Rsh(ref left, ref right) => simplify_rsh(left, right, ctx),
                 _ => mark_self_simplified(s),
@@ -1462,7 +1447,6 @@ impl Operand {
                 Xor(ref l, ref r) => Xor(sub(l, f), sub(r, f)),
                 Lsh(ref l, ref r) => Lsh(sub(l, f), sub(r, f)),
                 Rsh(ref l, ref r) => Rsh(sub(l, f), sub(r, f)),
-                RotateLeft(ref l, ref r) => RotateLeft(sub(l, f), sub(r, f)),
                 Equal(ref l, ref r) => Equal(sub(l, f), sub(r, f)),
                 Parity(ref x) => Parity(sub(x, f)),
                 GreaterThan(ref l, ref r) => GreaterThan(sub(l, f), sub(r, f)),
@@ -3004,7 +2988,11 @@ pub mod operand_helpers {
     }
 
     pub fn operand_rol(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        Operand::new_not_simplified_rc(OperandType::Arithmetic(RotateLeft(lhs, rhs)))
+        // rol(x, y) == (x << y) | (x >> (32 - y))
+        operand_or(
+            operand_lsh(lhs.clone(), rhs.clone()),
+            operand_rsh(lhs, operand_sub(constval(32), rhs)),
+        )
     }
 
     pub fn operand_not(lhs: Rc<Operand>) -> Rc<Operand> {

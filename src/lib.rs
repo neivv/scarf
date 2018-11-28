@@ -323,7 +323,7 @@ impl SectionDumps {
                         Mul(ref mut l, ref mut r) | And(ref mut l, ref mut r) |
                         Or(ref mut l, ref mut r) | Xor(ref mut l, ref mut r) |
                         Lsh(ref mut l, ref mut r) | Rsh(ref mut l, ref mut r) |
-                        RotateLeft(ref mut l, ref mut r) | Equal(ref mut l, ref mut r) |
+                        Equal(ref mut l, ref mut r) |
                         GreaterThan(ref mut l, ref mut r) | SignedMul(ref mut l, ref mut r) |
                         Div(ref mut l, ref mut r) | Modulo(ref mut l, ref mut r) |
                         GreaterThanSigned(ref mut l, ref mut r) =>

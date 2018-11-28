@@ -768,9 +768,6 @@ impl<'a> ExecutionState<'a> {
             Rsh(ref l, ref r) => {
                 Rsh(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
             }
-            RotateLeft(ref l, ref r) => {
-                RotateLeft(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
             Equal(ref l, ref r) => {
                 Equal(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
             }
