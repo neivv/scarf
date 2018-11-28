@@ -868,7 +868,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         match variant {
             0 | 1 => return self.generic_arith_with_imm_op(&TEST_OPS, op_size),
             2 => {
-                out.push(make_arith_operation(dest_operand(&rm), ArithOpType::Not(rm)));
+                let dest = dest_operand(&rm);
+                let not = ArithOpType::Xor(rm, self.ctx.const_ffffffff());
+                out.push(make_arith_operation(dest, not));
             }
             4 => {
                 out.push(mov(pair_edx_eax(), operand_mul(self.ctx.register(0), rm)));

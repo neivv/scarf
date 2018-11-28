@@ -203,6 +203,20 @@ fn je_jne_with_memory_write() {
     ]);
 }
 
+#[test]
+fn not_is_xor() {
+    test_inline(&[
+        0xf7, 0xd0, // not eax
+        0x83, 0xf0, 0xff, // xor eax, ffff_ffff
+        0x66, 0xf7, 0xd1, // not cx
+        0x81, 0xf1, 0xff, 0xff, 0x00, 0x00, // xor ecx, ffff
+        0xc3, //ret
+    ], &[
+        (operand_register(0), operand_register(0)),
+        (operand_register(1), operand_register(1)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();

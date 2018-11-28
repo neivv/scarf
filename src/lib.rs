@@ -335,7 +335,7 @@ impl SectionDumps {
                         addresses.extend(l_addresses);
                         addresses.extend(r_addresses);
                     }
-                    Not(ref mut l) | Parity(ref mut l) => {
+                    Parity(ref mut l) => {
                         let (l_resolved, l_addresses) = self.resolve_mem_accesses(l);
                         *l = l_resolved;
                         addresses.extend(l_addresses);

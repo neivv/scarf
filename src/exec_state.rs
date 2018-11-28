@@ -774,7 +774,6 @@ impl<'a> ExecutionState<'a> {
             Equal(ref l, ref r) => {
                 Equal(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
             }
-            Not(ref x) => Not(self.resolve_no_simplify(x, i)),
             Parity(ref x) => Parity(self.resolve_no_simplify(x, i)),
             GreaterThan(ref l, ref r) => {
                 GreaterThan(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))

@@ -254,7 +254,6 @@ impl fmt::Display for Operand {
                 GreaterThan(ref l, ref r) => write!(f, "({} > {})", l, r),
                 GreaterThanSigned(ref l, ref r) => write!(f, "gt_signed({}, {})", l, r),
                 SignedMul(ref l, ref r) => write!(f, "mul_signed({}, {})", l, r),
-                Not(ref l) => write!(f, "~{}", l),
                 Parity(ref l) => write!(f, "parity({})", l),
             },
             OperandType::ArithmeticHigh(ref arith) => {
@@ -300,7 +299,6 @@ pub enum ArithOpType {
     Rsh(Rc<Operand>, Rc<Operand>),
     RotateLeft(Rc<Operand>, Rc<Operand>),
     Equal(Rc<Operand>, Rc<Operand>),
-    Not(Rc<Operand>),
     Parity(Rc<Operand>),
     GreaterThan(Rc<Operand>, Rc<Operand>),
     GreaterThanSigned(Rc<Operand>, Rc<Operand>),
@@ -326,7 +324,7 @@ impl ArithOpType {
             {
                 (l, Some(r))
             }
-            Not(ref l) | Parity(ref l) => {
+            Parity(ref l) => {
                 (l, None)
             }
         }
@@ -402,7 +400,7 @@ fn iter_variant_next<'a, T: IterVariant<'a>>(s: &mut T) -> Option<&'a Operand> {
                     })),
                 })
             }
-            Not(ref l) | Parity(ref l) => {
+            Parity(ref l) => {
                 Some(IterState {
                     pos: l,
                     rhs: inner.rhs,
@@ -771,7 +769,6 @@ impl OperandType {
                 {
                     min(left.min_zero_bit_simplify_size, right.min_zero_bit_simplify_size)
                 }
-                ArithOpType::Not(ref val) => val.min_zero_bit_simplify_size,
                 ArithOpType::Lsh(ref l, ref r) | ArithOpType::Rsh(ref l, ref r) => {
                     let right_bits = match r.if_constant() {
                         Some(s) => 32u32.saturating_sub(s),
@@ -1077,14 +1074,14 @@ impl Operand {
         }
     }
 
-    fn collect_xor_ops(s: Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
+    fn collect_xor_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
         match s.clone().ty {
             OperandType::Arithmetic(ArithOpType::Xor(ref left, ref right)) => {
-                Operand::collect_xor_ops(left.clone(), ops);
-                Operand::collect_xor_ops(right.clone(), ops);
+                Operand::collect_xor_ops(left, ops);
+                Operand::collect_xor_ops(right, ops);
             }
             _ => {
-                ops.push(Operand::simplified(s));
+                ops.push(Operand::simplified(s.clone()));
             }
         }
     }
@@ -1350,7 +1347,6 @@ impl Operand {
     }
 
     pub fn simplified(s: Rc<Operand>) -> Rc<Operand> {
-        use self::ArithOpType::*;
         if s.simplified {
             return s;
         }
@@ -1371,27 +1367,7 @@ impl Operand {
                 }
                 ArithOpType::And(ref left, ref right) => simplify_and(left, right, ctx),
                 ArithOpType::Or(ref left, ref right) => simplify_or(left, right, ctx),
-                ArithOpType::Xor(_, _) => {
-                    let mut ops = vec![];
-                    Operand::collect_xor_ops(s, &mut ops);
-                    let const_val = ops.iter().flat_map(|x| x.if_constant())
-                        .fold(0u32, |sum, x| sum ^ x);
-                    ops.retain(|x| x.if_constant().is_none());
-                    ops.sort();
-                    simplify_xor_remove_reverting(&mut ops);
-                    if ops.is_empty() {
-                        return ctx.constant(const_val);
-                    }
-                    if const_val != 0 {
-                        ops.push(ctx.constant(const_val));
-                    }
-                    let mut tree = ops.pop().map(mark_self_simplified)
-                        .unwrap_or_else(|| ctx.const_0());
-                    while let Some(op) = ops.pop() {
-                        tree = Operand::new_simplified_rc(OperandType::Arithmetic(Xor(tree, op)))
-                    }
-                    tree
-                }
+                ArithOpType::Xor(ref left, ref right) => simplify_xor(left, right, ctx),
                 ArithOpType::Equal(ref left, ref right) => simplify_eq(left, right, ctx),
                 ArithOpType::GreaterThan(ref left, ref right) => {
                     let left = Operand::simplified(left.clone());
@@ -1429,16 +1405,6 @@ impl Operand {
                     }
                     let ty = OperandType::Arithmetic(ArithOpType::GreaterThanSigned(left, right));
                     Operand::new_simplified_rc(ty)
-                }
-                ArithOpType::Not(ref op) => {
-                    let op = Operand::simplified(op.clone());
-                    match op.ty {
-                        OperandType::Constant(a) => ctx.constant(!a),
-                        _ => {
-                            let ty = OperandType::Arithmetic(ArithOpType::Not(op));
-                            Operand::new_simplified_rc(ty)
-                        }
-                    }
                 }
                 ArithOpType::RotateLeft(ref left, ref right) => {
                     let left = Operand::simplified(left.clone());
@@ -1498,7 +1464,6 @@ impl Operand {
                 Rsh(ref l, ref r) => Rsh(sub(l, f), sub(r, f)),
                 RotateLeft(ref l, ref r) => RotateLeft(sub(l, f), sub(r, f)),
                 Equal(ref l, ref r) => Equal(sub(l, f), sub(r, f)),
-                Not(ref x) => Not(sub(x, f)),
                 Parity(ref x) => Parity(sub(x, f)),
                 GreaterThan(ref l, ref r) => GreaterThan(sub(l, f), sub(r, f)),
                 GreaterThanSigned(ref l, ref r) => {
@@ -1607,6 +1572,15 @@ impl Operand {
     pub fn if_arithmetic_and(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         match self.ty {
             OperandType::Arithmetic(ArithOpType::And(ref l, ref r)) => Some((l, r)),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Or(left, right))`
+    pub fn if_arithmetic_or(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        match self.ty {
+            OperandType::Arithmetic(ArithOpType::Or(ref l, ref r)) => Some((l, r)),
             _ => None,
         }
     }
@@ -2631,10 +2605,6 @@ fn simplify_with_zero_bits(
                 }
             }
         }
-        OperandType::Arithmetic(ArithOpType::Not(ref val)) => {
-            simplify_with_zero_bits(val, bits, ctx)
-                .map(|x| Operand::simplified(operand_not(x)))
-        }
         OperandType::Constant(c) => {
             let low = bits.start;
             let high = 32 - bits.end;
@@ -2847,6 +2817,74 @@ fn simplify_add_merge_muls(ops: &mut Vec<(Rc<Operand>, bool)>, ctx: &OperandCont
     }
 }
 
+fn simplify_xor(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+    let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
+
+    let mut ops = vec![];
+    Operand::collect_xor_ops(left, &mut ops);
+    Operand::collect_xor_ops(right, &mut ops);
+    let const_val = ops.iter().flat_map(|x| x.if_constant())
+        .fold(0u32, |sum, x| sum ^ x);
+    ops.retain(|x| x.if_constant().is_none());
+    ops.sort();
+    simplify_xor_remove_reverting(&mut ops);
+    if ops.is_empty() {
+        return ctx.constant(const_val);
+    }
+    if const_val != 0 {
+        if ops.len() == 1 {
+            // Try some conversations
+            let op = &ops[0];
+            // Convert c1 ^ (y & c2) == (y ^ (c1 & c2)) & c2
+            if let Some((l, r)) = op.if_arithmetic_and() {
+                let vals = match (&l.ty, &r.ty) {
+                    (&OperandType::Constant(c), _) => Some((l, c, r)),
+                    (_, &OperandType::Constant(c)) => Some((r, c, l)),
+                    _ => None,
+                };
+                if let Some((and_const, c, other)) = vals {
+                    if const_val & c == 0 {
+                        return op.clone();
+                    } else {
+                        return simplify_and(
+                            and_const,
+                            &simplify_xor(&ctx.constant(const_val & c), other, ctx),
+                            ctx,
+                        );
+                    }
+                }
+            }
+            // Convert c1 ^ ((c2 & x) | y) to (c2 & x) | (y ^ c1)
+            // if c1 & c2 == 0
+            if let Some((l, r)) = op.if_arithmetic_or() {
+                let vals = Operand::either(l, r, |x| {
+                    x.if_arithmetic_and()
+                        .and_then(|(l, r)| {
+                            Operand::either(l, r, |x| {
+                                x.if_constant().filter(|c| c & const_val == 0)
+                            })
+                        })
+                        .map(|_| x)
+                });
+                if let Some((lhs, rhs)) = vals {
+                    return simplify_or(
+                        lhs,
+                        &simplify_xor(rhs, &ctx.constant(const_val), ctx),
+                        ctx,
+                    );
+                }
+            }
+        }
+        ops.push(ctx.constant(const_val));
+    }
+    let mut tree = ops.pop().map(mark_self_simplified)
+        .unwrap_or_else(|| ctx.const_0());
+    while let Some(op) = ops.pop() {
+        tree = Operand::new_simplified_rc(OperandType::Arithmetic(ArithOpType::Xor(tree, op)))
+    }
+    tree
+}
+
 /// Assumes that `ops` is sorted.
 fn simplify_xor_remove_reverting(ops: &mut Vec<Rc<Operand>>) {
     let mut first_same = ops.len() as isize - 1;
@@ -2970,7 +3008,7 @@ pub mod operand_helpers {
     }
 
     pub fn operand_not(lhs: Rc<Operand>) -> Rc<Operand> {
-        Operand::new_not_simplified_rc(OperandType::Arithmetic(Not(lhs)))
+        operand_xor(lhs, constval(0xffff_ffff))
     }
 
     pub fn operand_logical_not(lhs: Rc<Operand>) -> Rc<Operand> {
@@ -4786,6 +4824,47 @@ mod test {
         );
 
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_xor_and_xor() {
+        use super::operand_helpers::*;
+        // c1 ^ ((x ^ c1) & c2) == x & c2 if c2 & c1 == c1
+        // (Effectively going to transform c1 ^ (y & c2) == (y ^ (c1 & c2)) & c2)
+        let op1 = operand_xor(
+            constval(0x423),
+            operand_and(
+                constval(0xfff),
+                operand_xor(
+                    constval(0x423),
+                    operand_register(1),
+                ),
+            ),
+        );
+        let eq1 = operand_and(
+            constval(0xfff),
+            operand_register(1),
+        );
+
+        let op2 = operand_xor(
+            constval(0x423),
+            operand_or(
+                operand_and(
+                    constval(0xfff),
+                    operand_xor(
+                        constval(0x423),
+                        operand_register(1),
+                    ),
+                ),
+                operand_and(
+                    constval(0xffff_f000),
+                    operand_register(1),
+                ),
+            )
+        );
+        let eq2 = operand_register(1);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 
     #[test]
