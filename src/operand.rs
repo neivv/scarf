@@ -941,6 +941,10 @@ impl Operand {
         Self::new_not_simplified(ty).into()
     }
 
+    pub(crate) fn is_simplified(&self) -> bool {
+        self.simplified
+    }
+
     pub fn pair(s: &Rc<Operand>) -> (Rc<Operand>, Rc<Operand>) {
         use self::operand_helpers::*;
         match s.ty {

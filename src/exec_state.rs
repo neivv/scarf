@@ -534,6 +534,22 @@ impl InternMap {
         }
     }
 
+    fn intern_and_get(&mut self, val: Rc<Operand>) -> Rc<Operand> {
+        if let OperandType::Undefined(_) = val.ty {
+            val
+        } else {
+            match self.reverse.entry(val.clone()) {
+                hash_map::Entry::Occupied(e) => self.map[e.get().0 as usize].clone(),
+                hash_map::Entry::Vacant(e) => {
+                    let new = InternedOperand(self.map.len() as u32);
+                    e.insert(new);
+                    self.map.push(val.clone());
+                    val
+                }
+            }
+        }
+    }
+
     /// Faster than `self.intern(ctx.undefined_rc())`
     pub fn new_undef(&self, ctx: &OperandContext) -> InternedOperand {
         InternedOperand(!ctx.new_undefined_id())
@@ -906,10 +922,15 @@ impl<'a> ExecutionState<'a> {
     }
 
     pub fn resolve(&self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
-        Operand::simplified({
-            let x = self.resolve_no_simplify(value, interner);
-            x
-        })
+        let x = self.resolve_no_simplify(value, interner);
+        if x.is_simplified() {
+            return x;
+        }
+        let operand = Operand::simplified(x);
+        // Intern in case the simplification created a very deeply different operand tree,
+        // as repeating the resolving would give an equal operand with different addresses.
+        // Bandaid fix, not necessarily the best.
+        interner.intern_and_get(operand)
     }
 
     pub fn try_resolve_const(&self, condition: &Rc<Operand>, i: &mut InternMap) -> Option<u32> {
