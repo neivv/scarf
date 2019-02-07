@@ -1229,7 +1229,7 @@ impl Operand {
                             let bytes = c / 8;
                             return is_offset_mem(left, ctx).and_then(|(x, (off, len, val_off))| {
                                 if bytes < len {
-                                    Some((x, (off + bytes, len - bytes, val_off)))
+                                    Some((x, (off.wrapping_add(bytes), len - bytes, val_off)))
                                 } else {
                                     None
                                 }
@@ -4950,6 +4950,26 @@ mod test {
         let eq2 = operand_register(1);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_or_mem_bug2() {
+        use super::operand_helpers::*;
+        let op = operand_or(
+            operand_and(
+                operand_rsh(
+                    mem32(operand_sub(operand_register(2), constval(0x1))),
+                    constval(8),
+                ),
+                constval(0x00ff_ffff),
+            ),
+            operand_and(
+                mem32(operand_sub(operand_register(2), constval(0x14))),
+                constval(0xff00_0000),
+            ),
+        );
+        // Just checking that this doesn't panic
+        let _ = Operand::simplified(op);
     }
 
     #[test]
