@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -221,7 +222,7 @@ pub fn relocs_with_values(
 pub struct FuncAnalysis<'a> {
     binary: &'a BinaryFile,
     cfg: Cfg<'a>,
-    unchecked_branches: Vec<(VirtualAddress, ExecutionState<'a>)>,
+    unchecked_branches: BTreeMap<VirtualAddress, ExecutionState<'a>>,
     operand_ctx: &'a OperandContext,
     pub interner: exec_state::InternMap,
     /// (Func, arg1, arg2)
@@ -314,7 +315,9 @@ impl<'a> FuncAnalysis<'a> {
             cfg: Cfg::new(),
             unchecked_branches: {
                 let init_state = initial_exec_state(&operand_ctx, binary, &mut interner);
-                vec![(start_address, init_state)]
+                let mut map = BTreeMap::new();
+                map.insert(start_address, init_state);
+                map
             },
             operand_ctx,
             interner,
@@ -333,7 +336,9 @@ impl<'a> FuncAnalysis<'a> {
             errors: Vec::new(),
             cfg: Cfg::new(),
             unchecked_branches: {
-                vec![(start_address, state)]
+                let mut map = BTreeMap::new();
+                map.insert(start_address, state);
+                map
             },
             operand_ctx,
             interner,
@@ -341,7 +346,7 @@ impl<'a> FuncAnalysis<'a> {
     }
 
     pub fn analyze<A: Analyzer>(&mut self, analyzer: &mut A) {
-        while let Some((addr, state)) = self.next_branch_merge_queued() {
+        while let Some((addr, state)) = self.pop_next_branch() {
             let state = match self.cfg.get(addr) {
                 Some(old_node) => {
                     exec_state::merge_states(&old_node.state, &state, &mut self.interner)
@@ -443,11 +448,23 @@ impl<'a> FuncAnalysis<'a> {
     }
 
     fn add_unchecked_branch(&mut self, addr: VirtualAddress, state: ExecutionState<'a>) {
-        self.unchecked_branches.push((addr, state));
+        use std::collections::btree_map::Entry;
+
+        match self.unchecked_branches.entry(addr) {
+            Entry::Vacant(e) => {
+                e.insert(state);
+            }
+            Entry::Occupied(mut e) => {
+                let interner = &mut self.interner;
+                if let Some(new) = exec_state::merge_states(&state, e.get(), interner) {
+                    *e.get_mut() = new;
+                }
+            }
+        }
     }
 
     pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a>> {
-        while let Some((addr, state)) = self.next_branch_merge_queued() {
+        while let Some((addr, state)) = self.pop_next_branch() {
             let state = match self.cfg.get(addr) {
                 Some(old_node) => {
                     exec_state::merge_states(&old_node.state, &state, &mut self.interner)
@@ -468,20 +485,9 @@ impl<'a> FuncAnalysis<'a> {
         None
     }
 
-    fn next_branch_merge_queued(&mut self) -> Option<(VirtualAddress, ExecutionState<'a>)> {
-        let (addr, mut state) = match self.unchecked_branches.pop() {
-            Some(s) => s,
-            None => return None,
-        };
-        let interner = &mut self.interner;
-        self.unchecked_branches.retain(|&(a, ref s)| if a == addr {
-            if let Some(new) = exec_state::merge_states(&state, s, interner) {
-                state = new;
-            }
-            false
-        } else {
-            true
-        });
+    fn pop_next_branch(&mut self) -> Option<(VirtualAddress, ExecutionState<'a>)> {
+        let addr = self.unchecked_branches.keys().next().cloned()?;
+        let state = self.unchecked_branches.remove(&addr).unwrap();
         Some((addr, state))
     }
 
@@ -793,18 +799,8 @@ fn update_analysis_for_jump<'exec>(
             let jump_state = state.assume_jump_flag(&condition, true, &mut analysis.interner);
             let no_jump_state = state.assume_jump_flag(&condition, false, &mut analysis.interner);
             let to = jump_state.resolve(&to, &mut analysis.interner);
-            let jumps_backwards = match to.if_constant() {
-                Some(x) => x < ins.address().0,
-                None => false,
-            };
-            let dest;
-            if jumps_backwards {
-                analysis.add_unchecked_branch(no_jump_addr, no_jump_state);
-                dest = try_add_branch(analysis, jump_state, to, ins.address());
-            } else {
-                dest = try_add_branch(analysis, jump_state, to, ins.address());
-                analysis.add_unchecked_branch(no_jump_addr, no_jump_state);
-            }
+            analysis.add_unchecked_branch(no_jump_addr, no_jump_state);
+            let dest = try_add_branch(analysis, jump_state, to, ins.address());
             *cfg_out_edge = CfgOutEdges::Branch(
                 NodeLink::new(no_jump_addr),
                 OutEdgeCondition {
