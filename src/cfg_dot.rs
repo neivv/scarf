@@ -8,7 +8,7 @@ use cfg::{Cfg, CfgOutEdges, NodeLink};
 use operand::{ArithOpType, Operand, OperandType};
 use ::VirtualAddress;
 
-pub fn write<W: Write>(cfg: &mut Cfg, out: &mut W) -> Result<(), io::Error> {
+pub fn write<W: Write, S>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(), io::Error> {
     writeln!(out, "digraph func {{")?;
     let mut nodes = HashMap::new();
     let mut node_name_pos = 0;

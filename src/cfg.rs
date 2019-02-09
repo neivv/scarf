@@ -10,9 +10,9 @@ use operand::{Operand, OperandContext};
 use ::{BinaryFile, VirtualAddress};
 
 #[derive(Debug, Clone)]
-pub struct Cfg<'exec> {
+pub struct Cfg<State> {
     // Sorted
-    nodes: Vec<(VirtualAddress, CfgNode<'exec>)>,
+    nodes: Vec<(VirtualAddress, CfgNode<State>)>,
     entry: NodeLink,
     node_indices_dirty: bool,
     // Just to be set once the cfg is available to users,
@@ -20,8 +20,8 @@ pub struct Cfg<'exec> {
     pub interner: InternMap,
 }
 
-impl<'exec> Cfg<'exec> {
-    pub fn new() -> Cfg<'exec> {
+impl<S> Cfg<S> {
+    pub fn new() -> Cfg<S> {
         Cfg {
             nodes: Vec::with_capacity(16),
             entry: NodeLink::new(VirtualAddress(!0)),
@@ -34,14 +34,14 @@ impl<'exec> Cfg<'exec> {
         self.node_indices_dirty = true;
     }
 
-    pub fn get(&self, address: VirtualAddress) -> Option<&CfgNode<'exec>> {
+    pub fn get(&self, address: VirtualAddress) -> Option<&CfgNode<S>> {
         match self.nodes.binary_search_by_key(&address, |x| x.0) {
             Ok(idx) => Some(&self.nodes[idx].1),
             _ => None,
         }
     }
 
-    pub fn add_node(&mut self, address: VirtualAddress, node: CfgNode<'exec>) {
+    pub fn add_node(&mut self, address: VirtualAddress, node: CfgNode<S>) {
         if self.nodes.is_empty() {
             self.entry = NodeLink::new(address);
         }
@@ -52,7 +52,7 @@ impl<'exec> Cfg<'exec> {
         self.mark_dirty();
     }
 
-    pub fn nodes(&self) -> CfgNodeIter {
+    pub fn nodes<'a>(&'a self) -> CfgNodeIter<'a, S> {
         CfgNodeIter(self.nodes.iter(), 0)
     }
 
@@ -331,7 +331,10 @@ impl<'exec> Cfg<'exec> {
         }
     }
 
-    pub fn immediate_postdominator<'a>(&'a self, node: NodeIndex<'a>) -> Option<NodeBorrow<'a>> {
+    pub fn immediate_postdominator<'a>(
+        &'a self,
+        node: NodeIndex<'a, S>,
+    ) -> Option<NodeBorrow<'a, S>> {
         // Do one run through one branch, mark the nodes 1.. based on their distance.
         // Any branches met store the mark they branched off from.
         // Then run through other branch until mark > 2 is found, keep track of largest
@@ -347,11 +350,11 @@ impl<'exec> Cfg<'exec> {
         // its child branches.
         assert!(!self.node_indices_dirty);
 
-        struct State<'exec> {
+        struct State<'exec, S> {
             mark_buf: Vec<u32>,
             forks: Vec<(usize, u32)>,
             mark_indices: Vec<usize>,
-            nodes: &'exec [(VirtualAddress, CfgNode<'exec>)],
+            nodes: &'exec [(VirtualAddress, CfgNode<S>)],
         }
         let mut state = State {
             mark_buf: vec![0u32; self.nodes.len()],
@@ -361,10 +364,10 @@ impl<'exec> Cfg<'exec> {
         };
 
         // Return Err on quick exit, Ok for continuing to rest of branches
-        fn traverse_first_branch<'a>(
-            state: &mut State<'a>,
-            node: NodeIndex<'a>,
-        ) -> Result<Vec<u32>, Option<NodeBorrow<'a>>> {
+        fn traverse_first_branch<'a, S>(
+            state: &mut State<'a, S>,
+            node: NodeIndex<'a, S>,
+        ) -> Result<Vec<u32>, Option<NodeBorrow<'a, S>>> {
             let mut pos = node.0 as usize;
             let mut mark = 1;
             loop {
@@ -428,10 +431,10 @@ impl<'exec> Cfg<'exec> {
             }
         }
 
-        fn traverse_rest<'a>(
-            state: &mut State<'a>,
+        fn traverse_rest<'a, S>(
+            state: &mut State<'a, S>,
             mark_limits: &mut [u32],
-        ) -> Option<NodeBorrow<'a>> {
+        ) -> Option<NodeBorrow<'a, S>> {
             loop {
                 let mut current_mark;
                 let mut pos;
@@ -530,8 +533,8 @@ impl<'exec> Cfg<'exec> {
 }
 
 /// Link indices must be correct.
-fn calculate_node_distance(
-    nodes: &mut [(VirtualAddress, CfgNode)],
+fn calculate_node_distance<S>(
+    nodes: &mut [(VirtualAddress, CfgNode<S>)],
     buf: &mut Vec<usize>,
     node_index: usize,
     distance: u32,
@@ -556,9 +559,9 @@ fn calculate_node_distance(
     }
 }
 
-pub struct CfgNodeIter<'a>(::std::slice::Iter<'a, (VirtualAddress, CfgNode<'a>)>, u32);
-impl<'a> Iterator for CfgNodeIter<'a> {
-    type Item = NodeBorrow<'a>;
+pub struct CfgNodeIter<'a, S>(::std::slice::Iter<'a, (VirtualAddress, CfgNode<S>)>, u32);
+impl<'a, S> Iterator for CfgNodeIter<'a, S> {
+    type Item = NodeBorrow<'a, S>;
     fn next(&mut self) -> Option<Self::Item> {
         let index = NodeIndex(self.1, PhantomData);
         self.1 += 1;
@@ -571,21 +574,21 @@ impl<'a> Iterator for CfgNodeIter<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct NodeBorrow<'a> {
-    pub node: &'a CfgNode<'a>,
-    pub index: NodeIndex<'a>,
+pub struct NodeBorrow<'a, State> {
+    pub node: &'a CfgNode<State>,
+    pub index: NodeIndex<'a, State>,
     pub address: VirtualAddress,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct NodeIndex<'a>(u32, PhantomData<&'a Cfg<'a>>);
+pub struct NodeIndex<'a, S>(u32, PhantomData<&'a Cfg<S>>);
 
 #[derive(Debug, Clone)]
-pub struct CfgNode<'exec> {
+pub struct CfgNode<State> {
     pub out_edges: CfgOutEdges,
     // The address is to the first instruction of in edge nodes instead of the jump-here address,
     // obviously so it can be looked up with Cfg::nodes.
-    pub state: ExecutionState<'exec>,
+    pub state: State,
     pub end_address: VirtualAddress,
     /// Distance from entry, first node has 1, its connected nodes have 2, etc.
     pub distance: u32,
@@ -720,35 +723,27 @@ impl NodeLink {
 #[cfg(test)]
 mod test {
     use super::*;
-    use exec_state::InternMap;
-    use operand::OperandContext;
     use VirtualAddress;
 
-    fn node0<'a>(addr: u32, ctx: &'a OperandContext, i: &mut InternMap) -> CfgNode<'a> {
+    fn node0(addr: u32) -> CfgNode<()> {
         CfgNode {
             out_edges: CfgOutEdges::None,
-            state: ::exec_state::ExecutionState::new(ctx, i),
+            state: (),
             end_address: VirtualAddress(addr + 1),
             distance: 0,
         }
     }
 
-    fn node1<'a>(addr: u32, ctx: &'a OperandContext, out: u32, i: &mut InternMap) -> CfgNode<'a> {
+    fn node1(addr: u32, out: u32) -> CfgNode<()> {
         CfgNode {
             out_edges: CfgOutEdges::Single(NodeLink::new(VirtualAddress(out))),
-            state: ::exec_state::ExecutionState::new(ctx, i),
+            state: (),
             end_address: VirtualAddress(addr + 1),
             distance: 0,
         }
     }
 
-    fn node2<'a>(
-        addr: u32,
-        ctx: &'a OperandContext,
-        out: u32,
-        out2: u32,
-        i: &mut InternMap,
-    ) -> CfgNode<'a> {
+    fn node2(addr: u32, out: u32, out2: u32) -> CfgNode<()> {
         CfgNode {
             out_edges: CfgOutEdges::Branch(
                 NodeLink::new(VirtualAddress(out)),
@@ -757,7 +752,7 @@ mod test {
                     condition: ::operand_helpers::operand_register(0),
                 },
             ),
-            state: ::exec_state::ExecutionState::new(ctx, i),
+            state: (),
             end_address: VirtualAddress(addr + 1),
             distance: 0,
         }
@@ -765,15 +760,12 @@ mod test {
 
     #[test]
     fn distances() {
-        let ctx = &::operand::OperandContext::new();
-        let mut interner = ::exec_state::InternMap::new();
-        let i = &mut interner;
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 104, i));
-        cfg.add_node(VirtualAddress(101), node2(101, ctx, 102, 104, i));
-        cfg.add_node(VirtualAddress(102), node2(102, ctx, 103, 104, i));
-        cfg.add_node(VirtualAddress(103), node1(103, ctx, 104, i));
-        cfg.add_node(VirtualAddress(104), node0(104, ctx, i));
+        cfg.add_node(VirtualAddress(100), node2(100, 101, 104));
+        cfg.add_node(VirtualAddress(101), node2(101, 102, 104));
+        cfg.add_node(VirtualAddress(102), node2(102, 103, 104));
+        cfg.add_node(VirtualAddress(103), node1(103, 104));
+        cfg.add_node(VirtualAddress(104), node0(104));
         cfg.calculate_distances();
         let mut iter = cfg.nodes().map(|x| x.node.distance);
         assert_eq!(iter.next().unwrap(), 1);
@@ -786,19 +778,16 @@ mod test {
 
     #[test]
     fn cycles() {
-        let ctx = &::operand::OperandContext::new();
-        let mut interner = ::exec_state::InternMap::new();
-        let i = &mut interner;
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 103, i));
-        cfg.add_node(VirtualAddress(101), node1(101, ctx, 102, i));
-        cfg.add_node(VirtualAddress(102), node2(102, ctx, 103, 101, i));
-        cfg.add_node(VirtualAddress(103), node1(103, ctx, 104, i));
-        cfg.add_node(VirtualAddress(104), node2(104, ctx, 105, 108, i));
-        cfg.add_node(VirtualAddress(105), node1(105, ctx, 106, i));
-        cfg.add_node(VirtualAddress(106), node2(106, ctx, 104, 107, i));
-        cfg.add_node(VirtualAddress(107), node2(107, ctx, 104, 108, i));
-        cfg.add_node(VirtualAddress(108), node0(108, ctx, i));
+        cfg.add_node(VirtualAddress(100), node2(100, 101, 103));
+        cfg.add_node(VirtualAddress(101), node1(101, 102));
+        cfg.add_node(VirtualAddress(102), node2(102, 103, 101));
+        cfg.add_node(VirtualAddress(103), node1(103, 104));
+        cfg.add_node(VirtualAddress(104), node2(104, 105, 108));
+        cfg.add_node(VirtualAddress(105), node1(105, 106));
+        cfg.add_node(VirtualAddress(106), node2(106, 104, 107));
+        cfg.add_node(VirtualAddress(107), node2(107, 104, 108));
+        cfg.add_node(VirtualAddress(108), node0(108));
         let mut cycles = cfg.cycles().into_iter()
             .map(|x| x.into_iter().map(|y| y.address().0).collect::<Vec<_>>())
             .collect::<Vec<_>>();
@@ -811,23 +800,20 @@ mod test {
 
     #[test]
     fn immediate_postdominator() {
-        let ctx = &::operand::OperandContext::new();
-        let mut interner = ::exec_state::InternMap::new();
-        let i = &mut interner;
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 102, i));
-        cfg.add_node(VirtualAddress(101), node1(101, ctx, 104, i));
-        cfg.add_node(VirtualAddress(102), node1(102, ctx, 103, i));
-        cfg.add_node(VirtualAddress(103), node2(103, ctx, 110, 106, i));
-        cfg.add_node(VirtualAddress(104), node1(104, ctx, 107, i));
-        cfg.add_node(VirtualAddress(105), node1(105, ctx, 107, i));
-        cfg.add_node(VirtualAddress(106), node1(106, ctx, 102, i));
-        cfg.add_node(VirtualAddress(107), node2(107, ctx, 108, 109, i));
-        cfg.add_node(VirtualAddress(108), node0(108, ctx, i));
-        cfg.add_node(VirtualAddress(109), node2(109, ctx, 111, 112, i));
-        cfg.add_node(VirtualAddress(110), node2(110, ctx, 104, 105, i));
-        cfg.add_node(VirtualAddress(111), node0(111, ctx, i));
-        cfg.add_node(VirtualAddress(112), node1(112, ctx, 109, i));
+        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
+        cfg.add_node(VirtualAddress(101), node1(101, 104));
+        cfg.add_node(VirtualAddress(102), node1(102, 103));
+        cfg.add_node(VirtualAddress(103), node2(103, 110, 106));
+        cfg.add_node(VirtualAddress(104), node1(104, 107));
+        cfg.add_node(VirtualAddress(105), node1(105, 107));
+        cfg.add_node(VirtualAddress(106), node1(106, 102));
+        cfg.add_node(VirtualAddress(107), node2(107, 108, 109));
+        cfg.add_node(VirtualAddress(108), node0(108));
+        cfg.add_node(VirtualAddress(109), node2(109, 111, 112));
+        cfg.add_node(VirtualAddress(110), node2(110, 104, 105));
+        cfg.add_node(VirtualAddress(111), node0(111));
+        cfg.add_node(VirtualAddress(112), node1(112, 109));
         cfg.calculate_node_indices();
         let node = |i| cfg.nodes().find(|x| x.address.0 == i).unwrap().index;
         assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 104);
@@ -839,12 +825,12 @@ mod test {
         assert_eq!(cfg.immediate_postdominator(node(109)).unwrap().address.0, 111);
 
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 102, i));
-        cfg.add_node(VirtualAddress(101), node1(101, ctx, 103, i));
-        cfg.add_node(VirtualAddress(102), node1(102, ctx, 103, i));
-        cfg.add_node(VirtualAddress(103), node2(103, ctx, 104, 105, i));
-        cfg.add_node(VirtualAddress(104), node1(104, ctx, 105, i));
-        cfg.add_node(VirtualAddress(105), node0(105, ctx, i));
+        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
+        cfg.add_node(VirtualAddress(101), node1(101, 103));
+        cfg.add_node(VirtualAddress(102), node1(102, 103));
+        cfg.add_node(VirtualAddress(103), node2(103, 104, 105));
+        cfg.add_node(VirtualAddress(104), node1(104, 105));
+        cfg.add_node(VirtualAddress(105), node0(105));
         cfg.calculate_node_indices();
         assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(102)).unwrap().address.0, 103);
@@ -852,30 +838,30 @@ mod test {
         assert_eq!(cfg.immediate_postdominator(node(104)).unwrap().address.0, 105);
 
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 102, i));
-        cfg.add_node(VirtualAddress(101), node1(101, ctx, 103, i));
-        cfg.add_node(VirtualAddress(102), node1(102, ctx, 103, i));
-        cfg.add_node(VirtualAddress(103), node2(103, ctx, 104, 101, i));
-        cfg.add_node(VirtualAddress(104), node0(104, ctx, i));
+        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
+        cfg.add_node(VirtualAddress(101), node1(101, 103));
+        cfg.add_node(VirtualAddress(102), node1(102, 103));
+        cfg.add_node(VirtualAddress(103), node2(103, 104, 101));
+        cfg.add_node(VirtualAddress(104), node0(104));
         cfg.calculate_node_indices();
         assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(103)).unwrap().address.0, 104);
 
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 102, i));
-        cfg.add_node(VirtualAddress(101), node1(101, ctx, 100, i));
-        cfg.add_node(VirtualAddress(102), node0(102, ctx, i));
+        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
+        cfg.add_node(VirtualAddress(101), node1(101, 100));
+        cfg.add_node(VirtualAddress(102), node0(102));
         cfg.calculate_node_indices();
         assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 102);
         assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 100);
 
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, ctx, 101, 104, i));
-        cfg.add_node(VirtualAddress(101), node2(101, ctx, 100, 103, i));
-        cfg.add_node(VirtualAddress(102), node1(102, ctx, 101, i));
-        cfg.add_node(VirtualAddress(103), node0(103, ctx, i));
-        cfg.add_node(VirtualAddress(104), node1(104, ctx, 103, i));
+        cfg.add_node(VirtualAddress(100), node2(100, 101, 104));
+        cfg.add_node(VirtualAddress(101), node2(101, 100, 103));
+        cfg.add_node(VirtualAddress(102), node1(102, 101));
+        cfg.add_node(VirtualAddress(103), node0(103));
+        cfg.add_node(VirtualAddress(104), node1(104, 103));
         cfg.calculate_node_indices();
         assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 103);
