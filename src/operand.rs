@@ -1508,6 +1508,14 @@ impl Operand {
         }
     }
 
+    /// Returns `Some(r)` if `self.ty` is `OperandType::Register(r)`
+    pub fn if_register(&self) -> Option<Register> {
+        match self.ty {
+            OperandType::Register(r) => Some(r),
+            _ => None,
+        }
+    }
+
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)`
     pub fn if_memory(&self) -> Option<&MemAccess> {
         match self.ty {
