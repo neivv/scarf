@@ -483,7 +483,7 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
                         update_analysis_for_jump(
                             control.analysis,
                             &mut control.state.0,
-                            &mut control.state.1,
+                            &control.state.1,
                             binary,
                             condition.clone(),
                             to.clone(),

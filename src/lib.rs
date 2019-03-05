@@ -1,9 +1,4 @@
-#![cfg_attr(feature = "cargo-clippy", allow(
-    match_bool, trivially_copy_pass_by_ref, new_without_default, unneeded_field_pattern,
-    redundant_closure, new_without_default_derive, len_without_is_empty, many_single_char_names,
-    collapsible_if, verbose_bit_mask, wrong_self_convention, type_complexity, bool_comparison,
-    assign_op_pattern, question_mark, should_implement_trait,
-))]
+#![allow(clippy::style, clippy::bool_comparison, clippy::needless_lifetimes)]
 
 extern crate byteorder;
 extern crate fxhash;

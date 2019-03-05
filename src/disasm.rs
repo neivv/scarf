@@ -1,5 +1,3 @@
-#![cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
-
 use std::rc::Rc;
 
 use hex_slice::AsHex;
@@ -58,9 +56,9 @@ impl<'a> Disassembler<'a> {
         let length = lde::x86::ld(&self.buf[self.pos..]) as usize;
         if length == 0 {
             if self.pos == self.buf.len() {
-                return Err(Error::End(self.virtual_address + self.pos as u32))
+                return Err(Error::End(self.virtual_address + self.pos as u32));
             } else {
-                return Err(Error::UnknownOpcode(self.buf[self.pos..self.pos + 1].into()));
+                return Err(Error::UnknownOpcode(vec![self.buf[self.pos]]));
             }
         }
         let address = VirtualAddress(self.virtual_address.0 + self.pos as u32);

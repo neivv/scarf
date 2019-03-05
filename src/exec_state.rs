@@ -178,14 +178,14 @@ impl<'a> Clone for ExecutionState<'a> {
                 self.registers[7],
             ],
             xmm_registers: [
-                self.xmm_registers[0].clone(),
-                self.xmm_registers[1].clone(),
-                self.xmm_registers[2].clone(),
-                self.xmm_registers[3].clone(),
-                self.xmm_registers[4].clone(),
-                self.xmm_registers[5].clone(),
-                self.xmm_registers[6].clone(),
-                self.xmm_registers[7].clone(),
+                self.xmm_registers[0],
+                self.xmm_registers[1],
+                self.xmm_registers[2],
+                self.xmm_registers[3],
+                self.xmm_registers[4],
+                self.xmm_registers[5],
+                self.xmm_registers[6],
+                self.xmm_registers[7],
             ],
             flags: self.flags.clone(),
             memory: self.memory.clone(),
@@ -505,7 +505,7 @@ impl fmt::Debug for InternMap {
 pub struct InternedOperand(u32);
 
 impl InternedOperand {
-    pub fn is_undefined(&self) -> bool {
+    pub fn is_undefined(self) -> bool {
         self.0 > 0x8000_0000
     }
 }
