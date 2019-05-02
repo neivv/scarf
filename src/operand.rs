@@ -1494,10 +1494,41 @@ impl Operand {
     }
 
     pub fn substitute(oper: &Rc<Operand>, val: &Rc<Operand>, with: &Rc<Operand>) -> Rc<Operand> {
-        Operand::transform(oper, |old| match old == val {
-            true => Some(with.clone()),
-            false => None,
-        })
+        fn mem_bits(val: MemAccessSize) -> u8 {
+            match val {
+                MemAccessSize::Mem32 => 32,
+                MemAccessSize::Mem16 => 16,
+                MemAccessSize::Mem8 => 8,
+            }
+        }
+        if let Some(mem) = val.if_memory() {
+            // Transform also Mem16[mem.addr] to with & 0xffff if val is Mem32, etc.
+            // I guess recursing inside mem.addr doesn't make sense here,
+            // but didn't give it too much thought.
+            Operand::transform(oper, |old| {
+                old.if_memory()
+                    .filter(|old| old.address == mem.address)
+                    .filter(|old| mem_bits(old.size) <= mem_bits(mem.size))
+                    .map(|old| {
+                        use crate::operand_helpers::*;
+                        if mem.size == old.size {
+                            with.clone()
+                        } else {
+                            let mask = constval(match old.size {
+                                MemAccessSize::Mem32 => 0xffff_ffff,
+                                MemAccessSize::Mem16 => 0xffff,
+                                MemAccessSize::Mem8 => 0xff,
+                            });
+                            Operand::simplified(operand_and(with.clone(), mask))
+                        }
+                    })
+            })
+        } else {
+            Operand::transform(oper, |old| match old == val {
+                true => Some(with.clone()),
+                false => None,
+            })
+        }
     }
 
     /// Returns `Some(c)` if `self.ty` is `OperandType::Constant(c)`
