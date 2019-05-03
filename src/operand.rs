@@ -2285,6 +2285,20 @@ fn simplify_lsh(
                 Operand::new_simplified_rc(ty)
             }
         }
+        (&OperandType::Arithmetic(Xor(_, _)), &OperandType::Constant(_)) => {
+            // Try to simplify any parts of the xor separately
+            let mut ops = vec![];
+            Operand::collect_xor_ops(&left, &mut ops);
+            if ops.len() > 16 {
+                // Give up on dumb long xors
+                default()
+            } else {
+                for op in &mut ops {
+                    *op = simplify_lsh(op, &right, ctx, swzb_ctx);
+                }
+                simplify_xor_ops(&mut ops, ctx)
+            }
+        }
         (&OperandType::Arithmetic(Lsh(ref inner_left, ref inner_right)),
             &OperandType::Constant(lsh_const)) =>
         {
@@ -2397,6 +2411,20 @@ fn simplify_rsh(
             } else {
                 let ty = OperandType::Arithmetic(Rsh(tree, right.clone()));
                 Operand::new_simplified_rc(ty)
+            }
+        }
+        (&OperandType::Arithmetic(Xor(_, _)), &OperandType::Constant(_)) => {
+            // Try to simplify any parts of the xor separately
+            let mut ops = vec![];
+            Operand::collect_xor_ops(&left, &mut ops);
+            if ops.len() > 16 {
+                // Give up on dumb long xors
+                default()
+            } else {
+                for op in &mut ops {
+                    *op = simplify_rsh(op, &right, ctx, swzb_ctx);
+                }
+                simplify_xor_ops(&mut ops, ctx)
             }
         }
         (&OperandType::Arithmetic(Lsh(ref lsh_left, ref lsh_right)),
@@ -2937,16 +2965,20 @@ fn simplify_add_merge_muls(ops: &mut Vec<(Rc<Operand>, bool)>, ctx: &OperandCont
 }
 
 fn simplify_xor(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
-    let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
-
     let mut ops = vec![];
     Operand::collect_xor_ops(left, &mut ops);
     Operand::collect_xor_ops(right, &mut ops);
+    simplify_xor_ops(&mut ops, ctx)
+}
+
+fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Operand> {
+    let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
+
     let const_val = ops.iter().flat_map(|x| x.if_constant())
         .fold(0u32, |sum, x| sum ^ x);
     ops.retain(|x| x.if_constant().is_none());
     ops.sort();
-    simplify_xor_remove_reverting(&mut ops);
+    simplify_xor_remove_reverting(ops);
     if ops.is_empty() {
         return ctx.constant(const_val);
     }
@@ -5036,6 +5068,41 @@ mod test {
         );
         let eq1 = constval(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn shift_xor_parts() {
+        use super::operand_helpers::*;
+        let op1 = operand_rsh(
+            operand_xor(
+                constval(0xffe60000),
+                operand_xor(
+                    operand_lsh(mem16(operand_register(5)), constval(0x10)),
+                    mem32(operand_register(5)),
+                ),
+            ),
+            constval(0x10),
+        );
+        let eq1 = operand_xor(
+            constval(0xffe6),
+            operand_xor(
+                mem16(operand_register(5)),
+                operand_rsh(mem32(operand_register(5)), constval(0x10)),
+            ),
+        );
+        let op2 = operand_lsh(
+            operand_xor(
+                constval(0xffe6),
+                mem16(operand_register(5)),
+            ),
+            constval(0x10),
+        );
+        let eq2 = operand_xor(
+            constval(0xffe60000),
+            operand_lsh(mem16(operand_register(5)), constval(0x10)),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 
     #[test]
