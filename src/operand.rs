@@ -2313,6 +2313,16 @@ fn simplify_lsh(
                 simplify_xor_ops(&mut ops, ctx)
             }
         }
+        (&OperandType::Arithmetic(Mul(_, _)), &OperandType::Constant(c)) => {
+            if c < 0x10 {
+                // Prefer (x * y * 4) over ((x * y) << 2),
+                // especially since usually there's already a constant there.
+                let multiply_constant = 1 << c;
+                simplify_mul(&left, &ctx.constant(multiply_constant), ctx)
+            } else {
+                default()
+            }
+        }
         (&OperandType::Arithmetic(Lsh(ref inner_left, ref inner_right)),
             &OperandType::Constant(lsh_const)) =>
         {
@@ -5139,6 +5149,23 @@ mod test {
         let eq1 = operand_mul(
             base,
             constval(9),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn lsh_mul() {
+        use super::operand_helpers::*;
+        let op1 = operand_lsh(
+            operand_mul(
+                constval(0x9),
+                mem32(operand_register(1)),
+            ),
+            constval(0x2),
+        );
+        let eq1 = operand_mul(
+            mem32(operand_register(1)),
+            constval(0x24),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
