@@ -1028,7 +1028,21 @@ impl Operand {
                 Operand::collect_add_ops(right, ops, !negate);
             }
             _ => {
-                ops.push((Operand::simplified(s.clone()), negate));
+                let mut s = s.clone();
+                if !s.is_simplified() {
+                    // Simplification can cause it to be an add
+                    s = Operand::simplified(s);
+                    match s.ty {
+                        OperandType::Arithmetic(ArithOpType::Add(..)) |
+                            OperandType::Arithmetic(ArithOpType::Sub(..)) =>
+                        {
+                            Operand::collect_add_ops(&s, ops, negate);
+                            return;
+                        }
+                        _ => (),
+                    }
+                }
+                ops.push((s, negate));
             }
         }
     }
@@ -5103,6 +5117,30 @@ mod test {
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn lea_mul_9() {
+        use super::operand_helpers::*;
+        let base = Operand::simplified(operand_add(
+            constval(0xc),
+            operand_and(
+                constval(0xffff_ff7f),
+                mem32(operand_register(1)),
+            ),
+        ));
+        let op1 = operand_add(
+            base.clone(),
+            operand_mul(
+                base.clone(),
+                constval(8),
+            ),
+        );
+        let eq1 = operand_mul(
+            base,
+            constval(9),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
     #[test]
