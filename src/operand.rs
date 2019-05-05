@@ -1833,14 +1833,25 @@ fn simplify_mul_try_mul_constants(
 ) -> Option<Rc<Operand>> {
     use self::operand_helpers::*;
     match op.ty {
-        OperandType::Arithmetic(ArithOpType::Add(ref l, ref r)) |
-            OperandType::Arithmetic(ArithOpType::Sub(ref l, ref r)) =>
-        {
+        OperandType::Arithmetic(ArithOpType::Add(ref l, ref r)) => {
             Operand::either(l, r, |x| x.if_constant())
                 .map(|(c2, other)| {
                     let multiplied = ctx.constant(c2.wrapping_mul(c));
                     operand_add(multiplied, operand_mul(ctx.constant(c), other.clone()))
                 })
+        }
+        OperandType::Arithmetic(ArithOpType::Sub(ref l, ref r)) => {
+            match (&l.ty, &r.ty) {
+                (&OperandType::Constant(c2), _) => {
+                    let multiplied = ctx.constant(c2.wrapping_mul(c));
+                    Some(operand_sub(multiplied, operand_mul(ctx.constant(c), r.clone())))
+                }
+                (_, &OperandType::Constant(c2)) => {
+                    let multiplied = ctx.constant(c2.wrapping_mul(c));
+                    Some(operand_sub(operand_mul(ctx.constant(c), l.clone()), multiplied))
+                }
+                _ => None
+            }
         }
         _ => None,
     }
@@ -5166,6 +5177,30 @@ mod test {
         let eq1 = operand_mul(
             mem32(operand_register(1)),
             constval(0x24),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn lea_mul_negative() {
+        use super::operand_helpers::*;
+        let base = Operand::simplified(operand_sub(
+            mem16(operand_register(3)),
+            constval(1),
+        ));
+        let op1 = operand_add(
+            constval(0x1234),
+            operand_mul(
+                base,
+                constval(0x4),
+            ),
+        );
+        let eq1 = operand_add(
+            constval(0x1230),
+            operand_mul(
+                mem16(operand_register(3)),
+                constval(0x4),
+            ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
