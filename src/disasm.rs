@@ -510,9 +510,18 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let reg = self.ctx.reg_variable_size(Register(reg), self.mem16_32());
         let mut out = SmallVec::new();
         out.push(match is_inc {
-            true => add(reg, self.ctx.const_1()),
-            false => sub(reg, self.ctx.const_1()),
+            true => add(reg.clone(), self.ctx.const_1()),
+            false => sub(reg.clone(), self.ctx.const_1()),
         });
+        result_flags(reg.clone(), reg.clone(), &mut out, self.ctx);
+        let eq_value = match is_inc {
+            true => self.ctx.constant(0x8000_0000),
+            false => self.ctx.const_7fffffff(),
+        };
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Overflow),
+            ArithOpType::Equal(reg, eq_value),
+        ));
         Ok(out)
     }
 

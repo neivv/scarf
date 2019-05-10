@@ -234,6 +234,25 @@ fn jge_jge() {
     ]);
 }
 
+#[test]
+fn inc_dec_flags() {
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x40, // inc eax
+        0x75, 0x01, // jne skip
+        0xcc, // int3
+        0x48, // dec eax
+        0x74, 0x01, // jne skip
+        0xcc, // int3
+        0x48, // dec eax
+        0x73, 0x01, // jnc skip
+        0xcc, // int3
+        0xc3, //ret
+    ], &[
+        (operand_register(0), constval(0xffff_ffff)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
