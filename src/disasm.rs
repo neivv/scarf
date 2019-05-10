@@ -316,8 +316,10 @@ fn instruction_operations(
             0xaf => s.imul_normal(),
             0xb1 => {
                 // Cmpxchg
+                let (rm, _r) = s.parse_modrm(s.mem16_32())?;
                 let mut out = SmallVec::new();
-                out.push(Operation::Special(s.data.into()));
+                out.push(mov(rm, ctx.undefined_rc()));
+                out.push(mov(operand_register(0), ctx.undefined_rc()));
                 Ok(out)
             }
             0xb6 ... 0xb7 => s.movzx(),
