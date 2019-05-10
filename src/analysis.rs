@@ -69,15 +69,15 @@ fn find_functions_from_calls(
 ) {
     out.extend({
         code.iter().enumerate()
-            .filter(|&(_, &x)| x == 0xe8 || x == 0xe9)
+            .filter(|&(_, &x)| x == 0xe8)
             .flat_map(|(idx, _)| {
                 code.get(idx + 1..).and_then(|mut x| x.read_u32::<LittleEndian>().ok())
                     .map(|relative| (idx as u32 + 5).wrapping_add(relative))
+                    .filter(|&target| {
+                        (target as usize) < code.len() - 5
+                    })
+                    .map(|x| section_base + x)
             })
-            .filter(|&target| {
-                (target as usize) < code.len() - 5
-            })
-            .map(|x| section_base + x)
     });
 }
 
