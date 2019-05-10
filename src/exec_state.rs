@@ -20,7 +20,7 @@ struct Constraint(Rc<Operand>);
 
 impl Constraint {
     fn new(o: Rc<Operand>) -> Constraint {
-        Constraint(o)
+        Constraint(Operand::simplified(o))
     }
 
     fn invalidate_dest_operand(&self, dest: &DestOperand) -> Option<Constraint> {

@@ -217,6 +217,23 @@ fn not_is_xor() {
     ]);
 }
 
+#[test]
+fn jge_jge() {
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x39, 0xc8, // cmp eax, ecx
+        0x7d, 0x03, // jge next
+        0x7c, 0x04, // jl ret
+        0xcc, // int3
+        // next:
+        0x7d, 0x01, // jge ret
+        0xcc, // int3
+        0xc3, //ret
+    ], &[
+        (operand_register(0), constval(0)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
