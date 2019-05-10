@@ -696,6 +696,11 @@ impl<'a> ExecutionState<'a> {
         };
     }
 
+    /// Makes all of memory undefined
+    pub fn clear_memory(&mut self) {
+        self.memory = Memory::new();
+    }
+
     /// Equivalent to `self.update(Operation::Move(dest, val, None), i)`
     pub fn move_to(&mut self, dest: DestOperand, val: Rc<Operand>, i: &mut InternMap) {
         self.update(Operation::Move(dest, val, None), i);
