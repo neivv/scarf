@@ -635,7 +635,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         };
         let (rm, r) = self.parse_modrm(op_size)?;
         let mut out = SmallVec::new();
-        out.push(Operation::Swap(dest_operand(&r), dest_operand(&rm)));
+        if rm != r {
+            out.push(Operation::Swap(dest_operand(&r), dest_operand(&rm)));
+        }
         Ok(out)
     }
 
