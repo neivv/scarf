@@ -285,7 +285,7 @@ impl<'exec: 'b, 'b, S: AnalysisState> Control<'exec, 'b, S> {
     }
 
     pub fn try_resolve_const(&mut self, val: &Rc<Operand>) -> Option<u32> {
-        self.state.0.try_resolve_const(val, &mut self.analysis.interner)
+        self.state.0.try_resolve_const(&val, &mut self.analysis.interner)
     }
 
     /// Takes current analysis' state as starting state for a function.
@@ -829,8 +829,6 @@ fn update_analysis_for_jump<'exec, S: AnalysisState>(
             })
     }
 
-    // TODO Move simplify to disasm::next
-    let condition = Operand::simplified(condition);
     state.memory.maybe_convert_immutable();
     match state.try_resolve_const(&condition, &mut analysis.interner) {
         Some(0) => {

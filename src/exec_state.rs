@@ -934,7 +934,11 @@ impl<'a> ExecutionState<'a> {
     }
 
     pub fn try_resolve_const(&self, condition: &Rc<Operand>, i: &mut InternMap) -> Option<u32> {
-        let mut condition = condition.clone();
+        let mut condition = if condition.is_simplified() {
+            condition.clone()
+        } else {
+            Operand::simplified(condition.clone())
+        };
         if let Some(ref constraint) = self.last_jump_extra_constraint {
             constraint.apply_to(&mut condition);
         }
