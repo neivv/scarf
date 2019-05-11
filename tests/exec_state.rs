@@ -253,6 +253,26 @@ fn inc_dec_flags() {
     ]);
 }
 
+#[test]
+fn jo_jno_sometimes_undef() {
+    // jo is guaranteed to not be taken if esi == 0
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x85, 0xf6, // test esi, esi
+        0x74, 0x02, // je skip
+        0x39, 0xf9, // cmp ecx, edi
+        // skip:
+        0x70, 0x06, // jo end
+        0xc0, 0xec, 0x00, // shr ah, 0
+        0x71, 0x01, // jno end
+        0xcc, // int3
+        0x31, 0xc0, // xor eax, eax
+        0xc3, //ret
+    ], &[
+        (operand_register(0), constval(0)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();

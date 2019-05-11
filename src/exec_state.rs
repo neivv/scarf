@@ -979,13 +979,28 @@ impl<'a> ExecutionState<'a> {
 
         match (jump, &condition.ty) {
             (_, &OperandType::Arithmetic(Equal(ref left, ref right))) => {
-                let mut state = self.clone();
-                let (flag, flag_state) = match (&left.ty, &right.ty) {
-                    (&OperandType::Flag(f), &OperandType::Constant(1)) |
-                        (&OperandType::Constant(1), &OperandType::Flag(f)) => (f, jump as u32),
-                    (&OperandType::Flag(f), &OperandType::Constant(0)) |
-                        (&OperandType::Constant(0), &OperandType::Flag(f)) => (f, !jump as u32),
-                    _ => {
+                Operand::either(left, right, |x| x.if_constant().filter(|&c| c == 0))
+                    .and_then(|(_, other)| {
+                        let (other, flag_state) = other.if_arithmetic_eq()
+                            .and_then(|(l, r)| {
+                                Operand::either(l, r, |x| x.if_constant())
+                                    .map(|(c, other)| (other, if c == 0 { jump } else { !jump }))
+                            })
+                            .unwrap_or_else(|| (other, !jump));
+                        match other.ty {
+                            OperandType::Flag(flag) => {
+                                let mut state = self.clone();
+                                let flag_operand = self.ctx.flag(flag);
+                                let constant = self.ctx.constant(flag_state as u32);
+                                state.get_dest(&DestOperand::from_oper(&flag_operand), intern_map)
+                                    .set(constant, intern_map, self.ctx);
+                                Some(state)
+                            }
+                            _ => None,
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        let mut state = self.clone();
                         let cond = match jump {
                             true => condition.clone().into(),
                             false => Operand::simplified(
@@ -993,13 +1008,8 @@ impl<'a> ExecutionState<'a> {
                             ),
                         };
                         state.last_jump_extra_constraint = Some(Constraint::new(cond));
-                        return state;
-                    }
-                };
-                let flag_operand = self.ctx.flag(flag);
-                state.get_dest(&DestOperand::from_oper(&flag_operand), intern_map)
-                    .set(self.ctx.constant(flag_state), intern_map, self.ctx);
-                state
+                        state
+                    })
             }
             (false, &OperandType::Arithmetic(Or(ref left, ref right))) => {
                 let mut state = self.clone();

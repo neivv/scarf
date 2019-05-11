@@ -531,7 +531,7 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
             Entry::Occupied(mut e) => {
                 let interner = &mut self.interner;
                 let val = e.get_mut();
-                if let Some(new) = exec_state::merge_states(&exec_state, &val.0, interner) {
+                if let Some(new) = exec_state::merge_states(&val.0, &exec_state, interner) {
                     val.0 = new;
                     val.1.merge(analysis_state);
                 }
