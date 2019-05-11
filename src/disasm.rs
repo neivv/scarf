@@ -1467,8 +1467,8 @@ arith_op_generator!(TEST_OPS, TestOps, zero_carry_oflow, nop_ops, test_result_fl
 arith_op_generator!(MOV_OPS, MovOps, nop_flags, mov_ops, nop_flags);
 arith_op_generator!(PUSH_OPS, PushOps, nop_flags, push_ops, nop_flags);
 // zero_carry_oflow is wrong but lazy
-arith_op_generator!(ROL_OPS, RolOps, zero_carry_oflow, rol_ops, result_flags);
-arith_op_generator!(ROR_OPS, RorOps, zero_carry_oflow, ror_ops, result_flags);
+arith_op_generator!(ROL_OPS, RolOps, zero_carry_oflow, rol_ops, nop_flags);
+arith_op_generator!(ROR_OPS, RorOps, zero_carry_oflow, ror_ops, nop_flags);
 arith_op_generator!(LSH_OPS, LshOps, zero_carry_oflow, lsh_ops, result_flags);
 arith_op_generator!(RSH_OPS, RshOps, zero_carry_oflow, rsh_ops, result_flags);
 arith_op_generator!(SAR_OPS, SarOps, zero_carry_oflow, sar_ops, result_flags);
@@ -1517,7 +1517,9 @@ pub mod operation_helpers {
     }
 
     pub fn mov_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(mov(dest, rhs));
+        if dest != rhs {
+            out.push(mov(dest, rhs));
+        }
     }
 
     pub fn lea_ops(rhs: Rc<Operand>, dest: Rc<Operand>, out: &mut OperationVec) {
