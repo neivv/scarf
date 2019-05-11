@@ -733,7 +733,7 @@ impl<'a> ExecutionState<'a> {
             }
             DestOperand::PairEdxEax => {
                 let (eax, rest) = self.registers.split_first_mut().unwrap();
-                let (edx, _) = rest.split_first_mut().unwrap();
+                let edx = &mut rest[1];
                 Destination::Pair(edx, eax)
             }
             DestOperand::Xmm(reg, word) => {

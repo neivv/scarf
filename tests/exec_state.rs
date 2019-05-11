@@ -296,6 +296,20 @@ fn call_removes_constraints() {
     ]);
 }
 
+#[test]
+fn div_mod() {
+    test_inline(&[
+        0x33, 0xd2, // xor edx, edx
+        0xb9, 0x07, 0x00, 0x00, 0x00, // mov ecx, 7
+        0xf7, 0xf1, // div ecx
+        0xc3, //ret
+    ], &[
+        (operand_register(1), constval(7)),
+        (operand_register(2), operand_mod(operand_register(0), constval(7))),
+        (operand_register(0), operand_div(operand_register(0), constval(7))),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
@@ -323,9 +337,17 @@ fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, 
     for i in 0..8 {
         let expected = expected_state.resolve(&operand_register(i), &mut interner);
         let end = end_state.resolve(&operand_register(i), &mut end_i);
-        match (&expected.ty, &end.ty) {
-            (&OperandType::Undefined(_), &OperandType::Undefined(_)) => (),
-            _ => assert_eq!(expected, end, "Register {}: {:#?}", i, end),
+        if end.iter().any(|x| match x.ty {
+            OperandType::Undefined(_) => true,
+            _ => false,
+        }) {
+            let expected_is_ud = match expected.ty {
+                OperandType::Undefined(_) => true,
+                _ => false,
+            };
+            assert!(expected_is_ud);
+        } else {
+            assert_eq!(expected, end, "Register {}: got {} expected {}", i, end, expected);
         }
     }
 }

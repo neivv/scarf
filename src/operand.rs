@@ -1448,7 +1448,40 @@ impl Operand {
                 }
                 ArithOpType::Lsh(ref left, ref right) => simplify_lsh(left, right, ctx, swzb_ctx),
                 ArithOpType::Rsh(ref left, ref right) => simplify_rsh(left, right, ctx, swzb_ctx),
-                _ => mark_self_simplified(s),
+                ArithOpType::Div(ref left, ref right) |
+                    ArithOpType::Modulo(ref left, ref right) =>
+                {
+                    let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                    let left = match left.ty {
+                        OperandType::Pair(ref high, ref low) => {
+                            match high.if_constant() == Some(0) {
+                                true => low.clone(),
+                                false => left.clone(),
+                            }
+                        }
+                        _ => left.clone(),
+                    };
+
+                    let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                    let ty = match arith {
+                        ArithOpType::Div(..) => ArithOpType::Div(left, right),
+                        ArithOpType::Modulo(..) => ArithOpType::Modulo(left, right),
+                        _ => unreachable!(),
+                    };
+                    Operand::new_simplified_rc(OperandType::Arithmetic(ty))
+                }
+                ArithOpType::Parity(ref val) => {
+                    let val = Operand::simplified_with_ctx(val.clone(), ctx, swzb_ctx);
+                    if let Some(c) = val.if_constant() {
+                        return match (c as u8).count_ones() & 1 == 0 {
+                            true => ctx.const_1(),
+                            false => ctx.const_0(),
+                        }
+                    } else {
+                        let ty = OperandType::Arithmetic(ArithOpType::Parity(val));
+                        Operand::new_simplified_rc(ty)
+                    }
+                }
             },
             OperandType::Memory(ref mem) => {
                 Operand::new_simplified_rc(OperandType::Memory(MemAccess {
@@ -3239,7 +3272,7 @@ pub mod operand_helpers {
 
     pub fn pair_edx_eax() -> Rc<Operand> {
         Operand::new_simplified_rc(OperandType::Pair(
-            Operand::new_simplified_rc(OperandType::Register(Register(1))),
+            Operand::new_simplified_rc(OperandType::Register(Register(2))),
             Operand::new_simplified_rc(OperandType::Register(Register(0))),
         ))
     }

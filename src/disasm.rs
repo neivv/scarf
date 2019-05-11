@@ -1844,7 +1844,7 @@ fn dest_operand(val: &Operand) -> DestOperand {
         Register8High(x) => DestOperand::Register8High(x),
         Register8Low(x) => DestOperand::Register8Low(x),
         Pair(ref hi, ref low) => {
-            assert_eq!(hi.ty, Register(::operand::Register(1)));
+            assert_eq!(hi.ty, Register(::operand::Register(2)));
             assert_eq!(low.ty, Register(::operand::Register(0)));
             DestOperand::PairEdxEax
         }
@@ -1864,7 +1864,7 @@ impl From<DestOperand> for Operand {
             DestOperand::Register16(x) => Register16(x),
             DestOperand::Register8High(x) => Register8High(x),
             DestOperand::Register8Low(x) => Register8Low(x),
-            DestOperand::PairEdxEax => Pair(operand_register(1), operand_register(0)),
+            DestOperand::PairEdxEax => Pair(operand_register(2), operand_register(0)),
             DestOperand::Xmm(x, y) => Xmm(x, y),
             DestOperand::Flag(x) => Flag(x),
             DestOperand::Memory(x) => Memory(x),
