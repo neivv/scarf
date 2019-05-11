@@ -104,7 +104,6 @@ pub fn find_switch_tables(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<F
     out
 }
 
-
 fn find_funcptrs(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
     let mut out = Vec::with_capacity(4096);
     let code = file.code_section();
@@ -141,6 +140,14 @@ fn collect_relocs_pointing_to_code(
         .filter(|&(_src_addr, func_addr)| {
             let code_size = code.data.len() as u32;
             func_addr >= code.virtual_address && func_addr < code.virtual_address + code_size
+        })
+        .filter(|&(_src_addr, func_addr)| {
+            // Skip relocs pointing to other relocs, as they are either switch table
+            // or vtable refs in code, which aren't executable code.
+            // Ideally find_funcptrs could also detect switch cases and not check them,
+            // but not sure how to discern that from vtables/fnptr arrays.
+            let is_switch_jump = relocs.binary_search(&func_addr).is_ok();
+            !is_switch_jump
         })
         .map(|(src_addr, func_addr)| FuncPtrPair {
             address: src_addr,
