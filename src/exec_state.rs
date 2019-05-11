@@ -674,6 +674,7 @@ impl<'a> ExecutionState<'a> {
             }
             Operation::Call(_) => {
                 let mut ids = intern_map.many_undef(self.ctx, 9);
+                self.last_jump_extra_constraint = None;
                 self.registers[0] = ids.next();
                 self.registers[1] = ids.next();
                 self.registers[2] = ids.next();

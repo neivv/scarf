@@ -13,6 +13,7 @@ use scarf::{
 };
 use scarf::analysis;
 use scarf::operand_helpers::*;
+use scarf::operand::OperandType;
 
 #[test]
 fn movzx() {
@@ -273,6 +274,28 @@ fn jo_jno_sometimes_undef() {
     ]);
 }
 
+#[test]
+fn call_removes_constraints() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0x31, 0xdb, // xor ebx, ebx
+        0x85, 0xf6, // test esi, esi
+        0x7d, 0x08, // jge end
+        0xe8, 0x00, 0x00, 0x00, 0x00, // call x
+        0x7c, 0x01, // jl end
+        0x43, // inc ebx
+        // end
+        0xeb, 0x00, // jmp ret
+        0xc3, //ret
+    ], &[
+        (operand_register(0), ctx.undefined_rc()),
+        (operand_register(1), ctx.undefined_rc()),
+        (operand_register(2), ctx.undefined_rc()),
+        (operand_register(3), ctx.undefined_rc()),
+        (operand_register(4), ctx.undefined_rc()),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
@@ -300,7 +323,10 @@ fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, 
     for i in 0..8 {
         let expected = expected_state.resolve(&operand_register(i), &mut interner);
         let end = end_state.resolve(&operand_register(i), &mut end_i);
-        assert_eq!(expected, end, "Register {}: {:#?}", i, end);
+        match (&expected.ty, &end.ty) {
+            (&OperandType::Undefined(_), &OperandType::Undefined(_)) => (),
+            _ => assert_eq!(expected, end, "Register {}: {:#?}", i, end),
+        }
     }
 }
 
