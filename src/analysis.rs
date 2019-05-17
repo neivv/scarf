@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use quick_error::quick_error;
 
-use cfg::{CfgOutEdges, NodeLink, OutEdgeCondition};
-use disasm::{self, DestOperand, Instruction, Operation};
-use exec_state::{self, ExecutionState};
-use operand::{Operand, OperandContext};
-use ::{BinaryFile, BinarySection, VirtualAddress};
+use crate::cfg::{CfgOutEdges, NodeLink, OutEdgeCondition};
+use crate::disasm::{self, DestOperand, Instruction, Operation};
+use crate::exec_state::{self, ExecutionState};
+use crate::operand::{Operand, OperandContext};
+use crate::{BinaryFile, BinarySection, VirtualAddress};
 
 quick_error! {
     #[derive(Debug)]
@@ -160,12 +161,12 @@ macro_rules! try_get {
     ($slice:expr, $range:expr) => {
         match $slice.get($range) {
             Some(s) => s,
-            None => return Err(::Error::OutOfBounds),
+            None => return Err(crate::Error::OutOfBounds),
         }
     }
 }
 
-pub fn find_relocs(file: &BinaryFile) -> Result<Vec<VirtualAddress>, ::Error> {
+pub fn find_relocs(file: &BinaryFile) -> Result<Vec<VirtualAddress>, crate::Error> {
     let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
     let reloc_offset = file.read_u32(pe_header + 0xa0)?;
     let reloc_len = file.read_u32(pe_header + 0xa4)?;
@@ -202,7 +203,7 @@ pub struct RelocValues {
 pub fn relocs_with_values(
     file: &BinaryFile,
     mut relocs: &[VirtualAddress],
-) -> Result<Vec<RelocValues>, ::Error> {
+) -> Result<Vec<RelocValues>, crate::Error> {
     let mut result = Vec::with_capacity(relocs.len());
     'outer: while !relocs.is_empty() {
         let (section, reloc_count, start_address) = {
@@ -601,8 +602,8 @@ fn initial_exec_state<'e>(
     binary: &'e BinaryFile,
     interner: &mut exec_state::InternMap,
 ) -> ExecutionState<'e> {
-    use operand::MemAccessSize;
-    use operand::operand_helpers::*;
+    use crate::operand::MemAccessSize;
+    use crate::operand::operand_helpers::*;
     let mut state = ExecutionState::with_binary(binary, operand_ctx, interner);
 
     // Set the return address to somewhere in 0x400000 range

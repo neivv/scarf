@@ -7,8 +7,8 @@ use std::rc::Rc;
 use byteorder::{ReadBytesExt, LE};
 use fxhash::FxBuildHasher;
 
-use disasm::{DestOperand, Operation};
-use operand::{
+use crate::disasm::{DestOperand, Operation};
+use crate::operand::{
     self, ArithOpType, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType,
     OperandDummyHasher,
 };
@@ -92,7 +92,7 @@ fn apply_constraint_split(
     val: &Rc<Operand>,
     with: bool,
 ) -> Rc<Operand>{
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     match constraint.ty {
         OperandType::Arithmetic(ArithOpType::And(ref l, ref r)) => {
             let new = apply_constraint_split(l, val, with);
@@ -368,7 +368,7 @@ impl<'a> Iterator for MemoryIter<'a> {
 
 impl<'a> Destination<'a> {
     fn set(self, value: Rc<Operand>, intern_map: &mut InternMap, ctx: &OperandContext) {
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         match self {
             Destination::Oper(o) => {
                 *o = intern_map.intern(Operand::simplified(value));
@@ -639,6 +639,7 @@ impl<'a> ExecutionState<'a> {
     }
 
     pub fn update(&mut self, operation: Operation, intern_map: &mut InternMap) {
+        let ctx = self.ctx;
         match operation {
             Operation::Move(dest, value, cond) => {
                 // TODO: disassembly module should give the simplified values always
@@ -650,17 +651,17 @@ impl<'a> ExecutionState<'a> {
                         Some(_) => {
                             let resolved = self.resolve(&value, intern_map);
                             let dest = self.get_dest_invalidate_constraints(&dest, intern_map);
-                            dest.set(resolved, intern_map, self.ctx);
+                            dest.set(resolved, intern_map, ctx);
                         }
                         None => {
                             self.get_dest_invalidate_constraints(&dest, intern_map)
-                                .set(self.ctx.undefined_rc(), intern_map, self.ctx)
+                                .set(ctx.undefined_rc(), intern_map, ctx)
                         }
                     }
                 } else {
                     let resolved = self.resolve(&value, intern_map);
                     let dest = self.get_dest_invalidate_constraints(&dest, intern_map);
-                    dest.set(resolved, intern_map, self.ctx);
+                    dest.set(resolved, intern_map, ctx);
                 }
             }
             Operation::Swap(left, right) => {
@@ -668,12 +669,12 @@ impl<'a> ExecutionState<'a> {
                 let left_res = self.resolve(&Rc::new(left.clone().into()), intern_map);
                 let right_res = self.resolve(&Rc::new(right.clone().into()), intern_map);
                 self.get_dest_invalidate_constraints(&left, intern_map)
-                    .set(right_res, intern_map, self.ctx);
+                    .set(right_res, intern_map, ctx);
                 self.get_dest_invalidate_constraints(&right, intern_map)
-                    .set(left_res, intern_map, self.ctx);
+                    .set(left_res, intern_map, ctx);
             }
             Operation::Call(_) => {
-                let mut ids = intern_map.many_undef(self.ctx, 9);
+                let mut ids = intern_map.many_undef(ctx, 9);
                 self.last_jump_extra_constraint = None;
                 self.registers[0] = ids.next();
                 self.registers[1] = ids.next();
@@ -685,7 +686,7 @@ impl<'a> ExecutionState<'a> {
                     overflow: ids.next(),
                     sign: ids.next(),
                     parity: ids.next(),
-                    direction: intern_map.intern(self.ctx.const_0()),
+                    direction: intern_map.intern(ctx.const_0()),
                 };
             }
             Operation::Jump { .. } => {
@@ -707,11 +708,11 @@ impl<'a> ExecutionState<'a> {
         self.update(Operation::Move(dest, val, None), i);
     }
 
-    fn get_dest_invalidate_constraints(
-        &mut self,
+    fn get_dest_invalidate_constraints<'s>(
+        &'s mut self,
         dest: &DestOperand,
         interner: &mut InternMap,
-    ) -> Destination {
+    ) -> Destination<'s> {
         self.last_jump_extra_constraint = match self.last_jump_extra_constraint {
             Some(ref s) => s.invalidate_dest_operand(dest),
             None => None,
@@ -755,7 +756,7 @@ impl<'a> ExecutionState<'a> {
     }
 
     fn resolve_arith(&self, op: &ArithOpType, i: &mut InternMap) -> ArithOpType {
-        use operand::ArithOpType::*;
+        use crate::operand::ArithOpType::*;
         match *op {
             Add(ref l, ref r) => {
                 Add(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
@@ -804,7 +805,7 @@ impl<'a> ExecutionState<'a> {
     }
 
     fn resolve_mem(&self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
 
         let address = self.resolve(&mem.address, i);
         let size_bytes = match mem.size {
@@ -872,7 +873,7 @@ impl<'a> ExecutionState<'a> {
     }
 
     fn resolve_no_simplify(&self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
 
         match value.ty {
             OperandType::Register(reg) => interner.operand(self.registers[reg.0 as usize]),
@@ -975,8 +976,8 @@ impl<'a> ExecutionState<'a> {
         jump: bool,
         intern_map: &mut InternMap,
     ) -> ExecutionState<'a> {
-        use operand::ArithOpType::*;
-        use operand::operand_helpers::*;
+        use crate::operand::ArithOpType::*;
+        use crate::operand::operand_helpers::*;
 
         match (jump, &condition.ty) {
             (_, &OperandType::Arithmetic(Equal(ref left, ref right))) => {
@@ -1060,7 +1061,7 @@ pub fn merge_states<'a: 'r, 'r>(
     new: &'r ExecutionState<'a>,
     interner: &mut InternMap,
 ) -> Option<ExecutionState<'a>> {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
 
     let check_eq = |a: InternedOperand, b: InternedOperand| {
         a == b || a.is_undefined()
@@ -1288,9 +1289,9 @@ fn contains_undefined(oper: &Operand) -> bool {
 
 #[test]
 fn merge_state_constraints_eq() {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     let mut i = InternMap::new();
-    let ctx = ::operand::OperandContext::new();
+    let ctx = crate::operand::OperandContext::new();
     let state_a = ExecutionState::new(&ctx, &mut i);
     let mut state_b = ExecutionState::new(&ctx, &mut i);
     let sign_eq_overflow_flag = Operand::simplified(operand_eq(
@@ -1307,9 +1308,9 @@ fn merge_state_constraints_eq() {
 
 #[test]
 fn merge_state_constraints_or() {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     let mut i = InternMap::new();
-    let ctx = ::operand::OperandContext::new();
+    let ctx = crate::operand::OperandContext::new();
     let state_a = ExecutionState::new(&ctx, &mut i);
     let mut state_b = ExecutionState::new(&ctx, &mut i);
     let sign_or_overflow_flag = Operand::simplified(operand_or(
@@ -1335,8 +1336,8 @@ fn merge_state_constraints_or() {
 
 #[test]
 fn apply_constraint() {
-    use operand::operand_helpers::*;
-    let ctx = ::operand::OperandContext::new();
+    use crate::operand::operand_helpers::*;
+    let ctx = crate::operand::OperandContext::new();
     let constraint = Constraint(operand_eq(
         constval(0),
         operand_eq(

@@ -1,11 +1,12 @@
 use std::rc::Rc;
 
 use hex_slice::AsHex;
-use lde::{self, InsnSet};
+use lde::{InsnSet};
+use quick_error::quick_error;
 use smallvec::SmallVec;
 
-use ::{VirtualAddress};
-use operand::{
+use crate::{VirtualAddress};
+use crate::operand::{
     ArithOpType, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType, Register
 };
 
@@ -135,7 +136,7 @@ fn instruction_operations(
 ) -> Result<SmallVec<[Operation; 8]>, Error> {
     use self::Error::*;
     use self::operation_helpers::*;
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
 
     let is_prefix_byte = |byte| match byte {
         0x64 => true, // TODO fs segment is not handled
@@ -337,7 +338,7 @@ fn instruction_operations(
 }
 
 fn xmm_variant(op: &Rc<Operand>, i: u8) -> Rc<Operand> {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     assert!(i < 4);
     match op.ty {
         OperandType::Register(Register(r)) | OperandType::Xmm(r, _) => operand_xmm(r, i),
@@ -395,7 +396,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         op_size: MemAccessSize
     ) -> Result<(Rc<Operand>, Rc<Operand>, usize), Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
 
         let modrm = self.get(1);
         let register = (modrm >> 3) & 0x7;
@@ -458,7 +459,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         op_size: MemAccessSize
     ) -> Result<(Rc<Operand>, usize), Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let sib = self.get(2);
         let mul = 1 << ((sib >> 6) & 0x3);
         let (base_reg, size) = match (sib & 0x7, variation) {
@@ -492,7 +493,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn push_imm(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let imm_size = match self.get(0) {
             0x68 => self.mem16_32(),
             _ => MemAccessSize::Mem8,
@@ -529,7 +530,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn pushpop_reg_op(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let byte = self.get(0);
         let is_push = byte < 0x58;
         let reg = byte & 0x7;
@@ -554,7 +555,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn condition(&self) -> Rc<Operand> {
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let ctx = self.ctx;
         match self.get(0) & 0xf {
             // jo, jno
@@ -645,7 +646,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn move_mem_eax(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
@@ -737,7 +738,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         op_size: MemAccessSize,
     ) {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let keep_mask = match op_size {
             MemAccessSize::Mem8 => and(r.clone(), self.ctx.const_ff()),
             MemAccessSize::Mem16 => and(r.clone(), self.ctx.const_ffff()),
@@ -762,7 +763,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn movsx(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => MemAccessSize::Mem16,
@@ -825,7 +826,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn movzx(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
 
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
@@ -868,7 +869,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn various_f7(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
@@ -984,7 +985,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn packed_shift_left(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         if !self.has_prefix(0x66) {
             return Err(Error::UnknownOpcode(self.data.into()));
         }
@@ -1042,7 +1043,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn packed_shift_right(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         if !self.has_prefix(0x66) {
             return Err(Error::UnknownOpcode(self.data.into()));
         }
@@ -1100,7 +1101,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn various_d9(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let variant = (self.get(1) >> 3) & 0x7;
         match variant {
             // Fst/Fstp, as long as rm is mem
@@ -1221,7 +1222,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn signed_multiply_rm_imm(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let imm_size = match self.get(0) & 0x2 {
             2 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
@@ -1235,7 +1236,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn shld_imm(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let (hi, low, imm) = self.parse_modrm_imm(self.mem16_32(), MemAccessSize::Mem8)?;
         let mut out = SmallVec::new();
         let imm = Operand::simplified(operand_and(imm, self.ctx.const_1f()));
@@ -1265,7 +1266,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn shrd_imm(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         let (low, hi, imm) = self.parse_modrm_imm(self.mem16_32(), MemAccessSize::Mem8)?;
         let mut out = SmallVec::new();
         let imm = Operand::simplified(operand_and(imm, self.ctx.const_1f()));
@@ -1412,7 +1413,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
 /// Checks if r is a register, and rm is the equivalent short register
 fn is_rm_short_r_register(rm: &Rc<Operand>, r: &Rc<Operand>) -> bool {
-    use operand::OperandType::*;
+    use crate::operand::OperandType::*;
     match (&rm.ty, &r.ty) {
         (&Register8Low(s), &Register(l)) | (&Register8Low(s), &Register16(l)) => l == s,
         (&Register16(s), &Register(l)) => l == s,
@@ -1421,9 +1422,9 @@ fn is_rm_short_r_register(rm: &Rc<Operand>, r: &Rc<Operand>) -> bool {
 }
 
 trait ArithOperationGenerator {
-    fn operation(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec);
-    fn pre_flags(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext);
-    fn post_flags(&self, Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext);
+    fn operation(&self, _: Rc<Operand>, _: Rc<Operand>, _: &mut OperationVec);
+    fn pre_flags(&self, _: Rc<Operand>, _: Rc<Operand>, _: &mut OperationVec, _: &OperandContext);
+    fn post_flags(&self, _: Rc<Operand>, _: Rc<Operand>, _: &mut OperationVec, _: &OperandContext);
 }
 
 macro_rules! arith_op_generator {
@@ -1478,10 +1479,10 @@ pub mod operation_helpers {
 
     use byteorder::{LittleEndian, ReadBytesExt};
 
-    use operand::ArithOpType::*;
-    use operand::MemAccessSize::*;
-    use operand::{Flag, MemAccessSize, Operand, OperandType, OperandContext};
-    use operand::operand_helpers::*;
+    use crate::operand::ArithOpType::*;
+    use crate::operand::MemAccessSize::*;
+    use crate::operand::{Flag, MemAccessSize, Operand, OperandType, OperandContext};
+    use crate::operand::operand_helpers::*;
     use super::{dest_operand, make_arith_operation, DestOperand, Error, Operation, OperationVec};
 
     pub fn read_u32(mut val: &[u8]) -> Result<u32, Error> {
@@ -1837,15 +1838,15 @@ impl DestOperand {
 }
 
 fn dest_operand(val: &Operand) -> DestOperand {
-    use operand::OperandType::*;
+    use crate::operand::OperandType::*;
     match val.ty {
         Register(x) => DestOperand::Register(x),
         Register16(x) => DestOperand::Register16(x),
         Register8High(x) => DestOperand::Register8High(x),
         Register8Low(x) => DestOperand::Register8Low(x),
         Pair(ref hi, ref low) => {
-            assert_eq!(hi.ty, Register(::operand::Register(2)));
-            assert_eq!(low.ty, Register(::operand::Register(0)));
+            assert_eq!(hi.ty, Register(crate::operand::Register(2)));
+            assert_eq!(low.ty, Register(crate::operand::Register(0)));
             DestOperand::PairEdxEax
         }
         Xmm(x, y) => DestOperand::Xmm(x, y),
@@ -1857,8 +1858,8 @@ fn dest_operand(val: &Operand) -> DestOperand {
 
 impl From<DestOperand> for Operand {
     fn from(val: DestOperand) -> Operand {
-        use operand::operand_helpers::*;
-        use operand::OperandType::*;
+        use crate::operand::operand_helpers::*;
+        use crate::operand::OperandType::*;
         let ty = match val {
             DestOperand::Register(x) => Register(x),
             DestOperand::Register16(x) => Register16(x),
@@ -1878,8 +1879,8 @@ mod test {
     use super::*;
     #[test]
     fn test_operations_mov16() {
-        use operand::operand_helpers::*;
-        use operand::OperandContext;
+        use crate::operand::operand_helpers::*;
+        use crate::operand::OperandContext;
 
         let ctx = OperandContext::new();
         let buf = [0x66, 0xc7, 0x47, 0x62, 0x00, 0x20];
@@ -1897,8 +1898,8 @@ mod test {
 
     #[test]
     fn test_sib() {
-        use operand::operand_helpers::*;
-        use operand::OperandContext;
+        use crate::operand::operand_helpers::*;
+        use crate::operand::OperandContext;
 
         let ctx = OperandContext::new();
         let buf = [0x89, 0x84, 0xb5, 0x18, 0xeb, 0xff, 0xff];

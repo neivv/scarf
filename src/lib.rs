@@ -1,13 +1,7 @@
 #![allow(clippy::style, clippy::bool_comparison, clippy::needless_lifetimes)]
 
-extern crate byteorder;
-extern crate fxhash;
-extern crate hex_slice;
-extern crate lde;
 #[macro_use] extern crate log;
-#[macro_use] extern crate quick_error;
 extern crate serde;
-#[macro_use] extern crate serde_derive;
 extern crate smallvec;
 
 pub mod analysis;
@@ -19,10 +13,10 @@ pub mod exec_state;
 pub mod operand;
 mod vec_drop_iter;
 
-pub use analysis::{Analyzer};
-pub use disasm::{DestOperand, Operation, operation_helpers};
-pub use exec_state::{ExecutionState};
-pub use operand::{MemAccessSize, Operand, OperandType, OperandContext, operand_helpers};
+pub use crate::analysis::{Analyzer};
+pub use crate::disasm::{DestOperand, Operation, operation_helpers};
+pub use crate::exec_state::{ExecutionState};
+pub use crate::operand::{MemAccessSize, Operand, OperandType, OperandContext, operand_helpers};
 
 use std::ffi::{OsString, OsStr};
 use std::fs::File;
@@ -31,6 +25,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use quick_error::quick_error;
+use serde_derive::{Serialize, Deserialize};
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Rva(pub u32);
@@ -192,7 +188,7 @@ pub fn raw_bin(base: VirtualAddress, sections: Vec<BinarySection>) -> BinaryFile
 }
 
 pub fn parse(filename: &OsStr) -> Result<BinaryFile, Error> {
-    use Error::*;
+    use crate::Error::*;
     let mut file = BufReader::new(File::open(filename)?);
     if file.read_u16::<LittleEndian>()? != 0x5a4d {
         return Err(InvalidPeFile("Missing DOS magic".into()));
@@ -296,7 +292,7 @@ pub fn load_section_dumps(
 
 impl SectionDumps {
     pub fn resolve_mem_accesses(&self, val: &Rc<Operand>) -> (Rc<Operand>, Vec<VirtualAddress>) {
-        use operand::ArithOpType::*;
+        use crate::operand::ArithOpType::*;
         let mut addresses = vec![];
         let val = match val.ty {
             OperandType::Memory(ref mem) => {

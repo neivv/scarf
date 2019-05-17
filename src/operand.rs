@@ -6,11 +6,11 @@ use std::mem;
 use std::ops::Range;
 use std::rc::Rc;
 
-use fxhash;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize as DeserializeTrait, Deserializer};
+use serde_derive::{Deserialize, Serialize};
 
-use bit_misc::{bits_overlap, one_bit_ranges, zero_bit_ranges};
-use vec_drop_iter::VecDropIter;
+use crate::bit_misc::{bits_overlap, one_bit_ranges, zero_bit_ranges};
+use crate::vec_drop_iter::VecDropIter;
 
 #[derive(Debug, Clone, Eq, Serialize)]
 pub struct Operand {
@@ -25,7 +25,7 @@ pub struct Operand {
     relevant_bits: Range<u8>,
 }
 
-impl<'de> Deserialize<'de> for Operand {
+impl<'de> DeserializeTrait<'de> for Operand {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Operand, D::Error> {
         use serde::de::{self, MapAccess, SeqAccess, Visitor};
 
@@ -33,7 +33,7 @@ impl<'de> Deserialize<'de> for Operand {
         enum Field {
             Ty,
         }
-        impl<'de> Deserialize<'de> for Field {
+        impl<'de> DeserializeTrait<'de> for Field {
             fn deserialize<D>(deserializer: D) -> Result<Field, D::Error>
                 where D: Deserializer<'de>
             {
@@ -1326,7 +1326,7 @@ impl Operand {
     }
 
     pub fn const_offset(oper: &Rc<Operand>, ctx: &OperandContext) -> Option<(Rc<Operand>, u32)> {
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
 
         fn recurse(oper: &Rc<Operand>) -> Option<u32> {
             // ehhh

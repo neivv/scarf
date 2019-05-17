@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use hex_slice::AsHex;
 
-use cfg::{Cfg, CfgOutEdges, NodeLink};
-use operand::{ArithOpType, Operand, OperandType};
-use ::VirtualAddress;
+use crate::cfg::{Cfg, CfgOutEdges, NodeLink};
+use crate::operand::{ArithOpType, Operand, OperandType};
+use crate::VirtualAddress;
 
 pub fn write<W: Write, S>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(), io::Error> {
     writeln!(out, "digraph func {{")?;
@@ -118,7 +118,7 @@ enum Comparision {
 fn comparision_from_operand(
     oper: &Rc<Operand>
 ) -> Option<(Comparision, Rc<Operand>, Rc<Operand>)> {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     match oper.ty {
         OperandType::Arithmetic(ref arith) => match *arith {
             ArithOpType::Equal(ref l, ref r) => {
@@ -246,7 +246,7 @@ fn zero_flag_check(
     l: &Rc<Operand>,
     r: &Rc<Operand>
 ) -> Option<CompareOperands> {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     if comp == Comparision::Equal {
         let mut ops = Vec::new();
         collect_add_ops(l, &mut ops, false);
@@ -374,7 +374,7 @@ enum CompareOperands {
 
 impl CompareOperands {
     fn decide(self) -> (Rc<Operand>, Rc<Operand>) {
-        use operand::operand_helpers::*;
+        use crate::operand::operand_helpers::*;
         match self {
             CompareOperands::Certain(l, r) => (l, r),
             CompareOperands::Uncertain(mut opers) |
@@ -431,7 +431,7 @@ impl CompareOperands {
 }
 
 fn add_operands_to_tree(mut opers: Vec<(Rc<Operand>, bool)>) -> Rc<Operand> {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     let mut tree = opers.pop().map(|(op, neg)| match neg {
         true => operand_sub(constval(0), op),
         false => op,
@@ -446,7 +446,7 @@ fn add_operands_to_tree(mut opers: Vec<(Rc<Operand>, bool)>) -> Rc<Operand> {
 }
 
 fn compare_base_op(op: &Rc<Operand>) -> CompareOperands {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     match op.ty {
         OperandType::Arithmetic(ArithOpType::Add(ref l, ref r)) |
             OperandType::Arithmetic(ArithOpType::Sub(ref l, ref r)) =>
@@ -510,7 +510,7 @@ fn pretty_print_condition(cond: &Rc<Operand>) -> String {
 
 #[test]
 fn recognize_compare_operands() {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     let op = Operand::simplified(operand_eq(
         constval(0),
         operand_eq(
@@ -595,7 +595,7 @@ fn recognize_compare_operands() {
 
 #[test]
 fn recognize_compare_operands_unsigned() {
-    use operand::operand_helpers::*;
+    use crate::operand::operand_helpers::*;
     let op = Operand::simplified(operand_or(
         operand_eq(
             constval(0),

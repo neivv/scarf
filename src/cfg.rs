@@ -3,11 +3,11 @@ use std::marker::PhantomData;
 use std::mem;
 use std::rc::Rc;
 
-use analysis::FuncAnalysis;
-use disasm::Operation;
-use exec_state::{ExecutionState, InternMap};
-use operand::{Operand, OperandContext};
-use ::{BinaryFile, VirtualAddress};
+use crate::analysis::FuncAnalysis;
+use crate::disasm::Operation;
+use crate::exec_state::{ExecutionState, InternMap};
+use crate::operand::{Operand, OperandContext};
+use crate::{BinaryFile, VirtualAddress};
 
 #[derive(Debug, Clone)]
 pub struct Cfg<State> {
@@ -723,7 +723,7 @@ impl NodeLink {
 #[cfg(test)]
 mod test {
     use super::*;
-    use VirtualAddress;
+    use crate::VirtualAddress;
 
     fn node0(addr: u32) -> CfgNode<()> {
         CfgNode {
@@ -749,7 +749,7 @@ mod test {
                 NodeLink::new(VirtualAddress(out)),
                 OutEdgeCondition {
                     node: NodeLink::new(VirtualAddress(out2)),
-                    condition: ::operand_helpers::operand_register(0),
+                    condition: crate::operand_helpers::operand_register(0),
                 },
             ),
             state: (),
