@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
 use hex_slice::AsHex;
-use lde::{InsnSet};
 use quick_error::quick_error;
 use smallvec::SmallVec;
 
@@ -54,7 +53,7 @@ impl<'a> Disassembler<'a> {
         if let Some(finishing_instruction_pos) = self.finishing_instruction_pos {
             return Err(Error::Branch(self.virtual_address + finishing_instruction_pos as u32));
         }
-        let length = lde::x86::ld(&self.buf[self.pos..]) as usize;
+        let length = lde::X86.ld(&self.buf[self.pos..]) as usize;
         if length == 0 {
             if self.pos == self.buf.len() {
                 return Err(Error::End(self.virtual_address + self.pos as u32));
