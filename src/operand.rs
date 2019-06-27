@@ -669,7 +669,7 @@ impl OperandContext {
 
     pub fn constant(&self, value: u32) -> Rc<Operand> {
         match value {
-            0...0x40 => {
+            0..=0x40 => {
                 self.globals.constants.small_consts[value as usize].clone()
             }
             0xff => self.const_ff(),

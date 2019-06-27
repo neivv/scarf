@@ -181,8 +181,8 @@ fn instruction_operations(
     let first_byte = data[0];
     if !is_ext {
         match first_byte {
-            0x00 ... 0x05 | 0x08 ... 0x0b | 0x0c ... 0x0d | 0x10 ... 0x15 | 0x18 ... 0x1d |
-            0x20 ... 0x25 | 0x28 ... 0x2d | 0x30 ... 0x35 | 0x88 ... 0x8b | 0x8d =>
+            0x00 ..= 0x05 | 0x08 ..= 0x0b | 0x0c ..= 0x0d | 0x10 ..= 0x15 | 0x18 ..= 0x1d |
+            0x20 ..= 0x25 | 0x28 ..= 0x2d | 0x30 ..= 0x35 | 0x88 ..= 0x8b | 0x8d =>
             {
                 // Avoid ridiculous generic binary bloat
                 let (ops, flags, flags_post):
@@ -191,14 +191,14 @@ fn instruction_operations(
                     for<'x, 'y> fn(_, _, &'x mut _, &'y _),
                     for<'x, 'y> fn(_, _, &'x mut _, &'y _),
                 ) = match first_byte {
-                    0x00 ... 0x05 => (add_ops, add_flags, result_flags),
-                    0x08 ... 0x0d => (or_ops, zero_carry_oflow, result_flags),
-                    0x10 ... 0x15 => (adc_ops, adc_flags, result_flags),
-                    0x18 ... 0x1d => (sbb_ops, sbb_flags, result_flags),
-                    0x20 ... 0x25 => (and_ops, zero_carry_oflow, result_flags),
-                    0x28 ... 0x2d => (sub_ops, zero_carry_oflow, result_flags),
-                    0x30 ... 0x35 => (xor_ops, zero_carry_oflow, result_flags),
-                    0x88 ... 0x8b => (mov_ops, |_, _, _, _| {}, |_, _, _, _| {}),
+                    0x00 ..= 0x05 => (add_ops, add_flags, result_flags),
+                    0x08 ..= 0x0d => (or_ops, zero_carry_oflow, result_flags),
+                    0x10 ..= 0x15 => (adc_ops, adc_flags, result_flags),
+                    0x18 ..= 0x1d => (sbb_ops, sbb_flags, result_flags),
+                    0x20 ..= 0x25 => (and_ops, zero_carry_oflow, result_flags),
+                    0x28 ..= 0x2d => (sub_ops, zero_carry_oflow, result_flags),
+                    0x30 ..= 0x35 => (xor_ops, zero_carry_oflow, result_flags),
+                    0x88 ..= 0x8b => (mov_ops, |_, _, _, _| {}, |_, _, _, _| {}),
                     0x8d | _ => (lea_ops, |_, _, _, _| {}, |_, _, _, _| {}),
                 };
                 let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
@@ -209,17 +209,17 @@ fn instruction_operations(
                 }
             }
 
-            0x38 ... 0x3b => s.generic_cmp_op(operand_sub, sub_flags, result_flags),
-            0x3c ... 0x3d => s.eax_imm_cmp(operand_sub, sub_flags, result_flags),
-            0x40 ... 0x4f => s.inc_dec_op(),
-            0x50 ... 0x5f => s.pushpop_reg_op(),
+            0x38 ..= 0x3b => s.generic_cmp_op(operand_sub, sub_flags, result_flags),
+            0x3c ..= 0x3d => s.eax_imm_cmp(operand_sub, sub_flags, result_flags),
+            0x40 ..= 0x4f => s.inc_dec_op(),
+            0x50 ..= 0x5f => s.pushpop_reg_op(),
             0x68 | 0x6a => s.push_imm(),
             0x69 | 0x6b => s.signed_multiply_rm_imm(),
-            0x70 ... 0x7f => s.conditional_jmp(MemAccessSize::Mem8),
-            0x80 ... 0x83 => s.arith_with_imm_op(),
+            0x70 ..= 0x7f => s.conditional_jmp(MemAccessSize::Mem8),
+            0x80 ..= 0x83 => s.arith_with_imm_op(),
             // Test
-            0x84 ... 0x85 => s.generic_cmp_op(operand_and, zero_carry_oflow, result_flags),
-            0x86 ... 0x87 => s.xchg(),
+            0x84 ..= 0x85 => s.generic_cmp_op(operand_and, zero_carry_oflow, result_flags),
+            0x86 ..= 0x87 => s.xchg(),
             0x90 => Ok(SmallVec::new()),
             // Cwde
             0x98 => {
@@ -249,17 +249,17 @@ fn instruction_operations(
                 out.push(neg_sign_extend_op);
                 Ok(out)
             },
-            0xa0 ... 0xa3 => s.move_mem_eax(),
+            0xa0 ..= 0xa3 => s.move_mem_eax(),
             // rep mov
-            0xa4 ... 0xa5 => {
+            0xa4 ..= 0xa5 => {
                 let mut out = SmallVec::new();
                 out.push(Operation::Special(s.data.into()));
                 Ok(out)
             }
-            0xa8 ... 0xa9 => s.eax_imm_cmp(operand_and, zero_carry_oflow, result_flags),
-            0xb0 ... 0xbf => s.move_const_to_reg(),
-            0xc0 ... 0xc1 => s.bitwise_with_imm_op(),
-            0xc2 ... 0xc3 => {
+            0xa8 ..= 0xa9 => s.eax_imm_cmp(operand_and, zero_carry_oflow, result_flags),
+            0xb0 ..= 0xbf => s.move_const_to_reg(),
+            0xc0 ..= 0xc1 => s.bitwise_with_imm_op(),
+            0xc2 ..= 0xc3 => {
                 let stack_pop_size = match data[0] {
                     0xc2 => match read_u16(&data[1..]) {
                         Err(_) => 0,
@@ -269,27 +269,27 @@ fn instruction_operations(
                 };
                 Ok(Some(Operation::Return(stack_pop_size)).into_iter().collect())
             }
-            0xc6 ... 0xc7 => {
+            0xc6 ..= 0xc7 => {
                 s.generic_arith_with_imm_op(&MOV_OPS, match s.get(0) {
                     0xc6 => MemAccessSize::Mem8,
                     _ => s.mem16_32(),
                 })
             }
-            0xd0 ... 0xd3 => s.bitwise_compact_op(),
+            0xd0 ..= 0xd3 => s.bitwise_compact_op(),
             0xd9 => s.various_d9(),
             0xe8 => s.call_op(),
             0xe9 => s.jump_op(),
             0xeb => s.short_jmp(),
             0xf6 | 0xf7 => s.various_f7(),
-            0xf8 ... 0xfd => {
+            0xf8 ..= 0xfd => {
                 let flag = match first_byte {
-                    0xf8 ... 0xf9 => Flag::Carry,
+                    0xf8 ..= 0xf9 => Flag::Carry,
                     _ => Flag::Direction,
                 };
                 let state = first_byte & 0x1 == 1;
                 s.flag_set(flag, state)
             }
-            0xfe ... 0xff => s.various_fe_ff(),
+            0xfe ..= 0xff => s.various_fe_ff(),
             _ => Err(UnknownOpcode(s.data.into()))
         }
     } else {
@@ -305,12 +305,12 @@ fn instruction_operations(
                 out.push(mov(ctx.register(2), s.ctx.undefined_rc()));
                 Ok(out)
             }
-            0x40 ... 0x4f => s.cmov(),
+            0x40 ..= 0x4f => s.cmov(),
             0x57 => s.xorps(),
             0x6e => s.mov_sse_6e(),
             0x7e => s.mov_sse_7e(),
-            0x80 ... 0x8f => s.conditional_jmp(s.mem16_32()),
-            0x90 ... 0x9f => s.conditional_set(),
+            0x80 ..= 0x8f => s.conditional_jmp(s.mem16_32()),
+            0x90 ..= 0x9f => s.conditional_set(),
             0xa4 => s.shld_imm(),
             0xac => s.shrd_imm(),
             0xaf => s.imul_normal(),
@@ -322,8 +322,8 @@ fn instruction_operations(
                 out.push(mov(operand_register(0), ctx.undefined_rc()));
                 Ok(out)
             }
-            0xb6 ... 0xb7 => s.movzx(),
-            0xbe ... 0xbf => s.movsx(),
+            0xb6 ..= 0xb7 => s.movzx(),
+            0xbe ..= 0xbf => s.movsx(),
             0xd3 => s.packed_shift_right(),
             0xd6 => s.mov_sse_d6(),
             0xf3 => s.packed_shift_left(),
@@ -1183,7 +1183,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         if imm.ty == OperandType::Constant(0) {
             return Ok(SmallVec::new());
         }
-        let op_gen: &ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
+        let op_gen: &dyn ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
             0 => &ROL_OPS,
             1 => &ROR_OPS,
             4 | 6 => &LSH_OPS,
@@ -1204,7 +1204,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             0 => self.ctx.const_1(),
             _ => self.ctx.reg_variable_size(Register(1), MemAccessSize::Mem8),
         };
-        let op_gen: &ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
+        let op_gen: &dyn ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
             0 => &ROL_OPS,
             1 => &ROR_OPS,
             4 | 6 => &LSH_OPS,
@@ -1303,7 +1303,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn arith_with_imm_op(&self) -> Result<OperationVec, Error> {
-        let op_gen: &ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
+        let op_gen: &dyn ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
             0 => &ADD_OPS,
             1 => &OR_OPS,
             2 => &ADC_OPS,
@@ -1323,7 +1323,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
 
     fn generic_arith_with_imm_op(
         &self,
-        op_gen: &ArithOperationGenerator,
+        op_gen: &dyn ArithOperationGenerator,
         imm_size: MemAccessSize,
     ) -> Result<OperationVec, Error> {
         let op_size = match self.get(0) & 0x1 {
