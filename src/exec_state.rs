@@ -708,6 +708,13 @@ impl<'a> ExecutionState<'a> {
         self.update(Operation::Move(dest, val, None), i);
     }
 
+    pub fn move_no_resolve(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap) {
+        let value = Operand::simplified(value);
+        let ctx = self.ctx;
+        let dest = self.get_dest_invalidate_constraints(dest, i);
+        dest.set(value, i, ctx);
+    }
+
     fn get_dest_invalidate_constraints<'s>(
         &'s mut self,
         dest: &DestOperand,

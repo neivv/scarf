@@ -299,7 +299,7 @@ impl<'exec: 'b, 'b, S: AnalysisState> Control<'exec, 'b, S> {
     /// Takes current analysis' state as starting state for a function.
     /// ("Calls the function")
     /// However, this does not update the state to what this function changes it to.
-    pub fn analyze_with_current_state<A: Analyzer<State = S>>(
+    pub fn analyze_with_current_state<A: Analyzer<'exec, State = S>>(
         &mut self,
         analyzer: &mut A,
         entry: VirtualAddress,
@@ -325,6 +325,39 @@ impl<'exec: 'b, 'b, S: AnalysisState> Control<'exec, 'b, S> {
         analysis.analyze(analyzer);
     }
 
+    /// Calls the function and updates own state (Both ExecutionState and custom) to
+    /// a merge of states at this child function's return points.
+    pub fn inline<A: Analyzer<'exec, State = S>>(
+        &mut self,
+        analyzer: &mut A,
+        entry: VirtualAddress,
+    ) {
+        use crate::operand_helpers::*;
+
+        let mut state = self.state.clone();
+        let ctx = self.analysis.operand_ctx;
+        let esp = ctx.register(4);
+        let mut i = self.analysis.interner.clone();
+        state.0.move_to(
+            DestOperand::from_oper(&esp),
+            operand_sub(esp.clone(), ctx.const_4()),
+            &mut i,
+        );
+        state.0.move_to(
+            DestOperand::from_oper(&mem32(esp)),
+            ctx.constant(self.current_instruction_end().0),
+            &mut i,
+        );
+        let mut analysis =
+            FuncAnalysis::custom_state(self.analysis.binary, ctx, entry, state.0, state.1, i);
+        let mut analyzer = CollectReturnsAnalyzer::new(analyzer);
+        analysis.analyze(&mut analyzer);
+        if let Some(state) = analyzer.state {
+            *self.state = state;
+            self.analysis.interner = analysis.interner;
+        }
+    }
+
     pub fn address(&self) -> VirtualAddress {
         self.address
     }
@@ -335,11 +368,11 @@ impl<'exec: 'b, 'b, S: AnalysisState> Control<'exec, 'b, S> {
     }
 }
 
-pub trait Analyzer {
+pub trait Analyzer<'exec> {
     type State: AnalysisState;
-    fn branch_start(&mut self, _control: &mut Control<Self::State>) { }
-    fn branch_end(&mut self, _control: &mut Control<Self::State>) { }
-    fn operation(&mut self, _control: &mut Control<Self::State>, _op: &Operation) { }
+    fn branch_start(&mut self, _control: &mut Control<'exec, '_, Self::State>) { }
+    fn branch_end(&mut self, _control: &mut Control<'exec, '_, Self::State>) { }
+    fn operation(&mut self, _control: &mut Control<'exec, '_, Self::State>, _op: &Operation) { }
 }
 
 impl<'a> FuncAnalysis<'a, DefaultState> {
@@ -409,7 +442,7 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
         }
     }
 
-    pub fn analyze<A: Analyzer<State = State>>(&mut self, analyzer: &mut A) {
+    pub fn analyze<A: Analyzer<'a, State = State>>(&mut self, analyzer: &mut A) {
         while let Some((addr, (exec_state, analysis_state))) = self.pop_next_branch() {
             let mut state = match self.cfg.get(addr) {
                 Some(old_node) => {
@@ -431,7 +464,7 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
         }
     }
 
-    fn analyze_branch<'b, A: Analyzer<State = State>>(
+    fn analyze_branch<'b, A: Analyzer<'a, State = State>>(
         &mut self,
         analyzer: &mut A,
         addr: VirtualAddress,
@@ -594,6 +627,53 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
         cfg.resolve_cond_jump_operands(self.binary, hook);
         cfg.interner = self.interner;
         (cfg, self.errors)
+    }
+}
+
+/// Merges states at return operations, used for following calls.
+struct CollectReturnsAnalyzer<'a, 'exec: 'a, A: Analyzer<'exec>> {
+    inner: &'a mut A,
+    state: Option<(ExecutionState<'exec>, A::State)>,
+}
+
+impl<'a, 'exec: 'a, A: Analyzer<'exec>> CollectReturnsAnalyzer<'a, 'exec, A> {
+    fn new(inner: &'a mut A) -> CollectReturnsAnalyzer<'a, 'exec, A> {
+        CollectReturnsAnalyzer {
+            inner,
+            state: None,
+        }
+    }
+}
+
+impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyzer<'a, 'exec, A> {
+    type State = A::State;
+    fn branch_start(&mut self, control: &mut Control<'exec, '_, Self::State>) {
+        self.inner.branch_start(control)
+    }
+
+    fn branch_end(&mut self, control: &mut Control<'exec, '_, Self::State>) {
+        self.inner.branch_start(control)
+    }
+
+    fn operation(&mut self, control: &mut Control<'exec, '_, Self::State>, op: &Operation) {
+        self.inner.operation(control, op);
+        if let disasm::Operation::Return(_) = op {
+            match self.state {
+                Some(ref mut state) => {
+                    let (new, interner) = control.exec_state();
+                    let new_exec = exec_state::merge_states(&state.0, new, interner);
+                    if let Some(new_exec) = new_exec {
+                        state.0 = new_exec;
+                        state.1.merge(control.user_state().clone());
+                    }
+                }
+                None => {
+                    self.state = Some(
+                        (control.exec_state().0.clone(), control.user_state().clone())
+                    );
+                }
+            }
+        }
     }
 }
 
