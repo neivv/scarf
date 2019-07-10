@@ -310,6 +310,21 @@ fn div_mod() {
     ]);
 }
 
+#[test]
+fn cmp_mem8() {
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x04, 0x95, // add al, 95
+        0x89, 0x01, // mov [ecx], eax
+        0x80, 0x39, 0x94, // cmp byte [ecx], 94
+        0x77, 0x01, // ja ok
+        0xcc,
+        0xc3, //ret
+    ], &[
+         (operand_register(0), constval(0x95)),
+    ]);
+}
+
 fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();

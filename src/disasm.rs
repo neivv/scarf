@@ -445,6 +445,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let (rm, r, offset) = self.parse_modrm_inner(op_size)?;
         let imm = read_variable_size(self.slice(offset), imm_size)?;
         let imm = match imm_size {
+            x if x == op_size => imm,
             MemAccessSize::Mem8 => imm as i8 as u32,
             MemAccessSize::Mem16 => imm as i16 as u32,
             MemAccessSize::Mem32 => imm,
