@@ -196,6 +196,17 @@ impl fmt::Display for Operand {
                 7 => write!(f, "edi"),
                 x => write!(f, "r32_{}", x),
             },
+            OperandType::Register64(r) => match r.0 {
+                0 => write!(f, "rax"),
+                1 => write!(f, "rcx"),
+                2 => write!(f, "rdx"),
+                3 => write!(f, "rbx"),
+                4 => write!(f, "rsp"),
+                5 => write!(f, "rbp"),
+                6 => write!(f, "rsi"),
+                7 => write!(f, "rdi"),
+                x => write!(f, "r{}", x),
+            },
             OperandType::Register16(r) => match r.0 {
                 0 => write!(f, "ax"),
                 1 => write!(f, "cx"),
@@ -232,28 +243,36 @@ impl fmt::Display for Operand {
                 Flag::Direction => write!(f, "d"),
             },
             OperandType::Constant(c) => write!(f, "{:x}", c),
+            OperandType::Constant64(c) => write!(f, "{:x}", c),
             OperandType::Memory(ref mem) => write!(f, "Mem{}[{}]", match mem.size {
                 MemAccessSize::Mem8 => "8",
                 MemAccessSize::Mem16 => "16",
                 MemAccessSize::Mem32 => "32",
+                MemAccessSize::Mem64 => "64",
             }, mem.address),
             OperandType::Undefined(id) => write!(f, "Undefined_{:x}", id.0),
-            OperandType::Arithmetic(ref arith) => match *arith {
-                Add(ref l, ref r) => write!(f, "({} + {})", l, r),
-                Sub(ref l, ref r) => write!(f, "({} - {})", l, r),
-                Mul(ref l, ref r) => write!(f, "({} * {})", l, r),
-                Div(ref l, ref r) => write!(f, "({} / {})", l, r),
-                Modulo(ref l, ref r) => write!(f, "({} % {})", l, r),
-                And(ref l, ref r) => write!(f, "({} & {})", l, r),
-                Or(ref l, ref r) => write!(f, "({} | {})", l, r),
-                Xor(ref l, ref r) => write!(f, "({} ^ {})", l, r),
-                Lsh(ref l, ref r) => write!(f, "({} << {})", l, r),
-                Rsh(ref l, ref r) => write!(f, "({} >> {})", l, r),
-                Equal(ref l, ref r) => write!(f, "({} == {})", l, r),
-                GreaterThan(ref l, ref r) => write!(f, "({} > {})", l, r),
-                GreaterThanSigned(ref l, ref r) => write!(f, "gt_signed({}, {})", l, r),
-                SignedMul(ref l, ref r) => write!(f, "mul_signed({}, {})", l, r),
-                Parity(ref l) => write!(f, "parity({})", l),
+            OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith) => {
+                match *arith {
+                    Add(ref l, ref r) => write!(f, "({} + {})", l, r),
+                    Sub(ref l, ref r) => write!(f, "({} - {})", l, r),
+                    Mul(ref l, ref r) => write!(f, "({} * {})", l, r),
+                    Div(ref l, ref r) => write!(f, "({} / {})", l, r),
+                    Modulo(ref l, ref r) => write!(f, "({} % {})", l, r),
+                    And(ref l, ref r) => write!(f, "({} & {})", l, r),
+                    Or(ref l, ref r) => write!(f, "({} | {})", l, r),
+                    Xor(ref l, ref r) => write!(f, "({} ^ {})", l, r),
+                    Lsh(ref l, ref r) => write!(f, "({} << {})", l, r),
+                    Rsh(ref l, ref r) => write!(f, "({} >> {})", l, r),
+                    Equal(ref l, ref r) => write!(f, "({} == {})", l, r),
+                    GreaterThan(ref l, ref r) => write!(f, "({} > {})", l, r),
+                    GreaterThanSigned(ref l, ref r) => write!(f, "gt_signed({}, {})", l, r),
+                    SignedMul(ref l, ref r) => write!(f, "mul_signed({}, {})", l, r),
+                    Parity(ref l) => write!(f, "parity({})", l),
+                }?;
+                if let OperandType::Arithmetic64(..) = self.ty {
+                    write!(f, "[64]")?;
+                }
+                Ok(())
             },
             OperandType::ArithmeticHigh(ref arith) => {
                 // TODO: Should honestly just have format on ArithOpType
@@ -270,13 +289,16 @@ pub enum OperandType {
     Register16(Register),
     Register8High(Register),
     Register8Low(Register),
+    Register64(Register),
     // For div, as it sets eax to (edx:eax / x), and edx to (edx:eax % x)
     Pair(Rc<Operand>, Rc<Operand>),
     Xmm(u8, u8),
     Flag(Flag),
     Constant(u32),
+    Constant64(u64),
     Memory(MemAccess),
     Arithmetic(ArithOpType),
+    Arithmetic64(ArithOpType),
     Undefined(UndefinedId),
     // The high 32 bits that usually are discarded in a airthmetic operation,
     // but relevant for 64-bit multiplications.
@@ -327,6 +349,54 @@ impl ArithOpType {
             }
         }
     }
+
+    /// If self has 64-bit operands, returns a new ArithOpType with high bits discarded.
+    ///
+    /// Helper function for simplification. Take care with behaviour of Arith64 -> Arith
+    /// conversion.
+    fn truncate_operands_to_32bit(&self, ctx: &OperandContext) -> Option<ArithOpType> {
+        use self::ArithOpType::*;
+        let trunc = |operand: &Rc<Operand>| -> Rc<Operand> {
+            match operand.ty {
+                OperandType::Constant64(c) => ctx.constant(c as u32),
+                OperandType::Register64(r) => ctx.register(r.0),
+                OperandType::Arithmetic64(_) => {
+                    self::operand_helpers::operand_and64(operand.clone(), ctx.const_ffffffff())
+                }
+                _ => operand.clone(),
+            }
+        };
+        let (first, second) = self.operands();
+        let first_needs_trunc = match first.ty.expr_size() {
+            MemAccessSize::Mem8 | MemAccessSize::Mem16 | MemAccessSize::Mem32 => false,
+            MemAccessSize::Mem64 => true,
+        };
+        let second_needs_trunc = second.map(|x| match x.ty.expr_size() {
+            MemAccessSize::Mem8 | MemAccessSize::Mem16 | MemAccessSize::Mem32 => false,
+            MemAccessSize::Mem64 => true,
+        }).unwrap_or(false);
+        if first_needs_trunc || second_needs_trunc {
+            match self {
+                Add(l, r) => Some(ArithOpType::Add(trunc(l), trunc(r))),
+                Sub(l, r) => Some(ArithOpType::Sub(trunc(l), trunc(r))),
+                Mul(l, r) => Some(ArithOpType::Mul(trunc(l), trunc(r))),
+                And(l, r) => Some(ArithOpType::And(trunc(l), trunc(r))),
+                Or(l, r) => Some(ArithOpType::Or(trunc(l), trunc(r))),
+                Xor(l, r) => Some(ArithOpType::Xor(trunc(l), trunc(r))),
+                Lsh(l, r) => Some(ArithOpType::Lsh(trunc(l), trunc(r))),
+                Rsh(l, r) => Some(ArithOpType::Rsh(trunc(l), trunc(r))),
+                Equal(l, r) => Some(ArithOpType::Equal(trunc(l), trunc(r))),
+                GreaterThan(l, r) => Some(ArithOpType::GreaterThan(trunc(l), trunc(r))),
+                GreaterThanSigned(l, r) => Some(ArithOpType::GreaterThanSigned(trunc(l), trunc(r))),
+                SignedMul(l, r) => Some(ArithOpType::SignedMul(trunc(l), trunc(r))),
+                Div(l, r) => Some(ArithOpType::Div(trunc(l), trunc(r))),
+                Modulo(l, r) => Some(ArithOpType::Modulo(trunc(l), trunc(r))),
+                Parity(l) => Some(ArithOpType::Parity(trunc(l))),
+            }
+        } else {
+            None
+        }
+    }
 }
 
 
@@ -347,6 +417,7 @@ struct OperandCtxGlobals {
     // Contains the nonexisting esp/ebp/esi/edi low ones for simplicity
     registers8_low: [Rc<Operand>; 8],
     registers8_high: [Rc<Operand>; 4],
+    registers64: [Rc<Operand>; 8],
     flag_z: Rc<Operand>,
     flag_c: Rc<Operand>,
     flag_o: Rc<Operand>,
@@ -558,6 +629,16 @@ impl OperandCtxGlobals {
                 Operand::new_simplified_rc(OperandType::Register8High(Register(2))),
                 Operand::new_simplified_rc(OperandType::Register8High(Register(3))),
             ],
+            registers64: [
+                Operand::new_simplified_rc(OperandType::Register64(Register(0))),
+                Operand::new_simplified_rc(OperandType::Register64(Register(1))),
+                Operand::new_simplified_rc(OperandType::Register64(Register(2))),
+                Operand::new_simplified_rc(OperandType::Register64(Register(3))),
+                Operand::new_simplified_rc(OperandType::Register64(Register(4))),
+                Operand::new_simplified_rc(OperandType::Register64(Register(5))),
+                Operand::new_simplified_rc(OperandType::Register64(Register(6))),
+                Operand::new_simplified_rc(OperandType::Register64(Register(7))),
+            ],
         }
     }
 }
@@ -627,8 +708,13 @@ impl OperandContext {
         self.globals.registers8_high[index as usize].clone()
     }
 
+    pub fn register64(&self, index: u8) -> Rc<Operand> {
+        self.globals.registers64[index as usize].clone()
+    }
+
     pub fn reg_variable_size(&self, reg: Register, size: MemAccessSize) -> Rc<Operand> {
         match size {
+            MemAccessSize::Mem64 => self.register64(reg.0),
             MemAccessSize::Mem32 => self.register(reg.0),
             MemAccessSize::Mem16 => self.register16(reg.0),
             MemAccessSize::Mem8 => if reg.0 >= 4 {
@@ -719,36 +805,27 @@ impl OperandContext {
 impl fmt::Debug for OperandType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::OperandType::*;
-        if f.alternate() {
-            match *self {
-                Register(ref r) => write!(f, "Register({:#?})", r),
-                Register16(ref r) => write!(f, "Register16({:#?})", r),
-                Register8High(ref r) => write!(f, "Register8High({:#?})", r),
-                Register8Low(ref r) => write!(f, "Register8Low({:#?})", r),
-                Pair(ref hi, ref low) => write!(f, "Pair({:#?}, {:#?})", hi, low),
-                Xmm(ref r, x) => write!(f, "Xmm({:#?}.{})", r, x),
-                Flag(ref r) => write!(f, "Flag({:#?})", r),
-                Constant(ref r) => write!(f, "Constant({:x})", r),
-                Memory(ref r) => write!(f, "Memory({:#?})", r),
-                Arithmetic(ref r) => write!(f, "Arithmetic({:#?})", r),
-                Undefined(ref r) => write!(f, "Undefined_{:x}", r.0),
-                ArithmeticHigh(ref r) => write!(f, "ArithmeticHigh({:#?})", r),
+        match self {
+            Register(r) => write!(f, "Register({})", r.0),
+            Register16(r) => write!(f, "Register16({})", r.0),
+            Register8High(r) => write!(f, "Register8High({})", r.0),
+            Register8Low(r) => write!(f, "Register8Low({})", r.0),
+            Register64(r) => write!(f, "Register64({})", r.0),
+            Xmm(r, x) => write!(f, "Xmm({}.{})", r, x),
+            Flag(r) => write!(f, "Flag({:?})", r),
+            Constant(r) => write!(f, "Constant({:x})", r),
+            Constant64(r) => write!(f, "Constant64({:x})", r),
+            Undefined(r) => write!(f, "Undefined_{:x}", r.0),
+            Pair(hi, low) => {
+                f.debug_tuple("Pair")
+                    .field(hi)
+                    .field(low)
+                    .finish()
             }
-        } else {
-            match *self {
-                Register(ref r) => write!(f, "Register({:?})", r),
-                Register16(ref r) => write!(f, "Register16({:?})", r),
-                Register8High(ref r) => write!(f, "Register8High({:?})", r),
-                Register8Low(ref r) => write!(f, "Register8Low({:?})", r),
-                Pair(ref hi, ref low) => write!(f, "Pair({:?}, {:?})", hi, low),
-                Xmm(ref r, x) => write!(f, "Xmm({:?}.{})", r, x),
-                Flag(ref r) => write!(f, "Flag({:?})", r),
-                Constant(ref r) => write!(f, "Constant({:x})", r),
-                Memory(ref r) => write!(f, "Memory({:?})", r),
-                Arithmetic(ref r) => write!(f, "Arithmetic({:?})", r),
-                Undefined(ref r) => write!(f, "Undefined_{:x}", r.0),
-                ArithmeticHigh(ref r) => write!(f, "ArithmeticHigh({:?})", r),
-            }
+            Memory(r) => f.debug_tuple("Memory").field(r).finish(),
+            Arithmetic(r) => f.debug_tuple("Arithmetic").field(r).finish(),
+            Arithmetic64(r) => f.debug_tuple("Arithmetic64").field(r).finish(),
+            ArithmeticHigh(r) => f.debug_tuple("ArithmeticHigh").field(r).finish(),
         }
     }
 }
@@ -764,6 +841,7 @@ impl OperandType {
                 MemAccessSize::Mem8 => 8,
                 MemAccessSize::Mem16 => 8,
                 MemAccessSize::Mem32 => 16,
+                MemAccessSize::Mem64 => 32,
             },
             OperandType::Register(_) | OperandType::Flag(_) | OperandType::Undefined(_) => 32,
             OperandType::Arithmetic(ref arith) => match *arith {
@@ -797,6 +875,7 @@ impl OperandType {
                 MemAccessSize::Mem8 => 0..8,
                 MemAccessSize::Mem16 => 0..16,
                 MemAccessSize::Mem32 => 0..32,
+                MemAccessSize::Mem64 => 0..64,
             },
             OperandType::Arithmetic(ArithOpType::Equal(_, _)) |
                 OperandType::Arithmetic(ArithOpType::GreaterThan(_, _)) |
@@ -880,6 +959,9 @@ impl OperandType {
                     })
                     .unwrap_or(0..32)
             }
+            OperandType::Arithmetic64(_) => {
+                0..64
+            }
             OperandType::Constant(c) => {
                 let trailing = c.trailing_zeros() as u8;
                 let leading = c.leading_zeros() as u8;
@@ -889,11 +971,21 @@ impl OperandType {
                     trailing..(32 - leading)
                 }
             }
+            OperandType::Constant64(c) => {
+                let trailing = c.trailing_zeros() as u8;
+                let leading = c.leading_zeros() as u8;
+                if 64 - leading < trailing {
+                    0..0
+                } else {
+                    trailing..(64 - leading)
+                }
+            }
+            OperandType::Register64(..) => 0..64,
             _ => 0..32,
         }
     }
 
-    /// Returns whether the operand is 8, 16, or 32 bits.
+    /// Returns whether the operand is 8, 16, 32, or 64 bits.
     /// Relevant with signed multiplication, usually operands can be considered
     /// zero-extended u32.
     pub fn expr_size(&self) -> MemAccessSize {
@@ -904,6 +996,7 @@ impl OperandType {
                 Undefined(..) | ArithmeticHigh(..) => MemAccessSize::Mem32,
             Register16(..) => MemAccessSize::Mem16,
             Register8High(..) | Register8Low(..) => MemAccessSize::Mem8,
+            Register64(..) | Constant64(..) | Arithmetic64(..) => MemAccessSize::Mem64,
         }
     }
 }
@@ -933,7 +1026,7 @@ impl Operand {
     }
 
     // TODO: Should not be pub?
-    pub fn new_simplified_rc(ty: OperandType) -> Rc<Operand> {
+    pub(crate) fn new_simplified_rc(ty: OperandType) -> Rc<Operand> {
         Self::new_simplified(ty).into()
     }
 
@@ -1254,6 +1347,7 @@ impl Operand {
                 }
                 OperandType::Memory(ref mem) => {
                     let len = match mem.size {
+                        MemAccessSize::Mem64 => 8,
                         MemAccessSize::Mem32 => 4,
                         MemAccessSize::Mem16 => 2,
                         MemAccessSize::Mem8 => 1,
@@ -1393,96 +1487,117 @@ impl Operand {
         }
         let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
         match s.clone().ty {
-            OperandType::Arithmetic(ref arith) => match *arith {
-                ArithOpType::Add(ref left, ref right) | ArithOpType::Sub(ref left, ref right) => {
-                    let is_sub = match *arith {
-                        ArithOpType::Sub(..) => true,
-                        _ => false,
-                    };
-                    simplify_add_sub(left, right, is_sub, ctx)
-                }
-                ArithOpType::Mul(ref left, ref right) => simplify_mul(left, right, ctx),
-                ArithOpType::SignedMul(ref left, ref right) => {
-                    simplify_signed_mul(left, right, ctx)
-                }
-                ArithOpType::And(ref left, ref right) => simplify_and(left, right, ctx, swzb_ctx),
-                ArithOpType::Or(ref left, ref right) => simplify_or(left, right, ctx),
-                ArithOpType::Xor(ref left, ref right) => simplify_xor(left, right, ctx),
-                ArithOpType::Equal(ref left, ref right) => simplify_eq(left, right, ctx),
-                ArithOpType::GreaterThan(ref left, ref right) => {
-                    let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-                    let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
-                    let l = left.clone();
-                    let r = right.clone();
-                    match (&l.ty, &r.ty) {
-                        (&OperandType::Constant(a), &OperandType::Constant(b)) => match a > b {
-                            true => return ctx.const_1(),
-                            false => return ctx.const_0(),
-                        },
-                        (&OperandType::Arithmetic(ArithOpType::Sub(ref l2, ref r2)), _) => {
-                            if *l2 == r {
-                                let ty = OperandType::Arithmetic(
-                                    ArithOpType::GreaterThan(r2.clone(), r.clone())
-                                );
-                                return Operand::new_simplified_rc(ty);
-                            }
-                        }
-                        _ => (),
+            OperandType::Arithmetic(ref arith) => {
+                let truncated;
+                // Arithmetic (32-bit) is defined to have operands truncated to 32-bit.
+                // The motivation being that Register64(0) & 0xffff_ffff != Register64(0),
+                // and as such all the existing arith simplifications would have to
+                // be reviewed for similar cases.
+                let arith = if let Some(trunc) = arith.truncate_operands_to_32bit(ctx) {
+                    truncated = trunc;
+                    &truncated
+                } else {
+                    arith
+                };
+                match *arith {
+                    ArithOpType::Add(ref left, ref right) | ArithOpType::Sub(ref left, ref right) => {
+                        let is_sub = match *arith {
+                            ArithOpType::Sub(..) => true,
+                            _ => false,
+                        };
+                        simplify_add_sub(left, right, is_sub, ctx)
                     }
-                    let ty = OperandType::Arithmetic(ArithOpType::GreaterThan(left, right));
-                    Operand::new_simplified_rc(ty)
-                }
-                ArithOpType::GreaterThanSigned(ref left, ref right) => {
-                    let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-                    let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
-                    let l = left.clone();
-                    let r = right.clone();
-                    if let (Some(a), Some(b)) = (l.if_constant(), r.if_constant()) {
-                        match a as i32 > b as i32 {
-                            true => return ctx.const_1(),
-                            false => return ctx.const_0(),
-                        }
+                    ArithOpType::Mul(ref left, ref right) => simplify_mul(left, right, ctx),
+                    ArithOpType::SignedMul(ref left, ref right) => {
+                        simplify_signed_mul(left, right, ctx)
                     }
-                    let ty = OperandType::Arithmetic(ArithOpType::GreaterThanSigned(left, right));
-                    Operand::new_simplified_rc(ty)
-                }
-                ArithOpType::Lsh(ref left, ref right) => simplify_lsh(left, right, ctx, swzb_ctx),
-                ArithOpType::Rsh(ref left, ref right) => simplify_rsh(left, right, ctx, swzb_ctx),
-                ArithOpType::Div(ref left, ref right) |
-                    ArithOpType::Modulo(ref left, ref right) =>
-                {
-                    let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-                    let left = match left.ty {
-                        OperandType::Pair(ref high, ref low) => {
-                            match high.if_constant() == Some(0) {
-                                true => low.clone(),
-                                false => left.clone(),
+                    ArithOpType::And(ref left, ref right) => {
+                        simplify_and(left, right, ctx, swzb_ctx)
+                    }
+                    ArithOpType::Or(ref left, ref right) => simplify_or(left, right, ctx),
+                    ArithOpType::Xor(ref left, ref right) => simplify_xor(left, right, ctx),
+                    ArithOpType::Equal(ref left, ref right) => simplify_eq(left, right, ctx),
+                    ArithOpType::GreaterThan(ref left, ref right) => {
+                        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                        let l = left.clone();
+                        let r = right.clone();
+                        match (&l.ty, &r.ty) {
+                            (&OperandType::Constant(a), &OperandType::Constant(b)) => if a > b {
+                                return ctx.const_1();
+                            } else {
+                                return ctx.const_0();
+                            },
+                            (&OperandType::Arithmetic(ArithOpType::Sub(ref l2, ref r2)), _) => {
+                                if *l2 == r {
+                                    let ty = OperandType::Arithmetic(
+                                        ArithOpType::GreaterThan(r2.clone(), r.clone())
+                                    );
+                                    return Operand::new_simplified_rc(ty);
+                                }
                             }
+                            _ => (),
                         }
-                        _ => left.clone(),
-                    };
-
-                    let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
-                    let ty = match arith {
-                        ArithOpType::Div(..) => ArithOpType::Div(left, right),
-                        ArithOpType::Modulo(..) => ArithOpType::Modulo(left, right),
-                        _ => unreachable!(),
-                    };
-                    Operand::new_simplified_rc(OperandType::Arithmetic(ty))
-                }
-                ArithOpType::Parity(ref val) => {
-                    let val = Operand::simplified_with_ctx(val.clone(), ctx, swzb_ctx);
-                    if let Some(c) = val.if_constant() {
-                        return match (c as u8).count_ones() & 1 == 0 {
-                            true => ctx.const_1(),
-                            false => ctx.const_0(),
-                        }
-                    } else {
-                        let ty = OperandType::Arithmetic(ArithOpType::Parity(val));
+                        let ty = OperandType::Arithmetic(ArithOpType::GreaterThan(left, right));
                         Operand::new_simplified_rc(ty)
                     }
+                    ArithOpType::GreaterThanSigned(ref left, ref right) => {
+                        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                        let l = left.clone();
+                        let r = right.clone();
+                        if let (Some(a), Some(b)) = (l.if_constant(), r.if_constant()) {
+                            match a as i32 > b as i32 {
+                                true => return ctx.const_1(),
+                                false => return ctx.const_0(),
+                            }
+                        }
+                        let ty =
+                            OperandType::Arithmetic(ArithOpType::GreaterThanSigned(left, right));
+                        Operand::new_simplified_rc(ty)
+                    }
+                    ArithOpType::Lsh(ref left, ref right) => {
+                        simplify_lsh(left, right, ctx, swzb_ctx)
+                    }
+                    ArithOpType::Rsh(ref left, ref right) => {
+                        simplify_rsh(left, right, ctx, swzb_ctx)
+                    }
+                    ArithOpType::Div(ref left, ref right) |
+                        ArithOpType::Modulo(ref left, ref right) =>
+                    {
+                        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                        let left = match left.ty {
+                            OperandType::Pair(ref high, ref low) => {
+                                match high.if_constant() == Some(0) {
+                                    true => low.clone(),
+                                    false => left.clone(),
+                                }
+                            }
+                            _ => left.clone(),
+                        };
+
+                        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                        let ty = match arith {
+                            ArithOpType::Div(..) => ArithOpType::Div(left, right),
+                            ArithOpType::Modulo(..) => ArithOpType::Modulo(left, right),
+                            _ => unreachable!(),
+                        };
+                        Operand::new_simplified_rc(OperandType::Arithmetic(ty))
+                    }
+                    ArithOpType::Parity(ref val) => {
+                        let val = Operand::simplified_with_ctx(val.clone(), ctx, swzb_ctx);
+                        if let Some(c) = val.if_constant() {
+                            return match (c as u8).count_ones() & 1 == 0 {
+                                true => ctx.const_1(),
+                                false => ctx.const_0(),
+                            }
+                        } else {
+                            let ty = OperandType::Arithmetic(ArithOpType::Parity(val));
+                            Operand::new_simplified_rc(ty)
+                        }
+                    }
                 }
-            },
+            }
             OperandType::Memory(ref mem) => {
                 Operand::new_simplified_rc(OperandType::Memory(MemAccess {
                     address: Operand::simplified_with_ctx(mem.address.clone(), ctx, swzb_ctx),
@@ -1543,6 +1658,7 @@ impl Operand {
     pub fn substitute(oper: &Rc<Operand>, val: &Rc<Operand>, with: &Rc<Operand>) -> Rc<Operand> {
         fn mem_bits(val: MemAccessSize) -> u8 {
             match val {
+                MemAccessSize::Mem64 => 64,
                 MemAccessSize::Mem32 => 32,
                 MemAccessSize::Mem16 => 16,
                 MemAccessSize::Mem8 => 8,
@@ -1558,10 +1674,11 @@ impl Operand {
                     .filter(|old| mem_bits(old.size) <= mem_bits(mem.size))
                     .map(|old| {
                         use crate::operand_helpers::*;
-                        if mem.size == old.size {
+                        if mem.size == old.size || old.size == MemAccessSize::Mem64 {
                             with.clone()
                         } else {
                             let mask = constval(match old.size {
+                                MemAccessSize::Mem64 => unreachable!(),
                                 MemAccessSize::Mem32 => 0xffff_ffff,
                                 MemAccessSize::Mem16 => 0xffff,
                                 MemAccessSize::Mem8 => 0xff,
@@ -1598,6 +1715,18 @@ impl Operand {
     pub fn if_memory(&self) -> Option<&MemAccess> {
         match self.ty {
             OperandType::Memory(ref mem) => Some(mem),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// `mem.size == MemAccessSize::Mem64`
+    pub fn if_mem64(&self) -> Option<&Rc<Operand>> {
+        match self.ty {
+            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem64 {
+                true => Some(&mem.address),
+                false => None,
+            },
             _ => None,
         }
     }
@@ -3137,6 +3266,7 @@ pub enum MemAccessSize {
     Mem32,
     Mem16,
     Mem8,
+    Mem64,
 }
 
 #[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd, Deserialize, Serialize)]
@@ -3237,6 +3367,26 @@ pub mod operand_helpers {
 
     pub fn operand_logical_not(lhs: Rc<Operand>) -> Rc<Operand> {
         Operand::new_not_simplified_rc(OperandType::Arithmetic(Equal(constval(0), lhs)))
+    }
+
+    pub fn operand_add64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        Operand::new_not_simplified_rc(OperandType::Arithmetic64(Add(lhs, rhs)))
+    }
+
+    pub fn operand_and64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        Operand::new_not_simplified_rc(OperandType::Arithmetic64(And(lhs, rhs)))
+    }
+
+    pub fn operand_or64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        Operand::new_not_simplified_rc(OperandType::Arithmetic64(Or(lhs, rhs)))
+    }
+
+    pub fn operand_lsh64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        Operand::new_not_simplified_rc(OperandType::Arithmetic64(Lsh(lhs, rhs)))
+    }
+
+    pub fn operand_rsh64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        Operand::new_not_simplified_rc(OperandType::Arithmetic64(Rsh(lhs, rhs)))
     }
 
     pub fn mem32_norc(val: Rc<Operand>) -> Operand {

@@ -351,6 +351,7 @@ impl SectionDumps {
                     sliced.read_u16::<LittleEndian>().ok().map(|x| u32::from(x))
                 }
                 MemAccessSize::Mem32 => sliced.read_u32::<LittleEndian>().ok(),
+                MemAccessSize::Mem64 => panic!("Cannot resolve mem64 to u32"),
             }
         })
     }

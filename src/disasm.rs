@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 
 use crate::{VirtualAddress};
 use crate::operand::{
-    ArithOpType, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType, Register
+    self, ArithOpType, Flag, MemAccess, Operand, OperandContext, OperandType, Register
 };
 
 quick_error! {
@@ -25,6 +25,26 @@ quick_error! {
         }
         InternalDecodeError {
             description("Internal decode error")
+        }
+    }
+}
+
+// Internal use, doesn't have Mem64 like the public MemAccessSize in mod operand does.
+// Exists since the disasm code cannot do anything but panic on Mem64 (or would need
+// a lot of rewriting)
+#[derive(Clone, Eq, PartialEq, Copy)]
+enum MemAccessSize {
+    Mem32,
+    Mem16,
+    Mem8,
+}
+
+impl MemAccessSize {
+    fn to_public_size(self) -> operand::MemAccessSize {
+        match self {
+            MemAccessSize::Mem32 => operand::MemAccessSize::Mem32,
+            MemAccessSize::Mem16 => operand::MemAccessSize::Mem16,
+            MemAccessSize::Mem8 => operand::MemAccessSize::Mem8,
         }
     }
 }
@@ -343,9 +363,10 @@ fn xmm_variant(op: &Rc<Operand>, i: u8) -> Rc<Operand> {
         OperandType::Register(Register(r)) | OperandType::Xmm(r, _) => operand_xmm(r, i),
         OperandType::Memory(ref mem) => {
             let bytes = match mem.size {
-                MemAccessSize::Mem8 => 1,
-                MemAccessSize::Mem16 => 2,
-                MemAccessSize::Mem32 => 4,
+                operand::MemAccessSize::Mem8 => 1,
+                operand::MemAccessSize::Mem16 => 2,
+                operand::MemAccessSize::Mem32 => 4,
+                operand::MemAccessSize::Mem64 => unreachable!(),
             };
             mem_variable_rc(
                 mem.size,
@@ -392,9 +413,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     /// Returns (rm, r, modrm_size)
     fn parse_modrm_inner(
         &self,
-        op_size: MemAccessSize
+        op_size: operand::MemAccessSize
     ) -> Result<(Rc<Operand>, Rc<Operand>, usize), Error> {
-        use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
 
         let modrm = self.get(1);
@@ -432,7 +452,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn parse_modrm(&self, op_size: MemAccessSize) -> Result<(Rc<Operand>, Rc<Operand>), Error> {
-        let (rm, r, _) = self.parse_modrm_inner(op_size)?;
+        let (rm, r, _) = self.parse_modrm_inner(op_size.to_public_size())?;
         Ok((rm, r))
     }
 
@@ -441,8 +461,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         op_size: MemAccessSize,
         imm_size: MemAccessSize,
     ) -> Result<(Rc<Operand>, Rc<Operand>, Rc<Operand>), Error> {
-        use self::operation_helpers::*;
-        let (rm, r, offset) = self.parse_modrm_inner(op_size)?;
+        let (rm, r, offset) = self.parse_modrm_inner(op_size.to_public_size())?;
         let imm = read_variable_size(self.slice(offset), imm_size)?;
         let imm = match imm_size {
             x if x == op_size => imm,
@@ -456,9 +475,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     fn parse_sib(
         &self,
         variation: u8,
-        op_size: MemAccessSize
+        op_size: operand::MemAccessSize,
     ) -> Result<(Rc<Operand>, usize), Error> {
-        use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
         let sib = self.get(2);
         let mul = 1 << ((sib >> 6) & 0x3);
@@ -510,7 +528,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let byte = self.get(0);
         let is_inc = byte < 0x48;
         let reg = byte & 0x7;
-        let reg = self.ctx.reg_variable_size(Register(reg), self.mem16_32());
+        let reg = self.ctx.reg_variable_size(Register(reg), self.mem16_32().to_public_size());
         let mut out = SmallVec::new();
         out.push(match is_inc {
             true => add(reg.clone(), self.ctx.const_1()),
@@ -606,7 +624,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn conditional_jmp(&self, op_size: MemAccessSize) -> Result<OperationVec, Error> {
-        use self::operation_helpers::*;
         let offset = read_variable_size_signed(self.slice(1), op_size)?;
         let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
@@ -623,7 +640,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn short_jmp(&self) -> Result<OperationVec, Error> {
-        use self::operation_helpers::*;
         let offset = read_variable_size_signed(self.slice(1), MemAccessSize::Mem8)?;
         let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
@@ -652,7 +668,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
             _ => self.mem16_32(),
         };
         let constant = read_variable_size(self.slice(1), op_size)?;
-        let mem = mem_variable(op_size, self.ctx.constant(constant)).into();
+        let mem = mem_variable(op_size.to_public_size(), self.ctx.constant(constant)).into();
         let eax_left = self.get(0) & 0x2 == 0;
         let eax = self.ctx.register(0);
         let mut out = SmallVec::new();
@@ -686,12 +702,11 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
           G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
           H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
     {
-        use self::operation_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let dest = self.ctx.reg_variable_size(Register(0), op_size);
+        let dest = self.ctx.reg_variable_size(Register(0), op_size.to_public_size());
         let imm = read_variable_size(self.slice(1), op_size)?;
         let val = self.ctx.constant(imm);
         let mut out = SmallVec::new();
@@ -771,7 +786,9 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let dest_size = self.mem16_32();
         let (rm, r) = self.parse_modrm(dest_size)?;
         let rm = match rm.ty {
-            OperandType::Memory(ref mem) => mem_variable_rc(op_size, mem.address.clone()),
+            OperandType::Memory(ref mem) => {
+                mem_variable_rc(op_size.to_public_size(), mem.address.clone())
+            }
             OperandType::Register(r) | OperandType::Register16(r) => match op_size {
                 MemAccessSize::Mem8 => match r.0 >= 4 {
                     false => self.ctx.register8_low(r.0),
@@ -827,6 +844,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     fn movzx(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
+        use crate::operand::MemAccessSize;
 
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
@@ -1128,7 +1146,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
                             mem.address.clone(),
                             self.ctx.constant(i * mem_bytes),
                         );
-                        let dest = mem_variable_rc(mem_size, address);
+                        let dest = mem_variable_rc(mem_size.to_public_size(), address);
                         mov(dest, self.ctx.undefined_rc())
                     }));
                 }
@@ -1203,7 +1221,7 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         let (rm, _) = self.parse_modrm(op_size)?;
         let shift_count = match self.get(0) & 2 {
             0 => self.ctx.const_1(),
-            _ => self.ctx.reg_variable_size(Register(1), MemAccessSize::Mem8),
+            _ => self.ctx.reg_variable_size(Register(1), operand::MemAccessSize::Mem8),
         };
         let op_gen: &dyn ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
             0 => &ROL_OPS,
@@ -1349,12 +1367,11 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
           G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
           H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
     {
-        use self::operation_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let eax = self.ctx.reg_variable_size(Register(0), op_size);
+        let eax = self.ctx.reg_variable_size(Register(0), op_size.to_public_size());
         let imm = read_variable_size(self.slice(1), op_size)?;
         let val = self.ctx.constant(imm);
         let mut out = SmallVec::new();
@@ -1393,7 +1410,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn call_op(&self) -> Result<OperationVec, Error> {
-        use self::operation_helpers::*;
         let offset = read_u32(self.slice(1))?;
         let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
@@ -1402,7 +1418,6 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
     }
 
     fn jump_op(&self) -> Result<OperationVec, Error> {
-        use self::operation_helpers::*;
         let offset = read_u32(self.slice(1))?;
         let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
         let mut out = SmallVec::new();
@@ -1474,44 +1489,46 @@ arith_op_generator!(LSH_OPS, LshOps, zero_carry_oflow, lsh_ops, result_flags);
 arith_op_generator!(RSH_OPS, RshOps, zero_carry_oflow, rsh_ops, result_flags);
 arith_op_generator!(SAR_OPS, SarOps, zero_carry_oflow, sar_ops, result_flags);
 
+fn read_variable_size(val: &[u8], size: MemAccessSize) -> Result<u32, Error> {
+    match size {
+        MemAccessSize::Mem32 => read_u32(val),
+        MemAccessSize::Mem16 => read_u16(val).map(|x| u32::from(x)),
+        MemAccessSize::Mem8 => read_u8(val).map(|x| u32::from(x)),
+    }
+}
+
+fn read_variable_size_signed(val: &[u8], size: MemAccessSize) -> Result<u32, Error> {
+    match size {
+        MemAccessSize::Mem32 => read_u32(val),
+        MemAccessSize::Mem16 => read_u16(val).map(|x| x as i16 as u32),
+        MemAccessSize::Mem8 => read_u8(val).map(|x| x as i8 as u32),
+    }
+}
+
+fn read_u32(mut val: &[u8]) -> Result<u32, Error> {
+    use byteorder::{LE, ReadBytesExt};
+    val.read_u32::<LE>().map_err(|_| Error::InternalDecodeError)
+}
+
+fn read_u16(mut val: &[u8]) -> Result<u16, Error> {
+    use byteorder::{LE, ReadBytesExt};
+    val.read_u16::<LE>().map_err(|_| Error::InternalDecodeError)
+}
+
+fn read_u8(mut val: &[u8]) -> Result<u8, Error> {
+    use byteorder::{ReadBytesExt};
+    val.read_u8().map_err(|_| Error::InternalDecodeError)
+}
+
 pub mod operation_helpers {
     use std::rc::Rc;
 
-    use byteorder::{LittleEndian, ReadBytesExt};
-
     use crate::operand::ArithOpType::*;
-    use crate::operand::MemAccessSize::*;
-    use crate::operand::{Flag, MemAccessSize, Operand, OperandType, OperandContext};
+    use crate::operand::{Flag, Operand, OperandType, OperandContext};
     use crate::operand::operand_helpers::*;
-    use super::{dest_operand, make_arith_operation, DestOperand, Error, Operation, OperationVec};
-
-    pub fn read_u32(mut val: &[u8]) -> Result<u32, Error> {
-        val.read_u32::<LittleEndian>().map_err(|_| Error::InternalDecodeError)
-    }
-
-    pub fn read_u16(mut val: &[u8]) -> Result<u16, Error> {
-        val.read_u16::<LittleEndian>().map_err(|_| Error::InternalDecodeError)
-    }
-
-    pub fn read_u8(mut val: &[u8]) -> Result<u8, Error> {
-        val.read_u8().map_err(|_| Error::InternalDecodeError)
-    }
-
-    pub fn read_variable_size(val: &[u8], size: MemAccessSize) -> Result<u32, Error> {
-        match size {
-            Mem32 => read_u32(val),
-            Mem16 => read_u16(val).map(|x| u32::from(x)),
-            Mem8 => read_u8(val).map(|x| u32::from(x)),
-        }
-    }
-
-    pub fn read_variable_size_signed(val: &[u8], size: MemAccessSize) -> Result<u32, Error> {
-        match size {
-            Mem32 => read_u32(val),
-            Mem16 => read_u16(val).map(|x| x as i16 as u32),
-            Mem8 => read_u8(val).map(|x| x as i8 as u32),
-        }
-    }
+    use super::{
+        dest_operand, make_arith_operation, DestOperand, Operation, OperationVec,
+    };
 
     pub fn mov(dest: Rc<Operand>, from: Rc<Operand>) -> Operation {
         Operation::Move(dest_operand(&dest), from, None)
@@ -1889,7 +1906,7 @@ mod test {
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
         let dest = mem_variable(
-            MemAccessSize::Mem16,
+            operand::MemAccessSize::Mem16,
             operand_add(operand_register(0x7), constval(0x62))
         );
 

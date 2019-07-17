@@ -404,6 +404,15 @@ impl<'a> Destination<'a> {
                 *low = intern_map.intern(Operand::simplified(val_low));
             }
             Destination::Memory(mem, addr, size) => {
+                if size == MemAccessSize::Mem64 {
+                    // Split into two u32 sets
+                    Destination::Memory(mem, addr.clone(), MemAccessSize::Mem32)
+                        .set(operand_and64(value.clone(), ctx.const_ffffffff()), intern_map, ctx);
+                    let addr = operand_add(addr, ctx.const_4());
+                    Destination::Memory(mem, addr, MemAccessSize::Mem32)
+                        .set(operand_rsh64(value, ctx.constant(32)), intern_map, ctx);
+                    return;
+                }
                 if let Some((base, offset)) = Operand::const_offset(&addr, ctx) {
                     let offset_4 = offset & 3;
                     let offset_rest = offset & !3;
@@ -412,6 +421,7 @@ impl<'a> Destination<'a> {
                             MemAccessSize::Mem32 => 32,
                             MemAccessSize::Mem16 => 16,
                             MemAccessSize::Mem8 => 8,
+                            MemAccessSize::Mem64 => unreachable!(),
                         };
                         let low_base = Operand::simplified(
                             operand_add(base.clone(), ctx.constant(offset_rest))
@@ -475,6 +485,7 @@ impl<'a> Destination<'a> {
                     MemAccessSize::Mem8 => operand_and(value, ctx.const_ff()),
                     MemAccessSize::Mem16 => operand_and(value, ctx.const_ffff()),
                     MemAccessSize::Mem32 => value,
+                    MemAccessSize::Mem64 => unreachable!(),
                 });
                 mem.set(addr, intern_map.intern(value));
             }
@@ -815,10 +826,27 @@ impl<'a> ExecutionState<'a> {
         use crate::operand::operand_helpers::*;
 
         let address = self.resolve(&mem.address, i);
+        if MemAccessSize::Mem64 == mem.size {
+            // Split into 2 32-bit resolves
+            return operand_or64(
+                operand_lsh64(
+                    self.resolve_mem(&MemAccess {
+                        address: operand_add64(mem.address.clone(), self.ctx.const_4()),
+                        size: MemAccessSize::Mem32,
+                    }, i),
+                    self.ctx.constant(32),
+                ),
+                self.resolve_mem(&MemAccess {
+                    address: mem.address.clone(),
+                    size: MemAccessSize::Mem32,
+                }, i),
+            );
+        }
         let size_bytes = match mem.size {
             MemAccessSize::Mem8 => 1,
             MemAccessSize::Mem16 => 2,
             MemAccessSize::Mem32 => 4,
+            MemAccessSize::Mem64 => unreachable!(),
         };
         if let Some(c) = address.if_constant() {
             // Simplify constants stored in code section (constant switch jumps etc)
@@ -836,6 +864,7 @@ impl<'a> ExecutionState<'a> {
                         MemAccessSize::Mem32 => {
                             (&section.data[offset..]).read_u32::<LE>().unwrap_or(0)
                         }
+                        MemAccessSize::Mem64 => unreachable!(),
                     };
                     return self.ctx.constant(val);
                 }
@@ -870,6 +899,7 @@ impl<'a> ExecutionState<'a> {
                     MemAccessSize::Mem8 => operand_and(combined, self.ctx.const_ff()),
                     MemAccessSize::Mem16 => operand_and(combined, self.ctx.const_ffff()),
                     MemAccessSize::Mem32 => combined,
+                    MemAccessSize::Mem64 => unreachable!(),
                 };
                 return masked;
             }
@@ -883,7 +913,9 @@ impl<'a> ExecutionState<'a> {
         use crate::operand::operand_helpers::*;
 
         match value.ty {
-            OperandType::Register(reg) => interner.operand(self.registers[reg.0 as usize]),
+            OperandType::Register(reg) | OperandType::Register64(reg) => {
+                interner.operand(self.registers[reg.0 as usize])
+            }
             OperandType::Register16(reg) => {
                 operand_and(
                     interner.operand(self.registers[reg.0 as usize]),
@@ -923,11 +955,16 @@ impl<'a> ExecutionState<'a> {
                 let ty = OperandType::Arithmetic(self.resolve_arith(op, interner));
                 Operand::new_not_simplified_rc(ty)
             }
+            OperandType::Arithmetic64(ref op) => {
+                let ty = OperandType::Arithmetic64(self.resolve_arith(op, interner));
+                Operand::new_not_simplified_rc(ty)
+            }
             OperandType::ArithmeticHigh(ref op) => {
                 let ty = OperandType::ArithmeticHigh(self.resolve_arith(op, interner));
                 Operand::new_not_simplified_rc(ty)
             }
             OperandType::Constant(_) => value.clone(),
+            OperandType::Constant64(_) => value.clone(),
             OperandType::Memory(ref mem) => {
                 self.resolve_mem(mem, interner)
             }
