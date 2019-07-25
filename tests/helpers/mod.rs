@@ -4,7 +4,7 @@ use std::io::Read;
 
 use scarf::{self, BinaryFile, BinarySection, VirtualAddress};
 
-pub fn raw_bin(filename: &OsStr) -> Result<BinaryFile, scarf::Error> {
+pub fn raw_bin(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, scarf::Error> {
     let mut file = std::fs::File::open(filename)?;
     let mut buf = vec![];
     file.read_to_end(&mut buf)?;
@@ -18,7 +18,6 @@ pub fn raw_bin(filename: &OsStr) -> Result<BinaryFile, scarf::Error> {
             x
         },
         virtual_address: VirtualAddress(0x401000),
-        physical_address: ::scarf::PhysicalAddress(0x1000),
         virtual_size: buf.len() as u32,
         data: buf,
     }]))

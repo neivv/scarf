@@ -12,11 +12,14 @@ use scarf::{
     BinaryFile, VirtualAddress
 };
 
+type Analysis<'a> =
+    analysis::FuncAnalysis<'a, scarf::ExecutionStateX86<'a>, analysis::DefaultState>;
+
 #[test]
 fn switch_cfg() {
     let (binary, func) = load_test(0);
     let ctx = scarf::operand::OperandContext::new();
-    let analysis = analysis::FuncAnalysis::new(&binary, &ctx, func);
+    let analysis = Analysis::new(&binary, &ctx, func);
     let (mut cfg, errors) = analysis.finish();
     cfg.calculate_distances();
     assert!(errors.is_empty());
@@ -37,7 +40,7 @@ fn switch_cfg() {
 fn undecideable() {
     let (binary, func) = load_test(1);
     let ctx = scarf::operand::OperandContext::new();
-    let analysis = analysis::FuncAnalysis::new(&binary, &ctx, func);
+    let analysis = Analysis::new(&binary, &ctx, func);
     let (mut cfg, errors) = analysis.finish();
     assert!(errors.is_empty());
 
@@ -49,7 +52,7 @@ fn undecideable() {
 fn switch_but_constant_case() {
     let (binary, func) = load_test(2);
     let ctx = scarf::operand::OperandContext::new();
-    let analysis = analysis::FuncAnalysis::new(&binary, &ctx, func);
+    let analysis = Analysis::new(&binary, &ctx, func);
     let (mut cfg, errors) = analysis.finish();
     cfg.calculate_distances();
     assert!(errors.is_empty());
@@ -66,7 +69,7 @@ fn switch_but_constant_case() {
     }
 }
 
-fn load_test(idx: usize) -> (BinaryFile, VirtualAddress) {
+fn load_test(idx: usize) -> (BinaryFile<VirtualAddress>, VirtualAddress) {
     let binary = helpers::raw_bin(OsStr::new("test_inputs/cfg.bin")).unwrap();
     let offset = (&binary.code_section().data[idx * 4..]).read_u32::<LittleEndian>().unwrap();
     let func = binary.code_section().virtual_address + offset;

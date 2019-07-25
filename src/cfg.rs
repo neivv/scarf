@@ -3,28 +3,29 @@ use std::marker::PhantomData;
 use std::mem;
 use std::rc::Rc;
 
-use crate::analysis::FuncAnalysis;
-use crate::disasm::Operation;
-use crate::exec_state::{ExecutionState, InternMap};
-use crate::operand::{Operand, OperandContext};
-use crate::{BinaryFile, VirtualAddress};
+use crate::exec_state::{InternMap, VirtualAddress};
+use crate::operand::{Operand};
 
 #[derive(Debug, Clone)]
-pub struct Cfg<State> {
+pub struct Cfg<State: CfgState> {
     // Sorted
-    nodes: Vec<(VirtualAddress, CfgNode<State>)>,
-    entry: NodeLink,
+    nodes: Vec<(State::VirtualAddress, CfgNode<State>)>,
+    entry: NodeLink<State::VirtualAddress>,
     node_indices_dirty: bool,
     // Just to be set once the cfg is available to users,
     // so they can resolve the states
     pub interner: InternMap,
 }
 
-impl<S> Cfg<S> {
+pub trait CfgState {
+    type VirtualAddress: VirtualAddress;
+}
+
+impl<S: CfgState> Cfg<S> {
     pub fn new() -> Cfg<S> {
         Cfg {
             nodes: Vec::with_capacity(16),
-            entry: NodeLink::new(VirtualAddress(!0)),
+            entry: NodeLink::new(S::VirtualAddress::max_value()),
             node_indices_dirty: false,
             interner: InternMap::new(),
         }
@@ -34,14 +35,14 @@ impl<S> Cfg<S> {
         self.node_indices_dirty = true;
     }
 
-    pub fn get(&self, address: VirtualAddress) -> Option<&CfgNode<S>> {
+    pub fn get(&self, address: S::VirtualAddress) -> Option<&CfgNode<S>> {
         match self.nodes.binary_search_by_key(&address, |x| x.0) {
             Ok(idx) => Some(&self.nodes[idx].1),
             _ => None,
         }
     }
 
-    pub fn add_node(&mut self, address: VirtualAddress, node: CfgNode<S>) {
+    pub fn add_node(&mut self, address: S::VirtualAddress, node: CfgNode<S>) {
         if self.nodes.is_empty() {
             self.entry = NodeLink::new(address);
         }
@@ -107,7 +108,7 @@ impl<S> Cfg<S> {
                         }
                         (&mut CfgOutEdges::None, _) | (_, &mut CfgOutEdges::None) => {
                             error!("Logic error: One of {:x}, {:x} has no out edges, \
-                                   other one does", start_addr.0, next_addr.0);
+                                   other one does", start_addr, next_addr);
                         }
                         _ => (),
                     }
@@ -116,35 +117,6 @@ impl<S> Cfg<S> {
             }
         }
         self.mark_dirty();
-    }
-
-    pub fn resolve_cond_jump_operands<F>(&mut self, binary: &BinaryFile, mut hook: F)
-    where F: FnMut(&Operation, &mut ExecutionState, VirtualAddress, &mut InternMap)
-    {
-        let ctx = OperandContext::new();
-        for &mut (address, ref mut node) in &mut self.nodes {
-            if let CfgOutEdges::Branch(_, ref mut cond) = node.out_edges {
-                let mut analysis = FuncAnalysis::new(binary, &ctx, address);
-                let mut branch = analysis.next_branch()
-                    .expect("New analysis should always have a branch.");
-                let mut ops = branch.operations();
-                while let Some((op, state, address, i)) = ops.next() {
-                    hook(op, state, address, i);
-                    let final_op = if address == node.end_address {
-                        true
-                    } else {
-                        match *op {
-                            Operation::Jump { .. } | Operation::Return(_) => true,
-                            _ => false,
-                        }
-                    };
-                    if final_op {
-                        cond.condition = state.resolve(&cond.condition, i);
-                        break;
-                    }
-                }
-            }
-        }
     }
 
     /// Can only be called on a graph with all node links being addresses of one of
@@ -177,7 +149,7 @@ impl<S> Cfg<S> {
             let address = node_pair.0;
             let node = &mut node_pair.1;
             let end_address = node.end_address;
-            let update_node = |link: &mut NodeLink| {
+            let update_node = |link: &mut NodeLink<S::VirtualAddress>| {
                 if link.is_unknown() {
                     return;
                 }
@@ -230,7 +202,7 @@ impl<S> Cfg<S> {
 
     /// Can only be called on a graph with all node links being addresses of one of
     /// the nodes in graph.
-    pub fn cycles(&mut self) -> Vec<Vec<NodeLink>> {
+    pub fn cycles(&mut self) -> Vec<Vec<NodeLink<S::VirtualAddress>>> {
         #[derive(Copy, Clone, Eq, PartialEq)]
         enum CheckState {
             Unchecked,
@@ -350,11 +322,11 @@ impl<S> Cfg<S> {
         // its child branches.
         assert!(!self.node_indices_dirty);
 
-        struct State<'exec, S> {
+        struct State<'exec, S: CfgState> {
             mark_buf: Vec<u32>,
             forks: Vec<(usize, u32)>,
             mark_indices: Vec<usize>,
-            nodes: &'exec [(VirtualAddress, CfgNode<S>)],
+            nodes: &'exec [(S::VirtualAddress, CfgNode<S>)],
         }
         let mut state = State {
             mark_buf: vec![0u32; self.nodes.len()],
@@ -364,7 +336,7 @@ impl<S> Cfg<S> {
         };
 
         // Return Err on quick exit, Ok for continuing to rest of branches
-        fn traverse_first_branch<'a, S>(
+        fn traverse_first_branch<'a, S: CfgState>(
             state: &mut State<'a, S>,
             node: NodeIndex<'a, S>,
         ) -> Result<Vec<u32>, Option<NodeBorrow<'a, S>>> {
@@ -431,7 +403,7 @@ impl<S> Cfg<S> {
             }
         }
 
-        fn traverse_rest<'a, S>(
+        fn traverse_rest<'a, S: CfgState>(
             state: &mut State<'a, S>,
             mark_limits: &mut [u32],
         ) -> Option<NodeBorrow<'a, S>> {
@@ -530,11 +502,26 @@ impl<S> Cfg<S> {
         };
         traverse_rest(&mut state, &mut mark_limits)
     }
+
+    /// Converts conditions to resolved form (Relative to branch start).
+    ///
+    /// The actual conversion function
+    /// fn x(condition: Rc<Operand>, start: VirtualAddress, end: VirtualAddress)
+    /// has to be provided by caller.
+    pub fn resolve_cond_jump_operands<F>(&mut self, mut convert: F)
+    where F: FnMut(&Rc<Operand>, S::VirtualAddress, S::VirtualAddress) -> Rc<Operand>
+    {
+        for &mut (address, ref mut node) in &mut self.nodes {
+            if let CfgOutEdges::Branch(_, ref mut cond) = node.out_edges {
+                cond.condition = convert(&cond.condition, address, node.end_address);
+            }
+        }
+    }
 }
 
 /// Link indices must be correct.
-fn calculate_node_distance<S>(
-    nodes: &mut [(VirtualAddress, CfgNode<S>)],
+fn calculate_node_distance<S: CfgState>(
+    nodes: &mut [(S::VirtualAddress, CfgNode<S>)],
     buf: &mut Vec<usize>,
     node_index: usize,
     distance: u32,
@@ -559,8 +546,8 @@ fn calculate_node_distance<S>(
     }
 }
 
-pub struct CfgNodeIter<'a, S>(::std::slice::Iter<'a, (VirtualAddress, CfgNode<S>)>, u32);
-impl<'a, S> Iterator for CfgNodeIter<'a, S> {
+pub struct CfgNodeIter<'a, S: CfgState>(::std::slice::Iter<'a, (S::VirtualAddress, CfgNode<S>)>, u32);
+impl<'a, S: CfgState> Iterator for CfgNodeIter<'a, S> {
     type Item = NodeBorrow<'a, S>;
     fn next(&mut self) -> Option<Self::Item> {
         let index = NodeIndex(self.1, PhantomData);
@@ -574,40 +561,40 @@ impl<'a, S> Iterator for CfgNodeIter<'a, S> {
 }
 
 #[derive(Debug, Clone)]
-pub struct NodeBorrow<'a, State> {
+pub struct NodeBorrow<'a, State: CfgState> {
     pub node: &'a CfgNode<State>,
     pub index: NodeIndex<'a, State>,
-    pub address: VirtualAddress,
+    pub address: State::VirtualAddress,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct NodeIndex<'a, S>(u32, PhantomData<&'a Cfg<S>>);
+pub struct NodeIndex<'a, S: CfgState>(u32, PhantomData<&'a Cfg<S>>);
 
 #[derive(Debug, Clone)]
-pub struct CfgNode<State> {
-    pub out_edges: CfgOutEdges,
+pub struct CfgNode<State: CfgState> {
+    pub out_edges: CfgOutEdges<State::VirtualAddress>,
     // The address is to the first instruction of in edge nodes instead of the jump-here address,
     // obviously so it can be looked up with Cfg::nodes.
     pub state: State,
-    pub end_address: VirtualAddress,
+    pub end_address: State::VirtualAddress,
     /// Distance from entry, first node has 1, its connected nodes have 2, etc.
     pub distance: u32,
 }
 
 #[derive(Debug, Clone)]
-pub enum CfgOutEdges {
+pub enum CfgOutEdges<Va: VirtualAddress> {
     None,
-    Single(NodeLink),
+    Single(NodeLink<Va>),
     // The operand is unresolved at the state of jump.
     // Could reanalyse the block and show it resolved (effectively unresolved to start of the
     // block) when Cfg is publicly available.
-    Branch(NodeLink, OutEdgeCondition),
+    Branch(NodeLink<Va>, OutEdgeCondition<Va>),
     // The operand should be a direct, resolved index to the table
-    Switch(Vec<NodeLink>, Rc<Operand>),
+    Switch(Vec<NodeLink<Va>>, Rc<Operand>),
 }
 
-impl CfgOutEdges {
-    pub fn default_address(&self) -> Option<VirtualAddress> {
+impl<Va: VirtualAddress> CfgOutEdges<Va> {
+    pub fn default_address(&self) -> Option<Va> {
         match *self {
             CfgOutEdges::None => None,
             CfgOutEdges::Single(ref x) => Some(x.address),
@@ -616,15 +603,15 @@ impl CfgOutEdges {
         }
     }
 
-    pub fn out_nodes(&self) -> CfgOutEdgesNodes {
+    pub fn out_nodes(&self) -> CfgOutEdgesNodes<Va> {
         CfgOutEdgesNodes(self, 0)
     }
 }
 
-pub struct CfgOutEdgesNodes<'a>(&'a CfgOutEdges, usize);
+pub struct CfgOutEdgesNodes<'a, Va: VirtualAddress>(&'a CfgOutEdges<Va>, usize);
 
-impl<'a> Iterator for CfgOutEdgesNodes<'a> {
-    type Item = &'a NodeLink;
+impl<'a, Va: VirtualAddress> Iterator for CfgOutEdgesNodes<'a, Va> {
+    type Item = &'a NodeLink<Va>;
     fn next(&mut self) -> Option<Self::Item> {
         let result = match *self.0 {
             CfgOutEdges::None => None,
@@ -645,20 +632,20 @@ impl<'a> Iterator for CfgOutEdgesNodes<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct OutEdgeCondition {
-    pub node: NodeLink,
+pub struct OutEdgeCondition<Va: VirtualAddress> {
+    pub node: NodeLink<Va>,
     pub condition: Rc<Operand>,
 }
 
 #[derive(Debug, Clone, Eq)]
 /// The address is considered a stable link to a node, while index is invalid if the parent
 /// graph's node_indices_dirty is true.
-pub struct NodeLink {
-    address: VirtualAddress,
+pub struct NodeLink<Va: VirtualAddress> {
+    address: Va,
     index: u32,
 }
 
-impl Ord for NodeLink {
+impl<Va: VirtualAddress> Ord for NodeLink<Va> {
     fn cmp(&self, other: &Self) -> Ordering {
         let NodeLink {
             ref address,
@@ -668,13 +655,13 @@ impl Ord for NodeLink {
     }
 }
 
-impl PartialOrd for NodeLink {
+impl<Va: VirtualAddress> PartialOrd for NodeLink<Va> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl PartialEq for NodeLink {
+impl<Va: VirtualAddress> PartialEq for NodeLink<Va> {
     fn eq(&self, other: &Self) -> bool {
         let NodeLink {
             ref address,
@@ -684,17 +671,17 @@ impl PartialEq for NodeLink {
     }
 }
 
-impl NodeLink {
-    pub fn new(address: VirtualAddress) -> NodeLink {
+impl<Va: VirtualAddress> NodeLink<Va> {
+    pub fn new(address: Va) -> NodeLink<Va> {
         NodeLink {
             address,
             index: !0,
         }
     }
 
-    pub fn unknown() -> NodeLink {
+    pub fn unknown() -> NodeLink<Va> {
         NodeLink {
-            address: VirtualAddress(!0),
+            address: Va::max_value(),
             index: !0,
         }
     }
@@ -703,7 +690,7 @@ impl NodeLink {
         *self == NodeLink::unknown()
     }
 
-    pub fn address(&self) -> VirtualAddress {
+    pub fn address(&self) -> Va {
         self.address
     }
 
@@ -725,25 +712,30 @@ mod test {
     use super::*;
     use crate::VirtualAddress;
 
-    fn node0(addr: u32) -> CfgNode<()> {
+    struct EmptyState;
+    impl CfgState for EmptyState {
+        type VirtualAddress = VirtualAddress;
+    }
+
+    fn node0(addr: u32) -> CfgNode<EmptyState> {
         CfgNode {
             out_edges: CfgOutEdges::None,
-            state: (),
+            state: EmptyState,
             end_address: VirtualAddress(addr + 1),
             distance: 0,
         }
     }
 
-    fn node1(addr: u32, out: u32) -> CfgNode<()> {
+    fn node1(addr: u32, out: u32) -> CfgNode<EmptyState> {
         CfgNode {
             out_edges: CfgOutEdges::Single(NodeLink::new(VirtualAddress(out))),
-            state: (),
+            state: EmptyState,
             end_address: VirtualAddress(addr + 1),
             distance: 0,
         }
     }
 
-    fn node2(addr: u32, out: u32, out2: u32) -> CfgNode<()> {
+    fn node2(addr: u32, out: u32, out2: u32) -> CfgNode<EmptyState> {
         CfgNode {
             out_edges: CfgOutEdges::Branch(
                 NodeLink::new(VirtualAddress(out)),
@@ -752,7 +744,7 @@ mod test {
                     condition: crate::operand_helpers::operand_register(0),
                 },
             ),
-            state: (),
+            state: EmptyState,
             end_address: VirtualAddress(addr + 1),
             distance: 0,
         }

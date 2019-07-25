@@ -4,11 +4,11 @@ use std::rc::Rc;
 
 use hex_slice::AsHex;
 
-use crate::cfg::{Cfg, CfgOutEdges, NodeLink};
+use crate::cfg::{Cfg, CfgState, CfgOutEdges, NodeLink};
+use crate::exec_state::VirtualAddress;
 use crate::operand::{ArithOpType, Operand, OperandType};
-use crate::VirtualAddress;
 
-pub fn write<W: Write, S>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(), io::Error> {
+pub fn write<W: Write, S: CfgState>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(), io::Error> {
     writeln!(out, "digraph func {{")?;
     let mut nodes = HashMap::new();
     let mut node_name_pos = 0;
@@ -22,14 +22,14 @@ pub fn write<W: Write, S>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(), io::Error
     for n in cfg.nodes() {
         let node_name = next_node_name(&mut node_name_pos);
         let mut label = format!(
-            "{:08x} -> {:08x}\nDistance: {}",
-            n.address.0,
-            n.node.end_address.0,
+            "{:x} -> {:x}\nDistance: {}",
+            n.address,
+            n.node.end_address,
             n.node.distance,
         );
         for cycle in cycles.iter().filter(|x| x[0].address() == n.address) {
             use std::fmt::Write;
-            let cycle = cycle.iter().map(|x| x.address().0).collect::<Vec<_>>();
+            let cycle = cycle.iter().map(|x| x.address().inner()).collect::<Vec<_>>();
             write!(label, "\nCycle {:x}", cycle.as_hex()).unwrap();
         }
         writeln!(out, "  {} [label=\"{}\"];", node_name, label)?;
@@ -37,7 +37,7 @@ pub fn write<W: Write, S>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(), io::Error
     }
     for n in cfg.nodes() {
         let node_name = nodes.get(&n.address).expect("Broken graph");
-        let mut print = |node: &NodeLink, cond| print_out_edge(
+        let mut print = |node: &NodeLink<S::VirtualAddress>, cond| print_out_edge(
             out,
             &node_name,
             node.address(),
@@ -66,16 +66,16 @@ pub fn write<W: Write, S>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(), io::Error
     Ok(())
 }
 
-fn print_out_edge<W: Write>(
+fn print_out_edge<W: Write, Va: VirtualAddress>(
     out: &mut W,
     src: &str,
-    addr: VirtualAddress,
-    nodes: &HashMap<VirtualAddress, String>,
+    addr: Va,
+    nodes: &HashMap<Va, String>,
     node_name_pos: &mut u32,
     name: Option<String>,
 ) -> Result<(), io::Error> {
     let node_name;
-    let dest = if addr == VirtualAddress(!0) {
+    let dest = if addr == Va::max_value() {
         node_name = next_node_name(node_name_pos);
         writeln!(out, "  {} [label=\"???\"];", node_name)?;
         &node_name

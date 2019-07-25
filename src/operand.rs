@@ -1703,6 +1703,16 @@ impl Operand {
         }
     }
 
+    /// Returns `Some(c)` if `self.ty` is `OperandType::Constant(c)` *or*
+    /// `OperandType::Constant64(c)`
+    pub fn if_constant64(&self) -> Option<u64> {
+        match self.ty {
+            OperandType::Constant(c) => Some(c as u64),
+            OperandType::Constant64(c) => Some(c),
+            _ => None,
+        }
+    }
+
     /// Returns `Some(r)` if `self.ty` is `OperandType::Register(r)`
     pub fn if_register(&self) -> Option<Register> {
         match self.ty {

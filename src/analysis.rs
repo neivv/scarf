@@ -4,9 +4,10 @@ use std::rc::Rc;
 use byteorder::{LittleEndian, ReadBytesExt};
 use quick_error::quick_error;
 
-use crate::cfg::{CfgOutEdges, NodeLink, OutEdgeCondition};
-use crate::disasm::{self, DestOperand, Instruction, Operation};
-use crate::exec_state::{self, ExecutionState};
+use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
+use crate::disasm::{self, Instruction, Operation};
+use crate::exec_state::{self, Disassembler, ExecutionState, InternMap};
+use crate::exec_state::VirtualAddress as VaTrait;
 use crate::operand::{Operand, OperandContext};
 use crate::{BinaryFile, BinarySection, VirtualAddress};
 
@@ -20,8 +21,17 @@ quick_error! {
     }
 }
 
-pub type Cfg<'a, S> = crate::cfg::Cfg<Box<(ExecutionState<'a>, S)>>;
-pub type CfgNode<'a, S> = crate::cfg::CfgNode<Box<(ExecutionState<'a>, S)>>;
+pub type Cfg<'a, E, S> = cfg::Cfg<CfgState<'a, E, S>>;
+
+#[derive(Debug)]
+pub struct CfgState<'a, E: ExecutionState<'a>, S: AnalysisState> {
+    data: Box<(E, S)>,
+    phantom: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, E: ExecutionState<'a>, S: AnalysisState> cfg::CfgState for CfgState<'a, E, S> {
+    type VirtualAddress = E::VirtualAddress;
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct FuncCallPair {
@@ -36,7 +46,7 @@ pub struct FuncPtrPair {
 }
 
 /// Sorted by callee, so looking up callers can be done with bsearch
-pub fn find_functions_with_callers(file: &BinaryFile) -> Vec<FuncCallPair> {
+pub fn find_functions_with_callers(file: &BinaryFile<VirtualAddress>) -> Vec<FuncCallPair> {
     let mut out = Vec::with_capacity(800);
     for code in file.code_sections() {
         let data = &code.data;
@@ -85,7 +95,7 @@ fn find_functions_from_calls(
 /// Attempts to find functions of a binary, accepting ones that are called/long jumped to
 /// from somewhere.
 /// Returns addresses relative to start of code section.
-pub fn find_functions(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<VirtualAddress> {
+pub fn find_functions(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddress]) -> Vec<VirtualAddress> {
     let mut called_functions = Vec::new();
     for section in file.code_sections() {
         find_functions_from_calls(&section.data, section.virtual_address, &mut called_functions);
@@ -97,7 +107,7 @@ pub fn find_functions(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<Virtu
 }
 
 // Sorted by address
-pub fn find_switch_tables(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
+pub fn find_switch_tables(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
     let mut out = Vec::with_capacity(4096);
     for sect in file.code_sections() {
         collect_relocs_pointing_to_code(sect, relocs, sect, &mut out);
@@ -105,7 +115,7 @@ pub fn find_switch_tables(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<F
     out
 }
 
-fn find_funcptrs(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
+fn find_funcptrs(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
     let mut out = Vec::with_capacity(4096);
     let code = file.code_section();
     for sect in file.sections.iter().filter(|sect| {
@@ -119,9 +129,9 @@ fn find_funcptrs(file: &BinaryFile, relocs: &[VirtualAddress]) -> Vec<FuncPtrPai
 }
 
 fn collect_relocs_pointing_to_code(
-    code: &BinarySection,
+    code: &BinarySection<VirtualAddress>,
     relocs: &[VirtualAddress],
-    sect: &BinarySection,
+    sect: &BinarySection<VirtualAddress>,
     out: &mut Vec<FuncPtrPair>,
 ) {
     let start = match relocs.binary_search(&sect.virtual_address) {
@@ -166,7 +176,7 @@ macro_rules! try_get {
     }
 }
 
-pub fn find_relocs(file: &BinaryFile) -> Result<Vec<VirtualAddress>, crate::Error> {
+pub fn find_relocs(file: &BinaryFile<VirtualAddress>) -> Result<Vec<VirtualAddress>, crate::Error> {
     let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
     let reloc_offset = file.read_u32(pe_header + 0xa0)?;
     let reloc_len = file.read_u32(pe_header + 0xa4)?;
@@ -201,7 +211,7 @@ pub struct RelocValues {
 
 /// The returned array is sorted by value
 pub fn relocs_with_values(
-    file: &BinaryFile,
+    file: &BinaryFile<VirtualAddress>,
     mut relocs: &[VirtualAddress],
 ) -> Result<Vec<RelocValues>, crate::Error> {
     let mut result = Vec::with_capacity(relocs.len());
@@ -236,27 +246,28 @@ pub trait AnalysisState: Clone {
 
 #[derive(Default, Clone, Debug)]
 pub struct DefaultState;
+
 impl AnalysisState for DefaultState {
     fn merge(&mut self, _newer: Self) {
     }
 }
 
-pub struct FuncAnalysis<'a, State: AnalysisState> {
-    binary: &'a BinaryFile,
-    cfg: Cfg<'a, State>,
-    unchecked_branches: BTreeMap<VirtualAddress, (ExecutionState<'a>, State)>,
+pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
+    binary: &'a BinaryFile<Exec::VirtualAddress>,
+    cfg: Cfg<'a, Exec, State>,
+    unchecked_branches: BTreeMap<Exec::VirtualAddress, (Exec, State)>,
     operand_ctx: &'a OperandContext,
-    pub interner: exec_state::InternMap,
+    pub interner: InternMap,
     /// (Func, arg1, arg2)
-    pub errors: Vec<(VirtualAddress, Error)>,
+    pub errors: Vec<(Exec::VirtualAddress, Error)>,
 }
 
-pub struct Control<'exec: 'b, 'b, State: AnalysisState> {
-    state: &'b mut (ExecutionState<'exec>, State),
-    analysis: &'b mut FuncAnalysis<'exec, State>,
+pub struct Control<'exec: 'b, 'b, Exec: ExecutionState<'exec>, State: AnalysisState> {
+    state: &'b mut (Exec, State),
+    analysis: &'b mut FuncAnalysis<'exec, Exec, State>,
     // Set by Analyzer callback if it wants an early exit
     end: Option<End>,
-    address: VirtualAddress,
+    address: Exec::VirtualAddress,
     instruction_length: u32,
 }
 
@@ -266,7 +277,7 @@ enum End {
     Branch,
 }
 
-impl<'exec: 'b, 'b, S: AnalysisState> Control<'exec, 'b, S> {
+impl<'exec: 'b, 'b, Exec: ExecutionState<'exec>, S: AnalysisState> Control<'exec, 'b, Exec, S> {
     pub fn end_analysis(&mut self) {
         if self.end.is_none() {
             self.end = Some(End::Function);
@@ -284,7 +295,7 @@ impl<'exec: 'b, 'b, S: AnalysisState> Control<'exec, 'b, S> {
         &mut self.state.1
     }
 
-    pub fn exec_state(&mut self) -> (&mut ExecutionState<'exec>, &mut exec_state::InternMap) {
+    pub fn exec_state(&mut self) -> (&mut Exec, &mut InternMap) {
         (&mut self.state.0, &mut self.analysis.interner)
     }
 
@@ -292,34 +303,22 @@ impl<'exec: 'b, 'b, S: AnalysisState> Control<'exec, 'b, S> {
         self.state.0.resolve(val, &mut self.analysis.interner)
     }
 
-    pub fn try_resolve_const(&mut self, val: &Rc<Operand>) -> Option<u32> {
-        self.state.0.try_resolve_const(&val, &mut self.analysis.interner)
+    pub fn resolve_apply_constraints(&mut self, val: &Rc<Operand>) -> Rc<Operand> {
+        self.state.0.resolve_apply_constraints(&val, &mut self.analysis.interner)
     }
 
     /// Takes current analysis' state as starting state for a function.
     /// ("Calls the function")
     /// However, this does not update the state to what this function changes it to.
-    pub fn analyze_with_current_state<A: Analyzer<'exec, State = S>>(
+    pub fn analyze_with_current_state<A: Analyzer<'exec, State = S, Exec = Exec>>(
         &mut self,
         analyzer: &mut A,
-        entry: VirtualAddress,
+        entry: Exec::VirtualAddress,
     ) {
-        use crate::operand_helpers::*;
-
         let mut state = self.state.clone();
         let ctx = self.analysis.operand_ctx;
-        let esp = ctx.register(4);
         let mut i = self.analysis.interner.clone();
-        state.0.move_to(
-            DestOperand::from_oper(&esp),
-            operand_sub(esp.clone(), ctx.const_4()),
-            &mut i,
-        );
-        state.0.move_to(
-            DestOperand::from_oper(&mem32(esp)),
-            ctx.constant(self.current_instruction_end().0),
-            &mut i,
-        );
+        state.0.apply_call(self.current_instruction_end(), &mut i);
         let mut analysis =
             FuncAnalysis::custom_state(self.analysis.binary, ctx, entry, state.0, state.1, i);
         analysis.analyze(analyzer);
@@ -327,27 +326,15 @@ impl<'exec: 'b, 'b, S: AnalysisState> Control<'exec, 'b, S> {
 
     /// Calls the function and updates own state (Both ExecutionState and custom) to
     /// a merge of states at this child function's return points.
-    pub fn inline<A: Analyzer<'exec, State = S>>(
+    pub fn inline<A: Analyzer<'exec, State = S, Exec = Exec>>(
         &mut self,
         analyzer: &mut A,
-        entry: VirtualAddress,
+        entry: Exec::VirtualAddress,
     ) {
-        use crate::operand_helpers::*;
-
         let mut state = self.state.clone();
         let ctx = self.analysis.operand_ctx;
-        let esp = ctx.register(4);
         let mut i = self.analysis.interner.clone();
-        state.0.move_to(
-            DestOperand::from_oper(&esp),
-            operand_sub(esp.clone(), ctx.const_4()),
-            &mut i,
-        );
-        state.0.move_to(
-            DestOperand::from_oper(&mem32(esp)),
-            ctx.constant(self.current_instruction_end().0),
-            &mut i,
-        );
+        state.0.apply_call(self.current_instruction_end(), &mut i);
         let mut analysis =
             FuncAnalysis::custom_state(self.analysis.binary, ctx, entry, state.0, state.1, i);
         let mut analyzer = CollectReturnsAnalyzer::new(analyzer);
@@ -358,36 +345,40 @@ impl<'exec: 'b, 'b, S: AnalysisState> Control<'exec, 'b, S> {
         }
     }
 
-    pub fn address(&self) -> VirtualAddress {
+    pub fn address(&self) -> Exec::VirtualAddress {
         self.address
     }
 
     /// Can be used for determining address for a branch when jump isn't followed and such.
-    pub fn current_instruction_end(&self) -> VirtualAddress {
-        VirtualAddress(self.address.0.wrapping_add(self.instruction_length))
+    pub fn current_instruction_end(&self) -> Exec::VirtualAddress {
+        self.address + self.instruction_length
     }
 }
 
 pub trait Analyzer<'exec> {
     type State: AnalysisState;
-    fn branch_start(&mut self, _control: &mut Control<'exec, '_, Self::State>) { }
-    fn branch_end(&mut self, _control: &mut Control<'exec, '_, Self::State>) { }
-    fn operation(&mut self, _control: &mut Control<'exec, '_, Self::State>, _op: &Operation) { }
+    type Exec: ExecutionState<'exec>;
+    fn branch_start<'b>(&mut self, _control: &mut Control<'exec, 'b, Self::Exec, Self::State>)
+    where 'exec: 'b { }
+    fn branch_end<'b>(&mut self, _control: &mut Control<'exec, 'b, Self::Exec, Self::State>)
+    where 'exec: 'b { }
+    fn operation<'b>(&mut self, _control: &mut Control<'exec, 'b, Self::Exec, Self::State>, _op: &Operation)
+    where 'exec: 'b { }
 }
 
-impl<'a> FuncAnalysis<'a, DefaultState> {
-    pub fn new<'b>(
-        binary: &'b BinaryFile,
-        operand_ctx: &'b OperandContext,
-        start_address: VirtualAddress,
-    ) -> FuncAnalysis<'b, DefaultState> {
-        let mut interner = exec_state::InternMap::new();
+impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
+    pub fn new(
+        binary: &'a BinaryFile<Exec::VirtualAddress>,
+        operand_ctx: &'a OperandContext,
+        start_address: Exec::VirtualAddress,
+    ) -> FuncAnalysis<'a, Exec, DefaultState> {
+        let mut interner = InternMap::new();
         FuncAnalysis {
             binary,
             errors: Vec::new(),
             cfg: Cfg::new(),
             unchecked_branches: {
-                let init_state = initial_exec_state(&operand_ctx, binary, &mut interner);
+                let init_state = Exec::initial_state(&operand_ctx, binary, &mut interner);
                 let mut map = BTreeMap::new();
                 map.insert(start_address, (init_state, DefaultState::default()));
                 map
@@ -397,13 +388,13 @@ impl<'a> FuncAnalysis<'a, DefaultState> {
         }
     }
 
-    pub fn with_state<'b>(
-        binary: &'b BinaryFile,
-        operand_ctx: &'b OperandContext,
-        start_address: VirtualAddress,
-        state: ExecutionState<'b>,
-        interner: exec_state::InternMap,
-    ) -> FuncAnalysis<'b, DefaultState> {
+    pub fn with_state(
+        binary: &'a BinaryFile<Exec::VirtualAddress>,
+        operand_ctx: &'a OperandContext,
+        start_address: Exec::VirtualAddress,
+        state: Exec,
+        interner: InternMap,
+    ) -> FuncAnalysis<'a, Exec, DefaultState> {
         FuncAnalysis {
             binary,
             errors: Vec::new(),
@@ -419,15 +410,15 @@ impl<'a> FuncAnalysis<'a, DefaultState> {
     }
 }
 
-impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
-    pub fn custom_state<'b>(
-        binary: &'b BinaryFile,
-        operand_ctx: &'b OperandContext,
-        start_address: VirtualAddress,
-        exec_state: ExecutionState<'b>,
+impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, State> {
+    pub fn custom_state(
+        binary: &'a BinaryFile<Exec::VirtualAddress>,
+        operand_ctx: &'a OperandContext,
+        start_address: Exec::VirtualAddress,
+        exec_state: Exec,
         analysis_state: State,
-        interner: exec_state::InternMap,
-    ) -> FuncAnalysis<'b, State> {
+        interner: InternMap,
+    ) -> FuncAnalysis<'a, Exec, State> {
         FuncAnalysis {
             binary,
             errors: Vec::new(),
@@ -442,13 +433,13 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
         }
     }
 
-    pub fn analyze<A: Analyzer<'a, State = State>>(&mut self, analyzer: &mut A) {
+    pub fn analyze<A: Analyzer<'a, State = State, Exec = Exec>>(&mut self, analyzer: &mut A) {
         while let Some((addr, (exec_state, analysis_state))) = self.pop_next_branch() {
             let mut state = match self.cfg.get(addr) {
                 Some(old_node) => {
-                    exec_state::merge_states(&old_node.state.0, &exec_state, &mut self.interner)
+                    Exec::merge_states(&old_node.state.data.0, &exec_state, &mut self.interner)
                         .map(|e| {
-                            let mut state = old_node.state.1.clone();
+                            let mut state = old_node.state.data.1.clone();
                             state.merge(analysis_state);
                             (e, state)
                         })
@@ -464,11 +455,11 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
         }
     }
 
-    fn analyze_branch<'b, A: Analyzer<'a, State = State>>(
+    fn analyze_branch<'b, A: Analyzer<'a, State = State, Exec = Exec>>(
         &mut self,
         analyzer: &mut A,
-        addr: VirtualAddress,
-        state: &'b mut (ExecutionState<'a>, State),
+        addr: Exec::VirtualAddress,
+        state: &'b mut (Exec, State),
     ) -> Option<End> {
         let binary = self.binary;
         let section = match binary.section_by_addr(addr) {
@@ -489,8 +480,12 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
             return control.end;
         }
 
-        let rva = (addr - section.virtual_address).0 as usize;
-        let mut disasm = disasm::Disassembler::new(&section.data, rva, section.virtual_address);
+        let rva = (addr.as_u64() - section.virtual_address.as_u64()) as usize;
+        let mut disasm = Exec::Disassembler::new(
+            &section.data,
+            rva,
+            section.virtual_address,
+        );
 
         let init_state = control.state.clone();
         let mut cfg_out_edge = CfgOutEdges::None;
@@ -500,7 +495,7 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
                 control.address = address;
                 let ins = match disasm.next(operand_ctx) {
                     Ok(o) => o,
-                    Err(disasm::Error::Branch(_)) => {
+                    Err(disasm::Error::Branch) => {
                         break 'branch_loop;
                     }
                     Err(_) => {
@@ -534,14 +529,17 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
                     }
                     disasm::Operation::Return(_) => (),
                     o => {
-                        control.state.0.update(o.clone(), &mut control.analysis.interner);
+                        control.state.0.update(o, &mut control.analysis.interner);
                     }
                 }
             }
         }
         control.analysis.cfg.add_node(addr, CfgNode {
             out_edges: cfg_out_edge,
-            state: Box::new(init_state),
+            state: CfgState {
+                data: Box::new(init_state),
+                phantom: Default::default(),
+            },
             end_address: control.address, // Is this correct?
             distance: 0,
         });
@@ -552,8 +550,8 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
 
     fn add_unchecked_branch(
         &mut self,
-        addr: VirtualAddress,
-        exec_state: ExecutionState<'a>,
+        addr: Exec::VirtualAddress,
+        exec_state: Exec,
         analysis_state: State,
     ) {
         use std::collections::btree_map::Entry;
@@ -565,7 +563,7 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
             Entry::Occupied(mut e) => {
                 let interner = &mut self.interner;
                 let val = e.get_mut();
-                if let Some(new) = exec_state::merge_states(&val.0, &exec_state, interner) {
+                if let Some(new) = Exec::merge_states(&val.0, &exec_state, interner) {
                     val.0 = new;
                     val.1.merge(analysis_state);
                 }
@@ -573,15 +571,14 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
         }
     }
 
-    pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a, State>> {
+    pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a, Exec, State>> {
         while let Some((addr, (exec_state, analysis_state))) = self.pop_next_branch() {
             let state = match self.cfg.get(addr) {
                 Some(old_node) => {
-                    exec_state::merge_states(&old_node.state.0, &exec_state, &mut self.interner)
-                        .map(|e| {
-                            let state = old_node.state.1.clone();
-                            (e, state)
-                        })
+                    let old_exec = &old_node.state.data.0;
+                    let old_state = &old_node.state.data.1;
+                    Exec::merge_states(old_exec, &exec_state, &mut self.interner)
+                        .map(|exec| (exec, old_state.clone()))
                 }
                 None => Some((exec_state, analysis_state)),
             };
@@ -599,13 +596,15 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
         None
     }
 
-    fn pop_next_branch(&mut self) -> Option<(VirtualAddress, (ExecutionState<'a>, State))> {
+    fn pop_next_branch(&mut self) ->
+        Option<(Exec::VirtualAddress, (Exec, State))>
+    {
         let addr = self.unchecked_branches.keys().next().cloned()?;
         let state = self.unchecked_branches.remove(&addr).unwrap();
         Some((addr, state))
     }
 
-    pub fn finish(self) -> (Cfg<'a, State>, Vec<(VirtualAddress, Error)>) {
+    pub fn finish(self) -> (Cfg<'a, Exec, State>, Vec<(Exec::VirtualAddress, Error)>) {
         self.finish_with_changes(|_, _, _, _| {})
     }
 
@@ -613,9 +612,13 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
     pub fn finish_with_changes<F>(
         mut self,
         mut hook: F
-    ) -> (Cfg<'a, State>, Vec<(VirtualAddress, Error)>)
-    where F: FnMut(&Operation, &mut ExecutionState, VirtualAddress, &mut exec_state::InternMap)
-    {
+    ) -> (Cfg<'a, Exec, State>, Vec<(Exec::VirtualAddress, Error)>)
+    where F: FnMut(
+        &Operation,
+        &mut Exec,
+        Exec::VirtualAddress,
+        &mut InternMap,
+    ) {
         while let Some(mut branch) = self.next_branch() {
             let mut ops = branch.operations();
             while let Some((a, b, c, d)) = ops.next() {
@@ -624,7 +627,29 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
         }
         let mut cfg = self.cfg;
         cfg.merge_overlapping_blocks();
-        cfg.resolve_cond_jump_operands(self.binary, hook);
+        let binary = self.binary;
+        let ctx = self.operand_ctx;
+        cfg.resolve_cond_jump_operands(|condition, address, end_address| {
+            let mut analysis = FuncAnalysis::new(binary, ctx, address);
+            let mut branch = analysis.next_branch()
+                .expect("New analysis should always have a branch.");
+            let mut ops = branch.operations();
+            while let Some((op, state, address, i)) = ops.next() {
+                hook(op, state, address, i);
+                let final_op = if address == end_address {
+                    true
+                } else {
+                    match *op {
+                        Operation::Jump { .. } | Operation::Return(_) => true,
+                        _ => false,
+                    }
+                };
+                if final_op {
+                    return state.resolve(condition, i);
+                }
+            }
+            return condition.clone();
+        });
         cfg.interner = self.interner;
         (cfg, self.errors)
     }
@@ -633,7 +658,7 @@ impl<'a, State: AnalysisState> FuncAnalysis<'a, State> {
 /// Merges states at return operations, used for following calls.
 struct CollectReturnsAnalyzer<'a, 'exec: 'a, A: Analyzer<'exec>> {
     inner: &'a mut A,
-    state: Option<(ExecutionState<'exec>, A::State)>,
+    state: Option<(A::Exec, A::State)>,
 }
 
 impl<'a, 'exec: 'a, A: Analyzer<'exec>> CollectReturnsAnalyzer<'a, 'exec, A> {
@@ -647,21 +672,25 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> CollectReturnsAnalyzer<'a, 'exec, A> {
 
 impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyzer<'a, 'exec, A> {
     type State = A::State;
-    fn branch_start(&mut self, control: &mut Control<'exec, '_, Self::State>) {
+    type Exec = A::Exec;
+    fn branch_start<'b>(&mut self, control: &mut Control<'exec, 'b, Self::Exec, Self::State>)
+    where 'exec: 'b {
         self.inner.branch_start(control)
     }
 
-    fn branch_end(&mut self, control: &mut Control<'exec, '_, Self::State>) {
+    fn branch_end<'b>(&mut self, control: &mut Control<'exec, 'b, Self::Exec, Self::State>)
+    where 'exec: 'b {
         self.inner.branch_start(control)
     }
 
-    fn operation(&mut self, control: &mut Control<'exec, '_, Self::State>, op: &Operation) {
+    fn operation<'b>(&mut self, control: &mut Control<'exec, 'b, Self::Exec, Self::State>, op: &Operation)
+    where 'exec: 'b {
         self.inner.operation(control, op);
         if let disasm::Operation::Return(_) = op {
             match self.state {
                 Some(ref mut state) => {
                     let (new, interner) = control.exec_state();
-                    let new_exec = exec_state::merge_states(&state.0, new, interner);
+                    let new_exec = Self::Exec::merge_states(&state.0, new, interner);
                     if let Some(new_exec) = new_exec {
                         state.0 = new_exec;
                         state.1.merge(control.user_state().clone());
@@ -677,74 +706,37 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
     }
 }
 
-fn initial_exec_state<'e>(
-    operand_ctx: &'e OperandContext,
-    binary: &'e BinaryFile,
-    interner: &mut exec_state::InternMap,
-) -> ExecutionState<'e> {
-    use crate::operand::MemAccessSize;
-    use crate::operand::operand_helpers::*;
-    let mut state = ExecutionState::with_binary(binary, operand_ctx, interner);
-
-    // Set the return address to somewhere in 0x400000 range
-    let return_address = mem32(operand_ctx.register(4));
-    state.move_to(
-        DestOperand::from_oper(&return_address),
-        operand_ctx.constant(binary.code_section().virtual_address.0 + 0x4230),
-        interner
-    );
-
-    // Set the bytes above return address to 'call eax' to make it look like a legitmate call.
-    state.move_to(
-        DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
-            operand_sub(
-                return_address.clone(),
-                operand_ctx.const_1(),
-            ),
-        )),
-        operand_ctx.constant(0xd0),
-        interner
-    );
-    state.move_to(
-        DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
-            operand_sub(
-                return_address,
-                operand_ctx.const_2(),
-            ),
-        )),
-        operand_ctx.const_ff(),
-        interner
-    );
-    state
-}
-
 /// NOTE: You have to iterate through branch.operations for the analysis to add new branches
 /// correctly.
-pub struct Branch<'a, 'exec: 'a, State: AnalysisState> {
-    analysis: &'a mut FuncAnalysis<'exec, State>,
-    addr: VirtualAddress,
-    state: (ExecutionState<'exec>, State),
-    init_state: Option<(ExecutionState<'exec>, State)>,
-    cfg_out_edge: CfgOutEdges,
+pub struct Branch<'a, 'exec: 'a, Exec: ExecutionState<'exec>, State: AnalysisState> {
+    analysis: &'a mut FuncAnalysis<'exec, Exec, State>,
+    addr: Exec::VirtualAddress,
+    state: (Exec, State),
+    init_state: Option<(Exec, State)>,
+    cfg_out_edge: CfgOutEdges<Exec::VirtualAddress>,
 }
 
-pub struct Operations<'a, 'branch: 'a, 'exec: 'branch, S: AnalysisState> {
-    branch: &'a mut Branch<'branch, 'exec, S>,
-    disasm: disasm::Disassembler<'a>,
-    current_ins: Option<Instruction>,
+pub struct Operations<'a, 'branch: 'a, 'exec: 'branch, Exec: ExecutionState<'exec>, S: AnalysisState> {
+    branch: &'a mut Branch<'branch, 'exec, Exec, S>,
+    disasm: Exec::Disassembler,
+    current_ins: Option<Instruction<Exec::VirtualAddress>>,
     ins_pos: usize,
 }
 
-impl<'a, 'exec: 'a, S: AnalysisState> Branch<'a, 'exec, S> {
-    pub fn state<'b>(&'b mut self) -> (&'b ExecutionState<'exec>, &'b mut exec_state::InternMap) {
+impl<'a, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState> Branch<'a, 'exec, Exec, S> {
+    pub fn state<'b>(&'b mut self) -> (&'b Exec, &'b mut InternMap) {
         (&self.state.0, &mut self.analysis.interner)
     }
 
-    pub fn operations<'b>(&'b mut self) -> Operations<'b, 'a, 'exec, S> {
+    pub fn operations<'b>(&'b mut self) -> Operations<'b, 'a, 'exec, Exec, S> {
+        let pos = (
+            self.addr.as_u64() -
+            self.analysis.binary.code_section().virtual_address.as_u64()
+        ) as usize;
         Operations {
-            disasm: disasm::Disassembler::new(
+            disasm: Exec::Disassembler::new(
                 &self.analysis.binary.code_section().data,
-                (self.addr - self.analysis.binary.code_section().virtual_address).0 as usize,
+                pos,
                 self.analysis.binary.code_section().virtual_address,
             ),
             current_ins: None,
@@ -753,16 +745,19 @@ impl<'a, 'exec: 'a, S: AnalysisState> Branch<'a, 'exec, S> {
         }
     }
 
-    fn end_block(&mut self, end_address: VirtualAddress) {
+    fn end_block(&mut self, end_address: Exec::VirtualAddress) {
         self.analysis.cfg.add_node(self.addr, CfgNode {
             out_edges: self.cfg_out_edge.clone(),
-            state: Box::new(self.init_state.take().expect("end_block called twice")),
+            state: CfgState {
+                data: Box::new(self.init_state.take().expect("end_block called twice")),
+                phantom: Default::default(),
+            },
             end_address,
             distance: 0,
         });
     }
 
-    fn process_operation(&mut self, op: Operation, ins: &Instruction) -> Result<(), Error> {
+    fn process_operation(&mut self, op: Operation, ins: &Instruction<Exec::VirtualAddress>) -> Result<(), Error> {
         let state = &mut self.state.0;
         let analysis_state = &self.state.1;
         let binary = self.analysis.binary;
@@ -782,23 +777,25 @@ impl<'a, 'exec: 'a, S: AnalysisState> Branch<'a, 'exec, S> {
             }
             disasm::Operation::Return(_) => (),
             o => {
-                state.update(o, &mut self.analysis.interner);
+                state.update(&o, &mut self.analysis.interner);
             }
         }
         Ok(())
     }
 
-    pub fn address(&self) -> VirtualAddress {
+    pub fn address(&self) -> Exec::VirtualAddress {
         self.addr
     }
 }
 
-impl<'a, 'branch, 'exec: 'a, S: AnalysisState> Operations<'a, 'branch, 'exec, S> {
+impl<'a, 'branch, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState>
+    Operations<'a, 'branch, 'exec, Exec, S>
+{
     pub fn next(&mut self) -> Option<(
         &Operation,
-        &mut ExecutionState<'exec>,
-        VirtualAddress,
-        &mut exec_state::InternMap,
+        &mut Exec,
+        Exec::VirtualAddress,
+        &mut InternMap,
     )> {
         // Already finished
         if self.branch.init_state.is_none() {
@@ -829,7 +826,7 @@ impl<'a, 'branch, 'exec: 'a, S: AnalysisState> Operations<'a, 'branch, 'exec, S>
             let address = self.disasm.address();
             let ins = match self.disasm.next(&self.branch.analysis.operand_ctx) {
                 Ok(o) => o,
-                Err(disasm::Error::Branch(_)) => {
+                Err(disasm::Error::Branch) => {
                     self.branch.end_block(address);
                     return None;
                 }
@@ -853,72 +850,74 @@ impl<'a, 'branch, 'exec: 'a, S: AnalysisState> Operations<'a, 'branch, 'exec, S>
         Some((op, state, ins.address(), interner))
     }
 
-    pub fn current_address(&self) -> VirtualAddress {
+    pub fn current_address(&self) -> Exec::VirtualAddress {
         self.disasm.address()
     }
 }
 
-impl<'a, 'branch: 'a, 'exec: 'branch, S: AnalysisState> Drop for Operations<'a, 'branch, 'exec, S> {
+impl<'a, 'branch: 'a, 'exec: 'branch, Exec: ExecutionState<'exec>, S: AnalysisState> Drop for
+    Operations<'a, 'branch, 'exec, Exec, S>
+{
     fn drop(&mut self) {
         while let Some(_) = self.next() {
         }
     }
 }
 
-fn try_add_branch<'exec, S: AnalysisState>(
-    analysis: &mut FuncAnalysis<'exec, S>,
-    state: (ExecutionState<'exec>, S),
+fn try_add_branch<'exec, Exec: ExecutionState<'exec>, S: AnalysisState>(
+    analysis: &mut FuncAnalysis<'exec, Exec, S>,
+    state: (Exec, S),
     to: Rc<Operand>,
-    address: VirtualAddress,
-) -> Option<VirtualAddress> {
-    match to.if_constant() {
+    address: Exec::VirtualAddress,
+) -> Option<Exec::VirtualAddress> {
+    match to.if_constant64() {
         Some(s) => {
-            let address = VirtualAddress(s);
+            let address = Exec::VirtualAddress::from_u64(s);
             let code_offset = analysis.binary.code_section().virtual_address;
             let code_len = analysis.binary.code_section().data.len() as u32;
             let invalid_dest = address < code_offset || address >= code_offset + code_len;
             if !invalid_dest {
                 analysis.add_unchecked_branch(address, state.0, state.1);
             } else {
-                trace!("Destination {:x} is out of binary bounds", address.0);
+                trace!("Destination {:x} is out of binary bounds", address);
             }
             Some(address)
         }
         None => {
             let simplified = Operand::simplified(to);
-            trace!("Couldnt resolve jump dest @ {:x}: {:?}", address.0, simplified);
+            trace!("Couldnt resolve jump dest @ {:x}: {:?}", address, simplified);
             None
         }
     }
 }
 
-fn update_analysis_for_jump<'exec, S: AnalysisState>(
-    analysis: &mut FuncAnalysis<'exec, S>,
-    state: &mut ExecutionState<'exec>,
+fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState>(
+    analysis: &mut FuncAnalysis<'exec, Exec, S>,
+    state: &mut Exec,
     analysis_state: &S,
-    binary: &BinaryFile,
+    binary: &BinaryFile<Exec::VirtualAddress>,
     condition: Rc<Operand>,
     to: Rc<Operand>,
-    ins: &Instruction,
-    cfg_out_edge: &mut CfgOutEdges,
+    ins: &Instruction<Exec::VirtualAddress>,
+    cfg_out_edge: &mut CfgOutEdges<Exec::VirtualAddress>,
 ) {
-    fn is_switch_jump(to: &Operand) -> Option<(VirtualAddress, &Rc<Operand>)> {
+    fn is_switch_jump<VirtualAddress: exec_state::VirtualAddress>(to: &Operand) -> Option<(VirtualAddress, &Rc<Operand>)> {
         to.if_memory()
             .and_then(|mem| mem.address.if_arithmetic_add())
             .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul()))
             .and_then(|((l, r), switch_table)| {
-                let switch_table = switch_table.if_constant()?;
+                let switch_table = switch_table.if_constant64()?;
                 let (c, index) = Operand::either(l, r, |x| x.if_constant())?;
-                if c == 4 {
-                    Some((VirtualAddress(switch_table), index))
+                if c == VirtualAddress::SIZE {
+                    Some((VirtualAddress::from_u64(switch_table), index))
                 } else {
                     None
                 }
             })
     }
 
-    state.memory.maybe_convert_immutable();
-    match state.try_resolve_const(&condition, &mut analysis.interner) {
+    state.maybe_convert_memory_immutable();
+    match state.resolve_apply_constraints(&condition, &mut analysis.interner).if_constant() {
         Some(0) => {
             let address = ins.address() + ins.len() as u32;
             *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
@@ -927,17 +926,16 @@ fn update_analysis_for_jump<'exec, S: AnalysisState>(
         Some(_) => {
             let state = state.clone();
             let to = state.resolve(&to, &mut analysis.interner);
-            if let Some((switch_table, index)) = is_switch_jump(&to) {
+            if let Some((switch_table, index)) = is_switch_jump::<Exec::VirtualAddress>(&to) {
                 let mut cases = Vec::new();
                 let code_section = binary.code_section();
                 let code_section_start = code_section.virtual_address;
                 let code_section_end =
                     code_section.virtual_address + code_section.virtual_size;
                 let case_iter = (0u32..)
-                    .map(|x| binary.read_u32(switch_table + x * 4))
+                    .map(|x| binary.read_address(switch_table + x * Exec::VirtualAddress::SIZE))
                     .take_while(|x| x.is_ok())
                     .flat_map(|x| x.ok())
-                    .map(|x| VirtualAddress(x))
                     .take_while(|&addr| {
                         // TODO: Could use relocs instead
                         addr > code_section_start && addr < code_section_end

@@ -4,10 +4,11 @@ use hex_slice::AsHex;
 use quick_error::quick_error;
 use smallvec::SmallVec;
 
-use crate::{VirtualAddress};
+use crate::exec_state::{VirtualAddress};
 use crate::operand::{
     self, ArithOpType, Flag, MemAccess, Operand, OperandContext, OperandType, Register
 };
+use crate::VirtualAddress as VirtualAddress32;
 
 quick_error! {
     #[derive(Debug)]
@@ -16,11 +17,11 @@ quick_error! {
             description("Unknown opcode")
             display("Unknown opcode {:02x}", op.as_hex())
         }
-        End(addr: VirtualAddress) {
+        End {
             description("End of file")
         }
         // The preceding instruction's operations will be given before this error.
-        Branch(addr: VirtualAddress) {
+        Branch {
             description("Reached a branch")
         }
         InternalDecodeError {
@@ -51,46 +52,48 @@ impl MemAccessSize {
 
 pub type OperationVec = SmallVec<[Operation; 8]>;
 
-pub struct Disassembler<'a> {
+pub struct Disassembler32<'a> {
     buf: &'a [u8],
     pos: usize,
-    virtual_address: VirtualAddress,
-    finishing_instruction_pos: Option<usize>,
+    virtual_address: VirtualAddress32,
+    is_branching: bool,
 }
 
-impl<'a> Disassembler<'a> {
-    pub fn new(buf: &[u8], pos: usize, address: VirtualAddress) -> Disassembler {
+impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
+    type VirtualAddress = VirtualAddress32;
+
+    fn new(buf: &'a [u8], pos: usize, address: VirtualAddress32) -> Disassembler32<'a> {
         assert!(pos < buf.len());
-        Disassembler {
+        Disassembler32 {
             buf,
             pos,
             virtual_address: address,
-            finishing_instruction_pos: None,
+            is_branching: false,
         }
     }
 
-    pub fn next(&mut self, ctx: &OperandContext) -> Result<Instruction, Error> {
-        if let Some(finishing_instruction_pos) = self.finishing_instruction_pos {
-            return Err(Error::Branch(self.virtual_address + finishing_instruction_pos as u32));
+    fn next(&mut self, ctx: &OperandContext) -> Result<Instruction<VirtualAddress32>, Error> {
+        if self.is_branching {
+            return Err(Error::Branch);
         }
         let length = lde::X86.ld(&self.buf[self.pos..]) as usize;
         if length == 0 {
             if self.pos == self.buf.len() {
-                return Err(Error::End(self.virtual_address + self.pos as u32));
+                return Err(Error::End);
             } else {
                 return Err(Error::UnknownOpcode(vec![self.buf[self.pos]]));
             }
         }
-        let address = VirtualAddress(self.virtual_address.0 + self.pos as u32);
+        let address = self.virtual_address + self.pos as u32;
         let data = &self.buf[self.pos..self.pos + length];
-        let ops = instruction_operations(address, data, ctx)?;
+        let ops = instruction_operations32(address, data, ctx)?;
         let ins = Instruction {
             address,
             ops,
             length,
         };
         if ins.is_finishing() {
-            self.finishing_instruction_pos = Some(self.pos);
+            self.is_branching = true;
             self.buf = &self.buf[..self.pos + length];
             self.pos = self.buf.len();
         } else {
@@ -99,23 +102,23 @@ impl<'a> Disassembler<'a> {
         Ok(ins)
     }
 
-    pub fn address(&self) -> VirtualAddress {
+    fn address(&self) -> VirtualAddress32 {
         self.virtual_address + self.pos as u32
     }
 }
 
-pub struct Instruction {
-    address: VirtualAddress,
+pub struct Instruction<Va: VirtualAddress> {
+    address: Va,
     ops: SmallVec<[Operation; 8]>,
     length: usize,
 }
 
-impl Instruction {
+impl<Va: VirtualAddress> Instruction<Va> {
     pub fn ops(&self) -> &[Operation] {
         &self.ops
     }
 
-    pub fn address(&self) -> VirtualAddress {
+    pub fn address(&self) -> Va {
         self.address
     }
 
@@ -140,16 +143,16 @@ struct InstructionPrefixes {
     prefix_f3: bool,
 }
 
-struct InstructionOpsState<'a, 'exec: 'a> {
-    address: VirtualAddress,
+struct InstructionOpsState<'a, 'exec: 'a, Va: VirtualAddress> {
+    address: Va,
     data: &'a [u8],
     prefixes: InstructionPrefixes,
     len: u8,
     ctx: &'exec OperandContext,
 }
 
-fn instruction_operations(
-    address: VirtualAddress,
+fn instruction_operations32(
+    address: VirtualAddress32,
     data: &[u8],
     ctx: &OperandContext,
 ) -> Result<SmallVec<[Operation; 8]>, Error> {
@@ -377,7 +380,7 @@ fn xmm_variant(op: &Rc<Operand>, i: u8) -> Rc<Operand> {
     }
 }
 
-impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
+impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     pub fn len(&self) -> usize {
         self.len as usize
     }
@@ -623,27 +626,11 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         Ok(out)
     }
 
-    fn conditional_jmp(&self, op_size: MemAccessSize) -> Result<OperationVec, Error> {
-        let offset = read_variable_size_signed(self.slice(1), op_size)?;
-        let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
-        let mut out = SmallVec::new();
-        out.push(Operation::Jump { condition: self.condition(), to });
-        Ok(out)
-    }
-
     fn conditional_set(&self) -> Result<OperationVec, Error> {
         let condition = self.condition();
         let (rm, _) = self.parse_modrm(MemAccessSize::Mem8)?;
         let mut out = SmallVec::new();
         out.push(Operation::Move(dest_operand(&rm), condition, None));
-        Ok(out)
-    }
-
-    fn short_jmp(&self) -> Result<OperationVec, Error> {
-        let offset = read_variable_size_signed(self.slice(1), MemAccessSize::Mem8)?;
-        let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
-        let mut out = SmallVec::new();
-        out.push(Operation::Jump { condition: self.ctx.const_1(), to });
         Ok(out)
     }
 
@@ -1408,6 +1395,24 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec> {
         post_flags(operand, self.ctx.const_ffffffff(), &mut out, self.ctx);
         Ok(out)
     }
+}
+
+impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec, VirtualAddress32> {
+    fn conditional_jmp(&self, op_size: MemAccessSize) -> Result<OperationVec, Error> {
+        let offset = read_variable_size_signed(self.slice(1), op_size)?;
+        let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
+        let mut out = SmallVec::new();
+        out.push(Operation::Jump { condition: self.condition(), to });
+        Ok(out)
+    }
+
+    fn short_jmp(&self) -> Result<OperationVec, Error> {
+        let offset = read_variable_size_signed(self.slice(1), MemAccessSize::Mem8)?;
+        let to = self.ctx.constant((self.address.0 + self.len() as u32).wrapping_add(offset));
+        let mut out = SmallVec::new();
+        out.push(Operation::Jump { condition: self.ctx.const_1(), to });
+        Ok(out)
+    }
 
     fn call_op(&self) -> Result<OperationVec, Error> {
         let offset = read_u32(self.slice(1))?;
@@ -1894,6 +1899,8 @@ impl From<DestOperand> for Operand {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::VirtualAddress;
+    use crate::exec_state::Disassembler;
     #[test]
     fn test_operations_mov16() {
         use crate::operand::operand_helpers::*;
@@ -1901,7 +1908,7 @@ mod test {
 
         let ctx = OperandContext::new();
         let buf = [0x66, 0xc7, 0x47, 0x62, 0x00, 0x20];
-        let mut disasm = Disassembler::new(&buf[..], 0, VirtualAddress(0));
+        let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0));
         let ins = disasm.next(&ctx).unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
@@ -1920,7 +1927,7 @@ mod test {
 
         let ctx = OperandContext::new();
         let buf = [0x89, 0x84, 0xb5, 0x18, 0xeb, 0xff, 0xff];
-        let mut disasm = Disassembler::new(&buf[..], 0, VirtualAddress(0));
+        let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0));
         let ins = disasm.next(&ctx).unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];

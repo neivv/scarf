@@ -9,9 +9,10 @@ use std::rc::Rc;
 use byteorder::{ReadBytesExt, LittleEndian};
 
 use scarf::{
-    BinaryFile, BinarySection, DestOperand, ExecutionState, Operand, Operation, VirtualAddress
+    BinaryFile, BinarySection, DestOperand, Operand, Operation, VirtualAddress
 };
 use scarf::analysis;
+use scarf::ExecutionStateX86 as ExecutionState;
 use scarf::operand_helpers::*;
 use scarf::operand::OperandType;
 
@@ -325,14 +326,18 @@ fn cmp_mem8() {
     ]);
 }
 
-fn test_inner(file: &BinaryFile, func: VirtualAddress, changes: &[(Rc<Operand>, Rc<Operand>)]) {
+fn test_inner(
+    file: &BinaryFile<VirtualAddress>,
+    func: VirtualAddress,
+    changes: &[(Rc<Operand>, Rc<Operand>)],
+) {
     let ctx = scarf::operand::OperandContext::new();
     let mut interner = scarf::exec_state::InternMap::new();
     let state = ExecutionState::with_binary(file, &ctx, &mut interner);
     let mut expected_state = state.clone();
     for &(ref op, ref val) in changes {
         let op = Operation::Move(DestOperand::from_oper(op), val.clone(), None);
-        expected_state.update(op, &mut interner);
+        expected_state.update(&op, &mut interner);
     }
     let mut analysis =
         analysis::FuncAnalysis::with_state(file, &ctx, func, state, interner.clone());
@@ -378,7 +383,6 @@ fn test_inline(code: &[u8], changes: &[(Rc<Operand>, Rc<Operand>)]) {
             x
         },
         virtual_address: VirtualAddress(0x401000),
-        physical_address: ::scarf::PhysicalAddress(0x1000),
         virtual_size: code.len() as u32,
         data: code.into(),
     }]);

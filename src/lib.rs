@@ -10,13 +10,15 @@ pub mod cfg;
 pub mod cfg_dot;
 mod disasm;
 pub mod exec_state;
+pub mod exec_state_x86;
 pub mod operand;
 mod vec_drop_iter;
 
 pub use crate::analysis::{Analyzer};
 pub use crate::disasm::{DestOperand, Operation, operation_helpers};
-pub use crate::exec_state::{ExecutionState};
 pub use crate::operand::{MemAccessSize, Operand, OperandType, OperandContext, operand_helpers};
+
+pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;
 
 use std::ffi::{OsString, OsStr};
 use std::fs::File;
@@ -31,6 +33,9 @@ use serde_derive::{Serialize, Deserialize};
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Rva(pub u32);
 
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct Rva64(pub u64);
+
 impl std::fmt::Debug for Rva {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "Rva({:08x})", self.0)
@@ -40,9 +45,42 @@ impl std::fmt::Debug for Rva {
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct VirtualAddress(pub u32);
 
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct VirtualAddress64(pub u64);
+
 impl std::fmt::Debug for VirtualAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "VirtualAddress({:08x})", self.0)
+    }
+}
+
+impl std::fmt::Debug for VirtualAddress64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "VirtualAddress({:08x}_{:08x})", self.0 >> 32, self.0 & 0xffff_ffff)
+    }
+}
+
+impl std::fmt::LowerHex for VirtualAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:08x}", self.0)
+    }
+}
+
+impl std::fmt::LowerHex for VirtualAddress64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:08x}_{:08x}", self.0 >> 32, self.0 & 0xffff_ffff)
+    }
+}
+
+impl std::fmt::UpperHex for VirtualAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:08X}", self.0)
+    }
+}
+
+impl std::fmt::UpperHex for VirtualAddress64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:08X}_{:08X}", self.0 >> 32, self.0 & 0xffff_ffff)
     }
 }
 
@@ -53,10 +91,24 @@ impl std::ops::Add<Rva> for VirtualAddress {
     }
 }
 
+impl std::ops::Add<Rva64> for VirtualAddress64 {
+    type Output = VirtualAddress64;
+    fn add(self, rhs: Rva64) -> VirtualAddress64 {
+        VirtualAddress64(self.0 + rhs.0)
+    }
+}
+
 impl std::ops::Add<u32> for VirtualAddress {
     type Output = VirtualAddress;
     fn add(self, rhs: u32) -> VirtualAddress {
         VirtualAddress(self.0.wrapping_add(rhs))
+    }
+}
+
+impl std::ops::Add<u32> for VirtualAddress64 {
+    type Output = VirtualAddress64;
+    fn add(self, rhs: u32) -> VirtualAddress64 {
+        VirtualAddress64(self.0.wrapping_add(rhs as u64))
     }
 }
 
@@ -67,10 +119,24 @@ impl std::ops::Sub<u32> for VirtualAddress {
     }
 }
 
+impl std::ops::Sub<u32> for VirtualAddress64 {
+    type Output = VirtualAddress64;
+    fn sub(self, rhs: u32) -> VirtualAddress64 {
+        VirtualAddress64(self.0.wrapping_sub(rhs as u64))
+    }
+}
+
 impl std::ops::Sub<VirtualAddress> for VirtualAddress {
     type Output = Rva;
     fn sub(self, rhs: VirtualAddress) -> Rva {
         Rva(self.0 - rhs.0)
+    }
+}
+
+impl std::ops::Sub<VirtualAddress64> for VirtualAddress64 {
+    type Output = Rva64;
+    fn sub(self, rhs: VirtualAddress64) -> Rva64 {
+        Rva64(self.0 - rhs.0)
     }
 }
 
@@ -80,9 +146,6 @@ impl std::ops::Add<u32> for Rva {
         Rva(self.0 + rhs)
     }
 }
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct PhysicalAddress(pub u32);
 
 quick_error! {
     #[derive(Debug)]
@@ -109,37 +172,36 @@ quick_error! {
 }
 
 #[derive(Debug, Clone)]
-pub struct BinaryFile {
-    pub base: VirtualAddress,
-    sections: Vec<BinarySection>,
+pub struct BinaryFile<Va: exec_state::VirtualAddress> {
+    pub base: Va,
+    sections: Vec<BinarySection<Va>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct BinarySection {
+pub struct BinarySection<Va: exec_state::VirtualAddress> {
     pub name: [u8; 8],
-    pub virtual_address: VirtualAddress,
-    pub physical_address: PhysicalAddress,
+    pub virtual_address: Va,
     pub virtual_size: u32,
     pub data: Vec<u8>,
 }
 
-impl BinaryFile {
+impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
     /// Panics if code section for some reason would not exist.
     /// Also bad since assumes only one
-    pub fn code_section(&self) -> &BinarySection {
+    pub fn code_section(&self) -> &BinarySection<Va> {
         self.section(b".text\0\0\0").unwrap()
     }
 
-    pub fn code_sections<'a>(&'a self) -> impl Iterator<Item = &'a BinarySection> + 'a {
+    pub fn code_sections<'a>(&'a self) -> impl Iterator<Item = &'a BinarySection<Va>> + 'a {
         self.sections.iter().filter(|x| &x.name[..] == &b".text\0\0\0"[..])
     }
 
-    pub fn section(&self, name: &[u8; 0x8]) -> Option<&BinarySection> {
+    pub fn section(&self, name: &[u8; 0x8]) -> Option<&BinarySection<Va>> {
         self.sections.iter().find(|x| x.name[..] == name[..])
     }
 
     /// Returns a section containing the address, if it exists
-    pub fn section_by_addr(&self, address: VirtualAddress) -> Option<&BinarySection> {
+    pub fn section_by_addr(&self, address: Va) -> Option<&BinarySection<Va>> {
         self.sections.iter().find(|x| {
             address >= x.virtual_address && address < (x.virtual_address + x.data.len() as u32)
         })
@@ -149,20 +211,21 @@ impl BinaryFile {
     pub fn slice_from(&self, range: std::ops::Range<u32>) -> Result<&[u8], Error> {
         self.section_by_addr(self.base + range.start)
             .and_then(|s| {
-                let section_relative = (self.base + range.start) - s.virtual_address;
+                let section_relative =
+                    (self.base + range.start).as_u64() - s.virtual_address.as_u64();
                 s.data.get(
-                    section_relative.0 as usize ..
-                    (section_relative + (range.end - range.start)).0 as usize,
+                    section_relative as usize ..
+                    (section_relative + (range.end - range.start) as u64) as usize,
                 )
             })
             .ok_or_else(|| Error::OutOfBounds)
     }
 
-    pub fn read_u32(&self, addr: VirtualAddress) -> Result<u32, Error> {
+    pub fn read_u32(&self, addr: Va) -> Result<u32, Error> {
         self.section_by_addr(addr)
             .and_then(|s| {
-                let section_relative = addr - s.virtual_address;
-                s.data.get(section_relative.0 as usize..)
+                let section_relative = addr.as_u64() - s.virtual_address.as_u64();
+                s.data.get(section_relative as usize..)
             })
             .and_then(|mut data| {
                 data.read_u32::<LittleEndian>().ok()
@@ -170,24 +233,39 @@ impl BinaryFile {
             .ok_or_else(|| Error::OutOfBounds)
     }
 
-    pub fn to_physical(&self, addr: VirtualAddress) -> Option<PhysicalAddress> {
+    pub fn read_u64(&self, addr: Va) -> Result<u64, Error> {
         self.section_by_addr(addr)
-            .map(|s| {
-                let section_relative = addr - s.virtual_address;
-                PhysicalAddress(s.physical_address.0 + section_relative.0)
+            .and_then(|s| {
+                let section_relative = addr.as_u64() - s.virtual_address.as_u64();
+                s.data.get(section_relative as usize..)
             })
+            .and_then(|mut data| {
+                data.read_u64::<LittleEndian>().ok()
+            })
+            .ok_or_else(|| Error::OutOfBounds)
+    }
+
+    pub fn read_address(&self, addr: Va) -> Result<Va, Error> {
+        match Va::SIZE {
+            4 => self.read_u32(addr).map(|x| Va::from_u64(x as u64)),
+            8 => self.read_u64(addr).map(|x| Va::from_u64(x)),
+            x => panic!("Unsupported VirtualAddress size {}", x),
+        }
     }
 }
 
 /// Allows loading a BinaryFile from memory buffer(s) representing the binary sections.
-pub fn raw_bin(base: VirtualAddress, sections: Vec<BinarySection>) -> BinaryFile {
+pub fn raw_bin<Va: exec_state::VirtualAddress>(
+    base: Va,
+    sections: Vec<BinarySection<Va>>,
+) -> BinaryFile<Va> {
     BinaryFile {
         base,
         sections,
     }
 }
 
-pub fn parse(filename: &OsStr) -> Result<BinaryFile, Error> {
+pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
     use crate::Error::*;
     let mut file = BufReader::new(File::open(filename)?);
     if file.read_u16::<LittleEndian>()? != 0x5a4d {
@@ -207,15 +285,14 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile, Error> {
         let virtual_size = file.read_u32::<LittleEndian>()?;
         let rva = Rva(file.read_u32::<LittleEndian>()?);
         let phys_size = file.read_u32::<LittleEndian>()?;
-        let phys = PhysicalAddress(file.read_u32::<LittleEndian>()?);
+        let phys = file.read_u32::<LittleEndian>()?;
 
-        file.seek(io::SeekFrom::Start(u64::from(phys.0)))?;
+        file.seek(io::SeekFrom::Start(u64::from(phys)))?;
         let mut data = vec![0; phys_size as usize];
         file.read_exact(&mut data)?;
         Ok(BinarySection {
             name,
             virtual_address: base + rva,
-            physical_address: phys,
             virtual_size,
             data,
         })
@@ -233,7 +310,6 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile, Error> {
             name
         },
         virtual_address: base,
-        physical_address: PhysicalAddress(0),
         virtual_size: header_block_size,
         data: header_data,
     });
@@ -263,7 +339,7 @@ struct SectionDump {
 pub fn load_section_dumps(
     dir: &OsStr,
     binary_name: &OsStr,
-    binary: &BinaryFile,
+    binary: &BinaryFile<VirtualAddress>,
 ) -> Result<SectionDumps, Error> {
     use self::Error::*;
 
