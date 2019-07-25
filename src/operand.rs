@@ -1745,6 +1745,17 @@ impl Operand {
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Sub(left, right))`
+    pub fn if_arithmetic_sub(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        match self.ty {
+            OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
+                Some((&arith.left, &arith.right))
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Mul(left, right))`
     pub fn if_arithmetic_mul(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         match self.ty {
