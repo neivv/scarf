@@ -368,7 +368,6 @@ pub fn load_section_dumps(
 
 impl SectionDumps {
     pub fn resolve_mem_accesses(&self, val: &Rc<Operand>) -> (Rc<Operand>, Vec<VirtualAddress>) {
-        use crate::operand::ArithOpType::*;
         let mut addresses = vec![];
         let val = match val.ty {
             OperandType::Memory(ref mem) => {
@@ -385,37 +384,20 @@ impl SectionDumps {
             }
             OperandType::Arithmetic(ref arith) => {
                 let mut arith = arith.clone();
-                match arith {
-                    Add(ref mut l, ref mut r) | Sub(ref mut l, ref mut r) |
-                        Mul(ref mut l, ref mut r) | And(ref mut l, ref mut r) |
-                        Or(ref mut l, ref mut r) | Xor(ref mut l, ref mut r) |
-                        Lsh(ref mut l, ref mut r) | Rsh(ref mut l, ref mut r) |
-                        Equal(ref mut l, ref mut r) |
-                        GreaterThan(ref mut l, ref mut r) | SignedMul(ref mut l, ref mut r) |
-                        Div(ref mut l, ref mut r) | Modulo(ref mut l, ref mut r) |
-                        GreaterThanSigned(ref mut l, ref mut r) =>
-                    {
-                        let (l_resolved, l_addresses) = self.resolve_mem_accesses(l);
-                        let (r_resolved, r_addresses) = self.resolve_mem_accesses(r);
-                        *l = l_resolved;
-                        *r = r_resolved;
-                        addresses.extend(l_addresses);
-                        addresses.extend(r_addresses);
-                    }
-                    Parity(ref mut l) => {
-                        let (l_resolved, l_addresses) = self.resolve_mem_accesses(l);
-                        *l = l_resolved;
-                        addresses.extend(l_addresses);
-                    }
-                }
+                let (l_resolved, l_addresses) = self.resolve_mem_accesses(&arith.left);
+                let (r_resolved, r_addresses) = self.resolve_mem_accesses(&arith.right);
+                arith.left = l_resolved;
+                arith.right = r_resolved;
+                addresses.extend(l_addresses);
+                addresses.extend(r_addresses);
                 Operand::new_not_simplified_rc(OperandType::Arithmetic(arith))
-            },
+            }
             _ => val.clone(),
         };
         (val, addresses)
     }
 
-    fn resolve_mem_value(&self, address: VirtualAddress, size: MemAccessSize) -> Option<u32>{
+    fn resolve_mem_value(&self, address: VirtualAddress, size: MemAccessSize) -> Option<u32> {
         self.0.iter().find(|sect| {
             address > sect.address && address < sect.address + sect.data.len() as u32
         }).and_then(|sect| {

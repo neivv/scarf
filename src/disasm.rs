@@ -249,8 +249,7 @@ fn instruction_operations32(
                 let mut out = SmallVec::new();
                 let eax = ctx.register(0);
                 let signed_max = ctx.const_7fff();
-                let compare = ArithOpType::GreaterThan(eax.clone(), signed_max);
-                let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
+                let cond = operand_gt(eax.clone(), signed_max);
                 let neg_sign_extend = operand_or(eax.clone(), ctx.const_ffff0000());
                 let neg_sign_extend_op =
                     Operation::Move(dest_operand(&eax), neg_sign_extend, Some(cond));
@@ -264,8 +263,7 @@ fn instruction_operations32(
                 let eax = ctx.register(0);
                 let edx = ctx.register(2);
                 let signed_max = ctx.const_7fffffff();
-                let compare = ArithOpType::GreaterThan(eax, signed_max);
-                let cond = Operand::new_not_simplified_rc(OperandType::Arithmetic(compare));
+                let cond = operand_gt(eax, signed_max);
                 let neg_sign_extend_op =
                     Operation::Move(dest_operand(&edx), ctx.const_ffffffff(), Some(cond));
                 out.push(mov(edx, ctx.const_0()));
@@ -544,7 +542,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
-            ArithOpType::Equal(reg, eq_value),
+            ArithOpType::Equal,
+            reg,
+            eq_value,
         ));
         Ok(out)
     }
@@ -757,8 +757,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             _ => unreachable!(),
         };
 
-        let compare = OperandType::Arithmetic(ArithOpType::GreaterThan(rm, signed_max));
-        let rm_cond = Operand::new_not_simplified_rc(compare);
+        let rm_cond = operand_gt(rm.clone(), signed_max);
         out.push(keep_mask);
         out.push(Operation::Move(dest_operand(&r), high_const, Some(rm_cond)));
     }
@@ -813,9 +812,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     MemAccessSize::Mem16 => self.ctx.const_7fff(),
                     _ => unreachable!(),
                 };
-                let compare =
-                    OperandType::Arithmetic(ArithOpType::GreaterThan(rm.clone(), signed_max));
-                let rm_cond = Operand::new_not_simplified_rc(compare);
+                let rm_cond = operand_gt(rm.clone(), signed_max);
                 out.push(mov(r.clone(), self.ctx.const_0()));
                 out.push(Operation::Move(
                     dest_operand(&r),
@@ -886,8 +883,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 | 1 => return self.generic_arith_with_imm_op(&TEST_OPS, op_size),
             2 => {
                 let dest = dest_operand(&rm);
-                let not = ArithOpType::Xor(rm, self.ctx.const_ffffffff());
-                out.push(make_arith_operation(dest, not));
+                out.push(
+                    make_arith_operation(dest, ArithOpType::Xor, rm, self.ctx.const_ffffffff())
+                );
             }
             4 => {
                 out.push(mov(pair_edx_eax(), operand_mul(self.ctx.register(0), rm)));
@@ -1006,10 +1004,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             let rm = Operand::to_xmm_32(&rm, 0);
             make_arith_operation(
                 dest_operand(&low),
-                ArithOpType::Or(
-                    operand_lsh(high, rm.clone()),
-                    operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
-                ),
+                ArithOpType::Or,
+                operand_lsh(high, rm.clone()),
+                operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
             )
         });
         out.push({
@@ -1022,10 +1019,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             let rm = Operand::to_xmm_32(&rm, 0);
             make_arith_operation(
                 dest_operand(&low),
-                ArithOpType::Or(
-                    operand_lsh(high, rm.clone()),
-                    operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
-                ),
+                ArithOpType::Or,
+                operand_lsh(high, rm.clone()),
+                operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
             )
         });
         out.push({
@@ -1064,10 +1060,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             let rm = Operand::to_xmm_32(&rm, 0);
             make_arith_operation(
                 dest_operand(&low),
-                ArithOpType::Or(
-                    operand_rsh(low, rm.clone()),
-                    operand_lsh(high, operand_sub(self.ctx.const_20(), rm)),
-                ),
+                ArithOpType::Or,
+                operand_rsh(low, rm.clone()),
+                operand_lsh(high, operand_sub(self.ctx.const_20(), rm)),
             )
         });
         out.push({
@@ -1080,10 +1075,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             let rm = Operand::to_xmm_32(&rm, 0);
             make_arith_operation(
                 dest_operand(&low),
-                ArithOpType::Or(
-                    operand_rsh(low, rm.clone()),
-                    operand_lsh(high, operand_sub(self.ctx.const_20(), rm)),
-                ),
+                ArithOpType::Or,
+                operand_rsh(low, rm.clone()),
+                operand_lsh(high, operand_sub(self.ctx.const_20(), rm)),
             )
         });
         out.push({
@@ -1557,10 +1551,7 @@ pub mod operation_helpers {
     }
 
     pub fn add(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(
-            dest_operand(&dest),
-            Add(dest, rhs),
-        )
+        make_arith_operation(dest_operand(&dest), Add, dest, rhs)
     }
 
     pub fn add_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
@@ -1572,10 +1563,7 @@ pub mod operation_helpers {
     }
 
     pub fn sub(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(
-            dest_operand(&dest),
-            Sub(dest, rhs),
-        )
+        make_arith_operation(dest_operand(&dest), Sub, dest, rhs)
     }
 
     pub fn sub_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
@@ -1587,17 +1575,11 @@ pub mod operation_helpers {
     }
 
     pub fn signed_mul(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(
-            dest_operand(&dest),
-            SignedMul(dest, rhs),
-        )
+        make_arith_operation(dest_operand(&dest), SignedMul, dest, rhs)
     }
 
     pub fn xor(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(
-            dest_operand(&dest),
-            Xor(dest, rhs),
-        )
+        make_arith_operation(dest_operand(&dest), Xor, dest, rhs)
     }
 
     pub fn xor_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
@@ -1607,39 +1589,29 @@ pub mod operation_helpers {
     pub fn rol_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
         // rol(x, y) == (x << y) | (x >> (32 - y))
         let dest_operand = dest_operand(&dest);
-        let arith = Or(
-            operand_lsh(dest.clone(), rhs.clone()),
-            operand_rsh(dest, operand_sub(constval(32), rhs)),
-        );
-        out.push(make_arith_operation(dest_operand, arith));
+        let left = operand_lsh(dest.clone(), rhs.clone());
+        let right = operand_rsh(dest, operand_sub(constval(32), rhs));
+        out.push(make_arith_operation(dest_operand, Or, left, right));
     }
 
     pub fn ror_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
         // ror(x, y) == (x >> y) | (x << (32 - y))
         let dest_operand = dest_operand(&dest);
-        let arith = Or(
-            operand_rsh(dest.clone(), rhs.clone()),
-            operand_lsh(dest, operand_sub(constval(32), rhs)),
-        );
-        out.push(make_arith_operation(dest_operand, arith));
+        let left = operand_rsh(dest.clone(), rhs.clone());
+        let right = operand_lsh(dest, operand_sub(constval(32), rhs));
+        out.push(make_arith_operation(dest_operand, Or, left, right));
     }
 
     pub fn lsh(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(
-            dest_operand(&dest),
-            Lsh(dest, rhs),
-        )
+        make_arith_operation(dest_operand(&dest), Lsh, dest, rhs)
     }
 
     pub fn lsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(make_arith_operation(dest_operand(&dest), Lsh(dest, rhs)));
+        out.push(make_arith_operation(dest_operand(&dest), Lsh, dest, rhs));
     }
 
     pub fn rsh(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(
-            dest_operand(&dest),
-            Rsh(dest, rhs),
-        )
+        make_arith_operation(dest_operand(&dest), Rsh, dest, rhs)
     }
 
     pub fn rsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
@@ -1664,10 +1636,7 @@ pub mod operation_helpers {
     }
 
     pub fn or(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(
-            dest_operand(&dest),
-            Or(dest, rhs),
-        )
+        make_arith_operation(dest_operand(&dest), Or, dest, rhs)
     }
 
     pub fn or_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
@@ -1675,10 +1644,7 @@ pub mod operation_helpers {
     }
 
     pub fn and(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(
-            dest_operand(&dest),
-            And(dest, rhs),
-        )
+        make_arith_operation(dest_operand(&dest), And, dest, rhs)
     }
 
     pub fn and_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
@@ -1705,11 +1671,15 @@ pub mod operation_helpers {
         let add = operand_add(lhs.clone(), rhs.clone());
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
-            GreaterThan(lhs.clone(), add.clone())
+            GreaterThan,
+            lhs.clone(),
+            add.clone(),
         ));
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
-            GreaterThanSigned(lhs, add)
+            GreaterThanSigned,
+            lhs,
+            add,
         ));
     }
 
@@ -1722,11 +1692,15 @@ pub mod operation_helpers {
         let add = operand_add(operand_add(lhs.clone(), rhs), ctx.flag_c());
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
-            GreaterThan(lhs.clone(), add.clone()),
+            GreaterThan,
+            lhs.clone(),
+            add.clone(),
         ));
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
-            GreaterThanSigned(lhs, add)
+            GreaterThanSigned,
+            lhs,
+            add,
         ));
     }
 
@@ -1739,11 +1713,15 @@ pub mod operation_helpers {
         let sub = operand_sub(lhs.clone(), rhs);
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
-            GreaterThan(sub.clone(), lhs.clone()),
+            GreaterThan,
+            sub.clone(),
+            lhs.clone(),
         ));
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
-            GreaterThanSigned(sub, lhs),
+            GreaterThanSigned,
+            sub,
+            lhs,
         ));
     }
 
@@ -1756,11 +1734,15 @@ pub mod operation_helpers {
         let sub = operand_sub(operand_sub(lhs.clone(), rhs), ctx.flag_c());
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
-            GreaterThan(sub.clone(), lhs.clone()),
+            GreaterThan,
+            sub.clone(),
+            lhs.clone(),
         ));
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
-            GreaterThanSigned(sub, lhs),
+            GreaterThanSigned,
+            sub,
+            lhs,
         ));
     }
 
@@ -1783,14 +1765,23 @@ pub mod operation_helpers {
         out.push(
             make_arith_operation(
                 DestOperand::Flag(Flag::Zero),
-                Equal(lhs.clone(), ctx.const_0()),
+                Equal,
+                lhs.clone(),
+                ctx.const_0(),
             )
         );
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Sign),
-            GreaterThan(lhs.clone(), ctx.const_7fffffff()),
+            GreaterThan,
+            lhs.clone(),
+            ctx.const_7fffffff(),
         ));
-        out.push(make_arith_operation(DestOperand::Flag(Flag::Parity), Parity(lhs)));
+        out.push(make_arith_operation(
+            DestOperand::Flag(Flag::Parity),
+            Parity,
+            lhs,
+            ctx.const_0(),
+        ));
     }
 
     pub fn cmp_result_flags(
@@ -1836,8 +1827,14 @@ pub enum Operation {
     Special(Vec<u8>),
 }
 
-fn make_arith_operation(dest: DestOperand, arith: ArithOpType) -> Operation {
-    let op = Operand::new_not_simplified_rc(OperandType::Arithmetic(arith));
+fn make_arith_operation(
+    dest: DestOperand,
+    ty: ArithOpType,
+    left: Rc<Operand>,
+    right: Rc<Operand>,
+) -> Operation {
+    use crate::operand_helpers::*;
+    let op = operand_arith(ty, left, right);
     Operation::Move(dest, Operand::simplified(op), None)
 }
 

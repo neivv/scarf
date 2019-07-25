@@ -9,7 +9,7 @@ use crate::disasm::{Disassembler32, DestOperand, Operation};
 use crate::exec_state::{Constraint, InternMap, InternedOperand};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::operand::{
-    ArithOpType, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType,
+    ArithOperand, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType,
 };
 use crate::{BinaryFile, VirtualAddress};
 
@@ -659,55 +659,6 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
-    fn resolve_arith(&self, op: &ArithOpType, i: &mut InternMap) -> ArithOpType {
-        use crate::operand::ArithOpType::*;
-        match *op {
-            Add(ref l, ref r) => {
-                Add(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Sub(ref l, ref r) => {
-                Sub(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Mul(ref l, ref r) => {
-                Mul(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            SignedMul(ref l, ref r) => {
-                SignedMul(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Div(ref l, ref r) => {
-                Div(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Modulo(ref l, ref r) => {
-                Modulo(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            And(ref l, ref r) => {
-                And(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Or(ref l, ref r) => {
-                Or(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Xor(ref l, ref r) => {
-                Xor(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Lsh(ref l, ref r) => {
-                Lsh(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Rsh(ref l, ref r) => {
-                Rsh(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Equal(ref l, ref r) => {
-                Equal(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            Parity(ref x) => Parity(self.resolve_no_simplify(x, i)),
-            GreaterThan(ref l, ref r) => {
-                GreaterThan(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-            GreaterThanSigned(ref l, ref r) => {
-                GreaterThanSigned(self.resolve_no_simplify(l, i), self.resolve_no_simplify(r, i))
-            }
-        }
-    }
-
     fn resolve_mem(&self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
         use crate::operand::operand_helpers::*;
 
@@ -838,15 +789,27 @@ impl<'a> ExecutionState<'a> {
                 Flag::Direction => self.flags.direction,
             }).clone(),
             OperandType::Arithmetic(ref op) => {
-                let ty = OperandType::Arithmetic(self.resolve_arith(op, interner));
+                let ty = OperandType::Arithmetic(ArithOperand {
+                    ty: op.ty,
+                    left: self.resolve(&op.left, interner),
+                    right: self.resolve(&op.right, interner),
+                });
                 Operand::new_not_simplified_rc(ty)
             }
             OperandType::Arithmetic64(ref op) => {
-                let ty = OperandType::Arithmetic64(self.resolve_arith(op, interner));
+                let ty = OperandType::Arithmetic64(ArithOperand {
+                    ty: op.ty,
+                    left: self.resolve(&op.left, interner),
+                    right: self.resolve(&op.right, interner),
+                });
                 Operand::new_not_simplified_rc(ty)
             }
             OperandType::ArithmeticHigh(ref op) => {
-                let ty = OperandType::ArithmeticHigh(self.resolve_arith(op, interner));
+                let ty = OperandType::ArithmeticHigh(ArithOperand {
+                    ty: op.ty,
+                    left: self.resolve(&op.left, interner),
+                    right: self.resolve(&op.right, interner),
+                });
                 Operand::new_not_simplified_rc(ty)
             }
             OperandType::Constant(_) => value.clone(),

@@ -120,122 +120,126 @@ fn comparision_from_operand(
 ) -> Option<(Comparision, Rc<Operand>, Rc<Operand>)> {
     use crate::operand::operand_helpers::*;
     match oper.ty {
-        OperandType::Arithmetic(ref arith) => match *arith {
-            ArithOpType::Equal(ref l, ref r) => {
-                let other = match (&l.ty, &r.ty) {
-                    (&OperandType::Constant(0), _) => Some(r),
-                    (_, &OperandType::Constant(0)) => Some(l),
-                    _ => None,
-                };
-                if let Some(other) = other {
-                    if let Some((c, l, r)) = comparision_from_operand(&other) {
-                        let inverted = match c {
-                            Comparision::Equal => Comparision::NotEqual,
-                            Comparision::NotEqual => Comparision::Equal,
-                            Comparision::LessThan => Comparision::GreaterOrEqual,
-                            Comparision::GreaterOrEqual => Comparision::LessThan,
-                            Comparision::GreaterThan => Comparision::LessOrEqual,
-                            Comparision::LessOrEqual => Comparision::GreaterThan,
-                            Comparision::SignedLessThan => Comparision::SignedGreaterOrEqual,
-                            Comparision::SignedGreaterOrEqual => Comparision::SignedLessThan,
-                            Comparision::SignedGreaterThan => Comparision::SignedLessOrEqual,
-                            Comparision::SignedLessOrEqual => Comparision::SignedGreaterThan,
-                        };
-                        Some((inverted, l, r))
+        OperandType::Arithmetic(ref arith) => {
+            let l = &arith.left;
+            let r = &arith.right;
+            match arith.ty {
+                ArithOpType::Equal => {
+                    let other = match (&l.ty, &r.ty) {
+                        (&OperandType::Constant(0), _) => Some(r),
+                        (_, &OperandType::Constant(0)) => Some(l),
+                        _ => None,
+                    };
+                    if let Some(other) = other {
+                        if let Some((c, l, r)) = comparision_from_operand(&other) {
+                            let inverted = match c {
+                                Comparision::Equal => Comparision::NotEqual,
+                                Comparision::NotEqual => Comparision::Equal,
+                                Comparision::LessThan => Comparision::GreaterOrEqual,
+                                Comparision::GreaterOrEqual => Comparision::LessThan,
+                                Comparision::GreaterThan => Comparision::LessOrEqual,
+                                Comparision::LessOrEqual => Comparision::GreaterThan,
+                                Comparision::SignedLessThan => Comparision::SignedGreaterOrEqual,
+                                Comparision::SignedGreaterOrEqual => Comparision::SignedLessThan,
+                                Comparision::SignedGreaterThan => Comparision::SignedLessOrEqual,
+                                Comparision::SignedLessOrEqual => Comparision::SignedGreaterThan,
+                            };
+                            Some((inverted, l, r))
+                        } else {
+                            let (l2, r2) = compare_base_op(&other).decide();
+                            Some((Comparision::Equal, l2, r2))
+                        }
                     } else {
-                        let (l2, r2) = compare_base_op(&other).decide();
-                        Some((Comparision::Equal, l2, r2))
-                    }
-                } else {
-                    if let Some((lc, ll, lr)) = comparision_from_operand(l) {
-                        if let Some((rc, rl, rr)) = comparision_from_operand(r) {
-                            if let Some(op1) = sign_flag_check(lc, &ll, &lr) {
-                                if let Some(op2) = overflow_flag_check(rc, &rl, &rr) {
-                                    if let Some(op1) = op1.decide_with_lhs(&op2.0) {
-                                        if op1 == op2 {
-                                            return Some((
-                                                Comparision::SignedGreaterOrEqual,
-                                                op1.0,
-                                                op1.1,
-                                            ));
+                        if let Some((lc, ll, lr)) = comparision_from_operand(l) {
+                            if let Some((rc, rl, rr)) = comparision_from_operand(r) {
+                                if let Some(op1) = sign_flag_check(lc, &ll, &lr) {
+                                    if let Some(op2) = overflow_flag_check(rc, &rl, &rr) {
+                                        if let Some(op1) = op1.decide_with_lhs(&op2.0) {
+                                            if op1 == op2 {
+                                                return Some((
+                                                    Comparision::SignedGreaterOrEqual,
+                                                    op1.0,
+                                                    op1.1,
+                                                ));
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                    Some((Comparision::Equal, l.clone(), r.clone()))
-                }
-            }
-            ArithOpType::GreaterThan(ref l, ref r) => {
-                if let Some(op) = carry_flag_check(Comparision::GreaterThan, l, r) {
-                    if op.0.ty == OperandType::Constant(0x7fff_ffff) {
-                        Some((Comparision::SignedLessThan, op.1, constval(0)))
-                    } else {
-                        Some((Comparision::LessThan, op.0, op.1))
-                    }
-                } else {
-                    if r.ty == OperandType::Constant(0x7fff_ffff) {
-                        // yes, using SignedLessThan here as well
-                        Some((Comparision::SignedLessThan, l.clone(), constval(0)))
-                    } else {
-                        Some((Comparision::GreaterThan, l.clone(), r.clone()))
+                        Some((Comparision::Equal, l.clone(), r.clone()))
                     }
                 }
-            }
-            ArithOpType::GreaterThanSigned(ref l, ref r) => {
-                if let Some(op) = overflow_flag_check(Comparision::SignedGreaterThan, l, r) {
-                    Some((Comparision::SignedLessThan, op.0, op.1))
-                } else {
-                    Some((Comparision::SignedGreaterThan, l.clone(), r.clone()))
-                }
-            }
-            ArithOpType::Or(ref l, ref r) => {
-                if let Some((lc, ll, lr)) = comparision_from_operand(l) {
-                    if let Some((rc, rl, rr)) = comparision_from_operand(r) {
-                        let ops = signed_less_check(lc, &ll, &lr)
-                            .and_then(|op1| zero_flag_check(rc, &rl, &rr).map(|op2| (op1, op2)))
-                            .or_else(|| {
-                                signed_less_check(rc, &rl, &rr)
-                                    .and_then(|op1| {
-                                        zero_flag_check(lc, &ll, &lr).map(|op2| (op1, op2))
-                                    })
-                            });
-                        if let Some((op1, op2)) = ops {
-                            if let Some((_left, right)) = op2.decide_with_lhs(&op1.0) {
-                                if op1.1 == right {
-                                    return Some((
-                                        Comparision::SignedLessOrEqual,
-                                        op1.0,
-                                        op1.1,
-                                    ));
-                                }
-                            }
+                ArithOpType::GreaterThan => {
+                    if let Some(op) = carry_flag_check(Comparision::GreaterThan, l, r) {
+                        if op.0.ty == OperandType::Constant(0x7fff_ffff) {
+                            Some((Comparision::SignedLessThan, op.1, constval(0)))
+                        } else {
+                            Some((Comparision::LessThan, op.0, op.1))
                         }
-                        let ops = unsigned_less_check(lc, &ll, &lr)
-                            .and_then(|op1| zero_flag_check(rc, &rl, &rr).map(|op2| (op1, op2)))
-                            .or_else(|| {
-                                unsigned_less_check(rc, &rl, &rr)
-                                    .and_then(|op1| {
-                                        zero_flag_check(lc, &ll, &lr).map(|op2| (op1, op2))
-                                    })
-                            });
-                        if let Some((op1, op2)) = ops {
-                            if let Some((_left, right)) = op2.decide_with_lhs(&op1.0) {
-                                if op1.1 == right {
-                                    return Some((
-                                        Comparision::LessOrEqual,
-                                        op1.0,
-                                        op1.1,
-                                    ));
-                                }
-                            }
+                    } else {
+                        if r.ty == OperandType::Constant(0x7fff_ffff) {
+                            // yes, using SignedLessThan here as well
+                            Some((Comparision::SignedLessThan, l.clone(), constval(0)))
+                        } else {
+                            Some((Comparision::GreaterThan, l.clone(), r.clone()))
                         }
                     }
                 }
-                None
+                ArithOpType::GreaterThanSigned => {
+                    if let Some(op) = overflow_flag_check(Comparision::SignedGreaterThan, l, r) {
+                        Some((Comparision::SignedLessThan, op.0, op.1))
+                    } else {
+                        Some((Comparision::SignedGreaterThan, l.clone(), r.clone()))
+                    }
+                }
+                ArithOpType::Or => {
+                    if let Some((lc, ll, lr)) = comparision_from_operand(l) {
+                        if let Some((rc, rl, rr)) = comparision_from_operand(r) {
+                            let ops = signed_less_check(lc, &ll, &lr)
+                                .and_then(|op1| zero_flag_check(rc, &rl, &rr).map(|op2| (op1, op2)))
+                                .or_else(|| {
+                                    signed_less_check(rc, &rl, &rr)
+                                        .and_then(|op1| {
+                                            zero_flag_check(lc, &ll, &lr).map(|op2| (op1, op2))
+                                        })
+                                });
+                            if let Some((op1, op2)) = ops {
+                                if let Some((_left, right)) = op2.decide_with_lhs(&op1.0) {
+                                    if op1.1 == right {
+                                        return Some((
+                                            Comparision::SignedLessOrEqual,
+                                            op1.0,
+                                            op1.1,
+                                        ));
+                                    }
+                                }
+                            }
+                            let ops = unsigned_less_check(lc, &ll, &lr)
+                                .and_then(|op1| zero_flag_check(rc, &rl, &rr).map(|op2| (op1, op2)))
+                                .or_else(|| {
+                                    unsigned_less_check(rc, &rl, &rr)
+                                        .and_then(|op1| {
+                                            zero_flag_check(lc, &ll, &lr).map(|op2| (op1, op2))
+                                        })
+                                });
+                            if let Some((op1, op2)) = ops {
+                                if let Some((_left, right)) = op2.decide_with_lhs(&op1.0) {
+                                    if op1.1 == right {
+                                        return Some((
+                                            Comparision::LessOrEqual,
+                                            op1.0,
+                                            op1.1,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None
+                }
+                _ => None,
             }
-            _ => None,
         },
         _ => None,
     }
@@ -448,17 +452,17 @@ fn add_operands_to_tree(mut opers: Vec<(Rc<Operand>, bool)>) -> Rc<Operand> {
 fn compare_base_op(op: &Rc<Operand>) -> CompareOperands {
     use crate::operand::operand_helpers::*;
     match op.ty {
-        OperandType::Arithmetic(ArithOpType::Add(ref l, ref r)) |
-            OperandType::Arithmetic(ArithOpType::Sub(ref l, ref r)) =>
-        {
+        OperandType::Arithmetic(ref arith) if {
+            arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub
+        } => {
             let mut ops = Vec::new();
-            collect_add_ops(l, &mut ops, false);
-            let negate = match op.ty {
-                OperandType::Arithmetic(ArithOpType::Add(_, _)) => false,
-                OperandType::Arithmetic(ArithOpType::Sub(_, _)) => true,
+            collect_add_ops(&arith.left, &mut ops, false);
+            let negate = match arith.ty {
+                ArithOpType::Add => false,
+                ArithOpType::Sub => true,
                 _ => unreachable!(),
             };
-            collect_add_ops(r, &mut ops, negate);
+            collect_add_ops(&arith.right, &mut ops, negate);
             for &mut (ref mut op, ref mut negate) in &mut ops {
                 if let OperandType::Constant(c) = op.ty {
                     if c > 0x8000_0000 && *negate == false {
@@ -475,13 +479,13 @@ fn compare_base_op(op: &Rc<Operand>) -> CompareOperands {
 
 fn collect_add_ops(s: &Rc<Operand>, ops: &mut Vec<(Rc<Operand>, bool)>, negate: bool) {
     match s.ty {
-        OperandType::Arithmetic(ArithOpType::Add(ref left, ref right)) => {
-            collect_add_ops(left, ops, negate);
-            collect_add_ops(right, ops, negate);
+        OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Add => {
+            collect_add_ops(&arith.left, ops, negate);
+            collect_add_ops(&arith.right, ops, negate);
         }
-        OperandType::Arithmetic(ArithOpType::Sub(ref left, ref right)) => {
-            collect_add_ops(left, ops, negate);
-            collect_add_ops(right, ops, !negate);
+        OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
+            collect_add_ops(&arith.left, ops, negate);
+            collect_add_ops(&arith.right, ops, !negate);
         }
         _ => {
             ops.push((s.clone(), negate));

@@ -5,7 +5,9 @@ use std::ops::{Add};
 use std::rc::Rc;
 
 use crate::disasm::{self, DestOperand, Instruction, Operation};
-use crate::operand::{self, ArithOpType, Operand, OperandType, OperandContext, OperandDummyHasher};
+use crate::operand::{
+    self, ArithOpType, ArithOperand, Operand, OperandType, OperandContext, OperandDummyHasher
+};
 
 /// A trait that does (most of) arch-specific state handling.
 ///
@@ -46,80 +48,89 @@ pub trait ExecutionState<'a> : Clone {
         &self,
         condition: &Rc<Operand>,
         jump: bool,
-        intern_map: &mut InternMap,
+        i: &mut InternMap,
     ) -> Self {
         use crate::operand::ArithOpType::*;
         use crate::operand::operand_helpers::*;
 
-        match (jump, &condition.ty) {
-            (_, &OperandType::Arithmetic(Equal(ref left, ref right))) => {
-                Operand::either(left, right, |x| x.if_constant().filter(|&c| c == 0))
-                    .and_then(|(_, other)| {
-                        let (other, flag_state) = other.if_arithmetic_eq()
-                            .and_then(|(l, r)| {
-                                Operand::either(l, r, |x| x.if_constant())
-                                    .map(|(c, other)| (other, if c == 0 { jump } else { !jump }))
+        match condition.ty {
+            OperandType::Arithmetic(ref arith) => {
+                let left = &arith.left;
+                let right = &arith.right;
+                match arith.ty {
+                    Equal => {
+                        Operand::either(left, right, |x| x.if_constant().filter(|&c| c == 0))
+                            .and_then(|(_, other)| {
+                                let (other, flag_state) = other.if_arithmetic_eq()
+                                    .and_then(|(l, r)| {
+                                        Operand::either(l, r, |x| x.if_constant())
+                                            .map(|(c, other)| (other, if c == 0 { jump } else { !jump }))
+                                    })
+                                    .unwrap_or_else(|| (other, !jump));
+                                match other.ty {
+                                    OperandType::Flag(flag) => {
+                                        let mut state = self.clone();
+                                        let constant = self.ctx().constant(flag_state as u32);
+                                        state.move_to(&DestOperand::Flag(flag), constant, i);
+                                        Some(state)
+                                    }
+                                    _ => None,
+                                }
                             })
-                            .unwrap_or_else(|| (other, !jump));
-                        match other.ty {
-                            OperandType::Flag(flag) => {
+                            .unwrap_or_else(|| {
                                 let mut state = self.clone();
-                                let constant = self.ctx().constant(flag_state as u32);
-                                state.move_to(&DestOperand::Flag(flag), constant, intern_map);
-                                Some(state)
-                            }
-                            _ => None,
+                                let cond = match jump {
+                                    true => condition.clone(),
+                                    false => Operand::simplified(
+                                        operand_logical_not(condition.clone())
+                                    ),
+                                };
+                                state.add_extra_constraint(Constraint::new(cond));
+                                state
+                            })
+                    }
+                    Or => {
+                        if jump {
+                            let mut state = self.clone();
+                            let cond = Operand::simplified(operand_or(
+                                left.clone(),
+                                right.clone()
+                            ));
+                            state.add_extra_constraint(Constraint::new(cond));
+                            state
+                        } else {
+                            let mut state = self.clone();
+                            let cond = Operand::simplified(operand_and(
+                                operand_logical_not(left.clone()),
+                                operand_logical_not(right.clone()),
+                            ));
+                            state.add_extra_constraint(Constraint::new(cond));
+                            state
                         }
-                    })
-                    .unwrap_or_else(|| {
-                        let mut state = self.clone();
-                        let cond = match jump {
-                            true => condition.clone(),
-                            false => Operand::simplified(
-                                operand_logical_not(condition.clone())
-                            ),
-                        };
-                        state.add_extra_constraint(Constraint::new(cond));
-                        state
-                    })
+                    }
+                    And => {
+                        if jump {
+                            let mut state = self.clone();
+                            let cond = Operand::simplified(operand_and(
+                                left.clone(),
+                                right.clone(),
+                            ));
+                            state.add_extra_constraint(Constraint::new(cond));
+                            state
+                        } else {
+                            let mut state = self.clone();
+                            let cond = Operand::simplified(operand_or(
+                                operand_logical_not(left.clone()),
+                                operand_logical_not(right.clone())
+                            ));
+                            state.add_extra_constraint(Constraint::new(cond));
+                            state
+                        }
+                    }
+                    _ => self.clone(),
+                }
             }
-            (false, &OperandType::Arithmetic(Or(ref left, ref right))) => {
-                let mut state = self.clone();
-                let cond = Operand::simplified(operand_and(
-                    operand_logical_not(left.clone()),
-                    operand_logical_not(right.clone()),
-                ));
-                state.add_extra_constraint(Constraint::new(cond));
-                state
-            }
-            (true, &OperandType::Arithmetic(Or(ref left, ref right))) => {
-                let mut state = self.clone();
-                let cond = Operand::simplified(operand_or(
-                    left.clone(),
-                    right.clone()
-                ));
-                state.add_extra_constraint(Constraint::new(cond));
-                state
-            }
-            (true, &OperandType::Arithmetic(And(ref left, ref right))) => {
-                let mut state = self.clone();
-                let cond = Operand::simplified(operand_and(
-                    left.clone(),
-                    right.clone(),
-                ));
-                state.add_extra_constraint(Constraint::new(cond));
-                state
-            }
-            (false, &OperandType::Arithmetic(And(ref left, ref right))) => {
-                let mut state = self.clone();
-                let cond = Operand::simplified(operand_or(
-                    operand_logical_not(left.clone()),
-                    operand_logical_not(right.clone())
-                ));
-                state.add_extra_constraint(Constraint::new(cond));
-                state
-            }
-            (_, _) => self.clone(),
+            _ => self.clone(),
         }
     }
 }
@@ -220,31 +231,34 @@ impl Constraint {
 fn remove_matching_ands<F>(oper: &Rc<Operand>, fun: &mut F) -> Option<Rc<Operand>>
 where F: FnMut(&OperandType) -> bool,
 {
-     match oper.ty {
-        OperandType::Arithmetic(ArithOpType::And(ref l, ref r)) => {
-            // Only going to try partially invalidate cases with logical ands
-            if l.relevant_bits() != (0..1) || r.relevant_bits() != (0..1) {
-                match oper.iter().any(|x| fun(&x.ty)) {
-                    true => None,
-                    false => Some(oper.clone()),
-                }
-            } else {
-                let left = remove_matching_ands(l, fun);
-                let right = remove_matching_ands(r, fun);
-                match (left, right) {
-                    (None, None) => None,
-                    (Some(x), None) | (None, Some(x)) => Some(x),
-                    (Some(l), Some(r)) => {
-                        let op_ty = OperandType::Arithmetic(ArithOpType::And(l, r));
-                        Some(Operand::new_not_simplified_rc(op_ty))
-                    }
+    if let Some((l, r)) = oper.if_arithmetic_and() {
+        // Only going to try partially invalidate cases with logical ands
+        if l.relevant_bits() != (0..1) || r.relevant_bits() != (0..1) {
+            match oper.iter().any(|x| fun(&x.ty)) {
+                true => None,
+                false => Some(oper.clone()),
+            }
+        } else {
+            let left = remove_matching_ands(l, fun);
+            let right = remove_matching_ands(r, fun);
+            match (left, right) {
+                (None, None) => None,
+                (Some(x), None) | (None, Some(x)) => Some(x),
+                (Some(left), Some(right)) => {
+                    let op_ty = OperandType::Arithmetic(ArithOperand {
+                        ty: ArithOpType::And,
+                        left,
+                        right,
+                    });
+                    Some(Operand::new_not_simplified_rc(op_ty))
                 }
             }
-        },
-        _ => match oper.iter().any(|x| fun(&x.ty)) {
+        }
+    } else {
+        match oper.iter().any(|x| fun(&x.ty)) {
             true => None,
             false => Some(oper.clone()),
-        },
+        }
     }
 }
 
@@ -257,16 +271,14 @@ fn apply_constraint_split(
 ) -> Rc<Operand>{
     use crate::operand::operand_helpers::*;
     match constraint.ty {
-        OperandType::Arithmetic(ArithOpType::And(ref l, ref r)) => {
-            let new = apply_constraint_split(l, val, with);
-            apply_constraint_split(r, &new, with)
+        OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
+            let new = apply_constraint_split(&arith.left, val, with);
+            apply_constraint_split(&arith.right, &new, with)
         }
-        OperandType::Arithmetic(ArithOpType::Equal(ref l, ref r)) => {
-            let other = match (&l.ty, &r.ty) {
-                (&OperandType::Constant(0), _) => Some(r),
-                (_, &OperandType::Constant(0)) => Some(l),
-                _ => None
-            };
+        OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Equal => {
+            let (l, r) = (&arith.left, &arith.right);
+            let other = Operand::either(l, r, |x| x.if_constant().filter(|&c| c == 0))
+                .map(|x| x.1);
             if let Some(other) = other {
                 apply_constraint_split(other, val, !with)
             } else {
