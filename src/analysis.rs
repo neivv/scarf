@@ -262,7 +262,11 @@ pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     pub errors: Vec<(Exec::VirtualAddress, Error)>,
 }
 
-pub struct Control<'exec: 'b, 'b, Exec: ExecutionState<'exec>, State: AnalysisState> {
+pub struct Control<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> {
+    inner: &'c mut ControlInner<'exec, 'b, A::Exec, A::State>,
+}
+
+struct ControlInner<'exec: 'b, 'b, Exec: ExecutionState<'exec> + 'b, State: AnalysisState> {
     state: &'b mut (Exec, State),
     analysis: &'b mut FuncAnalysis<'exec, Exec, State>,
     // Set by Analyzer callback if it wants an early exit
@@ -277,93 +281,107 @@ enum End {
     Branch,
 }
 
-impl<'exec: 'b, 'b, Exec: ExecutionState<'exec>, S: AnalysisState> Control<'exec, 'b, Exec, S> {
+impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
     pub fn end_analysis(&mut self) {
-        if self.end.is_none() {
-            self.end = Some(End::Function);
+        if self.inner.end.is_none() {
+            self.inner.end = Some(End::Function);
         }
     }
 
     /// Ends the branch without continuing through anything it leads to
     pub fn end_branch(&mut self) {
-        if self.end.is_none() {
-            self.end = Some(End::Branch);
+        if self.inner.end.is_none() {
+            self.inner.end = Some(End::Branch);
         }
     }
 
-    pub fn user_state(&mut self) -> &mut S {
-        &mut self.state.1
+    pub fn user_state(&mut self) -> &mut A::State {
+        &mut self.inner.state.1
     }
 
-    pub fn exec_state(&mut self) -> (&mut Exec, &mut InternMap) {
-        (&mut self.state.0, &mut self.analysis.interner)
+    pub fn exec_state(&mut self) -> (&mut A::Exec, &mut InternMap) {
+        (&mut self.inner.state.0, &mut self.inner.analysis.interner)
     }
 
     pub fn resolve(&mut self, val: &Rc<Operand>) -> Rc<Operand> {
-        self.state.0.resolve(val, &mut self.analysis.interner)
+        self.inner.state.0.resolve(val, &mut self.inner.analysis.interner)
     }
 
     pub fn resolve_apply_constraints(&mut self, val: &Rc<Operand>) -> Rc<Operand> {
-        self.state.0.resolve_apply_constraints(&val, &mut self.analysis.interner)
+        self.inner.state.0.resolve_apply_constraints(&val, &mut self.inner.analysis.interner)
     }
 
     /// Takes current analysis' state as starting state for a function.
     /// ("Calls the function")
     /// However, this does not update the state to what this function changes it to.
-    pub fn analyze_with_current_state<A: Analyzer<'exec, State = S, Exec = Exec>>(
+    pub fn analyze_with_current_state<A2: Analyzer<'exec, State = A::State, Exec = A::Exec>>(
         &mut self,
-        analyzer: &mut A,
-        entry: Exec::VirtualAddress,
+        analyzer: &mut A2,
+        entry: <A::Exec as ExecutionState<'exec>>::VirtualAddress,
     ) {
-        let mut state = self.state.clone();
-        let ctx = self.analysis.operand_ctx;
-        let mut i = self.analysis.interner.clone();
-        state.0.apply_call(self.current_instruction_end(), &mut i);
+        let current_instruction_end = self.current_instruction_end();
+        let inner = &mut *self.inner;
+        let mut state = inner.state.clone();
+        let ctx = inner.analysis.operand_ctx;
+        let mut i = inner.analysis.interner.clone();
+        state.0.apply_call(current_instruction_end, &mut i);
         let mut analysis =
-            FuncAnalysis::custom_state(self.analysis.binary, ctx, entry, state.0, state.1, i);
+            FuncAnalysis::custom_state(inner.analysis.binary, ctx, entry, state.0, state.1, i);
         analysis.analyze(analyzer);
     }
 
     /// Calls the function and updates own state (Both ExecutionState and custom) to
     /// a merge of states at this child function's return points.
-    pub fn inline<A: Analyzer<'exec, State = S, Exec = Exec>>(
+    pub fn inline<A2: Analyzer<'exec, State = A::State, Exec = A::Exec>>(
         &mut self,
-        analyzer: &mut A,
-        entry: Exec::VirtualAddress,
+        analyzer: &mut A2,
+        entry: <A::Exec as ExecutionState<'exec>>::VirtualAddress,
     ) {
-        let mut state = self.state.clone();
-        let ctx = self.analysis.operand_ctx;
-        let mut i = self.analysis.interner.clone();
-        state.0.apply_call(self.current_instruction_end(), &mut i);
+        let current_instruction_end = self.current_instruction_end();
+        let inner = &mut *self.inner;
+        let mut state = inner.state.clone();
+        let ctx = inner.analysis.operand_ctx;
+        let mut i = inner.analysis.interner.clone();
+        state.0.apply_call(current_instruction_end, &mut i);
         let mut analysis =
-            FuncAnalysis::custom_state(self.analysis.binary, ctx, entry, state.0, state.1, i);
+            FuncAnalysis::custom_state(inner.analysis.binary, ctx, entry, state.0, state.1, i);
         let mut analyzer = CollectReturnsAnalyzer::new(analyzer);
         analysis.analyze(&mut analyzer);
         if let Some(state) = analyzer.state {
-            *self.state = state;
-            self.analysis.interner = analysis.interner;
+            *inner.state = state;
+            inner.analysis.interner = analysis.interner;
         }
     }
 
-    pub fn address(&self) -> Exec::VirtualAddress {
-        self.address
+    pub fn address(&self) -> <A::Exec as ExecutionState<'exec>>::VirtualAddress {
+        self.inner.address
     }
 
     /// Can be used for determining address for a branch when jump isn't followed and such.
-    pub fn current_instruction_end(&self) -> Exec::VirtualAddress {
-        self.address + self.instruction_length
+    pub fn current_instruction_end(&self) -> <A::Exec as ExecutionState<'exec>>::VirtualAddress {
+        self.inner.address + self.inner.instruction_length
+    }
+
+    /// Casts to Control<B: Analyzer> with compatible states.
+    ///
+    /// This is fine as the control doesn't use Analyzer for anything, the type is just defined
+    /// to take Analyzer as Control<Self> is cleaner than Control<Self::Exec, Self::State> when
+    /// implementing trait methods.
+    pub fn cast<'d, B>(&'d mut self) -> Control<'exec, 'b, 'd, B>
+    where B: Analyzer<'exec, Exec = A::Exec, State = A::State>,
+    {
+        Control {
+            inner: self.inner,
+        }
     }
 }
 
-pub trait Analyzer<'exec> {
+pub trait Analyzer<'exec> : Sized {
     type State: AnalysisState;
     type Exec: ExecutionState<'exec>;
-    fn branch_start<'b>(&mut self, _control: &mut Control<'exec, 'b, Self::Exec, Self::State>)
-    where 'exec: 'b { }
-    fn branch_end<'b>(&mut self, _control: &mut Control<'exec, 'b, Self::Exec, Self::State>)
-    where 'exec: 'b { }
-    fn operation<'b>(&mut self, _control: &mut Control<'exec, 'b, Self::Exec, Self::State>, _op: &Operation)
-    where 'exec: 'b { }
+    fn branch_start(&mut self, _control: &mut Control<'exec, '_, '_, Self>) {}
+    fn branch_end(&mut self, _control: &mut Control<'exec, '_, '_, Self>) {}
+    fn operation(&mut self, _control: &mut Control<'exec, '_, '_, Self>, _op: &Operation) {}
 }
 
 impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
@@ -468,16 +486,19 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         };
 
         let operand_ctx = self.operand_ctx;
-        let mut control = Control {
+        let mut inner = ControlInner {
             analysis: self,
             address: addr,
             instruction_length: 0,
             state,
             end: None,
         };
+        let mut control = Control {
+            inner: &mut inner,
+        };
         analyzer.branch_start(&mut control);
-        if control.end.is_some() {
-            return control.end;
+        if control.inner.end.is_some() {
+            return control.inner.end;
         }
 
         let rva = (addr.as_u64() - section.virtual_address.as_u64()) as usize;
@@ -487,12 +508,12 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             section.virtual_address,
         );
 
-        let init_state = control.state.clone();
+        let init_state = control.inner.state.clone();
         let mut cfg_out_edge = CfgOutEdges::None;
         'branch_loop: loop {
             let instruction = loop {
                 let address = disasm.address();
-                control.address = address;
+                control.inner.address = address;
                 let ins = match disasm.next(operand_ctx) {
                     Ok(o) => o,
                     Err(disasm::Error::Branch) => {
@@ -504,22 +525,22 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                         break 'branch_loop;
                     }
                 };
-                control.instruction_length = ins.len() as u32;
+                control.inner.instruction_length = ins.len() as u32;
                 if !ins.ops().is_empty() {
                     break ins;
                 }
             };
             for op in instruction.ops() {
                 analyzer.operation(&mut control, op);
-                if control.end.is_some() {
-                    return control.end;
+                if control.inner.end.is_some() {
+                    return control.inner.end;
                 }
                 match op {
                     disasm::Operation::Jump { condition, to } => {
                         update_analysis_for_jump(
-                            control.analysis,
-                            &mut control.state.0,
-                            &control.state.1,
+                            control.inner.analysis,
+                            &mut control.inner.state.0,
+                            &control.inner.state.1,
                             binary,
                             condition.clone(),
                             to.clone(),
@@ -529,23 +550,23 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                     }
                     disasm::Operation::Return(_) => (),
                     o => {
-                        control.state.0.update(o, &mut control.analysis.interner);
+                        control.inner.state.0.update(o, &mut control.inner.analysis.interner);
                     }
                 }
             }
         }
-        control.analysis.cfg.add_node(addr, CfgNode {
+        control.inner.analysis.cfg.add_node(addr, CfgNode {
             out_edges: cfg_out_edge,
             state: CfgState {
                 data: Box::new(init_state),
                 phantom: Default::default(),
             },
-            end_address: control.address, // Is this correct?
+            end_address: control.inner.address, // Is this correct?
             distance: 0,
         });
 
         analyzer.branch_end(&mut control);
-        control.end
+        control.inner.end
     }
 
     fn add_unchecked_branch(
@@ -673,19 +694,16 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> CollectReturnsAnalyzer<'a, 'exec, A> {
 impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyzer<'a, 'exec, A> {
     type State = A::State;
     type Exec = A::Exec;
-    fn branch_start<'b>(&mut self, control: &mut Control<'exec, 'b, Self::Exec, Self::State>)
-    where 'exec: 'b {
-        self.inner.branch_start(control)
+    fn branch_start(&mut self, control: &mut Control<'exec, '_, '_, Self>) {
+        self.inner.branch_start(&mut control.cast())
     }
 
-    fn branch_end<'b>(&mut self, control: &mut Control<'exec, 'b, Self::Exec, Self::State>)
-    where 'exec: 'b {
-        self.inner.branch_start(control)
+    fn branch_end(&mut self, control: &mut Control<'exec, '_, '_, Self>) {
+        self.inner.branch_start(&mut control.cast())
     }
 
-    fn operation<'b>(&mut self, control: &mut Control<'exec, 'b, Self::Exec, Self::State>, op: &Operation)
-    where 'exec: 'b {
-        self.inner.operation(control, op);
+    fn operation(&mut self, control: &mut Control<'exec, '_, '_, Self>, op: &Operation) {
+        self.inner.operation(&mut control.cast(), op);
         if let disasm::Operation::Return(_) = op {
             match self.state {
                 Some(ref mut state) => {
