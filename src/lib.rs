@@ -1,8 +1,6 @@
 #![allow(clippy::style, clippy::bool_comparison, clippy::needless_lifetimes)]
 
 #[macro_use] extern crate log;
-extern crate serde;
-extern crate smallvec;
 
 pub mod analysis;
 mod bit_misc;
@@ -25,12 +23,10 @@ pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;
 use std::ffi::{OsString, OsStr};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek};
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::path::{PathBuf};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use quick_error::quick_error;
-use serde_derive::{Serialize, Deserialize};
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Rva(pub u32);
@@ -329,115 +325,4 @@ fn read_at_16<R: Read + Seek>(f: &mut R, at: u64) -> Result<u16, io::Error> {
 fn read_at_32<R: Read + Seek>(f: &mut R, at: u64) -> Result<u32, io::Error> {
     f.seek(io::SeekFrom::Start(at))?;
     f.read_u32::<LittleEndian>()
-}
-
-pub struct SectionDumps(Vec<SectionDump>);
-
-struct SectionDump {
-    address: VirtualAddress,
-    data: Vec<u8>,
-}
-
-pub fn load_section_dumps(
-    dir: &OsStr,
-    binary_name: &OsStr,
-    binary: &BinaryFile<VirtualAddress>,
-) -> Result<SectionDumps, Error> {
-    use self::Error::*;
-
-    let filename_root = Path::new(binary_name).file_stem()
-        .ok_or_else(|| InvalidFilename(binary_name.into()))?;
-    let sections = binary.sections.iter()
-        .take_while(|section| !section.name.starts_with(&b".silps"[..]))
-        .enumerate().map(|(i, section)| {
-        let mut filename = filename_root.to_os_string();
-        let section_name = std::str::from_utf8(&section.name[..])
-            .unwrap_or("(no name)")
-            .trim_matches(|x: char| !x.is_alphanumeric());
-        filename.push(format!("_{}_{}", i, section_name));
-        let full_path = Path::new(dir).join(filename);
-        let mut file = File::open(&full_path)
-            .map_err(|e| IoWithFilename(e, full_path))?;
-        let mut buf = vec![];
-        file.read_to_end(&mut buf)?;
-        Ok(SectionDump {
-            address: section.virtual_address,
-            data: buf,
-        })
-    }).collect::<Result<Vec<_>, Error>>()?;
-    Ok(SectionDumps(sections))
-}
-
-impl SectionDumps {
-    pub fn resolve_mem_accesses(&self, val: &Rc<Operand>) -> (Rc<Operand>, Vec<VirtualAddress>) {
-        let mut addresses = vec![];
-        let val = match val.ty {
-            OperandType::Memory(ref mem) => {
-                if let OperandType::Constant(c) = mem.address.ty {
-                    if let Some(val) = self.resolve_mem_value(VirtualAddress(c), mem.size) {
-                        addresses.push(VirtualAddress(c));
-                        Operand::new_simplified_rc(OperandType::Constant(val))
-                    } else {
-                        val.clone()
-                    }
-                } else {
-                    val.clone()
-                }
-            }
-            OperandType::Arithmetic(ref arith) => {
-                let mut arith = arith.clone();
-                let (l_resolved, l_addresses) = self.resolve_mem_accesses(&arith.left);
-                let (r_resolved, r_addresses) = self.resolve_mem_accesses(&arith.right);
-                arith.left = l_resolved;
-                arith.right = r_resolved;
-                addresses.extend(l_addresses);
-                addresses.extend(r_addresses);
-                Operand::new_not_simplified_rc(OperandType::Arithmetic(arith))
-            }
-            _ => val.clone(),
-        };
-        (val, addresses)
-    }
-
-    fn resolve_mem_value(&self, address: VirtualAddress, size: MemAccessSize) -> Option<u32> {
-        self.0.iter().find(|sect| {
-            address > sect.address && address < sect.address + sect.data.len() as u32
-        }).and_then(|sect| {
-            let offset = (address.0 - sect.address.0) as usize;
-            let mut sliced = &sect.data[offset..];
-            match size {
-                MemAccessSize::Mem8 => sliced.read_u8().ok().map(|x| u32::from(x)),
-                MemAccessSize::Mem16 => {
-                    sliced.read_u16::<LittleEndian>().ok().map(|x| u32::from(x))
-                }
-                MemAccessSize::Mem32 => sliced.read_u32::<LittleEndian>().ok(),
-                MemAccessSize::Mem64 => panic!("Cannot resolve mem64 to u32"),
-            }
-        })
-    }
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct ScarfResults {
-    pub antidebug_keys: Vec<EncryptRuleSerialize>,
-    pub encrypt_key_fn: EncryptKeyResult,
-    pub antidebug_addr: u32
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct EncryptKeyResult {
-    pub address: String,
-    pub dynamic_key_readable: String,
-    pub static_key_readable: String,
-    pub dynamic_key: Option<Rc<Operand>>,
-    pub static_key: Option<Rc<Operand>>,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct EncryptRuleSerialize {
-    pub offset: String,
-    pub rule_human_readable_high: String,
-    pub rule_human_readable_low: String,
-    pub rule_high: Option<Rc<Operand>>,
-    pub rule_low: Option<Rc<Operand>>,
 }
