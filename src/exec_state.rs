@@ -13,7 +13,7 @@ use crate::operand::{
 ///
 /// ExecutionState contains the CPU state that is simulated, so registers, flags.
 pub trait ExecutionState<'a> : Clone {
-    type VirtualAddress: VirtualAddress + 'static;
+    type VirtualAddress: VirtualAddress;
     // Technically ExecState shouldn't need to be linked to disassembly code,
     // but I didn't want an additional trait to sit between user-defined AnalysisState and
     // ExecutionState, so ExecutionState shall contain this detail as well.
@@ -42,6 +42,26 @@ pub trait ExecutionState<'a> : Clone {
     ///
     /// A separate function as calls are usually just stepped over.
     fn apply_call(&mut self, ret: Self::VirtualAddress, i: &mut InternMap);
+
+    /// Creates an Mem[addr] with MemAccessSize of VirtualAddress size
+    fn operand_mem_word(address: Rc<Operand>) -> Rc<Operand> {
+        use crate::operand_helpers::*;
+        if <Self::VirtualAddress as VirtualAddress>::SIZE == 4 {
+            mem32(address)
+        } else {
+            mem64(address)
+        }
+    }
+
+    /// Creates either Arithmetic or Arithmetic64 based on VirtualAddress size
+    fn operand_arith_word(ty: ArithOpType, left: Rc<Operand>, right: Rc<Operand>) -> Rc<Operand> {
+        use crate::operand_helpers::*;
+        if <Self::VirtualAddress as VirtualAddress>::SIZE == 4 {
+            operand_arith(ty, left, right)
+        } else {
+            operand_arith64(ty, left, right)
+        }
+    }
 
     /// Returns state with the condition assumed to be true/false.
     fn assume_jump_flag(
@@ -137,7 +157,8 @@ pub trait ExecutionState<'a> : Clone {
 
 /// Either `scarf::VirtualAddress` in 32-bit or `scarf::VirtualAddress64` in 64-bit
 pub trait VirtualAddress: Eq + PartialEq + Ord + PartialOrd + Copy + Clone + std::hash::Hash +
-    fmt::LowerHex + fmt::UpperHex + fmt::Debug + Add<u32, Output = Self>
+    fmt::LowerHex + fmt::UpperHex + fmt::Debug + Add<u32, Output = Self> +
+    'static
 {
     type Inner: fmt::LowerHex + fmt::UpperHex;
     const SIZE: u32;

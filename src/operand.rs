@@ -1745,6 +1745,22 @@ impl Operand {
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Add(left, right))` or `Arithmetic64`
+    ///
+    /// Note that add32(a, b) isn't equal to add64(a, b) wrt overflow, but when matching
+    /// on simplified operands, that distinction isn't usually needed.
+    pub fn if_arithmetic_add64(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        match self.ty {
+            OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith)
+                if arith.ty == ArithOpType::Add =>
+            {
+                Some((&arith.left, &arith.right))
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Sub(left, right))`
     pub fn if_arithmetic_sub(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         match self.ty {
@@ -3472,6 +3488,10 @@ pub mod operand_helpers {
 
     pub fn mem32_norc(val: Rc<Operand>) -> Operand {
         mem_variable(Mem32, val)
+    }
+
+    pub fn mem64(val: Rc<Operand>) -> Rc<Operand> {
+        mem_variable_rc(Mem64, val)
     }
 
     pub fn mem32(val: Rc<Operand>) -> Rc<Operand> {
