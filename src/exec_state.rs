@@ -4,6 +4,7 @@ use std::fmt;
 use std::ops::{Add};
 use std::rc::Rc;
 
+use crate::analysis;
 use crate::disasm::{self, DestOperand, Instruction, Operation};
 use crate::operand::{
     self, ArithOpType, ArithOperand, Operand, OperandType, OperandContext, OperandDummyHasher
@@ -152,6 +153,23 @@ pub trait ExecutionState<'a> : Clone {
             }
             _ => self.clone(),
         }
+    }
+
+    // Analysis functions, default to no-op
+    fn find_functions_with_callers(_file: &crate::BinaryFile<Self::VirtualAddress>)
+        -> Vec<analysis::FuncCallPair<Self::VirtualAddress>> { Vec::new() }
+
+    fn find_functions_from_calls(
+        _code: &[u8],
+        _section_base: Self::VirtualAddress,
+        _out: &mut Vec<Self::VirtualAddress>
+    ) {
+    }
+
+    fn find_relocs(
+        _file: &crate::BinaryFile<Self::VirtualAddress>,
+    ) -> Result<Vec<Self::VirtualAddress>, crate::Error> {
+        Ok(Vec::new())
     }
 }
 

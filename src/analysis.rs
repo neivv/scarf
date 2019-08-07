@@ -34,19 +34,27 @@ impl<'a, E: ExecutionState<'a>, S: AnalysisState> cfg::CfgState for CfgState<'a,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct FuncCallPair {
-    pub caller: VirtualAddress,
-    pub callee: VirtualAddress,
+pub struct FuncCallPair<Va: VaTrait> {
+    pub caller: Va,
+    pub callee: Va,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct FuncPtrPair {
-    pub address: VirtualAddress,
-    pub callee: VirtualAddress,
+pub struct FuncPtrPair<Va: VaTrait> {
+    pub address: Va,
+    pub callee: Va,
 }
 
 /// Sorted by callee, so looking up callers can be done with bsearch
-pub fn find_functions_with_callers(file: &BinaryFile<VirtualAddress>) -> Vec<FuncCallPair> {
+pub fn find_functions_with_callers<'a, E: ExecutionState<'a>>(
+    file: &BinaryFile<E::VirtualAddress>,
+) -> Vec<FuncCallPair<E::VirtualAddress>> {
+    E::find_functions_with_callers(file)
+}
+
+pub fn find_functions_with_callers_x86(
+    file: &BinaryFile<VirtualAddress>,
+) -> Vec<FuncCallPair<VirtualAddress>> {
     let mut out = Vec::with_capacity(800);
     for code in file.code_sections() {
         let data = &code.data;
@@ -73,7 +81,15 @@ pub fn find_functions_with_callers(file: &BinaryFile<VirtualAddress>) -> Vec<Fun
     out
 }
 
-fn find_functions_from_calls(
+fn find_functions_from_calls<'a, E: ExecutionState<'a>>(
+    code: &[u8],
+    section_base: E::VirtualAddress,
+    out: &mut Vec<E::VirtualAddress>,
+) {
+    E::find_functions_from_calls(code, section_base, out)
+}
+
+pub(crate) fn find_functions_from_calls_x86(
     code: &[u8],
     section_base: VirtualAddress,
     out: &mut Vec<VirtualAddress>,
@@ -95,10 +111,17 @@ fn find_functions_from_calls(
 /// Attempts to find functions of a binary, accepting ones that are called/long jumped to
 /// from somewhere.
 /// Returns addresses relative to start of code section.
-pub fn find_functions(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddress]) -> Vec<VirtualAddress> {
+pub fn find_functions<'a, E: ExecutionState<'a>>(
+    file: &BinaryFile<E::VirtualAddress>,
+    relocs: &[E::VirtualAddress],
+) -> Vec<E::VirtualAddress> {
     let mut called_functions = Vec::new();
     for section in file.code_sections() {
-        find_functions_from_calls(&section.data, section.virtual_address, &mut called_functions);
+        find_functions_from_calls::<E>(
+            &section.data,
+            section.virtual_address,
+            &mut called_functions,
+        );
     }
     called_functions.extend(find_funcptrs(file, relocs).iter().map(|x| x.callee));
     called_functions.sort();
@@ -107,7 +130,7 @@ pub fn find_functions(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddres
 }
 
 // Sorted by address
-pub fn find_switch_tables(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
+pub fn find_switch_tables(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair<VirtualAddress>> {
     let mut out = Vec::with_capacity(4096);
     for sect in file.code_sections() {
         collect_relocs_pointing_to_code(sect, relocs, sect, &mut out);
@@ -115,7 +138,7 @@ pub fn find_switch_tables(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAd
     out
 }
 
-fn find_funcptrs(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair> {
+fn find_funcptrs<Va: VaTrait>(file: &BinaryFile<Va>, relocs: &[Va]) -> Vec<FuncPtrPair<Va>> {
     let mut out = Vec::with_capacity(4096);
     let code = file.code_section();
     for sect in file.sections.iter().filter(|sect| {
@@ -128,11 +151,11 @@ fn find_funcptrs(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddress]) -
     out
 }
 
-fn collect_relocs_pointing_to_code(
-    code: &BinarySection<VirtualAddress>,
-    relocs: &[VirtualAddress],
-    sect: &BinarySection<VirtualAddress>,
-    out: &mut Vec<FuncPtrPair>,
+fn collect_relocs_pointing_to_code<Va: VaTrait>(
+    code: &BinarySection<Va>,
+    relocs: &[Va],
+    sect: &BinarySection<Va>,
+    out: &mut Vec<FuncPtrPair<Va>>,
 ) {
     let start = match relocs.binary_search(&sect.virtual_address) {
         Ok(o) => o,
@@ -144,9 +167,11 @@ fn collect_relocs_pointing_to_code(
     };
     let funcs = relocs[start..end].iter()
         .flat_map(|&addr| {
-            let offset = (addr - sect.virtual_address).0 as usize;
-            (&sect.data[offset..]).read_u32::<LittleEndian>().ok()
-                .map(|x| (addr, VirtualAddress(x)))
+            // TODO broken on x86 for addresses right at end of section as it can't be
+            // read as u64
+            let offset = (addr.as_u64() - sect.virtual_address.as_u64()) as usize;
+            (&sect.data[offset..]).read_u64::<LittleEndian>().ok()
+                .map(|x| (addr, Va::from_u64(x)))
         })
         .filter(|&(_src_addr, func_addr)| {
             let code_size = code.data.len() as u32;
@@ -176,7 +201,13 @@ macro_rules! try_get {
     }
 }
 
-pub fn find_relocs(file: &BinaryFile<VirtualAddress>) -> Result<Vec<VirtualAddress>, crate::Error> {
+pub fn find_relocs<'a, E: ExecutionState<'a>>(
+    file: &BinaryFile<E::VirtualAddress>,
+) -> Result<Vec<E::VirtualAddress>, crate::Error> {
+    E::find_relocs(file)
+}
+
+pub fn find_relocs_x86(file: &BinaryFile<VirtualAddress>) -> Result<Vec<VirtualAddress>, crate::Error> {
     let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
     let reloc_offset = file.read_u32(pe_header + 0xa0)?;
     let reloc_len = file.read_u32(pe_header + 0xa4)?;
@@ -387,6 +418,13 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
     /// Create an arithmetic add with size of VirtualAddress.
     pub fn operand_add(&self, left: Rc<Operand>, right: Rc<Operand>) -> Rc<Operand> {
         A::Exec::operand_arith_word(crate::ArithOpType::Add, left, right)
+    }
+
+    /// Convenience for cases where `address + CONST * REG_SIZE` is needed
+    pub fn const_word_offset(&self, left: Rc<Operand>, right: u32) -> Rc<Operand> {
+        let size = <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE;
+        let constant = self.inner.analysis.operand_ctx.constant(right * size);
+        A::Exec::operand_arith_word(crate::ArithOpType::Add, left, constant)
     }
 }
 

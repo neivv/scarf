@@ -751,6 +751,14 @@ impl OperandContext {
         }
     }
 
+    pub fn constant64(&self, value: u64) -> Rc<Operand> {
+        if value <= u32::max_value() as u64 {
+            self.constant(value as u32)
+        } else {
+            Operand::new_simplified_rc(OperandType::Constant64(value))
+        }
+    }
+
     pub fn new() -> OperandContext {
         OperandContext {
             next_undefined: Cell::new(0),
@@ -3519,6 +3527,10 @@ pub mod operand_helpers {
 
     pub fn constval(num: u32) -> Rc<Operand> {
         OperandContext::new().constant(num)
+    }
+
+    pub fn constval64(num: u64) -> Rc<Operand> {
+        OperandContext::new().constant64(num)
     }
 
     pub fn pair_edx_eax() -> Rc<Operand> {

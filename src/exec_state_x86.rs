@@ -5,6 +5,7 @@ use std::rc::Rc;
 use byteorder::{ReadBytesExt, LE};
 use fxhash::FxBuildHasher;
 
+use crate::analysis;
 use crate::disasm::{Disassembler32, DestOperand, Operation};
 use crate::exec_state::{Constraint, InternMap, InternedOperand};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
@@ -117,6 +118,26 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
             interner
         );
         state
+    }
+
+    fn find_functions_with_callers(file: &crate::BinaryFile<Self::VirtualAddress>)
+        -> Vec<analysis::FuncCallPair<Self::VirtualAddress>>
+    {
+        crate::analysis::find_functions_with_callers_x86(file)
+    }
+
+    fn find_functions_from_calls(
+        code: &[u8],
+        section_base: Self::VirtualAddress,
+        out: &mut Vec<Self::VirtualAddress>
+    ) {
+        crate::analysis::find_functions_from_calls_x86(code, section_base, out)
+    }
+
+    fn find_relocs(
+        file: &BinaryFile<Self::VirtualAddress>,
+    ) -> Result<Vec<Self::VirtualAddress>, crate::Error> {
+        crate::analysis::find_relocs_x86(file)
     }
 }
 
