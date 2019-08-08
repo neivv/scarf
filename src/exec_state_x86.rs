@@ -267,13 +267,7 @@ impl Memory {
     pub fn get(&self, address: InternedOperand) -> Option<InternedOperand> {
         let op = self.map.get(&address).cloned()
             .or_else(|| self.immutable.as_ref().and_then(|x| x.get(address)));
-        match op {
-            Some(s) => match s.is_undefined() {
-                true => None,
-                false => Some(s),
-            },
-            None => None,
-        }
+        op
     }
 
     pub fn set(&mut self, address: InternedOperand, value: InternedOperand) {
@@ -298,13 +292,7 @@ impl Memory {
             .or_else(|| {
                 self.immutable.as_ref().and_then(|x| x.get(address)).map(|x| (x, true))
             });
-        match op {
-            Some(s) => match s.0.is_undefined() {
-                true => None,
-                false => Some(s),
-            },
-            None => None,
-        }
+        op
     }
 
     /// Iterates until the immutable block.
