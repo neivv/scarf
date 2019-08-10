@@ -32,6 +32,8 @@ pub trait ExecutionState<'a> : Clone {
     fn ctx(&self) -> &'a OperandContext;
     fn resolve(&self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand>;
     fn resolve_apply_constraints(&self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand>;
+    fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>>;
+    fn unresolve_memory(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>>;
     fn initial_state(
         operand_ctx: &'a OperandContext,
         binary: &'a crate::BinaryFile<Self::VirtualAddress>,

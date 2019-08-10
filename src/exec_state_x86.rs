@@ -60,6 +60,14 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         self.resolve(op_ref, i)
     }
 
+    fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
+        self.unresolve(val, i)
+    }
+
+    fn unresolve_memory(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
+        self.unresolve_memory(val, i)
+    }
+
     fn merge_states(old: &Self, new: &Self, i: &mut InternMap) -> Option<Self> {
         merge_states(old, new, i)
     }
@@ -340,6 +348,20 @@ impl Memory {
                 map,
                 immutable: old_immutable,
             }));
+        }
+    }
+
+    /// Does a value -> key lookup (Finds an address containing value)
+    pub fn reverse_lookup(&self, value: InternedOperand) -> Option<InternedOperand> {
+        for (&key, &val) in &self.map {
+            if value == val {
+                return Some(key);
+            }
+        }
+        if let Some(ref i) = self.immutable {
+            i.reverse_lookup(value)
+        } else {
+            None
         }
     }
 }
@@ -857,6 +879,13 @@ impl<'a> ExecutionState<'a> {
             }
         }
         None
+    }
+
+    /// Tries to find an memory address corresponding to a resolved value.
+    pub fn unresolve_memory(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
+        use crate::operand_helpers::*;
+        let interned = i.intern(val.clone());
+        self.memory.reverse_lookup(interned).map(|x| mem32(i.operand(x)))
     }
 }
 

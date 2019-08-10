@@ -303,7 +303,8 @@ struct ControlInner<'exec: 'b, 'b, Exec: ExecutionState<'exec> + 'b, State: Anal
     // Set by Analyzer callback if it wants an early exit
     end: Option<End>,
     address: Exec::VirtualAddress,
-    instruction_length: u32,
+    instruction_length: u8,
+    skip_operation: bool,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -326,6 +327,14 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
         }
     }
 
+    /// Skips the current operation.
+    ///
+    /// When used with branches (hopefully?) behaves as if branch is never taken, use
+    /// `end_branch()` to also stop analyzing the fallthrough case.
+    pub fn skip_operation(&mut self) {
+        self.inner.skip_operation = true;
+    }
+
     pub fn user_state(&mut self) -> &mut A::State {
         &mut self.inner.state.1
     }
@@ -340,6 +349,14 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
 
     pub fn resolve_apply_constraints(&mut self, val: &Rc<Operand>) -> Rc<Operand> {
         self.inner.state.0.resolve_apply_constraints(&val, &mut self.inner.analysis.interner)
+    }
+
+    pub fn unresolve(&mut self, val: &Rc<Operand>) -> Option<Rc<Operand>> {
+        self.inner.state.0.unresolve(val, &mut self.inner.analysis.interner)
+    }
+
+    pub fn unresolve_memory(&mut self, val: &Rc<Operand>) -> Option<Rc<Operand>> {
+        self.inner.state.0.unresolve_memory(val, &mut self.inner.analysis.interner)
     }
 
     /// Takes current analysis' state as starting state for a function.
@@ -390,7 +407,7 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
 
     /// Can be used for determining address for a branch when jump isn't followed and such.
     pub fn current_instruction_end(&self) -> <A::Exec as ExecutionState<'exec>>::VirtualAddress {
-        self.inner.address + self.inner.instruction_length
+        self.inner.address + self.inner.instruction_length as u32
     }
 
     /// Casts to Control<B: Analyzer> with compatible states.
@@ -542,6 +559,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             analysis: self,
             address: addr,
             instruction_length: 0,
+            skip_operation: false,
             state,
             end: None,
         };
@@ -562,6 +580,9 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
         let init_state = control.inner.state.clone();
         let mut cfg_out_edge = CfgOutEdges::None;
+        // skip_operation from branch_start is no-op, clear the flag here
+        // if it was set by user code
+        control.inner.skip_operation = false;
         'branch_loop: loop {
             let instruction = loop {
                 let address = disasm.address();
@@ -577,13 +598,17 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                         break 'branch_loop;
                     }
                 };
-                control.inner.instruction_length = ins.len() as u32;
+                control.inner.instruction_length = ins.len() as u8;
                 if !ins.ops().is_empty() {
                     break ins;
                 }
             };
             for op in instruction.ops() {
                 analyzer.operation(&mut control, op);
+                if control.inner.skip_operation {
+                    control.inner.skip_operation = false;
+                    continue;
+                }
                 if control.inner.end.is_some() {
                     return control.inner.end;
                 }
