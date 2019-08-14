@@ -1802,6 +1802,17 @@ impl Operand {
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::GreaterThan(left, right))`
+    pub fn if_arithmetic_gt(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        match self.ty {
+            OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::GreaterThan => {
+                Some((&arith.left, &arith.right))
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::And(left, right))`
     pub fn if_arithmetic_and(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         match self.ty {
