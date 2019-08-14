@@ -882,10 +882,16 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         match variant {
             0 | 1 => return self.generic_arith_with_imm_op(&TEST_OPS, op_size),
             2 => {
+                // Not
                 let dest = dest_operand(&rm);
                 out.push(
                     make_arith_operation(dest, ArithOpType::Xor, rm, self.ctx.const_ffffffff())
                 );
+            }
+            3 => {
+                // Neg
+                let dest = dest_operand(&rm);
+                out.push(make_arith_operation(dest, ArithOpType::Sub, self.ctx.const_0(), rm));
             }
             4 => {
                 out.push(mov(pair_edx_eax(), operand_mul(self.ctx.register(0), rm)));
