@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::mem;
 use std::rc::Rc;
@@ -316,6 +317,8 @@ impl<S: CfgState> Cfg<S> {
         //
         // Also mark any visited 0-marked nodes 1, and if another branch reaches 1-marked node,
         // it can just stop that branch.
+        // Because we stop on 1-marked nodes, it is important to go through any queued
+        // branches from lowest mark to highest, as lower marks override higher ones.
         //
         // Once there are no branches to check, the postdominator is received by the first
         // mark, for which any smaller mark won't reach another mark larger than it through
@@ -324,13 +327,13 @@ impl<S: CfgState> Cfg<S> {
 
         struct State<'exec, S: CfgState> {
             mark_buf: Vec<u32>,
-            forks: Vec<(usize, u32)>,
+            forks: VecDeque<(usize, u32)>,
             mark_indices: Vec<usize>,
             nodes: &'exec [(S::VirtualAddress, CfgNode<S>)],
         }
         let mut state = State {
             mark_buf: vec![0u32; self.nodes.len()],
-            forks: Vec::with_capacity(self.nodes.len()),
+            forks: VecDeque::with_capacity(self.nodes.len()),
             mark_indices: Vec::with_capacity(32),
             nodes: &self.nodes,
         };
@@ -346,7 +349,7 @@ impl<S: CfgState> Cfg<S> {
                 while state.mark_buf[pos] != 0 {
                     // We reached a loop, that's not useful.
                     // Switch marks that are larger than last fork to "useless"
-                    let (branch, last_good_mark) = match state.forks.pop() {
+                    let (branch, last_good_mark) = match state.forks.pop_back() {
                         None => return Err(None),
                         Some(s) => s,
                     };
@@ -378,13 +381,13 @@ impl<S: CfgState> Cfg<S> {
                     }
                     CfgOutEdges::Branch(ref s, ref cond) => {
                         if !cond.node.is_unknown() {
-                            state.forks.push((cond.node.index(), mark));
+                            state.forks.push_back((cond.node.index(), mark));
                         }
                         s.index_if_not_unkown()
                     }
                     CfgOutEdges::Switch(ref cases, _) => {
                         for other in cases.iter().skip(1) {
-                            state.forks.push((other.index(), mark));
+                            state.forks.push_back((other.index(), mark));
                         }
                         cases.first().map(|x| x.index())
                     }
@@ -411,7 +414,7 @@ impl<S: CfgState> Cfg<S> {
                 let mut current_mark;
                 let mut pos;
                 loop {
-                    match state.forks.pop() {
+                    match state.forks.pop_front() {
                         Some((p, m)) => {
                             pos = p;
                             current_mark = m;
@@ -461,7 +464,7 @@ impl<S: CfgState> Cfg<S> {
                                 } else {
                                     let cond_index = cond.node.index();
                                     if state.mark_buf[cond_index] != 1 {
-                                        state.forks.push((cond_index, current_mark));
+                                        state.forks.push_back((cond_index, current_mark));
                                     }
                                     s.index_if_not_unkown()
                                 }
@@ -469,7 +472,7 @@ impl<S: CfgState> Cfg<S> {
                             CfgOutEdges::Switch(ref cases, _) => {
                                 for other in cases.iter().skip(1) {
                                     if other.index() != 1 {
-                                        state.forks.push((other.index(), current_mark));
+                                        state.forks.push_back((other.index(), current_mark));
                                     }
                                 }
                                 cases.first().map(|x| x.index())
@@ -483,7 +486,7 @@ impl<S: CfgState> Cfg<S> {
                                 }
                             }
                             Some(1) => (),
-                            Some(s) => state.forks.push((s, current_mark)),
+                            Some(s) => state.forks.push_back((s, current_mark)),
                         }
                     }
                     1 => (),
@@ -824,6 +827,7 @@ mod test {
         cfg.add_node(VirtualAddress(104), node1(104, 105));
         cfg.add_node(VirtualAddress(105), node0(105));
         cfg.calculate_node_indices();
+        let node = |i| cfg.nodes().find(|x| x.address.0 == i).unwrap().index;
         assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(102)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(103)).unwrap().address.0, 105);
@@ -836,6 +840,7 @@ mod test {
         cfg.add_node(VirtualAddress(103), node2(103, 104, 101));
         cfg.add_node(VirtualAddress(104), node0(104));
         cfg.calculate_node_indices();
+        let node = |i| cfg.nodes().find(|x| x.address.0 == i).unwrap().index;
         assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(103)).unwrap().address.0, 104);
@@ -845,6 +850,7 @@ mod test {
         cfg.add_node(VirtualAddress(101), node1(101, 100));
         cfg.add_node(VirtualAddress(102), node0(102));
         cfg.calculate_node_indices();
+        let node = |i| cfg.nodes().find(|x| x.address.0 == i).unwrap().index;
         assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 102);
         assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 100);
 
@@ -855,8 +861,21 @@ mod test {
         cfg.add_node(VirtualAddress(103), node0(103));
         cfg.add_node(VirtualAddress(104), node1(104, 103));
         cfg.calculate_node_indices();
+        let node = |i| cfg.nodes().find(|x| x.address.0 == i).unwrap().index;
         assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 103);
+    }
+
+    #[test]
+    fn immediate_postdominator2() {
+        let mut cfg = Cfg::new();
+        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
+        cfg.add_node(VirtualAddress(101), node2(101, 103, 102));
+        cfg.add_node(VirtualAddress(102), node1(102, 103));
+        cfg.add_node(VirtualAddress(103), node0(103));
+        cfg.calculate_node_indices();
+        let node = |i| cfg.nodes().find(|x| x.address.0 == i).unwrap().index;
+        assert_eq!(cfg.immediate_postdominator(node(100)).unwrap().address.0, 103);
         assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 103);
     }
 }
