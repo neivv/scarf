@@ -996,7 +996,9 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
     ins: &Instruction<Exec::VirtualAddress>,
     cfg_out_edge: &mut CfgOutEdges<Exec::VirtualAddress>,
 ) {
-    fn is_switch_jump<VirtualAddress: exec_state::VirtualAddress>(to: &Operand) -> Option<(VirtualAddress, &Rc<Operand>)> {
+    fn is_switch_jump<VirtualAddress: exec_state::VirtualAddress>(
+        to: &Operand,
+    ) -> Option<(VirtualAddress, &Rc<Operand>)> {
         to.if_memory()
             .and_then(|mem| mem.address.if_arithmetic_add())
             .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul()))
@@ -1023,24 +1025,25 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
             let to = state.resolve(&to, &mut analysis.interner);
             if let Some((switch_table, index)) = is_switch_jump::<Exec::VirtualAddress>(&to) {
                 let mut cases = Vec::new();
-                let code_section = binary.code_section();
-                let code_section_start = code_section.virtual_address;
-                let code_section_end =
-                    code_section.virtual_address + code_section.virtual_size;
-                let case_iter = (0u32..)
-                    .map(|x| binary.read_address(switch_table + x * Exec::VirtualAddress::SIZE))
-                    .take_while(|x| x.is_ok())
-                    .flat_map(|x| x.ok())
-                    .take_while(|&addr| {
-                        // TODO: Could use relocs instead
-                        addr > code_section_start && addr < code_section_end
-                    });
-                for case in case_iter {
-                    analysis.add_unchecked_branch(case, state.clone(), analysis_state.clone());
-                    cases.push(NodeLink::new(case));
-                }
-                if !cases.is_empty() {
-                    *cfg_out_edge = CfgOutEdges::Switch(cases, index.clone());
+                let reloc_index = binary.relocs.binary_search(&switch_table);
+                if let Ok(reloc_index) = reloc_index {
+                    let case_iter = (0u32..)
+                        .take_while(|&x| {
+                            match binary.relocs.get(reloc_index + x as usize) {
+                                Some(&s) => s == switch_table + x * Exec::VirtualAddress::SIZE,
+                                None => false,
+                            }
+                        })
+                        .map(|x| binary.read_address(switch_table + x * Exec::VirtualAddress::SIZE))
+                        .take_while(|x| x.is_ok())
+                        .flat_map(|x| x.ok());
+                    for case in case_iter {
+                        analysis.add_unchecked_branch(case, state.clone(), analysis_state.clone());
+                        cases.push(NodeLink::new(case));
+                    }
+                    if !cases.is_empty() {
+                        *cfg_out_edge = CfgOutEdges::Switch(cases, index.clone());
+                    }
                 }
             } else {
                 let s = (state, analysis_state.clone());

@@ -173,6 +173,7 @@ quick_error! {
 pub struct BinaryFile<Va: exec_state::VirtualAddress> {
     pub base: Va,
     sections: Vec<BinarySection<Va>>,
+    relocs: Vec<Va>,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +251,10 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
             x => panic!("Unsupported VirtualAddress size {}", x),
         }
     }
+
+    pub fn set_relocs(&mut self, relocs: Vec<Va>) {
+        self.relocs = relocs;
+    }
 }
 
 /// Allows loading a BinaryFile from memory buffer(s) representing the binary sections.
@@ -260,6 +265,7 @@ pub fn raw_bin<Va: exec_state::VirtualAddress>(
     BinaryFile {
         base,
         sections,
+        relocs: Vec::new(),
     }
 }
 
@@ -314,6 +320,7 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
     Ok(BinaryFile {
         base,
         sections,
+        relocs: Vec::new(),
     })
 }
 

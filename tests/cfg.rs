@@ -70,8 +70,11 @@ fn switch_but_constant_case() {
 }
 
 fn load_test(idx: usize) -> (BinaryFile<VirtualAddress>, VirtualAddress) {
-    let binary = helpers::raw_bin(OsStr::new("test_inputs/cfg.bin")).unwrap();
-    let offset = (&binary.code_section().data[idx * 4..]).read_u32::<LittleEndian>().unwrap();
-    let func = binary.code_section().virtual_address + offset;
+    let mut binary = helpers::raw_bin(OsStr::new("test_inputs/cfg.bin")).unwrap();
+    let code_section = binary.code_section();
+    let offset = (&code_section.data[idx * 4..]).read_u32::<LittleEndian>().unwrap();
+    let func = code_section.virtual_address + offset;
+    let switch_table_addr = code_section.virtual_address + (code_section.virtual_size - 5 * 4);
+    binary.set_relocs((0..5).map(|i| switch_table_addr + i * 4).collect());
     (binary, func)
 }
