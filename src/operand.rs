@@ -281,6 +281,9 @@ impl fmt::Display for Operand {
                 let fmt = Operand::new_not_simplified_rc(OperandType::Arithmetic(arith.clone()));
                 write!(f, "{}.high", fmt)
             }
+            OperandType::SignExtend(ref val, ref from, ref to) => {
+                write!(f, "signext_{}_to_{}({})", from.bits(), to.bits(), val)
+            }
         }
     }
 }
@@ -305,6 +308,7 @@ pub enum OperandType {
     // The high 32 bits that usually are discarded in a airthmetic operation,
     // but relevant for 64-bit multiplications.
     ArithmeticHigh(ArithOperand),
+    SignExtend(Rc<Operand>, MemAccessSize, MemAccessSize),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
@@ -809,6 +813,9 @@ impl fmt::Debug for OperandType {
             Arithmetic(r) => f.debug_tuple("Arithmetic").field(r).finish(),
             Arithmetic64(r) => f.debug_tuple("Arithmetic64").field(r).finish(),
             ArithmeticHigh(r) => f.debug_tuple("ArithmeticHigh").field(r).finish(),
+            SignExtend(a, b, c) => {
+                f.debug_tuple("SignExtend").field(a).field(b).field(c).finish()
+            }
         }
     }
 }
@@ -983,6 +990,7 @@ impl OperandType {
             Register16(..) => MemAccessSize::Mem16,
             Register8High(..) | Register8Low(..) => MemAccessSize::Mem8,
             Register64(..) | Constant64(..) | Arithmetic64(..) => MemAccessSize::Mem64,
+            SignExtend(_, _from, to) => to,
         }
     }
 }
@@ -1585,6 +1593,31 @@ impl Operand {
                     size: mem.size,
                 }))
             }
+            OperandType::SignExtend(ref val, from, to) => {
+                // Shouldn't be 64bit constant since then `from` would already be Mem64
+                // Obviously such thing could be built, but assuming disasm/users don't..
+                if let Some(val) = val.if_constant() {
+                    let (ext, mask) = match from {
+                        MemAccessSize::Mem8 => (val & 0x80 != 0, 0xff),
+                        MemAccessSize::Mem16 => (val & 0x8000 != 0, 0xffff),
+                        MemAccessSize::Mem32 | _ => (val & 0x8000_0000 != 0, 0xffff_ffff),
+                    };
+                    if ext {
+                        let new = match to {
+                            MemAccessSize::Mem16 => (0xffff & !mask) | val as u64,
+                            MemAccessSize::Mem32 => (0xffff_ffff & !mask) | val as u64,
+                            MemAccessSize::Mem64 | _ => {
+                                (0xffff_ffff_ffff_ffff & !mask) | val as u64
+                            }
+                        };
+                        ctx.constant64(new)
+                    } else {
+                        ctx.constant(val)
+                    }
+                } else {
+                    mark_self_simplified(s)
+                }
+            }
             _ => mark_self_simplified(s),
         }
     }
@@ -1620,14 +1653,6 @@ impl Operand {
     }
 
     pub fn substitute(oper: &Rc<Operand>, val: &Rc<Operand>, with: &Rc<Operand>) -> Rc<Operand> {
-        fn mem_bits(val: MemAccessSize) -> u8 {
-            match val {
-                MemAccessSize::Mem64 => 64,
-                MemAccessSize::Mem32 => 32,
-                MemAccessSize::Mem16 => 16,
-                MemAccessSize::Mem8 => 8,
-            }
-        }
         if let Some(mem) = val.if_memory() {
             // Transform also Mem16[mem.addr] to with & 0xffff if val is Mem32, etc.
             // I guess recursing inside mem.addr doesn't make sense here,
@@ -1635,7 +1660,7 @@ impl Operand {
             Operand::transform(oper, |old| {
                 old.if_memory()
                     .filter(|old| old.address == mem.address)
-                    .filter(|old| mem_bits(old.size) <= mem_bits(mem.size))
+                    .filter(|old| old.size.bits() <= mem.size.bits())
                     .map(|old| {
                         use crate::operand_helpers::*;
                         if mem.size == old.size || old.size == MemAccessSize::Mem64 {
@@ -3364,6 +3389,17 @@ pub enum MemAccessSize {
     Mem16,
     Mem8,
     Mem64,
+}
+
+impl MemAccessSize {
+    fn bits(self) -> u32 {
+        match self {
+            MemAccessSize::Mem64 => 64,
+            MemAccessSize::Mem32 => 32,
+            MemAccessSize::Mem16 => 16,
+            MemAccessSize::Mem8 => 8,
+        }
+    }
 }
 
 #[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd, Deserialize, Serialize)]

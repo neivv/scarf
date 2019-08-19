@@ -732,96 +732,37 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(out)
     }
 
-    fn movsx_short(
-        &self,
-        out: &mut OperationVec,
-        r: &Rc<Operand>,
-        rm: Rc<Operand>,
-        op_size: MemAccessSize,
-    ) {
-        use self::operation_helpers::*;
-        use crate::operand::operand_helpers::*;
-        let keep_mask = match op_size {
-            MemAccessSize::Mem8 => and(r.clone(), self.ctx.const_ff()),
-            MemAccessSize::Mem16 => and(r.clone(), self.ctx.const_ffff()),
-            _ => unreachable!(),
-        };
-        let signed_max = match op_size {
-            MemAccessSize::Mem8 => self.ctx.const_7f(),
-            MemAccessSize::Mem16 => self.ctx.const_7fff(),
-            _ => unreachable!(),
-        };
-        let high_const = match op_size {
-            MemAccessSize::Mem8 => operand_or(self.ctx.const_ffffff00(), r.clone()),
-            MemAccessSize::Mem16 => operand_or(self.ctx.const_ffff0000(), r.clone()),
-            _ => unreachable!(),
-        };
-
-        let rm_cond = operand_gt(rm.clone(), signed_max);
-        out.push(keep_mask);
-        out.push(Operation::Move(dest_operand(&r), high_const, Some(rm_cond)));
-    }
-
     fn movsx(&self) -> Result<OperationVec, Error> {
-        use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
-            0 => MemAccessSize::Mem8,
-            _ => MemAccessSize::Mem16,
+            0 => operand::MemAccessSize::Mem8,
+            _ => operand::MemAccessSize::Mem16,
         };
         let dest_size = self.mem16_32();
         let (rm, r) = self.parse_modrm(dest_size)?;
         let rm = match rm.ty {
             OperandType::Memory(ref mem) => {
-                mem_variable_rc(op_size.to_public_size(), mem.address.clone())
+                mem_variable_rc(op_size, mem.address.clone())
             }
             OperandType::Register(r) | OperandType::Register16(r) => match op_size {
-                MemAccessSize::Mem8 => match r.0 >= 4 {
+                operand::MemAccessSize::Mem8 => match r.0 >= 4 {
                     false => self.ctx.register8_low(r.0),
                     true => self.ctx.register8_high(r.0 - 4),
                 },
-                MemAccessSize::Mem16 => self.ctx.register16(r.0),
+                operand::MemAccessSize::Mem16 => self.ctx.register16(r.0),
                 _ => unreachable!(),
             },
             _ => rm.clone(),
         };
 
         let mut out = SmallVec::new();
-        if is_rm_short_r_register(&rm, &r) {
-            self.movsx_short(&mut out, &r, rm, op_size)
-        } else {
-            let reg = match r.ty {
-                OperandType::Register(r) | OperandType::Register16(r) => r,
-                _ => unreachable!(),
-            };
-            let short_r = match op_size {
-                MemAccessSize::Mem8 => self.ctx.register8_low(reg.0),
-                MemAccessSize::Mem16 => self.ctx.register16(reg.0),
-                _ => unreachable!(),
-            };
-            let mem_size = match rm.ty {
-                OperandType::Memory(ref mem) => Some(mem.size),
-                _ => None,
-            };
-            if mem_size.is_some() {
-                out.push(mov(r.clone(), rm));
-                self.movsx_short(&mut out, &r, short_r, op_size)
-            } else {
-                let signed_max = match op_size {
-                    MemAccessSize::Mem8 => self.ctx.const_7f(),
-                    MemAccessSize::Mem16 => self.ctx.const_7fff(),
-                    _ => unreachable!(),
-                };
-                let rm_cond = operand_gt(rm.clone(), signed_max);
-                out.push(mov(r.clone(), self.ctx.const_0()));
-                out.push(Operation::Move(
-                    dest_operand(&r),
-                    self.ctx.const_ffffffff(),
-                    Some(rm_cond),
-                ));
-                out.push(mov(short_r, rm));
-            }
-        }
+        out.push(Operation::Move(
+            dest_operand(&r),
+            Operand::new_not_simplified_rc(
+                OperandType::SignExtend(rm, op_size, dest_size.to_public_size()),
+            ),
+            None,
+        ));
         Ok(out)
     }
 

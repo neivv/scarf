@@ -849,6 +849,11 @@ impl<'a> ExecutionState<'a> {
                 self.resolve_mem(mem, interner)
             }
             OperandType::Undefined(_) => value.clone(),
+            OperandType::SignExtend(ref val, from, to) => {
+                let val = self.resolve(val, interner);
+                let ty = OperandType::SignExtend(val, from, to);
+                Operand::new_not_simplified_rc(ty)
+            }
         }
     }
 
