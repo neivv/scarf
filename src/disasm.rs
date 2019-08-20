@@ -380,6 +380,13 @@ fn xmm_variant(op: &Rc<Operand>, i: u8) -> Rc<Operand> {
     }
 }
 
+fn x87_variant(ctx: &OperandContext, op: Rc<Operand>, offset: i8) -> Rc<Operand> {
+    match op.ty {
+        OperandType::Register(Register(r)) => ctx.register_fpu((r as i8 + offset) as u8 & 7),
+        _ => op,
+    }
+}
+
 impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     pub fn len(&self) -> usize {
         self.len as usize
@@ -1078,18 +1085,44 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(out)
     }
 
+    fn fpu_push(&self, out: &mut OperationVec) {
+        // fdecstp
+        out.push(Operation::Special(vec![0xd9, 0xf6]));
+    }
+
+    fn fpu_pop(&self, out: &mut OperationVec) {
+        // fincstp
+        out.push(Operation::Special(vec![0xd9, 0xf7]));
+    }
+
     fn various_d9(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
-        let variant = (self.get(1) >> 3) & 0x7;
+        let byte = self.get(1);
+        let variant = (byte >> 3) & 0x7;
         match variant {
-            // Fst/Fstp, as long as rm is mem
-            2 | 3 => {
+            // Fld
+            0 => {
                 let (rm, _) = self.parse_modrm(MemAccessSize::Mem32)?;
                 let mut out = SmallVec::new();
-                if rm.if_memory().is_some() {
-                    out.push(mov(rm.clone(), self.ctx.undefined_rc()));
+                self.fpu_push(&mut out);
+                out.push(mov(self.ctx.register_fpu(0), x87_variant(self.ctx, rm, 1)));
+                Ok(out)
+            }
+            // Fst/Fstp, as long as rm is mem
+            2 | 3 => {
+                let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+                let mut out = SmallVec::new();
+                out.push(mov(rm, x87_variant(self.ctx, r, 0)));
+                if variant == 3 {
+                    self.fpu_pop(&mut out);
                 }
+                Ok(out)
+            }
+            // Fincstp, fdecstp
+            6 if byte == 0xf6 || byte == 0xf7 => {
+                let mut out = SmallVec::new();
+                out.push(Operation::Special(self.data.into()));
                 Ok(out)
             }
             // Fstenv
@@ -1122,8 +1155,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 }
                 Ok(out)
             }
-            // Others just touch FPU registers
-            _ => Ok(SmallVec::new()),
+            _ => return Err(Error::UnknownOpcode(self.data.into())),
         }
     }
 
@@ -1826,6 +1858,7 @@ pub enum DestOperand {
     Register8Low(Register),
     PairEdxEax,
     Xmm(u8, u8),
+    Fpu(u8),
     Flag(Flag),
     Memory(MemAccess),
 }
@@ -1849,6 +1882,7 @@ fn dest_operand(val: &Operand) -> DestOperand {
             DestOperand::PairEdxEax
         }
         Xmm(x, y) => DestOperand::Xmm(x, y),
+        Fpu(x) => DestOperand::Fpu(x),
         Flag(x) => DestOperand::Flag(x),
         Memory(ref x) => DestOperand::Memory(x.clone()),
         ref x => panic!("Invalid value for converting Operand -> DestOperand: {:?}", x),
@@ -1866,6 +1900,7 @@ impl From<DestOperand> for Operand {
             DestOperand::Register8Low(x) => Register8Low(x),
             DestOperand::PairEdxEax => Pair(operand_register(2), operand_register(0)),
             DestOperand::Xmm(x, y) => Xmm(x, y),
+            DestOperand::Fpu(x) => Fpu(x),
             DestOperand::Flag(x) => Flag(x),
             DestOperand::Memory(x) => Memory(x),
         };

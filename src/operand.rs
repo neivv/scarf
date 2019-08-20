@@ -234,6 +234,7 @@ impl fmt::Display for Operand {
             },
             OperandType::Pair(ref hi, ref low) => write!(f, "{}:{}", hi, low),
             OperandType::Xmm(reg, subword) => write!(f, "xmm{}.{}", reg, subword),
+            OperandType::Fpu(reg) => write!(f, "fpu{}", reg),
             OperandType::Flag(flag) => match flag {
                 Flag::Zero => write!(f, "z"),
                 Flag::Carry => write!(f, "c"),
@@ -300,6 +301,7 @@ pub enum OperandType {
     // For div, as it sets eax to (edx:eax / x), and edx to (edx:eax % x)
     Pair(Rc<Operand>, Rc<Operand>),
     Xmm(u8, u8),
+    Fpu(u8),
     Flag(Flag),
     Constant(u32),
     Constant64(u64),
@@ -695,6 +697,10 @@ impl OperandContext {
         self.globals.registers64[index as usize].clone()
     }
 
+    pub fn register_fpu(&self, index: u8) -> Rc<Operand> {
+        Operand::new_simplified_rc(OperandType::Fpu(index))
+    }
+
     pub fn reg_variable_size(&self, reg: Register, size: MemAccessSize) -> Rc<Operand> {
         match size {
             MemAccessSize::Mem64 => self.register64(reg.0),
@@ -803,6 +809,7 @@ impl fmt::Debug for OperandType {
             Register8Low(r) => write!(f, "Register8Low({})", r.0),
             Register64(r) => write!(f, "Register64({})", r.0),
             Xmm(r, x) => write!(f, "Xmm({}.{})", r, x),
+            Fpu(r) => write!(f, "Fpu({})", r),
             Flag(r) => write!(f, "Flag({:?})", r),
             Constant(r) => write!(f, "Constant({:x})", r),
             Constant64(r) => write!(f, "Constant64({:x})", r),
@@ -990,7 +997,7 @@ impl OperandType {
         match *self {
             Memory(ref mem) => mem.size,
             Register(..) | Arithmetic(..) | Pair(..) | Xmm(..) | Flag(..) | Constant(..) |
-                Undefined(..) | ArithmeticHigh(..) => MemAccessSize::Mem32,
+                Undefined(..) | ArithmeticHigh(..) | Fpu(..) => MemAccessSize::Mem32,
             Register16(..) => MemAccessSize::Mem16,
             Register8High(..) | Register8Low(..) => MemAccessSize::Mem8,
             Register64(..) | Constant64(..) | Arithmetic64(..) => MemAccessSize::Mem64,

@@ -153,6 +153,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
 pub struct ExecutionState<'a> {
     pub registers: [InternedOperand; 0x8],
     pub xmm_registers: [XmmOperand; 0x8],
+    pub fpu_registers: [InternedOperand; 0x8],
     pub flags: Flags,
     pub memory: Memory,
     last_jump_extra_constraint: Option<Constraint>,
@@ -216,6 +217,16 @@ impl<'a> Clone for ExecutionState<'a> {
                 self.xmm_registers[5],
                 self.xmm_registers[6],
                 self.xmm_registers[7],
+            ],
+            fpu_registers: [
+                self.fpu_registers[0],
+                self.fpu_registers[1],
+                self.fpu_registers[2],
+                self.fpu_registers[3],
+                self.fpu_registers[4],
+                self.fpu_registers[5],
+                self.fpu_registers[6],
+                self.fpu_registers[7],
             ],
             flags: self.flags.clone(),
             memory: self.memory.clone(),
@@ -545,6 +556,7 @@ impl<'a> ExecutionState<'a> {
         interner: &mut InternMap,
     ) -> ExecutionState<'b> {
         let mut registers = [InternedOperand(0); 8];
+        let mut fpu_registers = [InternedOperand(0); 8];
         let mut xmm_registers = [XmmOperand(
             InternedOperand(0),
             InternedOperand(0),
@@ -553,11 +565,13 @@ impl<'a> ExecutionState<'a> {
         ); 8];
         for i in 0..8 {
             registers[i] = interner.intern(ctx.register(i as u8));
+            fpu_registers[i] = interner.intern(ctx.register_fpu(i as u8));
             xmm_registers[i] = XmmOperand::initial(i as u8, interner);
         }
         ExecutionState {
             registers,
             xmm_registers,
+            fpu_registers,
             flags: Flags::initial(ctx, interner),
             memory: Memory::new(),
             last_jump_extra_constraint: None,
@@ -626,9 +640,16 @@ impl<'a> ExecutionState<'a> {
             }
             Operation::Return(_) => {
             }
-            Operation::Special(_) => {
+            Operation::Special(code) => {
+                if code == &[0xd9, 0xf6] {
+                    // fdecstp
+                    self.fpu_registers.rotate_left(1);
+                } else if code == &[0xd9, 0xf7] {
+                    // fincstp
+                    self.fpu_registers.rotate_right(1);
+                }
             }
-        };
+        }
     }
 
     /// Makes all of memory undefined
@@ -671,6 +692,9 @@ impl<'a> ExecutionState<'a> {
                 let (eax, rest) = self.registers.split_first_mut().unwrap();
                 let edx = &mut rest[1];
                 Destination::Pair(edx, eax)
+            }
+            DestOperand::Fpu(id) => {
+                Destination::Oper(&mut self.fpu_registers[id as usize])
             }
             DestOperand::Xmm(reg, word) => {
                 Destination::Oper(self.xmm_registers[reg as usize].word_mut(word))
@@ -810,6 +834,9 @@ impl<'a> ExecutionState<'a> {
             }
             OperandType::Xmm(reg, word) => {
                 interner.operand(self.xmm_registers[reg as usize].word(word))
+            }
+            OperandType::Fpu(id) => {
+                interner.operand(self.fpu_registers[id as usize])
             }
             OperandType::Flag(flag) => interner.operand(match flag {
                 Flag::Zero => self.flags.zero,
@@ -1066,11 +1093,14 @@ pub fn merge_states<'a: 'r, 'r>(
             .any(|(&a, &b)| !check_eq(a, b)) ||
         old.xmm_registers.iter().zip(new.xmm_registers.iter())
             .any(|(a, b)| !check_xmm_eq(a, b)) ||
+        old.fpu_registers.iter().zip(new.fpu_registers.iter())
+            .any(|(&a, &b)| !check_eq(a, b)) ||
         !check_flags_eq(&old.flags, &new.flags) ||
         !check_memory_eq(&old.memory, &new.memory, interner) ||
         merged_ljec.as_ref().map(|x| *x != old.last_jump_extra_constraint).unwrap_or(false);
     if changed {
         let mut registers = [InternedOperand(0); 8];
+        let mut fpu_registers = [InternedOperand(0); 8];
         let mut xmm_registers = [XmmOperand(
             InternedOperand(0),
             InternedOperand(0),
@@ -1088,6 +1118,7 @@ pub fn merge_states<'a: 'r, 'r>(
         {
             for i in 0..8 {
                 registers[i] = merge(old.registers[i], new.registers[i], interner);
+                fpu_registers[i] = merge(old.fpu_registers[i], new.fpu_registers[i], interner);
                 xmm_registers[i] =
                     merge_xmm(&old.xmm_registers[i], &new.xmm_registers[i], interner);
             }
@@ -1105,6 +1136,7 @@ pub fn merge_states<'a: 'r, 'r>(
         }
         Some(ExecutionState {
             registers,
+            fpu_registers,
             xmm_registers,
             flags,
             memory: merge_memory(&old.memory, &new.memory, interner),

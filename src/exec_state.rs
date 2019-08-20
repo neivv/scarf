@@ -249,6 +249,9 @@ impl Constraint {
             DestOperand::Xmm(_, _) => {
                 None
             }
+            DestOperand::Fpu(_) => {
+                None
+            }
             DestOperand::Flag(flag) => {
                 remove_matching_ands(&self.0, &mut |x| *x == OperandType::Flag(flag))
             },
