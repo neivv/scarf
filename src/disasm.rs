@@ -319,6 +319,7 @@ fn instruction_operations32(
             0x12 | 0x13 => s.mov_sse_12_13(),
             // nop
             0x1f => Ok(SmallVec::new()),
+            0x2c => s.cvttss2si(),
             // rdtsc
             0x31 => {
                 let mut out = SmallVec::new();
@@ -328,6 +329,7 @@ fn instruction_operations32(
             }
             0x40 ..= 0x4f => s.cmov(),
             0x57 => s.xorps(),
+            0x5b => s.cvtdq2ps(),
             0x6e => s.mov_sse_6e(),
             0x7e => s.mov_sse_7e(),
             0x80 ..= 0x8f => s.conditional_jmp(s.mem16_32()),
@@ -854,6 +856,37 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         use self::operation_helpers::*;
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
         Ok((0..4).map(|i| xor(xmm_variant(&dest, i), xmm_variant(&rm, i))).collect())
+    }
+
+    fn cvttss2si(&self) -> Result<OperationVec, Error> {
+        if !self.has_prefix(0xf3) {
+            return Err(Error::UnknownOpcode(self.data.into()));
+        }
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let mut out = SmallVec::new();
+        let op = make_arith_operation(
+            dest_operand(&r),
+            ArithOpType::FloatToInt,
+            xmm_variant(&rm, 0),
+            self.ctx.const_0(),
+        );
+        out.push(op);
+        Ok(out)
+    }
+
+    fn cvtdq2ps(&self) -> Result<OperationVec, Error> {
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let mut out = SmallVec::new();
+        for i in 0..4 {
+            let op = make_arith_operation(
+                dest_operand(&xmm_variant(&r, i)),
+                ArithOpType::IntToFloat,
+                xmm_variant(&rm, i),
+                self.ctx.const_0(),
+            );
+            out.push(op);
+        }
+        Ok(out)
     }
 
     fn mov_sse_6e(&self) -> Result<OperationVec, Error> {

@@ -270,6 +270,8 @@ impl fmt::Display for Operand {
                     GreaterThanSigned => write!(f, "gt_signed({}, {})", l, r),
                     SignedMul => write!(f, "mul_signed({}, {})", l, r),
                     Parity => write!(f, "parity({})", l),
+                    FloatToInt => write!(f, "float_to_int({})", l),
+                    IntToFloat => write!(f, "int_to_float({})", l),
                 }?;
                 if let OperandType::Arithmetic64(..) = self.ty {
                     write!(f, "[64]")?;
@@ -335,6 +337,8 @@ pub enum ArithOpType {
     Parity,
     GreaterThan,
     GreaterThanSigned,
+    IntToFloat,
+    FloatToInt,
 }
 
 impl ArithOperand {
@@ -1580,6 +1584,47 @@ impl Operand {
                             let ty = OperandType::Arithmetic(ArithOperand {
                                 ty: ArithOpType::Parity,
                                 left: val,
+                                right: ctx.const_0(),
+                            });
+                            Operand::new_simplified_rc(ty)
+                        }
+                    }
+                    ArithOpType::FloatToInt => {
+                        let val = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                        if let Some(c) = val.if_constant() {
+                            use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+                            let mut buf = [0; 4];
+                            (&mut buf[..]).write_u32::<LE>(c).unwrap();
+                            let float = (&buf[..]).read_f32::<LE>().unwrap();
+                            let overflow = float > i32::max_value() as f32 ||
+                                float < i32::min_value() as f32;
+                            let int = if overflow {
+                                0x8000_0000
+                            } else {
+                                float as i32 as u32
+                            };
+                            ctx.constant(int)
+                        } else {
+                            let ty = OperandType::Arithmetic(ArithOperand {
+                                ty: arith.ty,
+                                left: left.clone(),
+                                right: ctx.const_0(),
+                            });
+                            Operand::new_simplified_rc(ty)
+                        }
+                    }
+                    ArithOpType::IntToFloat => {
+                        let val = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                        if let Some(c) = val.if_constant() {
+                            use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+                            let mut buf = [0; 4];
+                            (&mut buf[..]).write_f32::<LE>(c as i32 as f32).unwrap();
+                            let float = (&buf[..]).read_u32::<LE>().unwrap();
+                            ctx.constant(float)
+                        } else {
+                            let ty = OperandType::Arithmetic(ArithOperand {
+                                ty: arith.ty,
+                                left: left.clone(),
                                 right: ctx.const_0(),
                             });
                             Operand::new_simplified_rc(ty)
