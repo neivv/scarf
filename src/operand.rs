@@ -252,7 +252,9 @@ impl fmt::Display for Operand {
                 MemAccessSize::Mem64 => "64",
             }, mem.address),
             OperandType::Undefined(id) => write!(f, "Undefined_{:x}", id.0),
-            OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith) => {
+            OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith) |
+                OperandType::ArithmeticF32(ref arith) =>
+            {
                 let l = &arith.left;
                 let r = &arith.right;
                 match arith.ty {
@@ -274,8 +276,14 @@ impl fmt::Display for Operand {
                     FloatToInt => write!(f, "float_to_int({})", l),
                     IntToFloat => write!(f, "int_to_float({})", l),
                 }?;
-                if let OperandType::Arithmetic64(..) = self.ty {
-                    write!(f, "[64]")?;
+                match self.ty {
+                    OperandType::Arithmetic64(..) => {
+                        write!(f, "[64]")?;
+                    }
+                    OperandType::ArithmeticF32(..) => {
+                        write!(f, "[f32]")?;
+                    }
+                    _ => (),
                 }
                 Ok(())
             },
@@ -308,6 +316,7 @@ pub enum OperandType {
     Memory(MemAccess),
     Arithmetic(ArithOperand),
     Arithmetic64(ArithOperand),
+    ArithmeticF32(ArithOperand),
     Undefined(UndefinedId),
     // The high 32 bits that usually are discarded in a airthmetic operation,
     // but relevant for 64-bit multiplications.
@@ -823,6 +832,7 @@ impl fmt::Debug for OperandType {
             Memory(r) => f.debug_tuple("Memory").field(r).finish(),
             Arithmetic(r) => f.debug_tuple("Arithmetic").field(r).finish(),
             Arithmetic64(r) => f.debug_tuple("Arithmetic64").field(r).finish(),
+            ArithmeticF32(r) => f.debug_tuple("ArithmeticF32").field(r).finish(),
             ArithmeticHigh(r) => f.debug_tuple("ArithmeticHigh").field(r).finish(),
             SignExtend(a, b, c) => {
                 f.debug_tuple("SignExtend").field(a).field(b).field(c).finish()
@@ -997,7 +1007,8 @@ impl OperandType {
         match *self {
             Memory(ref mem) => mem.size,
             Register(..) | Arithmetic(..) | Pair(..) | Xmm(..) | Flag(..) | Constant(..) |
-                Undefined(..) | ArithmeticHigh(..) | Fpu(..) => MemAccessSize::Mem32,
+                Undefined(..) | ArithmeticHigh(..) | Fpu(..) |
+                ArithmeticF32(..) => MemAccessSize::Mem32,
             Register16(..) => MemAccessSize::Mem16,
             Register8High(..) | Register8Low(..) => MemAccessSize::Mem8,
             Register64(..) | Constant64(..) | Arithmetic64(..) => MemAccessSize::Mem64,
@@ -3495,6 +3506,14 @@ pub mod operand_helpers {
 
     pub fn operand_arith64(ty: ArithOpType, lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         Operand::new_not_simplified_rc(OperandType::Arithmetic64(ArithOperand {
+            ty,
+            left: lhs,
+            right: rhs,
+        }))
+    }
+
+    pub fn operand_arith_f32(ty: ArithOpType, lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        Operand::new_not_simplified_rc(OperandType::ArithmeticF32(ArithOperand {
             ty,
             left: lhs,
             right: rhs,

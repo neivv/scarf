@@ -862,6 +862,14 @@ impl<'a> ExecutionState<'a> {
                 });
                 Operand::new_not_simplified_rc(ty)
             }
+            OperandType::ArithmeticF32(ref op) => {
+                let ty = OperandType::ArithmeticF32(ArithOperand {
+                    ty: op.ty,
+                    left: self.resolve(&op.left, interner),
+                    right: self.resolve(&op.right, interner),
+                });
+                Operand::new_not_simplified_rc(ty)
+            }
             OperandType::ArithmeticHigh(ref op) => {
                 let ty = OperandType::ArithmeticHigh(ArithOperand {
                     ty: op.ty,

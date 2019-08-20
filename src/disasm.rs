@@ -297,6 +297,7 @@ fn instruction_operations32(
                 })
             }
             0xd0 ..= 0xd3 => s.bitwise_compact_op(),
+            0xd8 => s.various_d8(),
             0xd9 => s.various_d9(),
             0xe8 => s.call_op(),
             0xe9 => s.jump_op(),
@@ -1095,6 +1096,72 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         out.push(Operation::Special(vec![0xd9, 0xf7]));
     }
 
+    fn various_d8(&self) -> Result<OperationVec, Error> {
+        let byte = self.get(1);
+        let variant = (byte >> 3) & 0x7;
+        let (rm, _) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let mut out = SmallVec::new();
+        let st0 = self.ctx.register_fpu(0);
+        match variant {
+            // Fadd
+            0 => {
+                out.push(make_f32_operation(
+                    dest_operand(&st0),
+                    ArithOpType::Add,
+                    st0,
+                    rm,
+                ));
+            }
+            // Fmul
+            1 => {
+                out.push(make_f32_operation(
+                    dest_operand(&st0),
+                    ArithOpType::Mul,
+                    st0,
+                    rm,
+                ));
+            }
+            // Fsub
+            4 => {
+                out.push(make_f32_operation(
+                    dest_operand(&st0),
+                    ArithOpType::Sub,
+                    st0,
+                    rm,
+                ));
+            }
+            // Fsubr
+            5 => {
+                out.push(make_f32_operation(
+                    dest_operand(&st0),
+                    ArithOpType::Sub,
+                    rm,
+                    st0,
+                ));
+            }
+            // Fdiv
+            6 => {
+                out.push(make_f32_operation(
+                    dest_operand(&st0),
+                    ArithOpType::Div,
+                    st0,
+                    rm,
+                ));
+            }
+            // Fdivr
+            7 => {
+                out.push(make_f32_operation(
+                    dest_operand(&st0),
+                    ArithOpType::Div,
+                    rm,
+                    st0,
+                ));
+            }
+            _ => return Err(Error::UnknownOpcode(self.data.into())),
+        }
+        Ok(out)
+    }
+
     fn various_d9(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
@@ -1111,9 +1178,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             }
             // Fst/Fstp, as long as rm is mem
             2 | 3 => {
-                let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+                let (rm, _) = self.parse_modrm(MemAccessSize::Mem32)?;
                 let mut out = SmallVec::new();
-                out.push(mov(rm, x87_variant(self.ctx, r, 0)));
+                out.push(mov(rm, self.ctx.register_fpu(0)));
                 if variant == 3 {
                     self.fpu_pop(&mut out);
                 }
@@ -1837,6 +1904,17 @@ pub enum Operation {
     // Special cases like interrupts etc that scarf doesn't want to touch.
     // Also rep mov for now
     Special(Vec<u8>),
+}
+
+fn make_f32_operation(
+    dest: DestOperand,
+    ty: ArithOpType,
+    left: Rc<Operand>,
+    right: Rc<Operand>,
+) -> Operation {
+    use crate::operand_helpers::*;
+    let op = operand_arith_f32(ty, left, right);
+    Operation::Move(dest, Operand::simplified(op), None)
 }
 
 fn make_arith_operation(
