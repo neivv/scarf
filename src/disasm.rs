@@ -710,6 +710,14 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
     }
 
+    fn reg_variable_size(&self, register: Register, op_size: MemAccessSize) -> Rc<Operand> {
+        if register.0 >= 4 && self.prefixes.rex_prefix == 0 && op_size == MemAccessSize::Mem8 {
+            self.ctx.register8_high(register.0 - 4)
+        } else {
+            self.ctx.reg_variable_size(register, op_size)
+        }
+    }
+
     /// Returns (rm, r, modrm_size)
     fn parse_modrm_inner(
         &self,
@@ -725,7 +733,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             8 + ((modrm >> 3) & 0x7)
         };
         let rm_ext = self.prefixes.rex_prefix & 0x1 != 0;
-        let r = self.ctx.reg_variable_size(Register(register), op_size);
+        let r = self.reg_variable_size(Register(register), op_size);
         let (rm, size) = match (modrm >> 6) & 0x3 {
             0 => match rm_val {
                 4 => self.parse_sib(0, op_size)?,
@@ -776,9 +784,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             },
             3 => {
                 if rm_ext {
-                    (self.ctx.reg_variable_size(Register(rm_val + 8), op_size), 2)
+                    (self.reg_variable_size(Register(rm_val + 8), op_size), 2)
                 } else {
-                    (self.ctx.reg_variable_size(Register(rm_val), op_size), 2)
+                    (self.reg_variable_size(Register(rm_val), op_size), 2)
                 }
             }
             _ => unreachable!(),
@@ -983,7 +991,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let register = self.get(0) & 0x7;
+        let register = if self.prefixes.rex_prefix & 0x1 != 0 {
+            8 + (self.get(0) & 0x7)
+        } else {
+            self.get(0) & 0x7
+        };
         let constant = read_variable_size_64(self.slice(1), op_size)?;
         let mut out = SmallVec::new();
         out.push(mov(self.ctx.register(register), self.ctx.constant64(constant)));
@@ -1004,7 +1016,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let dest = self.ctx.reg_variable_size(Register(0), op_size);
+        let dest = self.reg_variable_size(Register(0), op_size);
         let imm = read_variable_size_32(self.slice(1), op_size)?;
         let val = self.ctx.constant64(imm);
         let mut out = SmallVec::new();
@@ -1046,8 +1058,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn movsx(&self) -> Result<OperationVec, Error> {
         use crate::operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
-            0 => operand::MemAccessSize::Mem8,
-            _ => operand::MemAccessSize::Mem16,
+            0 => MemAccessSize::Mem8,
+            _ => MemAccessSize::Mem16,
         };
         let dest_size = self.mem16_32();
         let (rm, r) = self.parse_modrm(dest_size)?;
@@ -1055,14 +1067,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             OperandType::Memory(ref mem) => {
                 mem_variable_rc(op_size, mem.address.clone())
             }
-            OperandType::Register(r) | OperandType::Register16(r) => match op_size {
-                operand::MemAccessSize::Mem8 => match r.0 >= 4 {
-                    false => self.ctx.register8_low(r.0),
-                    true => self.ctx.register8_high(r.0 - 4),
-                },
-                operand::MemAccessSize::Mem16 => self.ctx.register16(r.0),
-                _ => unreachable!(),
-            },
+            OperandType::Register(r) | OperandType::Register16(r) => {
+                self.reg_variable_size(r, op_size)
+            }
             _ => rm.clone(),
         };
 
@@ -1088,14 +1095,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let (rm, r) = self.parse_modrm(self.mem16_32())?;
         let rm = match rm.ty {
             OperandType::Memory(ref mem) => mem_variable_rc(op_size, mem.address.clone()),
-            OperandType::Register(r) => match op_size {
-                MemAccessSize::Mem8 => match r.0 >= 4 {
-                    false => self.ctx.register8_low(r.0),
-                    true => self.ctx.register8_high(r.0 - 4),
-                },
-                MemAccessSize::Mem16 => self.ctx.register16(r.0),
-                _ => unreachable!(),
-            },
+            OperandType::Register(r) | OperandType::Register16(r) => {
+                self.reg_variable_size(r, op_size)
+            }
             _ => rm.clone(),
         };
         let mut out = SmallVec::new();
@@ -1740,7 +1742,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let eax = self.ctx.reg_variable_size(Register(0), op_size);
+        let eax = self.reg_variable_size(Register(0), op_size);
         let imm = read_variable_size_32(self.slice(1), op_size)?;
         let val = self.ctx.constant64(imm);
         let mut out = SmallVec::new();

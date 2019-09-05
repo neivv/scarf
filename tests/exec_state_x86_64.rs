@@ -51,6 +51,43 @@ fn test_neg_mem8() {
     ]);
 }
 
+#[test]
+fn test_neg_mem8_dummy_rex_r() {
+    test_inline(&[
+        0xc6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, 0x04, // mov byte [rbp + 4ea2d325], 4
+        0x4e, 0xf6, 0x9d, 0x25, 0xd3, 0xa2, 0x4e, // neg byte [rbp + 4ea2d325]
+        0x0f, 0xb6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, // movzx eax, byte [rbp + 4ea2d325]
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval(0xfc)),
+    ]);
+}
+
+#[test]
+fn test_new_8bit_regs() {
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x31, 0xf6, // xor esi, esi
+        0x4d, 0x31, 0xc9, // xor r9, r9
+        0x4d, 0x31, 0xff, // xor r15, r15
+        0x66, 0xb8, 0xfe, 0x02, // mov ax, 2fe
+        0x66, 0xbe, 0xfe, 0x02, // mov si, 2fe
+        0x66, 0x41, 0xb9, 0xfe, 0x02, // mov r9w, 2fe
+        0x66, 0x41, 0xbf, 0xfe, 0x02, // mov r9w, 2fe
+        0x04, 0x05, // add al, 5
+        0x80, 0xc4, 0x05, // add ah, 5
+        0x40, 0x80, 0xc6, 0x05, // add sil, 5
+        0x41, 0x80, 0xc1, 0x05, // add r9b, 5
+        0x41, 0x80, 0xc7, 0x05, // add r15b, 5
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval(0x703)),
+         (operand_register64(6), constval(0x203)),
+         (operand_register64(9), constval(0x203)),
+         (operand_register64(15), constval(0x203)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

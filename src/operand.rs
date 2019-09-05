@@ -736,11 +736,7 @@ impl OperandContext {
             MemAccessSize::Mem64 => self.register64(reg.0),
             MemAccessSize::Mem32 => self.register(reg.0),
             MemAccessSize::Mem16 => self.register16(reg.0),
-            MemAccessSize::Mem8 => if reg.0 >= 4 {
-                self.register8_high(reg.0 - 4)
-            } else {
-                self.register8_low(reg.0)
-            },
+            MemAccessSize::Mem8 => self.register8_low(reg.0),
         }
     }
 
