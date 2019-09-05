@@ -342,7 +342,7 @@ fn instruction_operations32(
             0xe9 => s.jump_op(),
             0xeb => s.short_jmp(),
             0xf6 | 0xf7 => s.various_f7(),
-            0xf8 ..= 0xfd => {
+            0xf8 | 0xf9 | 0xfc | 0xfd => {
                 let flag = match first_byte {
                     0xf8 ..= 0xf9 => Flag::Carry,
                     _ => Flag::Direction,
@@ -574,7 +574,7 @@ fn instruction_operations64(
             0xe9 => s.jump_op(),
             0xeb => s.short_jmp(),
             0xf6 | 0xf7 => s.various_f7(),
-            0xf8 ..= 0xfd => {
+            0xf8 | 0xf9 | 0xfc | 0xfd => {
                 let flag = match first_byte {
                     0xf8 ..= 0xf9 => Flag::Carry,
                     _ => Flag::Direction,
