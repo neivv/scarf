@@ -9,6 +9,7 @@ pub mod cfg_dot;
 mod disasm;
 pub mod exec_state;
 pub mod exec_state_x86;
+pub mod exec_state_x86_64;
 pub mod operand;
 mod vec_drop_iter;
 
@@ -19,6 +20,7 @@ pub use crate::operand::{
 };
 
 pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;
+pub use crate::exec_state_x86_64::ExecutionState as ExecutionStateX86_64;
 
 use std::ffi::{OsString, OsStr};
 use std::fs::File;
@@ -324,6 +326,61 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
     })
 }
 
+pub fn parse_x86_64(filename: &OsStr) -> Result<BinaryFile<VirtualAddress64>, Error> {
+    use crate::Error::*;
+    let mut file = BufReader::new(File::open(filename)?);
+    if file.read_u16::<LittleEndian>()? != 0x5a4d {
+        return Err(InvalidPeFile("Missing DOS magic".into()));
+    }
+    let pe_offset = u64::from(read_at_32(&mut file, 0x3c)?);
+    if read_at_32(&mut file, pe_offset)? != 0x0000_4550 {
+        return Err(InvalidPeFile("Missing PE magic".into()));
+    }
+    let section_count = read_at_16(&mut file, pe_offset + 6)?;
+    let base = VirtualAddress64(read_at_64(&mut file, pe_offset + 0x30)?);
+    let mut sections = (0..u64::from(section_count)).map(|i| {
+        let mut name = [0; 8];
+        file.seek(io::SeekFrom::Start(pe_offset + 0x108 + 0x28 * i))?;
+        file.read_exact(&mut name)?;
+        file.seek(io::SeekFrom::Start(pe_offset + 0x108 + 0x28 * i + 0x8))?;
+        let virtual_size = file.read_u32::<LittleEndian>()?;
+        let rva = file.read_u32::<LittleEndian>()?;
+        let phys_size = file.read_u32::<LittleEndian>()?;
+        let phys = file.read_u32::<LittleEndian>()?;
+
+        file.seek(io::SeekFrom::Start(u64::from(phys)))?;
+        let mut data = vec![0; phys_size as usize];
+        file.read_exact(&mut data)?;
+        Ok(BinarySection {
+            name,
+            virtual_address: base + rva,
+            virtual_size,
+            data,
+        })
+    }).collect::<Result<Vec<_>, Error>>()?;
+    let header_block_size = read_at_32(&mut file, pe_offset + 0x54)?;
+    file.seek(io::SeekFrom::Start(0))?;
+    let mut header_data = vec![0; header_block_size as usize];
+    file.read_exact(&mut header_data)?;
+    sections.push(BinarySection {
+        name: {
+            let mut name = [0; 8];
+            for (&c, out) in b"(header)".iter().zip(name.iter_mut()) {
+                *out = c;
+            }
+            name
+        },
+        virtual_address: base,
+        virtual_size: header_block_size,
+        data: header_data,
+    });
+    Ok(BinaryFile {
+        base,
+        sections,
+        relocs: Vec::new(),
+    })
+}
+
 fn read_at_16<R: Read + Seek>(f: &mut R, at: u64) -> Result<u16, io::Error> {
     f.seek(io::SeekFrom::Start(at))?;
     f.read_u16::<LittleEndian>()
@@ -332,4 +389,9 @@ fn read_at_16<R: Read + Seek>(f: &mut R, at: u64) -> Result<u16, io::Error> {
 fn read_at_32<R: Read + Seek>(f: &mut R, at: u64) -> Result<u32, io::Error> {
     f.seek(io::SeekFrom::Start(at))?;
     f.read_u32::<LittleEndian>()
+}
+
+fn read_at_64<R: Read + Seek>(f: &mut R, at: u64) -> Result<u64, io::Error> {
+    f.seek(io::SeekFrom::Start(at))?;
+    f.read_u64::<LittleEndian>()
 }

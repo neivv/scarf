@@ -11,7 +11,7 @@ use byteorder::{ReadBytesExt, LittleEndian};
 use scarf::{
     BinaryFile, BinarySection, DestOperand, Operand, Operation, VirtualAddress
 };
-use scarf::analysis;
+use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86 as ExecutionState;
 use scarf::operand_helpers::*;
 use scarf::operand::OperandType;
@@ -326,6 +326,32 @@ fn cmp_mem8() {
     ]);
 }
 
+#[test]
+fn movzx_mem8() {
+    test_inline(&[
+        0x0f, 0xb6, 0x56, 0x4d, // movzx edx, byte [esi + 4d]
+        0xc3, //ret
+    ], &[
+         (operand_register(2), mem8(operand_add(operand_register(6), constval(0x4d)))),
+    ]);
+}
+
+struct CollectEndState<'e> {
+    end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
+}
+
+impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
+    type State = analysis::DefaultState;
+    type Exec = ExecutionState<'e>;
+    fn operation(&mut self, control: &mut Control<'e, '_, '_, Self>, op: &Operation) {
+        println!("@ {:x} {:#?}", control.address(), op);
+        if let Operation::Return(_) = *op {
+            let (state, i) = control.exec_state();
+            self.end_state = Some((state.clone(), i.clone()));
+        }
+    }
+}
+
 fn test_inner(
     file: &BinaryFile<VirtualAddress>,
     func: VirtualAddress,
@@ -341,19 +367,14 @@ fn test_inner(
     }
     let mut analysis =
         analysis::FuncAnalysis::with_state(file, &ctx, func, state, interner.clone());
-    let mut end_state = None;
-    while let Some(mut branch) = analysis.next_branch() {
-        let mut ops = branch.operations();
-        while let Some((op, state, addr, i)) = ops.next() {
-            println!("@ {:x} {:#?}", addr.0, op);
-            if let Operation::Return(_) = *op {
-                end_state = Some((state.clone(), i.clone()));
-            }
-        }
-    }
+    let mut collect_end_state = CollectEndState {
+        end_state: None,
+    };
+    analysis.analyze(&mut collect_end_state);
+
     println!("{:?}", analysis.errors);
     assert!(analysis.errors.is_empty());
-    let (end_state, mut end_i) = end_state.unwrap();
+    let (end_state, mut end_i) = collect_end_state.end_state.unwrap();
     for i in 0..8 {
         let expected = expected_state.resolve(&operand_register(i), &mut interner);
         let end = end_state.resolve(&operand_register(i), &mut end_i);

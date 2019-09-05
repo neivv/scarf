@@ -1,8 +1,11 @@
 use std::collections::{hash_map, HashMap};
 use std::hash::BuildHasherDefault;
 use std::fmt;
+use std::mem;
 use std::ops::{Add};
 use std::rc::Rc;
+
+use fxhash::FxBuildHasher;
 
 use crate::analysis;
 use crate::disasm::{self, DestOperand, Instruction, Operation};
@@ -241,7 +244,8 @@ impl Constraint {
     pub(crate) fn invalidate_dest_operand(&self, dest: &DestOperand) -> Option<Constraint> {
         match *dest {
             DestOperand::Register(reg) | DestOperand::Register16(reg) |
-                DestOperand::Register8High(reg) | DestOperand::Register8Low(reg) =>
+                DestOperand::Register8High(reg) | DestOperand::Register8Low(reg) |
+                DestOperand::Register64(reg) =>
             {
                 remove_matching_ands(&self.0, &mut |x| *x == OperandType::Register(reg))
             }
@@ -449,6 +453,298 @@ impl ManyInternedUndef {
         let val = InternedOperand(!self.pos);
         self.pos += 1;
         val
+    }
+}
+
+/// Contains memory state as addr -> value hashmap.
+/// The ExecutionState is expected to take care of cases where memory is written with one
+/// address and part of it is read at offset address, in practice by splitting accesses
+/// to be word-sized, and any misaligned accesses become bitwise and-or combinations.
+#[derive(Debug, Clone)]
+pub struct Memory {
+    pub(crate) map: HashMap<InternedOperand, InternedOperand, FxBuildHasher>,
+    /// Optimization for cases where memory gets large.
+    /// The existing mapping can be moved to Rc, where cloning it is effectively free.
+    immutable: Option<Rc<Memory>>,
+}
+
+struct MemoryIterUntilImm<'a> {
+    iter: hash_map::Iter<'a, InternedOperand, InternedOperand>,
+    immutable: &'a Option<Rc<Memory>>,
+    limit: Option<&'a Memory>,
+    in_immutable: bool,
+}
+
+pub struct MemoryIter<'a>(MemoryIterUntilImm<'a>);
+
+impl Memory {
+    pub fn new() -> Memory {
+        Memory {
+            map: HashMap::with_hasher(Default::default()),
+            immutable: None,
+        }
+    }
+
+    pub fn get(&self, address: InternedOperand) -> Option<InternedOperand> {
+        let op = self.map.get(&address).cloned()
+            .or_else(|| self.immutable.as_ref().and_then(|x| x.get(address)));
+        op
+    }
+
+    pub fn set(&mut self, address: InternedOperand, value: InternedOperand) {
+        self.map.insert(address, value);
+    }
+
+    /// Returns iterator yielding the interned operands.
+    pub fn iter_interned(&mut self) -> MemoryIter {
+        MemoryIter(self.iter_until_immutable(None))
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len() + self.immutable.as_ref().map(|x| x.len()).unwrap_or(0)
+    }
+
+    /// The bool is true if the value is in immutable map
+    fn get_with_immutable_info(
+        &self,
+        address: InternedOperand
+    ) -> Option<(InternedOperand, bool)> {
+        let op = self.map.get(&address).map(|&x| (x, false))
+            .or_else(|| {
+                self.immutable.as_ref().and_then(|x| x.get(address)).map(|x| (x, true))
+            });
+        op
+    }
+
+    /// Iterates until the immutable block.
+    /// Only ref-equality is considered, not deep-eq.
+    fn iter_until_immutable<'a>(&'a self, limit: Option<&'a Memory>) -> MemoryIterUntilImm<'a> {
+        MemoryIterUntilImm {
+            iter: self.map.iter(),
+            immutable: &self.immutable,
+            limit,
+            in_immutable: false,
+        }
+    }
+
+    fn common_immutable<'a>(&'a self, other: &'a Memory) -> Option<&'a Memory> {
+        self.immutable.as_ref().and_then(|i| {
+            let a = &**i as *const Memory;
+            let mut pos = Some(other);
+            while let Some(o) = pos {
+                if o as *const Memory == a {
+                    return pos;
+                }
+                pos = o.immutable.as_ref().map(|x| &**x);
+            }
+            i.common_immutable(other)
+        })
+    }
+
+    fn has_before_immutable(&self, address: InternedOperand, immutable: &Memory) -> bool {
+        if self as *const Memory == immutable as *const Memory {
+            false
+        } else if self.map.contains_key(&address) {
+            true
+        } else {
+            self.immutable.as_ref()
+                .map(|x| x.has_before_immutable(address, immutable))
+                .unwrap_or(false)
+        }
+    }
+
+    pub fn maybe_convert_immutable(&mut self) {
+        if self.map.len() >= 64 {
+            let map = mem::replace(&mut self.map, HashMap::with_hasher(Default::default()));
+            let old_immutable = self.immutable.take();
+            self.immutable = Some(Rc::new(Memory {
+                map,
+                immutable: old_immutable,
+            }));
+        }
+    }
+
+    /// Does a value -> key lookup (Finds an address containing value)
+    pub fn reverse_lookup(&self, value: InternedOperand) -> Option<InternedOperand> {
+        for (&key, &val) in &self.map {
+            if value == val {
+                return Some(key);
+            }
+        }
+        if let Some(ref i) = self.immutable {
+            i.reverse_lookup(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn merge(&self, new: &Memory, i: &mut InternMap, ctx: &OperandContext) -> Memory {
+        let a = self;
+        let b = new;
+        if a.len() == 0 {
+            return b.clone();
+        }
+        if b.len() == 0 {
+            return a.clone();
+        }
+        let mut result = HashMap::with_hasher(Default::default());
+        let imm_eq = a.immutable.as_ref().map(|x| &**x as *const Memory) ==
+            b.immutable.as_ref().map(|x| &**x as *const Memory);
+        if imm_eq {
+            // Allows just checking a.map.iter() instead of a.iter()
+            for (&key, &a_val) in &a.map {
+                if let Some((b_val, is_imm)) = b.get_with_immutable_info(key) {
+                    match a_val == b_val {
+                        true => {
+                            if !is_imm {
+                                result.insert(key, a_val);
+                            }
+                        }
+                        false => {
+                            if is_imm {
+                                result.insert(key, i.new_undef(ctx));
+                            }
+                        }
+                    }
+                }
+            }
+            Memory {
+                map: result,
+                immutable: a.immutable.clone(),
+            }
+        } else {
+            // Not inserting undefined addresses here, as missing entry is effectively undefined.
+            // Should be fine?
+            //
+            // a's immutable map is used as base, so one which exist there don't get inserted to
+            // result, but if it has ones that should become undefined, the undefined has to be
+            // inserted to the result instead.
+            let common = a.common_immutable(b);
+            for (&key, &b_val, _is_imm) in b.iter_until_immutable(common) {
+                if let Some((a_val, is_imm)) = a.get_with_immutable_info(key) {
+                    match a_val == b_val {
+                        true => {
+                            if !is_imm {
+                                result.insert(key, a_val);
+                            }
+                        }
+                        false => {
+                            if is_imm {
+                                result.insert(key, i.new_undef(ctx));
+                            }
+                        }
+                    }
+                }
+            }
+            // The result contains now anything that was in b's unique branch of the memory and
+            // matched something in a.
+            // However, it is possible that for address A, the common branch contains X and b's
+            // unique branch has nothing, in which case b's value for A is X.
+            // if a's unique branch has something for A, then A's value may be X (if the values
+            // are equal), or undefined.
+            //
+            // Only checking both unique branches instead of walking through the common branch
+            // ends up being faster in cases where the memory grows large.
+            //
+            // If there is no common branch, we don't have to do anything else.
+            if let Some(common) = common {
+                for (&key, &a_val, is_imm) in a.iter_until_immutable(Some(common)) {
+                    if !b.has_before_immutable(key, common) {
+                        if let Some(b_val) = common.get(key) {
+                            match a_val == b_val {
+                                true => {
+                                    if !is_imm {
+                                        result.insert(key, a_val);
+                                    }
+                                }
+                                false => {
+                                    if is_imm {
+                                        result.insert(key, i.new_undef(ctx));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Memory {
+                map: result,
+                immutable: a.immutable.clone(),
+            }
+        }
+    }
+}
+
+impl<'a> Iterator for MemoryIterUntilImm<'a> {
+    /// The bool tells if we're at immutable parts of the calling operand or not
+    type Item = (&'a InternedOperand, &'a InternedOperand, bool);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter.next() {
+            Some(s) => Some((s.0, s.1, self.in_immutable)),
+            None => {
+                let at_limit = self.immutable.as_ref().map(|x| &**x as *const Memory) ==
+                    self.limit.map(|x| x as *const Memory);
+                if at_limit {
+                    return None;
+                }
+                match *self.immutable {
+                    Some(ref i) => {
+                        *self = i.iter_until_immutable(self.limit);
+                        self.in_immutable = true;
+                        self.next()
+                    }
+                    None => None,
+                }
+            }
+        }
+    }
+}
+
+impl<'a> Iterator for MemoryIter<'a> {
+    type Item = (InternedOperand, InternedOperand);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|(&key, &val, _)| (key, val))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct XmmOperand(
+    pub InternedOperand,
+    pub InternedOperand,
+    pub InternedOperand,
+    pub InternedOperand,
+);
+
+impl XmmOperand {
+    pub fn initial(register: u8, interner: &mut InternMap) -> XmmOperand {
+        XmmOperand(
+            interner.intern(Rc::new(Operand::new_xmm(register, 0))),
+            interner.intern(Rc::new(Operand::new_xmm(register, 1))),
+            interner.intern(Rc::new(Operand::new_xmm(register, 2))),
+            interner.intern(Rc::new(Operand::new_xmm(register, 3))),
+        )
+    }
+
+    #[inline]
+    pub fn word(&self, idx: u8) -> InternedOperand {
+        match idx {
+            0 => self.0,
+            1 => self.1,
+            2 => self.2,
+            3 => self.3,
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    pub fn word_mut(&mut self, idx: u8) -> &mut InternedOperand {
+        match idx {
+            0 => &mut self.0,
+            1 => &mut self.1,
+            2 => &mut self.2,
+            3 => &mut self.3,
+            _ => unreachable!(),
+        }
     }
 }
 
