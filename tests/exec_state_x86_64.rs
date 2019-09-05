@@ -39,6 +39,18 @@ fn test_xor_high() {
     ]);
 }
 
+#[test]
+fn test_neg_mem8() {
+    test_inline(&[
+        0xc6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, 0x04, // mov byte [rbp + 4ea2d325], 4
+        0xf6, 0x9d, 0x25, 0xd3, 0xa2, 0x4e, // neg byte [rbp + 4ea2d325]
+        0x0f, 0xb6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, // movzx eax, byte [rbp + 4ea2d325]
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval(0xfc)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
