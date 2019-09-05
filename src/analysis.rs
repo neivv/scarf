@@ -674,9 +674,8 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                     Err(disasm::Error::Branch) => {
                         break 'branch_loop;
                     }
-                    Err(_) => {
-                        // TODO ERROR?
-                        //self.branch.analysis.errors.push((address, e.into()));
+                    Err(e) => {
+                        control.inner.analysis.errors.push((address, e.into()));
                         break 'branch_loop;
                     }
                 };
