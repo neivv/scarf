@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use hex_slice::AsHex;
+use lde::Isa;
 use quick_error::quick_error;
 use smallvec::SmallVec;
 
@@ -58,7 +59,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
         if self.is_branching {
             return Err(Error::Branch);
         }
-        let length = lde::X86.ld(&self.buf[self.pos..]) as usize;
+        let length = lde::X86::ld(&self.buf[self.pos..]) as usize;
         if length == 0 {
             if self.pos == self.buf.len() {
                 return Err(Error::End);
@@ -113,7 +114,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
         if self.is_branching {
             return Err(Error::Branch);
         }
-        let length = lde::X64.ld(&self.buf[self.pos..]) as usize;
+        let length = lde::X64::ld(&self.buf[self.pos..]) as usize;
         if length == 0 {
             if self.pos == self.buf.len() {
                 return Err(Error::End);
@@ -998,7 +999,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let constant = read_variable_size_64(self.slice(1), op_size)?;
         let mut out = SmallVec::new();
-        out.push(mov(self.ctx.register(register), self.ctx.constant64(constant)));
+        let register = self.ctx.reg_variable_size(Register(register), op_size);
+        out.push(mov(register, self.ctx.constant64(constant)));
         Ok(out)
     }
 

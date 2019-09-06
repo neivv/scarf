@@ -16,7 +16,7 @@ required-features = ["binaries"]
 byteorder = "1.1.0"
 fxhash = "0.2"
 hex-slice = "0.1.0"
-lde = "0.3"
+lde = { git = "https://github.com/neivv/lde" }
 log = "0.4"
 quick-error = "1.2.0"
 serde = { version = "1.0.11", features = ["rc"] }

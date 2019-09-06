@@ -88,6 +88,20 @@ fn test_new_8bit_regs() {
     ]);
 }
 
+#[test]
+fn test_64bit_regs() {
+    test_inline(&[
+        0x49, 0xbf, 0x0c, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, // mov r15, c_0000_000c
+        0x31, 0xc0, // xor eax, eax
+        0x48, 0x8d, 0x88, 0x88, 0x00, 0x00, 0x00, // lea rcx, [rax + 88]
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval(0)),
+         (operand_register64(1), constval(0x88)),
+         (operand_register64(15), constval64(0xc_0000_000c)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
