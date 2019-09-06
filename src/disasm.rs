@@ -386,7 +386,9 @@ fn instruction_operations32(
                 out.push(mov(operand_register(0), ctx.undefined_rc()));
                 Ok(out)
             }
+            0xb3 => s.btr(false),
             0xb6 ..= 0xb7 => s.movzx(),
+            0xba => s.various_0f_ba(),
             0xbe ..= 0xbf => s.movsx(),
             0xd3 => s.packed_shift_right(),
             0xd6 => s.mov_sse_d6(),
@@ -618,7 +620,9 @@ fn instruction_operations64(
                 out.push(mov(operand_register(0), ctx.undefined_rc()));
                 Ok(out)
             }
+            0xb3 => s.btr(false),
             0xb6 ..= 0xb7 => s.movzx(),
+            0xba => s.various_0f_ba(),
             0xbe ..= 0xbf => s.movsx(),
             0xd3 => s.packed_shift_right(),
             0xd6 => s.mov_sse_d6(),
@@ -1162,6 +1166,52 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             _ => return Err(Error::UnknownOpcode(self.data.into())),
         }
         Ok(out)
+    }
+
+    fn various_0f_ba(&self) -> Result<OperationVec, Error> {
+        let variant = (self.get(1) >> 3) & 0x7;
+        match variant {
+            6 => self.btr(true),
+            _ => Err(Error::UnknownOpcode(self.data.into())),
+        }
+    }
+
+    fn btr(&self, imm8: bool) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        use crate::operand::operand_helpers::*;
+        let op_size = self.mem16_32();
+        let (dest, index) = if imm8 {
+            let (rm, _, imm) = self.parse_modrm_imm(op_size, MemAccessSize::Mem8)?;
+            (rm, imm)
+        } else {
+            self.parse_modrm(op_size)?
+        };
+        // Move bit at index to carry, clear it
+        // c = (dest >> index) & 1; dest &= !(1 << index)
+        let mut result = SmallVec::new();
+        result.push(mov(
+            self.ctx.flag_c(),
+            operand_and64(
+                operand_rsh64(
+                    dest.clone(),
+                    index.clone(),
+                ),
+                self.ctx.const_1(),
+            ),
+        ));
+        result.push(mov(
+            dest.clone(),
+            operand_and64(
+                dest,
+                operand_not64(
+                    operand_lsh64(
+                        self.ctx.const_1(),
+                        index,
+                    ),
+                ),
+            ),
+        ));
+        Ok(result)
     }
 
     fn xorps(&self) -> Result<OperationVec, Error> {

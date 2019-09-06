@@ -1340,16 +1340,28 @@ impl Operand {
         recurse(s, ops, ctx, false)
     }
 
-    fn collect_xor_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        match s.ty {
-            OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Xor => {
-                Operand::collect_xor_ops(&arith.left, ops);
-                Operand::collect_xor_ops(&arith.right, ops);
-            }
-            _ => {
-                ops.push(Operand::simplified(s.clone()));
+    fn collect_xor_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
+        fn recurse(
+            s: &Rc<Operand>,
+            ops: &mut Vec<Rc<Operand>>,
+            ctx: &OperandContext,
+            trunc_to_32: bool,
+        )  {
+            match s.ty {
+                OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Xor => {
+                    recurse(&arith.left, ops, ctx, false);
+                    recurse(&arith.right, ops, ctx, false);
+                }
+                OperandType::Arithmetic64(ref arith) if arith.ty == ArithOpType::Xor => {
+                    recurse(&arith.left, ops, ctx, trunc_to_32);
+                    recurse(&arith.right, ops, ctx, trunc_to_32);
+                }
+                _ => {
+                    ops.push(Operand::simplified(s.clone()));
+                }
             }
         }
+        recurse(s, ops, ctx, false)
     }
 
     // "Simplify bitwise and: merge child ors"
@@ -1809,6 +1821,7 @@ impl Operand {
                 match arith.ty {
                     ArithOpType::And => simplify_and(left, right, ctx, swzb_ctx),
                     ArithOpType::Or => simplify_or(left, right, ctx),
+                    ArithOpType::Xor => simplify_xor(left, right, ctx),
                     ArithOpType::Lsh => simplify_lsh(left, right, 64, ctx, swzb_ctx),
                     ArithOpType::Rsh => simplify_rsh(left, right, 64, ctx, swzb_ctx),
                     _ => mark_self_simplified(s),
@@ -2069,10 +2082,18 @@ impl Operand {
         self.if_arithmetic(ArithOpType::And, false)
     }
 
+    pub fn if_arithmetic_and64(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        self.if_arithmetic(ArithOpType::And, true)
+    }
+
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Or(left, right))`
     pub fn if_arithmetic_or(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         self.if_arithmetic(ArithOpType::Or, false)
+    }
+
+    pub fn if_arithmetic_or64(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        self.if_arithmetic(ArithOpType::Or, true)
     }
 
     /// If either of `a` or `b` matches the filter-map `f`, return the mapped result and the other
@@ -2846,7 +2867,7 @@ fn simplify_lsh(
                 ArithOpType::Xor => {
                     // Try to simplify any parts of the xor separately
                     let mut ops = vec![];
-                    Operand::collect_xor_ops(&left, &mut ops);
+                    Operand::collect_xor_ops(&left, &mut ops, ctx);
                     if ops.len() > 16 {
                         // Give up on dumb long xors
                         default()
@@ -3038,7 +3059,7 @@ fn simplify_rsh(
                 ArithOpType::Xor => {
                     // Try to simplify any parts of the xor separately
                     let mut ops = vec![];
-                    Operand::collect_xor_ops(&left, &mut ops);
+                    Operand::collect_xor_ops(&left, &mut ops, ctx);
                     if ops.len() > 16 {
                         // Give up on dumb long xors
                         default()
@@ -3366,11 +3387,7 @@ fn simplify_with_zero_bits(
                                     if l == *left && r == *right {
                                         Some(op.clone())
                                     } else {
-                                        if is_64 {
-                                            Some(Operand::simplified(operand_and64(l, r)))
-                                        } else {
-                                            Some(simplify_and(&l, &r, ctx, swzb))
-                                        }
+                                        Some(simplify_and(&l, &r, ctx, swzb))
                                     }
                                 }
                                 None => None,
@@ -3389,11 +3406,7 @@ fn simplify_with_zero_bits(
                             if l == *left && r == *right {
                                 Some(op.clone())
                             } else {
-                                if is_64 {
-                                    Some(Operand::simplified(operand_or64(l, r)))
-                                } else {
-                                    Some(simplify_or(&l, &r, ctx))
-                                }
+                                Some(simplify_or(&l, &r, ctx))
                             }
                         }
                     }
@@ -3408,11 +3421,7 @@ fn simplify_with_zero_bits(
                             if l == *left && r == *right {
                                 Some(op.clone())
                             } else {
-                                if is_64 {
-                                    Some(Operand::simplified(operand_xor64(l, r)))
-                                } else {
-                                    Some(simplify_xor(&l, &r, ctx))
-                                }
+                                Some(simplify_xor(&l, &r, ctx))
                             }
                         }
                     }
@@ -3430,13 +3439,7 @@ fn simplify_with_zero_bits(
                             let result = simplify_with_zero_bits(left, &(low..high), ctx, swzb);
                             if let Some(result) =  result {
                                 if result != *left {
-                                    if is_64 {
-                                        Some(Operand::simplified(
-                                            operand_lsh64(result, right.clone())
-                                        ))
-                                    } else {
-                                        Some(simplify_lsh(&result, right, bit_size, ctx, swzb))
-                                    }
+                                    Some(simplify_lsh(&result, right, bit_size, ctx, swzb))
                                 } else {
                                     Some(op.clone())
                                 }
@@ -3461,13 +3464,7 @@ fn simplify_with_zero_bits(
                             let result = simplify_with_zero_bits(left, &(low..high), ctx, swzb);
                             if let Some(result) =  result {
                                 if result != *left {
-                                    if is_64 {
-                                        Some(Operand::simplified(
-                                            operand_rsh64(result, right.clone())
-                                        ))
-                                    } else {
-                                        Some(simplify_rsh(&result, right, bit_size, ctx, swzb))
-                                    }
+                                    Some(simplify_rsh(&result, right, bit_size, ctx, swzb))
                                 } else {
                                     Some(op.clone())
                                 }
@@ -3729,21 +3726,21 @@ fn simplify_add_merge_muls(ops: &mut Vec<(Rc<Operand>, bool)>, ctx: &OperandCont
 
 fn simplify_xor(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
     let mut ops = vec![];
-    Operand::collect_xor_ops(left, &mut ops);
-    Operand::collect_xor_ops(right, &mut ops);
+    Operand::collect_xor_ops(left, &mut ops, ctx);
+    Operand::collect_xor_ops(right, &mut ops, ctx);
     simplify_xor_ops(&mut ops, ctx)
 }
 
 fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Operand> {
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
 
-    let const_val = ops.iter().flat_map(|x| x.if_constant())
-        .fold(0u32, |sum, x| sum ^ x);
-    ops.retain(|x| x.if_constant().is_none());
+    let const_val = ops.iter().flat_map(|x| x.if_constant64())
+        .fold(0u64, |sum, x| sum ^ x);
+    ops.retain(|x| x.if_constant64().is_none());
     ops.sort();
     simplify_xor_remove_reverting(ops);
     if ops.is_empty() {
-        return ctx.constant(const_val);
+        return ctx.constant64(const_val);
     }
     if const_val != 0 {
         if ops.len() == 1 {
@@ -3751,9 +3748,9 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
             let op = &ops[0];
             // Convert c1 ^ (y & c2) == (y ^ (c1 & c2)) & c2
             if let Some((l, r)) = op.if_arithmetic_and() {
-                let vals = match (&l.ty, &r.ty) {
-                    (&OperandType::Constant(c), _) => Some((l, c, r)),
-                    (_, &OperandType::Constant(c)) => Some((r, c, l)),
+                let vals = match (l.if_constant64(), r.if_constant64()) {
+                    (Some(c), _) => Some((l, c, r)),
+                    (_, Some(c)) => Some((r, c, l)),
                     _ => None,
                 };
                 if let Some((and_const, c, other)) = vals {
@@ -3762,7 +3759,7 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
                     } else {
                         return simplify_and(
                             and_const,
-                            &simplify_xor(&ctx.constant(const_val & c), other, ctx),
+                            &simplify_xor(&ctx.constant64(const_val & c), other, ctx),
                             ctx,
                             &mut SimplifyWithZeroBits::default(),
                         );
@@ -3771,12 +3768,12 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
             }
             // Convert c1 ^ ((c2 & x) | y) to (c2 & x) | (y ^ c1)
             // if c1 & c2 == 0
-            if let Some((l, r)) = op.if_arithmetic_or() {
+            if let Some((l, r)) = op.if_arithmetic_or64() {
                 let vals = Operand::either(l, r, |x| {
-                    x.if_arithmetic_and()
+                    x.if_arithmetic_and64()
                         .and_then(|(l, r)| {
                             Operand::either(l, r, |x| {
-                                x.if_constant().filter(|c| c & const_val == 0)
+                                x.if_constant64().filter(|c| c & const_val == 0)
                             })
                         })
                         .map(|_| x)
@@ -3784,22 +3781,32 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
                 if let Some((lhs, rhs)) = vals {
                     return simplify_or(
                         lhs,
-                        &simplify_xor(rhs, &ctx.constant(const_val), ctx),
+                        &simplify_xor(rhs, &ctx.constant64(const_val), ctx),
                         ctx,
                     );
                 }
             }
         }
-        ops.push(ctx.constant(const_val));
+        ops.push(ctx.constant64(const_val));
     }
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_0());
+    let is_64 = if const_val > u32::max_value() as u64 {
+        true
+    } else {
+        ops.iter().any(|x| x.relevant_bits().end > 32)
+    };
     while let Some(op) = ops.pop() {
-        tree = Operand::new_simplified_rc(OperandType::Arithmetic(ArithOperand {
+        let arith = ArithOperand {
             ty: ArithOpType::Xor,
             left: tree,
             right: op,
-        }));
+        };
+        if is_64 {
+            tree = Operand::new_simplified_rc(OperandType::Arithmetic64(arith));
+        } else {
+            tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+        }
     }
     tree
 }
@@ -3975,6 +3982,10 @@ pub mod operand_helpers {
 
     pub fn operand_not(lhs: Rc<Operand>) -> Rc<Operand> {
         operand_xor(lhs, constval(0xffff_ffff))
+    }
+
+    pub fn operand_not64(lhs: Rc<Operand>) -> Rc<Operand> {
+        operand_xor64(lhs, constval64(0xffff_ffff_ffff_ffff))
     }
 
     pub fn operand_logical_not(lhs: Rc<Operand>) -> Rc<Operand> {
@@ -6107,6 +6118,17 @@ mod test {
             constval64(0x28),
         );
         let eq1 = constval64(0x0000_0400_0000_0000);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn xor_64() {
+        use super::operand_helpers::*;
+        let op1 = operand_xor64(
+            constval64(0x4000_0000_0000),
+            constval64(0x6000_0000_0000),
+        );
+        let eq1 = constval64(0x2000_0000_0000);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 

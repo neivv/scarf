@@ -102,6 +102,23 @@ fn test_64bit_regs() {
     ]);
 }
 
+#[test]
+fn test_btr() {
+    test_inline(&[
+        0xb8, 0xff, 0xff, 0x00, 0x00, // mov eax, ffff
+        0xb9, 0x08, 0x00, 0x00, 0x00, // mov ecx, 8
+        0x0f, 0xb3, 0xc8, // btr eax, ecx
+        0x73, 0x06, // jnc int3
+        0x0f, 0xba, 0xf0, 0x11, // btr eax, 11
+        0x73, 0x01, // jnc end
+        0xcc, // int3
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval(0xfeff)),
+         (operand_register64(1), constval(0x8)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
