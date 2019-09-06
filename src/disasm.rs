@@ -389,7 +389,8 @@ fn instruction_operations32(
             0xb3 => s.btr(false),
             0xb6 ..= 0xb7 => s.movzx(),
             0xba => s.various_0f_ba(),
-            0xbe ..= 0xbf => s.movsx(),
+            0xbe => s.movsx(MemAccessSize::Mem8),
+            0xbf => s.movsx(MemAccessSize::Mem16),
             0xd3 => s.packed_shift_right(),
             0xd6 => s.mov_sse_d6(),
             0xf3 => s.packed_shift_left(),
@@ -489,6 +490,7 @@ fn instruction_operations64(
             0x38 ..= 0x3b => s.generic_cmp_op(operand_sub, sub_flags, result_flags),
             0x3c ..= 0x3d => s.eax_imm_cmp(operand_sub, sub_flags, result_flags),
             0x50 ..= 0x5f => s.pushpop_reg_op(),
+            0x63 => s.movsx(MemAccessSize::Mem32),
             0x68 | 0x6a => s.push_imm(),
             0x69 | 0x6b => s.signed_multiply_rm_imm(),
             0x70 ..= 0x7f => s.conditional_jmp(MemAccessSize::Mem8),
@@ -623,7 +625,8 @@ fn instruction_operations64(
             0xb3 => s.btr(false),
             0xb6 ..= 0xb7 => s.movzx(),
             0xba => s.various_0f_ba(),
-            0xbe ..= 0xbf => s.movsx(),
+            0xbe => s.movsx(MemAccessSize::Mem8),
+            0xbf => s.movsx(MemAccessSize::Mem16),
             0xd3 => s.packed_shift_right(),
             0xd6 => s.mov_sse_d6(),
             0xf3 => s.packed_shift_left(),
@@ -1061,12 +1064,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(out)
     }
 
-    fn movsx(&self) -> Result<OperationVec, Error> {
+    fn movsx(&self, op_size: MemAccessSize) -> Result<OperationVec, Error> {
         use crate::operand::operand_helpers::*;
-        let op_size = match self.get(0) & 0x1 {
-            0 => MemAccessSize::Mem8,
-            _ => MemAccessSize::Mem16,
-        };
         let dest_size = self.mem16_32();
         let (rm, r) = self.parse_modrm(dest_size)?;
         let rm = match rm.ty {

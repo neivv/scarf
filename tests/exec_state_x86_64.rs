@@ -119,6 +119,17 @@ fn test_btr() {
     ]);
 }
 
+#[test]
+fn test_movsxd() {
+    test_inline(&[
+        0xc7, 0x44, 0x24, 0x28, 0x44, 0xff, 0x44, 0xff, // mov dword [rsp + 28], ff44ff44
+        0x4c, 0x63, 0x5c, 0x24, 0x28, // movsxd r11, dword [rsp + 28]
+        0xc3, // ret
+    ], &[
+         (operand_register64(11), constval64(0xffff_ffff_ff44_ff44)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
