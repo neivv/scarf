@@ -373,6 +373,14 @@ fn instruction_operations32(
             0x57 => s.xorps(),
             0x5b => s.cvtdq2ps(),
             0x6e => s.mov_sse_6e(),
+            0x6f => {
+                if s.has_prefix(0xf3) || s.has_prefix(0x66) {
+                    // movdqa/u
+                    s.mov_rm_to_xmm_128()
+                } else {
+                    Err(UnknownOpcode(s.data.into()))
+                }
+            }
             0x7e => s.mov_sse_7e(),
             0x80 ..= 0x8f => s.conditional_jmp(s.mem16_32()),
             0x90 ..= 0x9f => s.conditional_set(),
@@ -610,6 +618,14 @@ fn instruction_operations64(
             0x57 => s.xorps(),
             0x5b => s.cvtdq2ps(),
             0x6e => s.mov_sse_6e(),
+            0x6f => {
+                if s.has_prefix(0xf3) || s.has_prefix(0x66) {
+                    // movdqa/u
+                    s.mov_rm_to_xmm_128()
+                } else {
+                    Err(UnknownOpcode(s.data.into()))
+                }
+            }
             0x7e => s.mov_sse_7e(),
             0x80 ..= 0x8f => s.conditional_jmp(s.mem16_32()),
             0x90 ..= 0x9f => s.conditional_set(),
@@ -1315,6 +1331,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             true => (rm, r),
             false => (r, rm),
         };
+        Ok((0..4).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
+    }
+
+    fn mov_rm_to_xmm_128(&self) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (src, dest) = (rm, r);
         Ok((0..4).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
     }
 
