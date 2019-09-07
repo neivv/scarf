@@ -1235,45 +1235,90 @@ impl Operand {
         }
     }
 
-    fn collect_add_ops(s: &Rc<Operand>, ops: &mut Vec<(Rc<Operand>, bool)>, negate: bool) {
-        match s.ty {
-            OperandType::Arithmetic(ref arith) if {
-                arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
-            } => {
-                Operand::collect_add_ops(&arith.left, ops, negate);
-                let negate_right = match arith.ty {
-                    ArithOpType::Add => negate,
-                    _ => !negate,
-                };
-                Operand::collect_add_ops(&arith.right, ops, negate_right);
-            }
-            _ => {
-                let mut s = s.clone();
-                if !s.is_simplified() {
-                    // Simplification can cause it to be an add
-                    s = Operand::simplified(s);
-                    if let OperandType::Arithmetic(ref arith) = s.ty {
-                        if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
-                            Operand::collect_add_ops(&s, ops, negate);
-                            return;
+    fn collect_add_ops(
+        s: &Rc<Operand>,
+        ops: &mut Vec<(Rc<Operand>, bool)>,
+        ctx: &OperandContext,
+        negate: bool,
+    ) {
+        fn recurse(
+            s: &Rc<Operand>,
+            ops: &mut Vec<(Rc<Operand>, bool)>,
+            ctx: &OperandContext,
+            negate: bool,
+            trunc_to_32: bool,
+        )  {
+            match s.ty {
+                OperandType::Arithmetic(ref arith) if {
+                    arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
+                } => {
+                    recurse(&arith.left, ops, ctx, negate, true);
+                    let negate_right = match arith.ty {
+                        ArithOpType::Add => negate,
+                        _ => !negate,
+                    };
+                    recurse(&arith.right, ops, ctx, negate_right, true);
+                }
+                OperandType::Arithmetic64(ref arith) if {
+                    arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
+                } => {
+                    recurse(&arith.left, ops, ctx, negate, trunc_to_32);
+                    let negate_right = match arith.ty {
+                        ArithOpType::Add => negate,
+                        _ => !negate,
+                    };
+                    recurse(&arith.right, ops, ctx, negate_right, trunc_to_32);
+                }
+                _ => {
+                    let mut s = s.clone();
+                    if !s.is_simplified() {
+                        // Simplification can cause it to be an add
+                        s = Operand::simplified(s);
+                        if let OperandType::Arithmetic(ref arith) = s.ty {
+                            if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
+                                recurse(&s, ops, ctx, negate, trunc_to_32);
+                                return;
+                            }
                         }
                     }
+                    if trunc_to_32 && s.relevant_bits().end > 32 {
+                        let op = Operand::simplified(Operand::truncate_to_32bit(&s, ctx));
+                        ops.push((op, negate));
+                    } else {
+                        ops.push((Operand::simplified(s.clone()), negate));
+                    }
                 }
-                ops.push((s, negate));
             }
         }
+        recurse(s, ops, ctx, negate, false)
     }
 
-    fn collect_mul_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        match s.ty {
-            OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Mul => {
-                Operand::collect_mul_ops(&arith.left, ops);
-                Operand::collect_mul_ops(&arith.right, ops);
-            }
-            _ => {
-                ops.push(Operand::simplified(s.clone()));
+    fn collect_mul_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
+        fn recurse(
+            s: &Rc<Operand>,
+            ops: &mut Vec<Rc<Operand>>,
+            ctx: &OperandContext,
+            trunc_to_32: bool,
+        )  {
+            match s.ty {
+                OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Mul => {
+                    recurse(&arith.left, ops, ctx, true);
+                    recurse(&arith.right, ops, ctx, true);
+                }
+                OperandType::Arithmetic64(ref arith) if arith.ty == ArithOpType::Mul => {
+                    recurse(&arith.left, ops, ctx, trunc_to_32);
+                    recurse(&arith.right, ops, ctx, trunc_to_32);
+                }
+                _ => {
+                    if trunc_to_32 && s.relevant_bits().end > 32 {
+                        ops.push(Operand::simplified(Operand::truncate_to_32bit(s, ctx)));
+                    } else {
+                        ops.push(Operand::simplified(s.clone()));
+                    }
+                }
             }
         }
+        recurse(s, ops, ctx, false)
     }
 
     fn collect_signed_mul_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
@@ -1297,8 +1342,8 @@ impl Operand {
         )  {
             match s.ty {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
-                    recurse(&arith.left, ops, ctx, false);
-                    recurse(&arith.right, ops, ctx, false);
+                    recurse(&arith.left, ops, ctx, true);
+                    recurse(&arith.right, ops, ctx, true);
                 }
                 OperandType::Arithmetic64(ref arith) if arith.ty == ArithOpType::And => {
                     recurse(&arith.left, ops, ctx, trunc_to_32);
@@ -1325,8 +1370,8 @@ impl Operand {
         )  {
             match s.ty {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Or => {
-                    recurse(&arith.left, ops, ctx, false);
-                    recurse(&arith.right, ops, ctx, false);
+                    recurse(&arith.left, ops, ctx, true);
+                    recurse(&arith.right, ops, ctx, true);
                 }
                 OperandType::Arithmetic64(ref arith) if arith.ty == ArithOpType::Or => {
                     recurse(&arith.left, ops, ctx, trunc_to_32);
@@ -1349,8 +1394,8 @@ impl Operand {
         )  {
             match s.ty {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Xor => {
-                    recurse(&arith.left, ops, ctx, false);
-                    recurse(&arith.right, ops, ctx, false);
+                    recurse(&arith.left, ops, ctx, true);
+                    recurse(&arith.right, ops, ctx, true);
                 }
                 OperandType::Arithmetic64(ref arith) if arith.ty == ArithOpType::Xor => {
                     recurse(&arith.left, ops, ctx, trunc_to_32);
@@ -1676,9 +1721,9 @@ impl Operand {
                 match arith.ty {
                     ArithOpType::Add | ArithOpType::Sub => {
                         let is_sub = arith.ty == ArithOpType::Sub;
-                        simplify_add_sub(left, right, is_sub, ctx)
+                        simplify_add_sub(left, right, 32, is_sub, ctx)
                     }
-                    ArithOpType::Mul => simplify_mul(left, right, ctx),
+                    ArithOpType::Mul => simplify_mul(left, right, 32, ctx),
                     ArithOpType::SignedMul => simplify_signed_mul(left, right, ctx),
                     ArithOpType::And => simplify_and(left, right, ctx, swzb_ctx),
                     ArithOpType::Or => simplify_or(left, right, ctx),
@@ -1819,6 +1864,11 @@ impl Operand {
                 let left = &arith.left;
                 let right = &arith.right;
                 match arith.ty {
+                    ArithOpType::Add | ArithOpType::Sub => {
+                        let is_sub = arith.ty == ArithOpType::Sub;
+                        simplify_add_sub(left, right, 64, is_sub, ctx)
+                    }
+                    ArithOpType::Mul => simplify_mul(left, right, 64, ctx),
                     ArithOpType::And => simplify_and(left, right, ctx, swzb_ctx),
                     ArithOpType::Or => simplify_or(left, right, ctx),
                     ArithOpType::Xor => simplify_xor(left, right, ctx),
@@ -2065,6 +2115,15 @@ impl Operand {
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Mul(left, right))` or `Arithmetic64`
+    ///
+    /// Note that mul32(a, b) isn't equal to mul64(a, b) wrt overflow, but when matching
+    /// on simplified operands, that distinction isn't usually needed.
+    pub fn if_arithmetic_mul64(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        self.if_arithmetic(ArithOpType::Mul, true)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Equal(left, right))`
     pub fn if_arithmetic_eq(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         self.if_arithmetic(ArithOpType::Equal, false)
@@ -2112,53 +2171,74 @@ impl Operand {
 fn simplify_add_sub(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
+    bit_size: u8,
     is_sub: bool,
     ctx: &OperandContext,
 ) -> Rc<Operand> {
     use self::ArithOpType::*;
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
-    let mut ops = simplify_add_sub_ops(left, right, is_sub, ctx);
+    let mut ops = simplify_add_sub_ops(left, right, bit_size, is_sub, ctx);
     let mut tree = match ops.pop() {
         Some((s, neg)) => match neg {
             false => mark_self_simplified(s),
             true => {
-                let op_ty = OperandType::Arithmetic(ArithOperand {
+                let arith = ArithOperand {
                     ty: Sub,
                     left: ctx.const_0(),
                     right: s,
-                });
-                Operand::new_simplified_rc(op_ty)
+                };
+                if bit_size == 32 {
+                    Operand::new_simplified_rc(OperandType::Arithmetic(arith))
+                } else {
+                    Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
+                }
             }
         },
         None => ctx.const_0(),
     };
     while let Some((op, neg)) = ops.pop() {
-        let op_ty = OperandType::Arithmetic(ArithOperand {
+        let arith = ArithOperand {
             ty: if neg { Sub } else { Add},
             left: tree,
             right: op,
-        });
-        tree = Operand::new_simplified_rc(op_ty);
+        };
+        if bit_size == 32 {
+            tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+        } else {
+            tree = Operand::new_simplified_rc(OperandType::Arithmetic64(arith));
+        }
     }
     tree
 }
 
-fn simplify_mul(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+fn simplify_mul(
+    left: &Rc<Operand>,
+    right: &Rc<Operand>,
+    bit_size: u8,
+    ctx: &OperandContext,
+) -> Rc<Operand> {
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     let mut ops = vec![];
-    Operand::collect_mul_ops(left, &mut ops);
-    Operand::collect_mul_ops(right, &mut ops);
-    let const_product = ops.iter().flat_map(|x| x.if_constant())
-        .fold(1u32, |product, x| product.wrapping_mul(x));
+    Operand::collect_mul_ops(left, &mut ops, ctx);
+    Operand::collect_mul_ops(right, &mut ops, ctx);
+    let const_product = ops.iter().flat_map(|x| x.if_constant64())
+        .fold(1u64, |product, x| product.wrapping_mul(x));
+    let const_product = if bit_size != 32 {
+        const_product
+    } else {
+        const_product & 0xffff_ffff
+    };
     if const_product == 0 {
         return ctx.const_0();
     }
-    ops.retain(|x| x.if_constant().is_none());
+    ops.retain(|x| x.if_constant64().is_none());
     if ops.is_empty() {
-        return ctx.constant(const_product);
+        return ctx.constant64(const_product);
     }
     ops.sort();
-    if const_product != 1 {
+    if const_product != 1 && bit_size == 32 {
+        // Child funcs not done for u64 mul
+        let const_product = const_product as u32;
         if ops.len() == 1 {
             if simplify_mul_should_apply_constant(&ops[0]) {
                 let op = ops.swap_remove(0);
@@ -2174,11 +2254,16 @@ fn simplify_mul(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_1());
     while let Some(op) = ops.pop() {
-        tree = Operand::new_simplified_rc(OperandType::Arithmetic(ArithOperand {
+        let arith = ArithOperand {
             ty: ArithOpType::Mul,
             left: tree,
             right: op,
-        }));
+        };
+        if bit_size == 32 {
+            tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+        } else {
+            tree = Operand::new_simplified_rc(OperandType::Arithmetic64(arith));
+        }
     }
     tree
 }
@@ -2311,29 +2396,46 @@ fn simplify_mul_try_mul_constants(
 fn simplify_add_sub_ops(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
+    bit_size: u8,
     is_sub: bool,
     ctx: &OperandContext,
 ) -> Vec<(Rc<Operand>, bool)> {
     let mut ops = Vec::new();
-    Operand::collect_add_ops(left, &mut ops, false);
-    Operand::collect_add_ops(right, &mut ops, is_sub);
+    Operand::collect_add_ops(left, &mut ops, ctx, false);
+    Operand::collect_add_ops(right, &mut ops, ctx, is_sub);
     let const_sum = ops.iter()
-        .flat_map(|&(ref x, neg)| x.if_constant().map(|x| (x, neg)))
-        .fold(0u32, |sum, (x, neg)| match neg {
+        .flat_map(|&(ref x, neg)| x.if_constant64().map(|x| (x, neg)))
+        .fold(0u64, |sum, (x, neg)| match neg {
             false => sum.wrapping_add(x),
             true => sum.wrapping_sub(x),
         });
-    ops.retain(|&(ref x, _)| x.if_constant().is_none());
+    ops.retain(|&(ref x, _)| x.if_constant64().is_none());
     ops.sort();
-    simplify_add_merge_muls(&mut ops, ctx);
+    simplify_add_merge_muls(&mut ops, bit_size, ctx);
     if ops.is_empty() {
-        return vec![(ctx.constant(const_sum), false)];
-    }
-    if const_sum != 0 {
-        if const_sum > 0x8000_0000 {
-            ops.push((ctx.constant(0u32.wrapping_sub(const_sum)), true));
+        if bit_size == 32 {
+            return vec![(ctx.constant(const_sum as u32), false)];
         } else {
-            ops.push((ctx.constant(const_sum), false));
+            return vec![(ctx.constant64(const_sum), false)];
+        }
+    }
+
+    if bit_size == 32 {
+        let const_sum = const_sum as u32;
+        if const_sum != 0 {
+            if const_sum > 0x8000_0000 {
+                ops.push((ctx.constant(0u32.wrapping_sub(const_sum)), true));
+            } else {
+                ops.push((ctx.constant(const_sum), false));
+            }
+        }
+    } else {
+        if const_sum != 0 {
+            if const_sum > 0x8000_0000_0000_0000 {
+                ops.push((ctx.constant64(0u64.wrapping_sub(const_sum)), true));
+            } else {
+                ops.push((ctx.constant64(const_sum), false));
+            }
         }
     }
     // Place non-negated terms last so the simplified result doesn't become
@@ -2352,7 +2454,7 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
         false => (right, left),
     };
 
-    let mut ops = simplify_add_sub_ops(left, right, true, ctx);
+    let mut ops = simplify_add_sub_ops(left, right, 32, true, ctx);
     let mark_self_simplified = |s: &Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     match ops.len() {
         0 => ctx.const_1(),
@@ -2883,7 +2985,7 @@ fn simplify_lsh(
                         // Prefer (x * y * 4) over ((x * y) << 2),
                         // especially since usually there's already a constant there.
                         let multiply_constant = 1 << constant;
-                        simplify_mul(&left, &ctx.constant(multiply_constant), ctx)
+                        simplify_mul(&left, &ctx.constant(multiply_constant), bit_size, ctx)
                     } else {
                         default()
                     }
@@ -3487,7 +3589,7 @@ fn simplify_with_zero_bits(
                                 operand_add64(new_left.clone(), new_right.clone())
                             ))
                         } else {
-                            Some(simplify_add_sub(new_left, new_right, false, ctx))
+                            Some(simplify_add_sub(new_left, new_right, bit_size, false, ctx))
                         }
                     } else {
                         Some(op.clone())
@@ -3630,16 +3732,20 @@ fn simplify_with_one_bits(
 }
 
 /// Merges things like [2 * b, a, c, b, c] to [a, 3 * b, 2 * c]
-fn simplify_add_merge_muls(ops: &mut Vec<(Rc<Operand>, bool)>, ctx: &OperandContext) {
+fn simplify_add_merge_muls(
+    ops: &mut Vec<(Rc<Operand>, bool)>,
+    bit_size: u8,
+    ctx: &OperandContext,
+) {
     use self::operand_helpers::*;
 
-    fn count_equivalent_opers(ops: &[(Rc<Operand>, bool)], equiv: &Operand) -> u32 {
+    fn count_equivalent_opers(ops: &[(Rc<Operand>, bool)], equiv: &Operand) -> u64 {
         ops.iter().map(|&(ref o, neg)| {
-            let (mul, val) = o.if_arithmetic_mul()
-                .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+            let (mul, val) = o.if_arithmetic_mul64()
+                .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant64()))
                 .unwrap_or_else(|| (1, o));
             match *equiv == **val {
-                true => if neg { 0u32.wrapping_sub(mul) } else { mul },
+                true => if neg { 0u64.wrapping_sub(mul) } else { mul },
                 false => 0,
             }
         }).fold(0, |sum, next| sum.wrapping_add(next))
@@ -3648,13 +3754,13 @@ fn simplify_add_merge_muls(ops: &mut Vec<(Rc<Operand>, bool)>, ctx: &OperandCont
     let mut pos = 0;
     while pos < ops.len() {
         let merged = {
-            let (self_mul, op) = ops[pos].0.if_arithmetic_mul()
-                .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+            let (self_mul, op) = ops[pos].0.if_arithmetic_mul64()
+                .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant64()))
                 .unwrap_or_else(|| (1, &ops[pos].0));
 
             let others = count_equivalent_opers(&ops[pos + 1..], op);
             if others != 0 {
-                let self_mul = if ops[pos].1 { 0u32.wrapping_sub(self_mul) } else { self_mul };
+                let self_mul = if ops[pos].1 { 0u64.wrapping_sub(self_mul) } else { self_mul };
                 let sum = self_mul.wrapping_add(others);
                 if sum == 0 {
                     Some(None)
@@ -3669,45 +3775,46 @@ fn simplify_add_merge_muls(ops: &mut Vec<(Rc<Operand>, bool)>, ctx: &OperandCont
             Some(Some((sum, equiv))) => {
                 let mut other_pos = pos + 1;
                 while other_pos < ops.len() {
-                    let is_equiv = match ops[other_pos].0.ty {
-                        OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Mul => {
-                            match (&arith.left.ty, &arith.right.ty) {
-                                (&OperandType::Constant(_), _) => arith.right == equiv,
-                                (_, &OperandType::Constant(_)) => arith.left == equiv,
-                                _ => ops[other_pos].0 == equiv,
-                            }
-                        }
-                        _ => ops[other_pos].0 == equiv,
-                    };
+                    let is_equiv = ops[other_pos].0
+                        .if_arithmetic_mul64()
+                        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant64()))
+                        .map(|(_, other)| *other == equiv)
+                        .unwrap_or_else(|| ops[other_pos].0 == equiv);
                     if is_equiv {
                         ops.remove(other_pos);
                     } else {
                         other_pos += 1;
                     }
                 }
-                if sum > 0x8000_0000 {
-                    let sum = !sum.wrapping_add(1);
-                    ops[pos].0 = Operand::simplified(operand_mul(ctx.constant(sum), equiv));
-                    ops[pos].1 = true;
+                if bit_size == 32 {
+                    let sum = sum as u32;
+                    if sum > 0x8000_0000 {
+                        let sum = !sum.wrapping_add(1);
+                        ops[pos].0 = Operand::simplified(operand_mul(ctx.constant(sum), equiv));
+                        ops[pos].1 = true;
+                    } else {
+                        ops[pos].0 = Operand::simplified(operand_mul(ctx.constant(sum), equiv));
+                        ops[pos].1 = false;
+                    }
                 } else {
-                    ops[pos].0 = Operand::simplified(operand_mul(ctx.constant(sum), equiv));
-                    ops[pos].1 = false;
+                    if sum > 0x8000_0000_0000_0000 {
+                        let sum = !sum.wrapping_add(1);
+                        ops[pos].0 = Operand::simplified(operand_mul64(ctx.constant64(sum), equiv));
+                        ops[pos].1 = true;
+                    } else {
+                        ops[pos].0 = Operand::simplified(operand_mul64(ctx.constant64(sum), equiv));
+                        ops[pos].1 = false;
+                    }
                 }
                 pos += 1;
             }
             // Remove everything matching
             Some(None) => {
                 let (op, _) = ops.remove(pos);
-                let equiv = match op.ty {
-                    OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Mul => {
-                        match (&arith.left.ty, &arith.right.ty) {
-                            (&OperandType::Constant(_), _) => &arith.right,
-                            (_, &OperandType::Constant(_)) => &arith.left,
-                            _ => &op,
-                        }
-                    },
-                    _ => &op,
-                };
+                let equiv = op.if_arithmetic_mul64()
+                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant64()))
+                    .map(|(_, other)| other)
+                    .unwrap_or_else(|| &op);
                 let mut other_pos = pos;
                 while other_pos < ops.len() {
                     if ops[other_pos].0 == *equiv {
@@ -3998,6 +4105,10 @@ pub mod operand_helpers {
 
     pub fn operand_sub64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith64(Sub, lhs, rhs)
+    }
+
+    pub fn operand_mul64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        operand_arith64(Mul, lhs, rhs)
     }
 
     pub fn operand_and64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
@@ -4564,6 +4675,38 @@ mod test {
         );
         let eq2 = operand_mul(
             operand_register(1),
+            constval(3),
+        );
+        assert_eq!(Operand::simplified(op), Operand::simplified(eq));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_add_x_x_64() {
+        use super::operand_helpers::*;
+        let op = operand_add64(
+            operand_register64(1),
+            operand_register64(1),
+        );
+        let eq = operand_mul64(
+            operand_register64(1),
+            constval(2),
+        );
+        let op2 = operand_add64(
+            operand_sub64(
+                operand_add64(
+                    operand_register64(1),
+                    operand_register64(1),
+                ),
+                operand_register64(1),
+            ),
+            operand_add64(
+                operand_register64(1),
+                operand_register64(1),
+            ),
+        );
+        let eq2 = operand_mul64(
+            operand_register64(1),
             constval(3),
         );
         assert_eq!(Operand::simplified(op), Operand::simplified(eq));

@@ -130,6 +130,22 @@ fn test_movsxd() {
     ]);
 }
 
+#[test]
+fn movaps() {
+    test_inline(&[
+        0xc7, 0x04, 0x24, 0x45, 0x45, 0x45, 0x45, // mov dword [rsp], 45454545
+        0xc7, 0x44, 0x24, 0x0c, 0x25, 0x25, 0x25, 0x25, // mov dword [rsp], 25252525
+        0x0f, 0x28, 0x04, 0x24, // movaps xmm0, [rsp]
+        0x0f, 0x29, 0x44, 0x24, 0x20, // movaps [rsp+20], xmm0
+        0x8b, 0x44, 0x24, 0x20, // mov eax, [rsp + 20]
+        0x8b, 0x4c, 0x24, 0x2c, // mov ecx, [rsp + 2c]
+        0xc3, //ret
+    ], &[
+         (operand_register64(0), constval(0x45454545)),
+         (operand_register64(1), constval(0x25252525)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

@@ -360,6 +360,7 @@ fn instruction_operations32(
             0x12 | 0x13 => s.mov_sse_12_13(),
             // nop
             0x1f => Ok(SmallVec::new()),
+            0x28 | 0x29 => s.movaps(),
             0x2c => s.cvttss2si(),
             // rdtsc
             0x31 => {
@@ -596,6 +597,7 @@ fn instruction_operations64(
             0x12 | 0x13 => s.mov_sse_12_13(),
             // nop
             0x1f => Ok(SmallVec::new()),
+            0x28 | 0x29 => s.movaps(),
             0x2c => s.cvttss2si(),
             // rdtsc
             0x31 => {
@@ -636,27 +638,6 @@ fn instruction_operations64(
                 Err(UnknownOpcode(bytes))
             }
         }
-    }
-}
-
-fn xmm_variant(op: &Rc<Operand>, i: u8) -> Rc<Operand> {
-    use crate::operand::operand_helpers::*;
-    assert!(i < 4);
-    match op.ty {
-        OperandType::Register(Register(r)) | OperandType::Xmm(r, _) => operand_xmm(r, i),
-        OperandType::Memory(ref mem) => {
-            let bytes = match mem.size {
-                MemAccessSize::Mem8 => 1,
-                MemAccessSize::Mem16 => 2,
-                MemAccessSize::Mem32 => 4,
-                MemAccessSize::Mem64 => unreachable!(),
-            };
-            mem_variable_rc(
-                mem.size,
-                operand_add(mem.address.clone(), constval(bytes * u32::from(i))),
-            )
-        }
-        _ => panic!("Cannot xmm {:?}", op),
     }
 }
 
@@ -718,6 +699,36 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
     }
 
+    fn word_add(&self, left: Rc<Operand>, right: Rc<Operand>) -> Rc<Operand> {
+        use crate::operand::operand_helpers::*;
+        if Va::SIZE == 4 {
+            operand_add(left, right)
+        } else {
+            operand_add64(left, right)
+        }
+    }
+
+    fn xmm_variant(&self, op: &Rc<Operand>, i: u8) -> Rc<Operand> {
+        use crate::operand::operand_helpers::*;
+        assert!(i < 4);
+        match op.ty {
+            OperandType::Register(Register(r)) | OperandType::Xmm(r, _) => operand_xmm(r, i),
+            OperandType::Memory(ref mem) => {
+                let bytes = match mem.size {
+                    MemAccessSize::Mem8 => 1,
+                    MemAccessSize::Mem16 => 2,
+                    MemAccessSize::Mem32 => 4,
+                    MemAccessSize::Mem64 => unreachable!(),
+                };
+                mem_variable_rc(
+                    mem.size,
+                    self.word_add(mem.address.clone(), constval(bytes * u32::from(i))),
+                )
+            }
+            _ => panic!("Cannot xmm {:?}", op),
+        }
+    }
+
     fn reg_variable_size(&self, register: Register, op_size: MemAccessSize) -> Rc<Operand> {
         if register.0 >= 4 && self.prefixes.rex_prefix == 0 && op_size == MemAccessSize::Mem8 {
             self.ctx.register8_high(register.0 - 4)
@@ -773,7 +784,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     };
                     let offset = read_u8(self.slice(2))? as i8 as u32;
                     let addition =
-                        operand_add(self.word_register(reg), self.ctx.constant(offset));
+                        self.word_add(self.word_register(reg), self.ctx.constant(offset));
                     (mem_variable_rc(op_size, addition), 3)
                 }
             },
@@ -786,7 +797,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     };
                     let offset = read_u32(self.slice(2))?;
                     let addition =
-                        operand_add(self.word_register(reg), self.ctx.constant(offset));
+                        self.word_add(self.word_register(reg), self.ctx.constant(offset));
                     (mem_variable_rc(op_size, addition), 6)
                 }
             },
@@ -853,7 +864,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             } else {
                 self.word_register(reg)
             };
-            operand_add(scale_reg, base_reg)
+            self.word_add(scale_reg, base_reg)
         } else {
             base_reg
         };
@@ -861,11 +872,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 => Ok((mem_variable_rc(op_size, full_mem_op), size)),
             1 => {
                 let constant = self.ctx.constant(read_u8(self.slice(size))? as i8 as u32);
-                Ok((mem_variable_rc(op_size, operand_add(full_mem_op, constant)), size + 1))
+                Ok((mem_variable_rc(op_size, self.word_add(full_mem_op, constant)), size + 1))
             }
             2 => {
                 let constant = self.ctx.constant(read_u32(self.slice(size))?);
-                Ok((mem_variable_rc(op_size, operand_add(full_mem_op, constant)), size + 4))
+                Ok((mem_variable_rc(op_size, self.word_add(full_mem_op, constant)), size + 4))
             }
             _ => unreachable!(),
         }
@@ -1216,7 +1227,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn xorps(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
-        Ok((0..4).map(|i| xor(xmm_variant(&dest, i), xmm_variant(&rm, i))).collect())
+        Ok((0..4).map(|i| xor(self.xmm_variant(&dest, i), self.xmm_variant(&rm, i))).collect())
     }
 
     fn cvttss2si(&self) -> Result<OperationVec, Error> {
@@ -1228,7 +1239,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let op = make_arith_operation(
             dest_operand(&r),
             ArithOpType::FloatToInt,
-            xmm_variant(&rm, 0),
+            self.xmm_variant(&rm, 0),
             self.ctx.const_0(),
         );
         out.push(op);
@@ -1240,9 +1251,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let mut out = SmallVec::new();
         for i in 0..4 {
             let op = make_arith_operation(
-                dest_operand(&xmm_variant(&r, i)),
+                dest_operand(&self.xmm_variant(&r, i)),
                 ArithOpType::IntToFloat,
-                xmm_variant(&rm, i),
+                self.xmm_variant(&rm, i),
                 self.ctx.const_0(),
             );
             out.push(op);
@@ -1257,10 +1268,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
         let mut out = SmallVec::new();
-        out.push(mov(xmm_variant(&r, 0), rm));
-        out.push(mov(xmm_variant(&r, 1), self.ctx.const_0()));
-        out.push(mov(xmm_variant(&r, 2), self.ctx.const_0()));
-        out.push(mov(xmm_variant(&r, 3), self.ctx.const_0()));
+        out.push(mov(self.xmm_variant(&r, 0), rm));
+        out.push(mov(self.xmm_variant(&r, 1), self.ctx.const_0()));
+        out.push(mov(self.xmm_variant(&r, 2), self.ctx.const_0()));
+        out.push(mov(self.xmm_variant(&r, 3), self.ctx.const_0()));
         Ok(out)
     }
 
@@ -1276,11 +1287,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             (true, true) => return Err(Error::UnknownOpcode(self.data.into())),
         };
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let (src, dest) = match self.get(1) == 0x10 {
+        let (src, dest) = match self.get(0) == 0x10 {
             true => (rm, r),
             false => (r, rm),
         };
-        Ok((0..length).map(|i| mov(xmm_variant(&dest, i), xmm_variant(&src, i))).collect())
+        Ok((0..length).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
     }
 
     fn mov_sse_12_13(&self) -> Result<OperationVec, Error> {
@@ -1290,11 +1301,21 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
         // movlpd
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let (src, dest) = match self.get(1) == 0x12 {
+        let (src, dest) = match self.get(0) == 0x12 {
             true => (rm, r),
             false => (r, rm),
         };
-        Ok((0..2).map(|i| mov(xmm_variant(&dest, i), xmm_variant(&src, i))).collect())
+        Ok((0..2).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
+    }
+
+    fn movaps(&self) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (src, dest) = match self.get(0) == 0x28 {
+            true => (rm, r),
+            false => (r, rm),
+        };
+        Ok((0..4).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
     }
 
     fn mov_sse_7e(&self) -> Result<OperationVec, Error> {
@@ -1304,10 +1325,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
         let mut out = SmallVec::new();
-        out.push(mov(xmm_variant(&dest, 0), xmm_variant(&rm, 0)));
-        out.push(mov(xmm_variant(&dest, 1), xmm_variant(&rm, 1)));
-        out.push(mov(xmm_variant(&dest, 2), xmm_variant(&rm, 2)));
-        out.push(mov(xmm_variant(&dest, 3), xmm_variant(&rm, 3)));
+        out.push(mov(self.xmm_variant(&dest, 0), self.xmm_variant(&rm, 0)));
+        out.push(mov(self.xmm_variant(&dest, 1), self.xmm_variant(&rm, 1)));
+        out.push(mov(self.xmm_variant(&dest, 2), self.xmm_variant(&rm, 2)));
+        out.push(mov(self.xmm_variant(&dest, 3), self.xmm_variant(&rm, 3)));
         Ok(out)
     }
 
@@ -1318,11 +1339,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
         let (rm, src) = self.parse_modrm(MemAccessSize::Mem32)?;
         let mut out = SmallVec::new();
-        out.push(mov(xmm_variant(&rm, 0), xmm_variant(&src, 0)));
-        out.push(mov(xmm_variant(&rm, 1), xmm_variant(&src, 1)));
+        out.push(mov(self.xmm_variant(&rm, 0), self.xmm_variant(&src, 0)));
+        out.push(mov(self.xmm_variant(&rm, 1), self.xmm_variant(&src, 1)));
         if let OperandType::Xmm(_, _) = rm.ty {
-            out.push(mov(xmm_variant(&rm, 2), self.ctx.const_0()));
-            out.push(mov(xmm_variant(&rm, 3), self.ctx.const_0()));
+            out.push(mov(self.xmm_variant(&rm, 2), self.ctx.const_0()));
+            out.push(mov(self.xmm_variant(&rm, 3), self.ctx.const_0()));
         }
         Ok(out)
     }
