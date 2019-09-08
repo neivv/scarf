@@ -1,6 +1,5 @@
 use std::rc::Rc;
 
-use hex_slice::AsHex;
 use lde::Isa;
 use quick_error::quick_error;
 use smallvec::SmallVec;
@@ -18,7 +17,7 @@ quick_error! {
     pub enum Error {
         UnknownOpcode(op: Vec<u8>) {
             description("Unknown opcode")
-            display("Unknown opcode {:02x}", op.as_hex())
+            display("Unknown opcode {:02x?}", op)
         }
         End {
             description("End of file")

@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::rc::Rc;
 
-use hex_slice::AsHex;
-
 use crate::cfg::{Cfg, CfgState, CfgOutEdges, NodeLink};
 use crate::exec_state::VirtualAddress;
 use crate::operand::{ArithOpType, Operand, OperandType};
@@ -29,8 +27,8 @@ pub fn write<W: Write, S: CfgState>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(),
         );
         for cycle in cycles.iter().filter(|x| x[0].address() == n.address) {
             use std::fmt::Write;
-            let cycle = cycle.iter().map(|x| x.address().inner()).collect::<Vec<_>>();
-            write!(label, "\nCycle {:x}", cycle.as_hex()).unwrap();
+            let cycle = cycle.iter().map(|x| x.address().as_u64()).collect::<Vec<_>>();
+            write!(label, "\nCycle {:x?}", cycle).unwrap();
         }
         writeln!(out, "  {} [label=\"{}\"];", node_name, label)?;
         nodes.insert(n.address, node_name);
