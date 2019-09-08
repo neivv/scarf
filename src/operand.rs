@@ -1728,7 +1728,7 @@ impl Operand {
                     ArithOpType::And => simplify_and(left, right, ctx, swzb_ctx),
                     ArithOpType::Or => simplify_or(left, right, ctx),
                     ArithOpType::Xor => simplify_xor(left, right, ctx),
-                    ArithOpType::Equal => simplify_eq(left, right, ctx),
+                    ArithOpType::Equal => simplify_eq(left, right, 32, ctx),
                     ArithOpType::GreaterThan => {
                         let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
                         let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
@@ -1874,6 +1874,33 @@ impl Operand {
                     ArithOpType::Xor => simplify_xor(left, right, ctx),
                     ArithOpType::Lsh => simplify_lsh(left, right, 64, ctx, swzb_ctx),
                     ArithOpType::Rsh => simplify_rsh(left, right, 64, ctx, swzb_ctx),
+                    ArithOpType::Equal => simplify_eq(left, right, 64, ctx),
+                    ArithOpType::GreaterThan => {
+                        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                        let l = left.clone();
+                        let r = right.clone();
+                        if let (Some(l), Some(r)) = (l.if_constant64(), r.if_constant64()) {
+                            if l > r {
+                                ctx.const_1()
+                            } else {
+                                ctx.const_0()
+                            }
+                        } else {
+                            let needs_64 =
+                                left.relevant_bits().end > 32 || right.relevant_bits().end > 32;
+                            let arith = ArithOperand {
+                                ty: ArithOpType::GreaterThan,
+                                left,
+                                right,
+                            };
+                            if needs_64 {
+                                Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
+                            } else {
+                                Operand::new_simplified_rc(OperandType::Arithmetic(arith))
+                            }
+                        }
+                    }
                     _ => mark_self_simplified(s),
                 }
             }
@@ -2127,6 +2154,10 @@ impl Operand {
     /// `OperandType::Arithmetic(ArithOpType::Equal(left, right))`
     pub fn if_arithmetic_eq(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         self.if_arithmetic(ArithOpType::Equal, false)
+    }
+
+    pub fn if_arithmetic_eq64(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+        self.if_arithmetic(ArithOpType::Equal, true)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
@@ -2446,7 +2477,12 @@ fn simplify_add_sub_ops(
     ops
 }
 
-fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+fn simplify_eq(
+    left: &Rc<Operand>,
+    right: &Rc<Operand>,
+    bit_size: u8,
+    ctx: &OperandContext,
+) -> Rc<Operand> {
     use self::operand_helpers::*;
 
     let (left, right) = match left < right {
@@ -2454,35 +2490,39 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
         false => (right, left),
     };
 
-    let mut ops = simplify_add_sub_ops(left, right, 32, true, ctx);
+    let mut ops = simplify_add_sub_ops(left, right, bit_size, true, ctx);
     let mark_self_simplified = |s: &Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     match ops.len() {
         0 => ctx.const_1(),
         1 => match ops[0].0.ty {
             OperandType::Constant(0) => ctx.const_1(),
-            OperandType::Constant(_) => ctx.const_0(),
+            OperandType::Constant(_) | OperandType::Constant64(_) => ctx.const_0(),
             _ => {
-                if let OperandType::Arithmetic(ref arith) = ops[0].0.ty {
-                    if arith.ty == ArithOpType::Equal {
-                        // Check for (x == 0) == 0
-                        let either_const =
-                            Operand::either(&arith.left, &arith.right, |x| x.if_constant());
-                        if let Some((0, other)) = either_const {
-                            if let OperandType::Arithmetic(ref arith) = other.ty {
-                                if arith.is_compare_op() {
-                                    return other.clone();
-                                }
-                            }
+                if let Some((left, right)) = ops[0].0.if_arithmetic_eq64() {
+                    // Check for (x == 0) == 0
+                    let either_const = Operand::either(&left, &right, |x| x.if_constant());
+                    if let Some((0, other)) = either_const {
+                        let is_compare = match other.ty {
+                            OperandType::Arithmetic(ref arith) |
+                                OperandType::Arithmetic64(ref arith) => arith.is_compare_op(),
+                            _ => false,
+                        };
+                        if is_compare {
+                            return other.clone();
                         }
                     }
                 }
                 let op = mark_self_simplified(&ops[0].0);
-                let ty = OperandType::Arithmetic(ArithOperand {
+                let arith = ArithOperand {
                     ty: ArithOpType::Equal,
                     left: op,
                     right: ctx.const_0(),
-                });
-                Operand::new_simplified_rc(ty)
+                };
+                if bit_size == 32 {
+                    Operand::new_simplified_rc(OperandType::Arithmetic(arith))
+                } else {
+                    Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
+                }
             }
         },
         2 => {
@@ -2502,51 +2542,81 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
             };
             let left = match left.1 {
                 true => mark_self_simplified(&left.0),
-                false => Operand::simplified(operand_sub(ctx.const_0(), left.0.clone())),
+                false => if bit_size == 32 {
+                    Operand::simplified(operand_sub(ctx.const_0(), left.0.clone()))
+                } else {
+                    Operand::simplified(operand_sub64(ctx.const_0(), left.0.clone()))
+                },
             };
             let right = match right.1 {
                 false => mark_self_simplified(&right.0),
-                true => Operand::simplified(operand_sub(ctx.const_0(), right.0.clone())),
+                true => if bit_size == 32 {
+                    Operand::simplified(operand_sub(ctx.const_0(), right.0.clone()))
+                } else {
+                    Operand::simplified(operand_sub64(ctx.const_0(), right.0.clone()))
+                }
             };
-            simplify_eq_2_ops(left, right, ctx)
+            simplify_eq_2_ops(left, right, bit_size, ctx)
         },
         _ => {
+            let is_64 = bit_size != 32;
             let mut tree = match ops.pop() {
                 Some((s, neg)) => match neg {
                     false => mark_self_simplified(&s),
                     true => {
-                        let op_ty = OperandType::Arithmetic(ArithOperand {
+                        let arith = ArithOperand {
                             ty: ArithOpType::Sub,
                             left: ctx.const_0(),
                             right: s,
-                        });
-                        Operand::new_simplified_rc(op_ty)
+                        };
+                        if !is_64 {
+                            Operand::new_simplified_rc(OperandType::Arithmetic(arith))
+                        } else {
+                            Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
+                        }
                     }
                 },
                 None => ctx.const_0(),
             };
             while let Some((op, neg)) = ops.pop() {
-                let op_ty = OperandType::Arithmetic(ArithOperand {
+                let arith = ArithOperand {
                     ty: if neg { ArithOpType::Sub } else { ArithOpType::Add },
                     left: tree,
                     right: op,
-                });
-                tree = Operand::new_simplified_rc(op_ty);
+                };
+                if !is_64 {
+                    tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+                } else {
+                    tree = Operand::new_simplified_rc(OperandType::Arithmetic64(arith));
+                }
             }
+            // If the top node of tree is sub, convert it to eq, otherwise do top == 0
             let ty = match tree.ty {
-                OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
-                    OperandType::Arithmetic(ArithOperand {
+                OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith)
+                    if arith.ty == ArithOpType::Sub =>
+                {
+                    let arith = ArithOperand {
                         ty: ArithOpType::Equal,
                         left: arith.left.clone(),
                         right: arith.right.clone(),
-                    })
+                    };
+                    if !is_64 {
+                        OperandType::Arithmetic(arith)
+                    } else {
+                        OperandType::Arithmetic64(arith)
+                    }
                 }
                 _ => {
-                    OperandType::Arithmetic(ArithOperand {
+                    let arith = ArithOperand {
                         ty: ArithOpType::Equal,
                         left: tree.clone(),
                         right: ctx.const_0(),
-                    })
+                    };
+                    if !is_64 {
+                        OperandType::Arithmetic(arith)
+                    } else {
+                        OperandType::Arithmetic64(arith)
+                    }
                 }
             };
             Operand::new_simplified_rc(ty)
@@ -2554,7 +2624,12 @@ fn simplify_eq(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
     }
 }
 
-fn simplify_eq_2_ops(left: Rc<Operand>, right: Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+fn simplify_eq_2_ops(
+    left: Rc<Operand>,
+    right: Rc<Operand>,
+    bit_size: u8,
+    ctx: &OperandContext,
+) -> Rc<Operand> {
     fn mask_maskee(x: &Rc<Operand>) -> Option<(u32, &Rc<Operand>)> {
         match x.ty {
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
@@ -2579,10 +2654,13 @@ fn simplify_eq_2_ops(left: Rc<Operand>, right: Rc<Operand>, ctx: &OperandContext
     if let Some((c, other)) = Operand::either(&left, &right, |x| x.if_constant()) {
         if c == 1 {
             // Simplify compare == 1 to compare
-            if let OperandType::Arithmetic(ref arith) = other.ty {
-                if arith.is_compare_op() {
-                    return other.clone();
+            match other.ty {
+                OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith) => {
+                    if arith.is_compare_op() {
+                        return other.clone();
+                    }
                 }
+                _ => (),
             }
         }
     }
@@ -2600,7 +2678,8 @@ fn simplify_eq_2_ops(left: Rc<Operand>, right: Rc<Operand>, ctx: &OperandContext
         let left_const = mask_maskee(&left);
         let right_const = mask_maskee(&right);
         if let (Some((mask1, l)), Some((mask2, r))) = (left_const, right_const) {
-            if mask1 == mask2 {
+            // TODO 64
+            if mask1 == mask2 && bit_size == 32 {
                 let add_const = simplify_eq_masked_add(l).map(|(c, other)| (other, r, c))
                     .or_else(|| {
                         simplify_eq_masked_add(r).map(|(c, other)| (other, l, c))
@@ -2624,12 +2703,16 @@ fn simplify_eq_2_ops(left: Rc<Operand>, right: Rc<Operand>, ctx: &OperandContext
             }
         }
     }
-    let ty = OperandType::Arithmetic(ArithOperand {
+    let arith = ArithOperand {
         ty: ArithOpType::Equal,
         left,
         right,
-    });
-    Operand::new_simplified_rc(ty)
+    };
+    if bit_size == 32 {
+        Operand::new_simplified_rc(OperandType::Arithmetic(arith))
+    } else {
+        Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
+    }
 }
 
 fn simplify_eq_masked_add(operand: &Rc<Operand>) -> Option<(u32, &Rc<Operand>)> {
@@ -4129,6 +4212,10 @@ pub mod operand_helpers {
 
     pub fn operand_rsh64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith64(Rsh, lhs, rhs)
+    }
+
+    pub fn operand_eq64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        operand_arith64(Equal, lhs, rhs)
     }
 
     pub fn operand_gt64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
@@ -6272,6 +6359,17 @@ mod test {
             constval64(0x6000_0000_0000),
         );
         let eq1 = constval64(0x2000_0000_0000);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn eq_64() {
+        use super::operand_helpers::*;
+        let op1 = operand_eq64(
+            constval64(0x40),
+            constval64(0x00),
+        );
+        let eq1 = constval64(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 

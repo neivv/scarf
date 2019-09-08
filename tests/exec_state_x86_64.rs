@@ -146,6 +146,22 @@ fn movaps() {
     ]);
 }
 
+#[test]
+fn test_bt() {
+    test_inline(&[
+        0xb8, 0xff, 0xff, 0x00, 0x00, // mov eax, ffff
+        0x48, 0xc1, 0xe0, 0x20, // shl rax, 20
+        0xb9, 0x28, 0x00, 0x00, 0x00, // mov ecx, 28
+        0x0f, 0xa3, 0xc8, // bt eax, ecx
+        0x73, 0x01, // jnc end
+        0xcc, // int3
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval64(0xffff_0000_0000)),
+         (operand_register64(1), constval(0x28)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

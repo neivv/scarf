@@ -250,9 +250,9 @@ fn instruction_operations32(
                 // Avoid ridiculous generic binary bloat
                 let (ops, flags, flags_post):
                 (
-                    for<'x> fn(_, _, &'x mut _),
-                    for<'x, 'y> fn(_, _, &'x mut _, &'y _),
-                    for<'x, 'y> fn(_, _, &'x mut _, &'y _),
+                    for<'x> fn(_, _, &'x mut _, bool),
+                    for<'x, 'y> fn(_, _, &'x mut _, &'y _, bool),
+                    for<'x, 'y> fn(_, _, &'x mut _, &'y _, bool),
                 ) = match first_byte {
                     0x00 ..= 0x05 => (add_ops, add_flags, result_flags),
                     0x08 ..= 0x0d => (or_ops, zero_carry_oflow, result_flags),
@@ -261,8 +261,8 @@ fn instruction_operations32(
                     0x20 ..= 0x25 => (and_ops, zero_carry_oflow, result_flags),
                     0x28 ..= 0x2d => (sub_ops, zero_carry_oflow, result_flags),
                     0x30 ..= 0x35 => (xor_ops, zero_carry_oflow, result_flags),
-                    0x88 ..= 0x8b => (mov_ops, |_, _, _, _| {}, |_, _, _, _| {}),
-                    0x8d | _ => (lea_ops, |_, _, _, _| {}, |_, _, _, _| {}),
+                    0x88 ..= 0x8b => (mov_ops, |_, _, _, _, _| {}, |_, _, _, _, _| {}),
+                    0x8d | _ => (lea_ops, |_, _, _, _, _| {}, |_, _, _, _, _| {}),
                 };
                 let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
                 if eax_imm_arith {
@@ -293,7 +293,7 @@ fn instruction_operations32(
                 let neg_sign_extend = operand_or(eax.clone(), ctx.const_ffff0000());
                 let neg_sign_extend_op =
                     Operation::Move(dest_operand(&eax), neg_sign_extend, Some(cond));
-                out.push(and(eax, ctx.const_ffff()));
+                out.push(and(eax, ctx.const_ffff(), false));
                 out.push(neg_sign_extend_op);
                 Ok(out)
             }
@@ -384,6 +384,7 @@ fn instruction_operations32(
             0x7e => s.mov_sse_7e(),
             0x80 ..= 0x8f => s.conditional_jmp(s.mem16_32()),
             0x90 ..= 0x9f => s.conditional_set(),
+            0xa3 => s.bit_test(false),
             0xa4 => s.shld_imm(),
             0xac => s.shrd_imm(),
             0xaf => s.imul_normal(),
@@ -474,9 +475,9 @@ fn instruction_operations64(
                 // Avoid ridiculous generic binary bloat
                 let (ops, flags, flags_post):
                 (
-                    for<'x> fn(_, _, &'x mut _),
-                    for<'x, 'y> fn(_, _, &'x mut _, &'y _),
-                    for<'x, 'y> fn(_, _, &'x mut _, &'y _),
+                    for<'x> fn(_, _, &'x mut _, bool),
+                    for<'x, 'y> fn(_, _, &'x mut _, &'y _, bool),
+                    for<'x, 'y> fn(_, _, &'x mut _, &'y _, bool),
                 ) = match first_byte {
                     0x00 ..= 0x05 => (add_ops, add_flags, result_flags),
                     0x08 ..= 0x0d => (or_ops, zero_carry_oflow, result_flags),
@@ -485,8 +486,8 @@ fn instruction_operations64(
                     0x20 ..= 0x25 => (and_ops, zero_carry_oflow, result_flags),
                     0x28 ..= 0x2d => (sub_ops, zero_carry_oflow, result_flags),
                     0x30 ..= 0x35 => (xor_ops, zero_carry_oflow, result_flags),
-                    0x88 ..= 0x8b => (mov_ops, |_, _, _, _| {}, |_, _, _, _| {}),
-                    0x8d | _ => (lea_ops, |_, _, _, _| {}, |_, _, _, _| {}),
+                    0x88 ..= 0x8b => (mov_ops, |_, _, _, _, _| {}, |_, _, _, _, _| {}),
+                    0x8d | _ => (lea_ops, |_, _, _, _, _| {}, |_, _, _, _, _| {}),
                 };
                 let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
                 if eax_imm_arith {
@@ -496,8 +497,8 @@ fn instruction_operations64(
                 }
             }
 
-            0x38 ..= 0x3b => s.generic_cmp_op(operand_sub, sub_flags, result_flags),
-            0x3c ..= 0x3d => s.eax_imm_cmp(operand_sub, sub_flags, result_flags),
+            0x38 ..= 0x3b => s.generic_cmp_op(operand_sub64, sub_flags, result_flags),
+            0x3c ..= 0x3d => s.eax_imm_cmp(operand_sub64, sub_flags, result_flags),
             0x50 ..= 0x5f => s.pushpop_reg_op(),
             0x63 => s.movsx(MemAccessSize::Mem32),
             0x68 | 0x6a => s.push_imm(),
@@ -505,7 +506,7 @@ fn instruction_operations64(
             0x70 ..= 0x7f => s.conditional_jmp(MemAccessSize::Mem8),
             0x80 ..= 0x83 => s.arith_with_imm_op(),
             // Test
-            0x84 ..= 0x85 => s.generic_cmp_op(operand_and, zero_carry_oflow, result_flags),
+            0x84 ..= 0x85 => s.generic_cmp_op(operand_and64, zero_carry_oflow, result_flags),
             0x86 ..= 0x87 => s.xchg(),
             0x90 => Ok(SmallVec::new()),
             // Cwde
@@ -518,7 +519,7 @@ fn instruction_operations64(
                     let neg_sign_extend = operand_or(eax.clone(), ctx.const_ffff0000());
                     let neg_sign_extend_op =
                         Operation::Move(dest_operand(&eax), neg_sign_extend, Some(cond));
-                    out.push(and(eax, ctx.const_ffff()));
+                    out.push(and(eax, ctx.const_ffff(), false));
                     out.push(neg_sign_extend_op);
                 } else {
                     let rax = ctx.register64(0);
@@ -528,7 +529,7 @@ fn instruction_operations64(
                         operand_or64(rax.clone(), ctx.constant64(0xffff_ffff_0000_0000));
                     let neg_sign_extend_op =
                         Operation::Move(dest_operand(&rax), neg_sign_extend, Some(cond));
-                    out.push(and(rax, ctx.const_ffffffff()));
+                    out.push(and(rax, ctx.const_ffffffff(), false));
                     out.push(neg_sign_extend_op);
                 }
                 Ok(out)
@@ -564,7 +565,7 @@ fn instruction_operations64(
                 out.push(Operation::Special(s.data.into()));
                 Ok(out)
             }
-            0xa8 ..= 0xa9 => s.eax_imm_cmp(operand_and, zero_carry_oflow, result_flags),
+            0xa8 ..= 0xa9 => s.eax_imm_cmp(operand_and64, zero_carry_oflow, result_flags),
             0xb0 ..= 0xbf => s.move_const_to_reg(),
             0xc0 ..= 0xc1 => s.bitwise_with_imm_op(),
             0xc2 ..= 0xc3 => {
@@ -629,6 +630,7 @@ fn instruction_operations64(
             0x7e => s.mov_sse_7e(),
             0x80 ..= 0x8f => s.conditional_jmp(s.mem16_32()),
             0x90 ..= 0x9f => s.conditional_set(),
+            0xa3 => s.bit_test(false),
             0xa4 => s.shld_imm(),
             0xac => s.shrd_imm(),
             0xaf => s.imul_normal(),
@@ -905,20 +907,24 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let reg = byte & 0x7;
         let reg = self.ctx.reg_variable_size(Register(reg), self.mem16_32());
         let mut out = SmallVec::new();
+        let is_64 = Va::SIZE == 8;
         out.push(match is_inc {
-            true => add(reg.clone(), self.ctx.const_1()),
-            false => sub(reg.clone(), self.ctx.const_1()),
+            true => add(reg.clone(), self.ctx.const_1(), is_64),
+            false => sub(reg.clone(), self.ctx.const_1(), is_64),
         });
-        result_flags(reg.clone(), reg.clone(), &mut out, self.ctx);
-        let eq_value = match is_inc {
-            true => self.ctx.constant(0x8000_0000),
-            false => self.ctx.const_7fffffff(),
+        result_flags(reg.clone(), reg.clone(), &mut out, self.ctx, is_64);
+        let eq_value = match (is_inc, is_64) {
+            (true, false) => self.ctx.constant(0x8000_0000),
+            (false, false) => self.ctx.const_7fffffff(),
+            (true, true) => self.ctx.constant64(0x8000_0000_0000_0000),
+            (false, true) => self.ctx.constant64(0x7fff_ffff_ffff_ffff),
         };
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
             ArithOpType::Equal,
             reg,
             eq_value,
+            is_64,
         ));
         Ok(out)
     }
@@ -1044,9 +1050,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         pre_flags: G,
         post_flags: H,
     ) -> Result<OperationVec, Error>
-    where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
+    where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, bool),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
     {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
@@ -1056,9 +1062,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let imm = read_variable_size_32(self.slice(1), op_size)?;
         let val = self.ctx.constant64(imm);
         let mut out = SmallVec::new();
-        pre_flags(dest.clone(), val.clone(), &mut out, self.ctx);
-        make_arith(dest.clone(), val.clone(), &mut out);
-        post_flags(dest.clone(), val.clone(), &mut out, self.ctx);
+        let is_64 = Va::SIZE == 8;
+        pre_flags(dest.clone(), val.clone(), &mut out, self.ctx, is_64);
+        make_arith(dest.clone(), val.clone(), &mut out, is_64);
+        post_flags(dest.clone(), val.clone(), &mut out, self.ctx, is_64);
         Ok(out)
     }
 
@@ -1070,9 +1077,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         pre_flags: G,
         post_flags: H,
     ) -> Result<OperationVec, Error>
-    where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec),
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
+    where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, bool),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
     {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
@@ -1085,9 +1092,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             true => (rm, r),
             false => (r, rm),
         };
-        pre_flags(left.clone(), right.clone(), &mut out, self.ctx);
-        make_arith(left.clone(), right.clone(), &mut out);
-        post_flags(left, right, &mut out, self.ctx);
+        let is_64 = Va::SIZE == 8;
+        pre_flags(left.clone(), right.clone(), &mut out, self.ctx, is_64);
+        make_arith(left.clone(), right.clone(), &mut out, is_64);
+        post_flags(left, right, &mut out, self.ctx, is_64);
         Ok(out)
     }
 
@@ -1135,8 +1143,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let mut out = SmallVec::new();
         if is_rm_short_r_register(&rm, &r) {
             out.push(match op_size {
-                MemAccessSize::Mem8 => and(r, self.ctx.const_ff()),
-                MemAccessSize::Mem16 => and(r, self.ctx.const_ffff()),
+                MemAccessSize::Mem8 => and(r, self.ctx.const_ff(), false),
+                MemAccessSize::Mem16 => and(r, self.ctx.const_ffff(), false),
                 _ => unreachable!(),
             });
         } else {
@@ -1164,19 +1172,21 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let (rm, _) = self.parse_modrm(op_size)?;
         let variant = (self.get(1) >> 3) & 0x7;
         let mut out = SmallVec::new();
+        let is_64 = Va::SIZE == 8;
         match variant {
             0 | 1 => return self.generic_arith_with_imm_op(&TEST_OPS, op_size),
             2 => {
                 // Not
                 let dest = dest_operand(&rm);
+                let constant = self.ctx.constant64(!0u64);
                 out.push(
-                    make_arith_operation(dest, ArithOpType::Xor, rm, self.ctx.const_ffffffff())
+                    make_arith_operation(dest, ArithOpType::Xor, rm, constant, is_64)
                 );
             }
             3 => {
                 // Neg
                 let dest = dest_operand(&rm);
-                out.push(make_arith_operation(dest, ArithOpType::Sub, self.ctx.const_0(), rm));
+                out.push(make_arith_operation(dest, ArithOpType::Sub, self.ctx.const_0(), rm, is_64));
             }
             4 => {
                 out.push(mov(pair_edx_eax(), operand_mul(self.ctx.register(0), rm)));
@@ -1197,9 +1207,36 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn various_0f_ba(&self) -> Result<OperationVec, Error> {
         let variant = (self.get(1) >> 3) & 0x7;
         match variant {
+            4 => self.bit_test(true),
             6 => self.btr(true),
             _ => Err(Error::UnknownOpcode(self.data.into())),
         }
+    }
+
+    fn bit_test(&self, imm8: bool) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        use crate::operand::operand_helpers::*;
+        let op_size = self.mem16_32();
+        let (dest, index) = if imm8 {
+            let (rm, _, imm) = self.parse_modrm_imm(op_size, MemAccessSize::Mem8)?;
+            (rm, imm)
+        } else {
+            self.parse_modrm(op_size)?
+        };
+        // Move bit at index to carry
+        // c = (dest >> index) & 1
+        let mut result = SmallVec::new();
+        result.push(mov(
+            self.ctx.flag_c(),
+            operand_and64(
+                operand_rsh64(
+                    dest.clone(),
+                    index.clone(),
+                ),
+                self.ctx.const_1(),
+            ),
+        ));
+        Ok(result)
     }
 
     fn btr(&self, imm8: bool) -> Result<OperationVec, Error> {
@@ -1243,7 +1280,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn xorps(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
-        Ok((0..4).map(|i| xor(self.xmm_variant(&dest, i), self.xmm_variant(&rm, i))).collect())
+        Ok((0..4).map(|i| xor(self.xmm_variant(&dest, i), self.xmm_variant(&rm, i), false)).collect())
     }
 
     fn cvttss2si(&self) -> Result<OperationVec, Error> {
@@ -1257,6 +1294,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             ArithOpType::FloatToInt,
             self.xmm_variant(&rm, 0),
             self.ctx.const_0(),
+            false,
         );
         out.push(op);
         Ok(out)
@@ -1271,6 +1309,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 ArithOpType::IntToFloat,
                 self.xmm_variant(&rm, i),
                 self.ctx.const_0(),
+                false,
             );
             out.push(op);
         }
@@ -1392,12 +1431,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 ArithOpType::Or,
                 operand_lsh(high, rm.clone()),
                 operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
+                false,
             )
         });
         out.push({
             let (low, _) = Operand::to_xmm_64(&dest, 0);
             let rm = Operand::to_xmm_32(&rm, 0);
-            lsh(low, rm)
+            lsh(low, rm, false)
         });
         out.push({
             let (low, high) = Operand::to_xmm_64(&dest, 1);
@@ -1407,12 +1447,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 ArithOpType::Or,
                 operand_lsh(high, rm.clone()),
                 operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
+                false,
             )
         });
         out.push({
             let (low, _) = Operand::to_xmm_64(&dest, 1);
             let rm = Operand::to_xmm_32(&rm, 0);
-            lsh(low, rm)
+            lsh(low, rm, false)
         });
         let (_, high) = Operand::to_xmm_64(&rm, 0);
         let high_u32_set = operand_logical_not(operand_eq(high, self.ctx.const_0()));
@@ -1448,12 +1489,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 ArithOpType::Or,
                 operand_rsh(low, rm.clone()),
                 operand_lsh(high, operand_sub(self.ctx.const_20(), rm)),
+                false,
             )
         });
         out.push({
             let (_, high) = Operand::to_xmm_64(&dest, 0);
             let rm = Operand::to_xmm_32(&rm, 0);
-            rsh(high, rm)
+            rsh(high, rm, false)
         });
         out.push({
             let (low, high) = Operand::to_xmm_64(&dest, 1);
@@ -1463,12 +1505,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 ArithOpType::Or,
                 operand_rsh(low, rm.clone()),
                 operand_lsh(high, operand_sub(self.ctx.const_20(), rm)),
+                false,
             )
         });
         out.push({
             let (_, high) = Operand::to_xmm_64(&dest, 1);
             let rm = Operand::to_xmm_32(&rm, 0);
-            rsh(high, rm)
+            rsh(high, rm, false)
         });
         let (_, high) = Operand::to_xmm_64(&rm, 0);
         let high_u32_set = operand_logical_not(operand_eq(high, self.ctx.const_0()));
@@ -1633,12 +1676,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let (rm, _) = self.parse_modrm(op_size)?;
         let mut out = SmallVec::new();
+        let is_64 = Va::SIZE == 8;
         match variant {
             0 | 1 => {
                 let is_inc = variant == 0;
                 out.push(match is_inc {
-                    true => add(rm, self.ctx.const_1()),
-                    false => sub(rm, self.ctx.const_1()),
+                    true => add(rm, self.ctx.const_1(), is_64),
+                    false => sub(rm, self.ctx.const_1(), is_64),
                 });
             }
             2 | 3 => out.push(Operation::Call(rm)),
@@ -1646,11 +1690,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             6 => {
                 if Va::SIZE == 4 {
                     let esp = self.ctx.register(4);
-                    out.push(sub(esp.clone(), self.ctx.const_4()));
+                    out.push(sub(esp.clone(), self.ctx.const_4(), is_64));
                     out.push(mov(mem32(esp), rm));
                 } else {
                     let rsp = self.ctx.register64(4);
-                    out.push(sub(rsp.clone(), self.ctx.const_8()));
+                    out.push(sub(rsp.clone(), self.ctx.const_8(), is_64));
                     out.push(mov(mem64(rsp), rm));
                 }
             }
@@ -1698,9 +1742,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             _ => return Err(Error::UnknownOpcode(self.data.into())),
         };
         let mut out = SmallVec::new();
-        op_gen.pre_flags(rm.clone(), shift_count.clone(), &mut out, self.ctx);
-        op_gen.operation(rm.clone(), shift_count.clone(), &mut out);
-        op_gen.post_flags(rm, shift_count, &mut out, self.ctx);
+        let is_64 = Va::SIZE == 8;
+        op_gen.pre_flags(rm.clone(), shift_count.clone(), &mut out, self.ctx, is_64);
+        op_gen.operation(rm.clone(), shift_count.clone(), &mut out, is_64);
+        op_gen.post_flags(rm, shift_count, &mut out, self.ctx, is_64);
         Ok(out)
     }
 
@@ -1783,7 +1828,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let (rm, r) = self.parse_modrm(self.mem16_32())?;
         // TODO flags, imul only sets c and o on overflow
         let mut out = SmallVec::new();
-        out.push(signed_mul(r, rm));
+        out.push(signed_mul(r, rm, Va::SIZE == 8));
         Ok(out)
     }
 
@@ -1817,9 +1862,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let (rm, _, imm) = self.parse_modrm_imm(op_size, imm_size)?;
         let mut out = SmallVec::new();
-        op_gen.pre_flags(rm.clone(), imm.clone(), &mut out, self.ctx);
-        op_gen.operation(rm.clone(), imm.clone(), &mut out);
-        op_gen.post_flags(rm, imm, &mut out, self.ctx);
+        let is_64 = Va::SIZE == 8;
+        op_gen.pre_flags(rm.clone(), imm.clone(), &mut out, self.ctx, is_64);
+        op_gen.operation(rm.clone(), imm.clone(), &mut out, is_64);
+        op_gen.post_flags(rm, imm, &mut out, self.ctx, is_64);
         Ok(out)
     }
 
@@ -1830,8 +1876,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         post_flags: H,
     ) -> Result<OperationVec, Error>
     where F: FnOnce(Rc<Operand>, Rc<Operand>) -> Rc<Operand>,
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
     {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
@@ -1841,9 +1887,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let imm = read_variable_size_32(self.slice(1), op_size)?;
         let val = self.ctx.constant64(imm);
         let mut out = SmallVec::new();
-        pre_flags(eax.clone(), val.clone(), &mut out, self.ctx);
+        let is_64 = Va::SIZE == 8;
+        pre_flags(eax.clone(), val.clone(), &mut out, self.ctx, is_64);
         let operand = make_arith(eax, val);
-        post_flags(operand, self.ctx.const_ffffffff(), &mut out, self.ctx);
+        post_flags(operand, self.ctx.constant64(!0u64), &mut out, self.ctx, is_64);
         Ok(out)
     }
 
@@ -1855,8 +1902,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         post_flags: H,
     ) -> Result<OperationVec, Error>
     where F: FnOnce(Rc<Operand>, Rc<Operand>) -> Rc<Operand>,
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext),
+          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
+          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
     {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
@@ -1869,9 +1916,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             false =>  (r, rm),
         };
         let mut out = SmallVec::new();
-        pre_flags(left.clone(), right.clone(), &mut out, self.ctx);
+        let is_64 = Va::SIZE == 8;
+        pre_flags(left.clone(), right.clone(), &mut out, self.ctx, is_64);
         let operand = make_arith(left, right);
-        post_flags(operand, self.ctx.const_ffffffff(), &mut out, self.ctx);
+        post_flags(operand, self.ctx.constant64(!0u64), &mut out, self.ctx, is_64);
         Ok(out)
     }
 
@@ -1886,6 +1934,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             8 + (byte & 0x7)
         };
         let mut out = SmallVec::new();
+        let is_64 = Va::SIZE != 4;
         let esp = if Va::SIZE == 4 {
             self.ctx.register(4)
         } else {
@@ -1894,20 +1943,20 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         match is_push {
             true => {
                 if Va::SIZE == 4 {
-                    out.push(sub(esp.clone(), self.ctx.const_4()));
+                    out.push(sub(esp.clone(), self.ctx.const_4(), is_64));
                     out.push(mov(mem32(esp), self.ctx.register(reg)));
                 } else {
-                    out.push(sub(esp.clone(), self.ctx.const_8()));
+                    out.push(sub(esp.clone(), self.ctx.const_8(), is_64));
                     out.push(mov(mem64(esp), self.ctx.register64(reg)));
                 }
             }
             false => {
                 if Va::SIZE == 4 {
                     out.push(mov(self.ctx.register(reg), mem32(esp.clone())));
-                    out.push(add(esp, self.ctx.const_4()));
+                    out.push(add(esp, self.ctx.const_4(), is_64));
                 } else {
                     out.push(mov(self.ctx.register64(reg), mem64(esp.clone())));
-                    out.push(add(esp, self.ctx.const_8()));
+                    out.push(add(esp, self.ctx.const_8(), is_64));
                 }
             }
         }
@@ -1923,8 +1972,12 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let constant = read_variable_size_32(self.slice(1), imm_size)? as u32;
         let mut out = SmallVec::new();
-        let esp = self.ctx.register(4);
-        out.push(sub(esp.clone(), self.ctx.const_4()));
+        let esp = if Va::SIZE == 4 {
+            self.ctx.register(4)
+        } else {
+            self.ctx.register64(4)
+        };
+        out.push(sub(esp.clone(), self.ctx.const_4(), Va::SIZE == 8));
         out.push(mov(mem32(esp), self.ctx.constant(constant)));
         Ok(out)
     }
@@ -2010,17 +2063,17 @@ fn is_rm_short_r_register(rm: &Rc<Operand>, r: &Rc<Operand>) -> bool {
 }
 
 trait ArithOperationGenerator {
-    fn operation(&self, _: Rc<Operand>, _: Rc<Operand>, _: &mut OperationVec);
-    fn pre_flags(&self, _: Rc<Operand>, _: Rc<Operand>, _: &mut OperationVec, _: &OperandContext);
-    fn post_flags(&self, _: Rc<Operand>, _: Rc<Operand>, _: &mut OperationVec, _: &OperandContext);
+    fn operation(&self, _: Rc<Operand>, _: Rc<Operand>, _: &mut OperationVec, _64bit: bool);
+    fn pre_flags(&self, _: Rc<Operand>, _: Rc<Operand>, _: &mut OperationVec, _: &OperandContext, _64bit: bool);
+    fn post_flags(&self, _: Rc<Operand>, _: Rc<Operand>, _: &mut OperationVec, _: &OperandContext, _64bit: bool);
 }
 
 macro_rules! arith_op_generator {
     ($stname: ident, $name:ident, $pre:ident, $op:ident, $post:ident) => {
         struct $name;
         impl ArithOperationGenerator for $name {
-            fn operation(&self, a: Rc<Operand>, b: Rc<Operand>, c: &mut OperationVec) {
-                self::operation_helpers::$op(a, b, c)
+            fn operation(&self, a: Rc<Operand>, b: Rc<Operand>, c: &mut OperationVec, d: bool) {
+                self::operation_helpers::$op(a, b, c, d)
             }
             fn pre_flags(
                 &self,
@@ -2028,8 +2081,9 @@ macro_rules! arith_op_generator {
                 b: Rc<Operand>,
                 c: &mut OperationVec,
                 d: &OperandContext,
+                e: bool,
             ) {
-                self::operation_helpers::$pre(a, b, c, d)
+                self::operation_helpers::$pre(a, b, c, d, e)
             }
             fn post_flags(
                 &self,
@@ -2037,8 +2091,9 @@ macro_rules! arith_op_generator {
                 b: Rc<Operand>,
                 c: &mut OperationVec,
                 d: &OperandContext,
+                e: bool,
             ) {
-                self::operation_helpers::$post(a, b, c, d)
+                self::operation_helpers::$post(a, b, c, d, e)
             }
         }
         static $stname: $name = $name;
@@ -2122,120 +2177,151 @@ pub mod operation_helpers {
         Operation::Move(dest_operand(&dest), from, None)
     }
 
-    pub fn mov_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+    pub fn mov_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, _64: bool) {
         if dest != rhs {
             out.push(mov(dest, rhs));
         }
     }
 
-    pub fn lea_ops(rhs: Rc<Operand>, dest: Rc<Operand>, out: &mut OperationVec) {
+    pub fn lea_ops(rhs: Rc<Operand>, dest: Rc<Operand>, out: &mut OperationVec, _64: bool) {
         if let OperandType::Memory(ref mem) = rhs.ty {
             out.push(mov(dest, mem.address.clone()));
         }
     }
 
-    pub fn add(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest_operand(&dest), Add, dest, rhs)
+    pub fn add(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {
+        make_arith_operation(dest_operand(&dest), Add, dest, rhs, is_64)
     }
 
-    pub fn add_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(add(dest, rhs));
+    pub fn add_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        out.push(add(dest, rhs, is_64));
     }
 
-    pub fn adc_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(add(dest, operand_add(rhs, flag_c())));
+    pub fn adc_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        out.push(add(dest, operand_add64(rhs, flag_c()), is_64));
     }
 
-    pub fn sub(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest_operand(&dest), Sub, dest, rhs)
+    pub fn sub(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {
+        make_arith_operation(dest_operand(&dest), Sub, dest, rhs, is_64)
     }
 
-    pub fn sub_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(sub(dest, rhs));
+    pub fn sub_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        out.push(sub(dest, rhs, is_64));
     }
 
-    pub fn sbb_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(sub(dest, operand_add(rhs, flag_c())));
+    pub fn sbb_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        out.push(sub(dest, operand_add64(rhs, flag_c()), is_64));
     }
 
-    pub fn signed_mul(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest_operand(&dest), SignedMul, dest, rhs)
+    pub fn signed_mul(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {
+        make_arith_operation(dest_operand(&dest), SignedMul, dest, rhs, is_64)
     }
 
-    pub fn xor(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest_operand(&dest), Xor, dest, rhs)
+    pub fn xor(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {
+        make_arith_operation(dest_operand(&dest), Xor, dest, rhs, is_64)
     }
 
-    pub fn xor_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(xor(dest, rhs));
+    pub fn xor_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        out.push(xor(dest, rhs, is_64));
     }
 
-    pub fn rol_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+    pub fn rol_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
         // rol(x, y) == (x << y) | (x >> (32 - y))
         let dest_operand = dest_operand(&dest);
-        let left = operand_lsh(dest.clone(), rhs.clone());
-        let right = operand_rsh(dest, operand_sub(constval(32), rhs));
-        out.push(make_arith_operation(dest_operand, Or, left, right));
+        let left;
+        let right;
+        if is_64 {
+            left = operand_lsh64(dest.clone(), rhs.clone());
+            right = operand_rsh64(dest, operand_sub64(constval(64), rhs));
+        } else {
+            left = operand_lsh(dest.clone(), rhs.clone());
+            right = operand_rsh(dest, operand_sub(constval(32), rhs));
+        }
+        out.push(make_arith_operation(dest_operand, Or, left, right, is_64));
     }
 
-    pub fn ror_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
+    pub fn ror_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
         // ror(x, y) == (x >> y) | (x << (32 - y))
         let dest_operand = dest_operand(&dest);
-        let left = operand_rsh(dest.clone(), rhs.clone());
-        let right = operand_lsh(dest, operand_sub(constval(32), rhs));
-        out.push(make_arith_operation(dest_operand, Or, left, right));
+        let left;
+        let right;
+        if is_64 {
+            left = operand_rsh64(dest.clone(), rhs.clone());
+            right = operand_lsh64(dest, operand_sub64(constval(64), rhs));
+        } else {
+            left = operand_rsh(dest.clone(), rhs.clone());
+            right = operand_lsh(dest, operand_sub(constval(32), rhs));
+        }
+        out.push(make_arith_operation(dest_operand, Or, left, right, is_64));
     }
 
-    pub fn lsh(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest_operand(&dest), Lsh, dest, rhs)
+    pub fn lsh(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {
+        make_arith_operation(dest_operand(&dest), Lsh, dest, rhs, is_64)
     }
 
-    pub fn lsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(make_arith_operation(dest_operand(&dest), Lsh, dest, rhs));
+    pub fn lsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        out.push(make_arith_operation(dest_operand(&dest), Lsh, dest, rhs, is_64));
     }
 
-    pub fn rsh(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest_operand(&dest), Rsh, dest, rhs)
+    pub fn rsh(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {
+        make_arith_operation(dest_operand(&dest), Rsh, dest, rhs, is_64)
     }
 
-    pub fn rsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(rsh(dest, rhs));
+    pub fn rsh_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        out.push(rsh(dest, rhs, is_64));
     }
 
-    pub fn sar_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        let is_positive = operand_eq(
-            operand_and(constval(0x8000_0000), dest.clone()),
-            constval(0),
-        );
-        out.push(Operation::Move(
-            dest_operand(&dest),
-            operand_or(operand_rsh(dest.clone(), rhs.clone()), constval(0x8000_0000)),
-            Some(operand_logical_not(is_positive.clone())),
-        ));
-        out.push(Operation::Move(
-            dest_operand(&dest),
-            operand_rsh(dest, rhs),
-            Some(is_positive),
-        ));
+    pub fn sar_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        if is_64 {
+            let is_positive = operand_eq64(
+                operand_and(constval64(0x8000_0000_0000_0000), dest.clone()),
+                constval(0),
+            );
+            out.push(Operation::Move(
+                dest_operand(&dest),
+                operand_or(operand_rsh64(dest.clone(), rhs.clone()), constval64(0x8000_0000_0000_0000)),
+                Some(operand_logical_not(is_positive.clone())),
+            ));
+            out.push(Operation::Move(
+                dest_operand(&dest),
+                operand_rsh64(dest, rhs),
+                Some(is_positive),
+            ));
+        } else {
+            let is_positive = operand_eq(
+                operand_and(constval(0x8000_0000), dest.clone()),
+                constval(0),
+            );
+            out.push(Operation::Move(
+                dest_operand(&dest),
+                operand_or(operand_rsh(dest.clone(), rhs.clone()), constval(0x8000_0000)),
+                Some(operand_logical_not(is_positive.clone())),
+            ));
+            out.push(Operation::Move(
+                dest_operand(&dest),
+                operand_rsh(dest, rhs),
+                Some(is_positive),
+            ));
+        }
     }
 
-    pub fn or(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest_operand(&dest), Or, dest, rhs)
+    pub fn or(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {
+        make_arith_operation(dest_operand(&dest), Or, dest, rhs, is_64)
     }
 
-    pub fn or_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(or(dest, rhs));
+    pub fn or_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        out.push(or(dest, rhs, is_64));
     }
 
-    pub fn and(dest: Rc<Operand>, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest_operand(&dest), And, dest, rhs)
+    pub fn and(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {
+        make_arith_operation(dest_operand(&dest), And, dest, rhs, is_64)
     }
 
-    pub fn and_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec) {
-        out.push(and(dest, rhs));
+    pub fn and_ops(dest: Rc<Operand>, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
+        out.push(and(dest, rhs, is_64));
     }
 
-    pub fn nop_ops(_dest: Rc<Operand>, _rhs: Rc<Operand>, _out: &mut OperationVec) {
+    pub fn nop_ops(_dest: Rc<Operand>, _rhs: Rc<Operand>, _out: &mut OperationVec, _is_64: bool) {
     }
 
     pub fn nop_flags(
@@ -2243,6 +2329,7 @@ pub mod operation_helpers {
         _rhs: Rc<Operand>,
         _out: &mut OperationVec,
         _ctx: &OperandContext,
+        _is_64: bool,
     ) {
     }
 
@@ -2251,19 +2338,26 @@ pub mod operation_helpers {
         rhs: Rc<Operand>,
         out: &mut OperationVec,
         _ctx: &OperandContext,
+        is_64: bool,
     ) {
-        let add = operand_add(lhs.clone(), rhs.clone());
+        let add = if is_64 {
+            operand_add64(lhs.clone(), rhs.clone())
+        } else {
+            operand_add(lhs.clone(), rhs.clone())
+        };
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
             GreaterThan,
             lhs.clone(),
             add.clone(),
+            is_64,
         ));
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
             GreaterThanSigned,
             lhs,
             add,
+            is_64,
         ));
     }
 
@@ -2272,19 +2366,26 @@ pub mod operation_helpers {
         rhs: Rc<Operand>,
         out: &mut OperationVec,
         ctx: &OperandContext,
+        is_64: bool,
     ) {
-        let add = operand_add(operand_add(lhs.clone(), rhs), ctx.flag_c());
+        let add = if is_64 {
+            operand_add64(operand_add64(lhs.clone(), rhs), ctx.flag_c())
+        } else {
+            operand_add(operand_add(lhs.clone(), rhs), ctx.flag_c())
+        };
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
             GreaterThan,
             lhs.clone(),
             add.clone(),
+            is_64,
         ));
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
             GreaterThanSigned,
             lhs,
             add,
+            is_64,
         ));
     }
 
@@ -2293,19 +2394,26 @@ pub mod operation_helpers {
         rhs: Rc<Operand>,
         out: &mut OperationVec,
         _ctx: &OperandContext,
+        is_64: bool,
     ) {
-        let sub = operand_sub(lhs.clone(), rhs);
+        let sub = if is_64 {
+            operand_sub64(lhs.clone(), rhs)
+        } else {
+            operand_sub(lhs.clone(), rhs)
+        };
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
             GreaterThan,
             sub.clone(),
             lhs.clone(),
+            is_64,
         ));
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
             GreaterThanSigned,
             sub,
             lhs,
+            is_64,
         ));
     }
 
@@ -2314,19 +2422,26 @@ pub mod operation_helpers {
         rhs: Rc<Operand>,
         out: &mut OperationVec,
         ctx: &OperandContext,
+        is_64: bool,
     ) {
-        let sub = operand_sub(operand_sub(lhs.clone(), rhs), ctx.flag_c());
+        let sub = if is_64 {
+            operand_sub64(operand_sub64(lhs.clone(), rhs), ctx.flag_c())
+        } else {
+            operand_sub(operand_sub(lhs.clone(), rhs), ctx.flag_c())
+        };
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Carry),
             GreaterThan,
             sub.clone(),
             lhs.clone(),
+            is_64,
         ));
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Overflow),
             GreaterThanSigned,
             sub,
             lhs,
+            is_64,
         ));
     }
 
@@ -2335,6 +2450,7 @@ pub mod operation_helpers {
         _rhs: Rc<Operand>,
         out: &mut OperationVec,
         ctx: &OperandContext,
+        _is_64: bool,
     ) {
         out.push(mov(ctx.flag_c(), ctx.const_0()));
         out.push(mov(ctx.flag_o(), ctx.const_0()));
@@ -2345,6 +2461,7 @@ pub mod operation_helpers {
         _: Rc<Operand>,
         out: &mut OperationVec,
         ctx: &OperandContext,
+        is_64: bool,
     ) {
         out.push(
             make_arith_operation(
@@ -2352,19 +2469,32 @@ pub mod operation_helpers {
                 Equal,
                 lhs.clone(),
                 ctx.const_0(),
+                is_64,
             )
         );
-        out.push(make_arith_operation(
-            DestOperand::Flag(Flag::Sign),
-            GreaterThan,
-            lhs.clone(),
-            ctx.const_7fffffff(),
-        ));
+        if is_64 {
+            out.push(make_arith_operation(
+                DestOperand::Flag(Flag::Sign),
+                GreaterThan,
+                lhs.clone(),
+                ctx.constant64(0x7fff_ffff_ffff_ffff),
+                true,
+            ));
+        } else {
+            out.push(make_arith_operation(
+                DestOperand::Flag(Flag::Sign),
+                GreaterThan,
+                lhs.clone(),
+                ctx.const_7fffffff(),
+                false,
+            ));
+        }
         out.push(make_arith_operation(
             DestOperand::Flag(Flag::Parity),
             Parity,
             lhs,
             ctx.const_0(),
+            is_64,
         ));
     }
 
@@ -2373,8 +2503,13 @@ pub mod operation_helpers {
         rhs: Rc<Operand>,
         out: &mut OperationVec,
         ctx: &OperandContext,
+        is_64: bool,
     ) {
-        result_flags(operand_sub(lhs, rhs), ctx.const_ffffffff(), out, ctx)
+        if is_64 {
+            result_flags(operand_sub64(lhs, rhs), ctx.constant64(!0u64), out, ctx, is_64)
+        } else {
+            result_flags(operand_sub(lhs, rhs), ctx.const_ffffffff(), out, ctx, is_64)
+        }
     }
 
     pub fn test_result_flags(
@@ -2382,8 +2517,13 @@ pub mod operation_helpers {
         rhs: Rc<Operand>,
         out: &mut OperationVec,
         ctx: &OperandContext,
+        is_64: bool,
     ) {
-        result_flags(operand_and(lhs, rhs), ctx.const_ffffffff(), out, ctx)
+        if is_64 {
+            result_flags(operand_and64(lhs, rhs), ctx.constant64(!0u64), out, ctx, is_64)
+        } else {
+            result_flags(operand_and(lhs, rhs), ctx.const_ffffffff(), out, ctx, is_64)
+        }
     }
 
     thread_local! {
@@ -2423,9 +2563,14 @@ fn make_arith_operation(
     ty: ArithOpType,
     left: Rc<Operand>,
     right: Rc<Operand>,
+    is_64: bool,
 ) -> Operation {
     use crate::operand_helpers::*;
-    let op = operand_arith(ty, left, right);
+    let op = if is_64 {
+        operand_arith64(ty, left, right)
+    } else {
+        operand_arith(ty, left, right)
+    };
     Operation::Move(dest, Operand::simplified(op), None)
 }
 
