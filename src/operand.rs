@@ -2972,7 +2972,7 @@ fn simplify_lsh(
         };
         Operand::new_simplified_rc(ty)
     };
-    let constant = match right.if_constant() {
+    let constant = match right.if_constant64() {
         Some(s) => s,
         None => return default(),
     };
@@ -2991,6 +2991,7 @@ fn simplify_lsh(
             }
         }
     }
+    let constant = constant as u32;
     match left.ty {
         OperandType::Constant(a) => ctx.constant64((a as u64) << constant as u8),
         OperandType::Constant64(a) => ctx.constant64(a << constant as u8),
@@ -3159,7 +3160,7 @@ fn simplify_rsh(
         };
         Operand::new_simplified_rc(ty)
     };
-    let constant = match right.if_constant() {
+    let constant = match right.if_constant64() {
         Some(s) => s,
         None => return default(),
     };
@@ -3178,6 +3179,7 @@ fn simplify_rsh(
             }
         }
     }
+    let constant = constant as u32;
 
     match left.ty {
         OperandType::Constant(a) => ctx.constant(a >> constant),
@@ -6368,6 +6370,34 @@ mod test {
         let op1 = operand_eq64(
             constval64(0x40),
             constval64(0x00),
+        );
+        let eq1 = constval64(0);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn and_bug_64() {
+        use super::operand_helpers::*;
+        let op1 = operand_and64(
+            operand_and64(
+                constval64(0xffff_ffff),
+                operand_rsh64(
+                    mem8(
+                        operand_add64(
+                            constval(0xf105b2a),
+                            operand_and64(
+                                constval64(0xffff_ffff),
+                                operand_add64(
+                                    operand_register(1),
+                                    constval(0xd6057390),
+                                ),
+                            ),
+                        ),
+                    ),
+                    constval64(0xffffffffffffffda),
+                ),
+            ),
+            constval(0xff),
         );
         let eq1 = constval64(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
