@@ -146,58 +146,16 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExecutionState<'a> {
-    pub registers: [InternedOperand; 0x8],
-    pub xmm_registers: [XmmOperand; 0x8],
-    pub fpu_registers: [InternedOperand; 0x8],
-    pub flags: Flags,
-    pub memory: Memory,
+    registers: [InternedOperand; 0x8],
+    xmm_registers: [XmmOperand; 0x8],
+    fpu_registers: [InternedOperand; 0x8],
+    flags: Flags,
+    memory: Memory,
     last_jump_extra_constraint: Option<Constraint>,
     ctx: &'a OperandContext,
     code_sections: Vec<&'a crate::BinarySection<VirtualAddress>>,
-}
-
-impl<'a> Clone for ExecutionState<'a> {
-    fn clone(&self) -> ExecutionState<'a> {
-        ExecutionState {
-            registers: [
-                self.registers[0],
-                self.registers[1],
-                self.registers[2],
-                self.registers[3],
-                self.registers[4],
-                self.registers[5],
-                self.registers[6],
-                self.registers[7],
-            ],
-            xmm_registers: [
-                self.xmm_registers[0],
-                self.xmm_registers[1],
-                self.xmm_registers[2],
-                self.xmm_registers[3],
-                self.xmm_registers[4],
-                self.xmm_registers[5],
-                self.xmm_registers[6],
-                self.xmm_registers[7],
-            ],
-            fpu_registers: [
-                self.fpu_registers[0],
-                self.fpu_registers[1],
-                self.fpu_registers[2],
-                self.fpu_registers[3],
-                self.fpu_registers[4],
-                self.fpu_registers[5],
-                self.fpu_registers[6],
-                self.fpu_registers[7],
-            ],
-            flags: self.flags.clone(),
-            memory: self.memory.clone(),
-            last_jump_extra_constraint: self.last_jump_extra_constraint.clone(),
-            ctx: self.ctx,
-            code_sections: self.code_sections.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -740,6 +698,14 @@ impl<'a> ExecutionState<'a> {
         use crate::operand_helpers::*;
         let interned = i.intern(val.clone());
         self.memory.reverse_lookup(interned).map(|x| mem32(i.operand(x)))
+    }
+
+    pub fn memory(&self) -> &Memory {
+        &self.memory
+    }
+
+    pub fn replace_memory(&mut self, new: Memory) {
+        self.memory = new;
     }
 }
 

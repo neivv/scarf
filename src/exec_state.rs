@@ -496,7 +496,7 @@ impl Memory {
     }
 
     /// Returns iterator yielding the interned operands.
-    pub fn iter_interned(&mut self) -> MemoryIter {
+    pub fn iter_interned(&self) -> MemoryIter {
         MemoryIter(self.iter_until_immutable(None))
     }
 

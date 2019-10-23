@@ -11,12 +11,12 @@ use crate::operand::{
 };
 use crate::{BinaryFile, VirtualAddress64};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExecutionState<'a> {
-    pub registers: [InternedOperand; 0x10],
-    pub xmm_registers: [XmmOperand; 0x10],
-    pub flags: Flags,
-    pub memory: Memory,
+    registers: [InternedOperand; 0x10],
+    xmm_registers: [XmmOperand; 0x10],
+    flags: Flags,
+    memory: Memory,
     last_jump_extra_constraint: Option<Constraint>,
     ctx: &'a OperandContext,
     code_sections: Vec<&'a crate::BinarySection<VirtualAddress64>>,
@@ -657,54 +657,6 @@ impl<'a> ExecutionState<'a> {
         use crate::operand_helpers::*;
         let interned = i.intern(val.clone());
         self.memory.reverse_lookup(interned).map(|x| mem64(i.operand(x)))
-    }
-}
-
-impl<'a> Clone for ExecutionState<'a> {
-    fn clone(&self) -> ExecutionState<'a> {
-        ExecutionState {
-            registers: [
-                self.registers[0],
-                self.registers[1],
-                self.registers[2],
-                self.registers[3],
-                self.registers[4],
-                self.registers[5],
-                self.registers[6],
-                self.registers[7],
-                self.registers[8],
-                self.registers[9],
-                self.registers[10],
-                self.registers[11],
-                self.registers[12],
-                self.registers[13],
-                self.registers[14],
-                self.registers[15],
-            ],
-            xmm_registers: [
-                self.xmm_registers[0],
-                self.xmm_registers[1],
-                self.xmm_registers[2],
-                self.xmm_registers[3],
-                self.xmm_registers[4],
-                self.xmm_registers[5],
-                self.xmm_registers[6],
-                self.xmm_registers[7],
-                self.xmm_registers[8],
-                self.xmm_registers[9],
-                self.xmm_registers[10],
-                self.xmm_registers[11],
-                self.xmm_registers[12],
-                self.xmm_registers[13],
-                self.xmm_registers[14],
-                self.xmm_registers[15],
-            ],
-            flags: self.flags.clone(),
-            memory: self.memory.clone(),
-            last_jump_extra_constraint: self.last_jump_extra_constraint.clone(),
-            ctx: self.ctx,
-            code_sections: self.code_sections.clone(),
-        }
     }
 }
 
