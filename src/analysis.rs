@@ -1107,6 +1107,8 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
             if let Some((switch_table, index)) = is_switch_jump::<Exec::VirtualAddress>(&to) {
                 let mut cases = Vec::new();
                 let reloc_index = binary.relocs.binary_search(&switch_table);
+                let code_offset = analysis.binary.code_section().virtual_address;
+                let code_len = analysis.binary.code_section().data.len() as u32;
                 if let Ok(reloc_index) = reloc_index {
                     let case_iter = (0u32..)
                         .take_while(|&x| {
@@ -1117,7 +1119,8 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                         })
                         .map(|x| binary.read_address(switch_table + x * Exec::VirtualAddress::SIZE))
                         .take_while(|x| x.is_ok())
-                        .flat_map(|x| x.ok());
+                        .flat_map(|x| x.ok())
+                        .take_while(|&x| x >= code_offset && x < code_offset + code_len);
                     for case in case_iter {
                         analysis.add_unchecked_branch(case, state.clone(), analysis_state.clone());
                         cases.push(NodeLink::new(case));
