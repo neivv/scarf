@@ -28,6 +28,7 @@ use std::io::{self, BufReader, Read, Seek};
 use std::path::{PathBuf};
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use serde_derive::{Serialize, Deserialize};
 use quick_error::quick_error;
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -43,9 +44,11 @@ impl std::fmt::Debug for Rva {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Serialize, Deserialize)]
 pub struct VirtualAddress(pub u32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Serialize, Deserialize)]
 pub struct VirtualAddress64(pub u64);
 
 impl std::fmt::Debug for VirtualAddress {
