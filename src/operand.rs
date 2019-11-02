@@ -2267,20 +2267,24 @@ fn simplify_mul(
         return ctx.constant64(const_product);
     }
     ops.sort();
-    if const_product != 1 && bit_size == 32 {
+    if const_product != 1 {
         // Child funcs not done for u64 mul
-        let const_product = const_product as u32;
-        if ops.len() == 1 {
-            if simplify_mul_should_apply_constant(&ops[0]) {
-                let op = ops.swap_remove(0);
-                return simplify_mul_apply_constant(&op, const_product, ctx);
+        if bit_size == 32 {
+            let const_product = const_product as u32;
+            if ops.len() == 1 {
+                if simplify_mul_should_apply_constant(&ops[0]) {
+                    let op = ops.swap_remove(0);
+                    return simplify_mul_apply_constant(&op, const_product, ctx);
+                }
+                let new = simplify_mul_try_mul_constants(&ops[0], const_product, ctx);
+                if let Some(new) = new {
+                    return new;
+                }
             }
-            let new = simplify_mul_try_mul_constants(&ops[0], const_product, ctx);
-            if let Some(new) = new {
-                return new;
-            }
+            ops.push(ctx.constant(const_product));
+        } else {
+            ops.push(ctx.constant64(const_product));
         }
-        ops.push(ctx.constant(const_product));
     }
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_1());
@@ -4781,6 +4785,7 @@ mod test {
             operand_register64(1),
             constval(2),
         );
+        let neq = operand_register64(1);
         let op2 = operand_add64(
             operand_sub64(
                 operand_add64(
@@ -4798,8 +4803,9 @@ mod test {
             operand_register64(1),
             constval(3),
         );
-        assert_eq!(Operand::simplified(op), Operand::simplified(eq));
+        assert_eq!(Operand::simplified(op.clone()), Operand::simplified(eq));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+        assert_ne!(Operand::simplified(op), Operand::simplified(neq));
     }
 
     #[test]
