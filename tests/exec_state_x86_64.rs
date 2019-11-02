@@ -162,6 +162,23 @@ fn test_bt() {
     ]);
 }
 
+#[test]
+fn test_xadd() {
+    test_inline(&[
+        0xb8, 0x20, 0x00, 0x00, 0x00, // mov eax, 20
+        0xc7, 0x04, 0x24, 0x13, 0x00, 0x00, 0x00, // mov dword [rsp], 13
+        0xf0, 0x0f, 0xc1, 0x04, 0x24, // lock xadd dword [rsp], eax
+        0x8b, 0x0c, 0x24, // mov ecx, [rsp]
+        0xba, 0x05, 0x00, 0x00, 0x00, // mov edx, 5
+        0x0f, 0xc1, 0xd2, // xadd edx, edx
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval(0x13)),
+         (operand_register64(1), constval(0x33)),
+         (operand_register64(2), constval(0xa)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

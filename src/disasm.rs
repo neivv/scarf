@@ -400,6 +400,7 @@ fn instruction_operations32(
             0xba => s.various_0f_ba(),
             0xbe => s.movsx(MemAccessSize::Mem8),
             0xbf => s.movsx(MemAccessSize::Mem16),
+            0xc0 ..= 0xc1 => s.xadd(),
             0xd3 => s.packed_shift_right(),
             0xd6 => s.mov_sse_d6(),
             0xf3 => s.packed_shift_left(),
@@ -646,6 +647,7 @@ fn instruction_operations64(
             0xba => s.various_0f_ba(),
             0xbe => s.movsx(MemAccessSize::Mem8),
             0xbf => s.movsx(MemAccessSize::Mem16),
+            0xc0 ..= 0xc1 => s.xadd(),
             0xd3 => s.packed_shift_right(),
             0xd6 => s.mov_sse_d6(),
             0xf3 => s.packed_shift_left(),
@@ -1008,6 +1010,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(out)
     }
 
+    fn xadd(&self) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        let mut result = self.xchg()?;
+        result.extend(self.generic_arith_op(add_ops, add_flags, result_flags)?);
+        Ok(result)
+    }
+
     fn move_mem_eax(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
@@ -1045,16 +1054,12 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(out)
     }
 
-    fn eax_imm_arith<F, G, H>(
+    fn eax_imm_arith(
         &self,
-        make_arith: F,
-        pre_flags: G,
-        post_flags: H,
-    ) -> Result<OperationVec, Error>
-    where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, bool),
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
-    {
+        make_arith: fn(Rc<Operand>, Rc<Operand>, &mut OperationVec, bool),
+        pre_flags: fn(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
+        post_flags: fn(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
+    ) -> Result<OperationVec, Error> {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
@@ -1072,16 +1077,12 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     /// Also mov even though I'm not sure if I should count it as no-op arith or a separate
     /// thing.
-    fn generic_arith_op<F, G, H>(
+    fn generic_arith_op(
         &self,
-        make_arith: F,
-        pre_flags: G,
-        post_flags: H,
-    ) -> Result<OperationVec, Error>
-    where F: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, bool),
-          G: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
-          H: FnOnce(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
-    {
+        make_arith: fn(Rc<Operand>, Rc<Operand>, &mut OperationVec, bool),
+        pre_flags: fn(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
+        post_flags: fn(Rc<Operand>, Rc<Operand>, &mut OperationVec, &OperandContext, bool),
+    ) -> Result<OperationVec, Error> {
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
