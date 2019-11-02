@@ -780,7 +780,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     if Va::SIZE == 4 {
                         (mem_variable_rc(op_size, self.ctx.constant(imm)), 6)
                     } else {
-                        let addr = self.address.as_u64().wrapping_add(imm as i32 as i64 as u64);
+                        let addr = self.address.as_u64()
+                            .wrapping_add(self.len() as u64)
+                            .wrapping_add(imm as i32 as i64 as u64);
                         (mem_variable_rc(op_size, self.ctx.constant64(addr)), 6)
                     }
                 }
