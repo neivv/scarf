@@ -611,6 +611,7 @@ impl<'a> ExecutionState<'a> {
             }
             OperandType::Constant(_) => value.clone(),
             OperandType::Constant64(_) => value.clone(),
+            OperandType::Custom(_) => value.clone(),
             OperandType::Memory(ref mem) => {
                 self.resolve_mem(mem, interner)
             }
