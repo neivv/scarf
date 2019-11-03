@@ -43,6 +43,18 @@ impl<S: CfgState> Cfg<S> {
         }
     }
 
+    pub fn entry_link(&self) -> &NodeLink<S::VirtualAddress> {
+        &self.entry
+    }
+
+    pub fn entry(&self) -> &CfgNode<S> {
+        self.get_by_link(&self.entry)
+    }
+
+    pub fn get_by_link(&self, link: &NodeLink<S::VirtualAddress>) -> &CfgNode<S> {
+        &self.nodes[link.index as usize].1
+    }
+
     pub fn add_node(&mut self, address: S::VirtualAddress, node: CfgNode<S>) {
         if self.nodes.is_empty() {
             self.entry = NodeLink::new(address);

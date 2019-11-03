@@ -33,6 +33,16 @@ impl<'a, E: ExecutionState<'a>, S: AnalysisState> cfg::CfgState for CfgState<'a,
     type VirtualAddress = E::VirtualAddress;
 }
 
+impl<'a, E: ExecutionState<'a>, S: AnalysisState> CfgState<'a, E, S> {
+    pub fn exec_state(&self) -> &E {
+        &self.data.0
+    }
+
+    pub fn user_state(&self) -> &S {
+        &self.data.1
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct FuncCallPair<Va: VaTrait> {
     pub caller: Va,
