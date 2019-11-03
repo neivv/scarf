@@ -1953,7 +1953,7 @@ impl Operand {
     pub fn transform<F>(oper: &Rc<Operand>, mut f: F) -> Rc<Operand>
     where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
     {
-        Operand::transform_internal(&oper, &mut f)
+        Operand::simplified(Operand::transform_internal(&oper, &mut f))
     }
 
     pub fn transform_internal<F>(oper: &Rc<Operand>, f: &mut F) -> Rc<Operand>
@@ -1964,6 +1964,11 @@ impl Operand {
         }
         let sub = |oper: &Rc<Operand>, f: &mut F| Operand::transform_internal(oper, f);
         let ty = match oper.ty {
+            OperandType::Arithmetic64(ref arith) => OperandType::Arithmetic64(ArithOperand {
+                ty: arith.ty,
+                left: sub(&arith.left, f),
+                right: sub(&arith.right, f),
+            }),
             OperandType::Arithmetic(ref arith) => OperandType::Arithmetic(ArithOperand {
                 ty: arith.ty,
                 left: sub(&arith.left, f),
