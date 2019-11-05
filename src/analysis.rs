@@ -1066,6 +1066,18 @@ fn try_add_branch<'exec, Exec: ExecutionState<'exec>, S: AnalysisState>(
                 analysis.add_unchecked_branch(address, state.0, state.1);
             } else {
                 trace!("Destination {:x} is out of binary bounds", address);
+                // Add cfg node to keep cfg sensible
+                // (Adding all branches and checking for binary bounds after states have
+                // been merged could be better)
+                analysis.cfg.add_node(address, CfgNode {
+                    out_edges: CfgOutEdges::None,
+                    state: CfgState {
+                        data: Box::new(state),
+                        phantom: Default::default(),
+                    },
+                    end_address: address + 1,
+                    distance: 0,
+                });
             }
             Some(address)
         }
