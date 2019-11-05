@@ -4085,7 +4085,7 @@ pub enum MemAccessSize {
 }
 
 impl MemAccessSize {
-    fn bits(self) -> u32 {
+    pub fn bits(self) -> u32 {
         match self {
             MemAccessSize::Mem64 => 64,
             MemAccessSize::Mem32 => 32,
