@@ -3402,7 +3402,19 @@ fn vec_filter_map<T, F: FnMut(T) -> Option<T>>(vec: &mut Vec<T>, mut fun: F) {
 
 /// Convert and(x, mask) to x
 fn simplify_with_and_mask(op: &Rc<Operand>, mask: u64, ctx: &OperandContext) -> Rc<Operand> {
+    simplify_with_and_mask_inner(op, mask, ctx, 12)
+}
+
+fn simplify_with_and_mask_inner(
+    op: &Rc<Operand>,
+    mask: u64,
+    ctx: &OperandContext,
+    recurse_limit: u32,
+) -> Rc<Operand> {
     use self::operand_helpers::*;
+    if recurse_limit == 0 {
+        return op.clone();
+    }
     match op.ty {
         OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith) => {
             let is_64 = match op.ty {
@@ -3430,8 +3442,10 @@ fn simplify_with_and_mask(op: &Rc<Operand>, mask: u64, ctx: &OperandContext) -> 
                             return ctx.const_0();
                         }
                     }
-                    let simplified_left = simplify_with_and_mask(&arith.left, mask, ctx);
-                    let simplified_right = simplify_with_and_mask(&arith.right, mask, ctx);
+                    let simplified_left =
+                        simplify_with_and_mask_inner(&arith.left, mask, ctx, recurse_limit - 1);
+                    let simplified_right =
+                        simplify_with_and_mask_inner(&arith.right, mask, ctx, recurse_limit - 1);
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
                     } else {
@@ -3444,13 +3458,15 @@ fn simplify_with_and_mask(op: &Rc<Operand>, mask: u64, ctx: &OperandContext) -> 
                     }
                 }
                 ArithOpType::Or => {
-                    let simplified_left = simplify_with_and_mask(&arith.left, mask, ctx);
+                    let simplified_left =
+                        simplify_with_and_mask_inner(&arith.left, mask, ctx, recurse_limit - 1);
                     if let Some(c) = simplified_left.if_constant64() {
                         if mask & c == mask {
                             return simplified_left;
                         }
                     }
-                    let simplified_right = simplify_with_and_mask(&arith.right, mask, ctx);
+                    let simplified_right =
+                        simplify_with_and_mask_inner(&arith.right, mask, ctx, recurse_limit - 1);
                     if let Some(c) = simplified_right.if_constant64() {
                         if mask & c == mask {
                             return simplified_right;
@@ -3468,8 +3484,10 @@ fn simplify_with_and_mask(op: &Rc<Operand>, mask: u64, ctx: &OperandContext) -> 
                     }
                 }
                 ArithOpType::Xor => {
-                    let simplified_left = simplify_with_and_mask(&arith.left, mask, ctx);
-                    let simplified_right = simplify_with_and_mask(&arith.right, mask, ctx);
+                    let simplified_left =
+                        simplify_with_and_mask_inner(&arith.left, mask, ctx, recurse_limit - 1);
+                    let simplified_right =
+                        simplify_with_and_mask_inner(&arith.right, mask, ctx, recurse_limit - 1);
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
                     } else {
