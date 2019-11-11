@@ -357,9 +357,9 @@ fn instruction_operations32(
         match first_byte {
             0x10 | 0x11 => s.mov_sse_10_11(),
             0x12 | 0x13 => s.mov_sse_12_13(),
-            // nop
-            0x1f => Ok(SmallVec::new()),
-            0x28 | 0x29 => s.movaps(),
+            // Prefetch/nop
+            0x18 ..= 0x1f => Ok(SmallVec::new()),
+            0x28 | 0x29 | 0x2b => s.movaps_movntps(),
             0x2c => s.cvttss2si(),
             // rdtsc
             0x31 => {
@@ -386,6 +386,14 @@ fn instruction_operations32(
             0xa3 => s.bit_test(false),
             0xa4 => s.shld_imm(),
             0xac => s.shrd_imm(),
+            0xae => {
+                match (s.get(1) >> 3) & 0x7 {
+                    // Memory fences
+                    // (5 is also xrstor though)
+                    5 | 6 | 7 => Ok(SmallVec::new()),
+                    _ => Err(Error::UnknownOpcode(s.data.into())),
+                }
+            }
             0xaf => s.imul_normal(),
             0xb1 => {
                 // Cmpxchg
@@ -604,9 +612,9 @@ fn instruction_operations64(
         match first_byte {
             0x10 | 0x11 => s.mov_sse_10_11(),
             0x12 | 0x13 => s.mov_sse_12_13(),
-            // nop
-            0x1f => Ok(SmallVec::new()),
-            0x28 | 0x29 => s.movaps(),
+            // Prefetch/nop
+            0x18 ..= 0x1f => Ok(SmallVec::new()),
+            0x28 | 0x29 | 0x2b => s.movaps_movntps(),
             0x2c => s.cvttss2si(),
             // rdtsc
             0x31 => {
@@ -633,6 +641,14 @@ fn instruction_operations64(
             0xa3 => s.bit_test(false),
             0xa4 => s.shld_imm(),
             0xac => s.shrd_imm(),
+            0xae => {
+                match (s.get(1) >> 3) & 0x7 {
+                    // Memory fences
+                    // (5 is also xrstor though)
+                    5 | 6 | 7 => Ok(SmallVec::new()),
+                    _ => Err(Error::UnknownOpcode(s.data.into())),
+                }
+            }
             0xaf => s.imul_normal(),
             0xb1 => {
                 // Cmpxchg
@@ -1365,7 +1381,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok((0..2).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
     }
 
-    fn movaps(&self) -> Result<OperationVec, Error> {
+    fn movaps_movntps(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
         let (src, dest) = match self.get(0) == 0x28 {
