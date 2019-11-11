@@ -1891,6 +1891,18 @@ impl Operand {
                         let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
                         let l = left.clone();
                         let r = right.clone();
+                        if let OperandType::Arithmetic64(ref arith) = l.ty {
+                            if arith.ty == ArithOpType::Sub {
+                                if arith.left == r {
+                                    let ty = OperandType::Arithmetic64(ArithOperand {
+                                        ty: ArithOpType::GreaterThan,
+                                        left: arith.right.clone(),
+                                        right: r.clone(),
+                                    });
+                                    return Operand::new_simplified_rc(ty);
+                                }
+                            }
+                        }
                         if let (Some(l), Some(r)) = (l.if_constant64(), r.if_constant64()) {
                             if l > r {
                                 ctx.const_1()
@@ -5517,8 +5529,20 @@ mod test {
             operand_register(2),
             operand_register(5),
         );
+        let op3 = operand_gt64(
+            operand_sub64(
+                operand_register64(5),
+                operand_register64(2),
+            ),
+            operand_register64(5),
+        );
+        let eq3 = operand_gt64(
+            operand_register64(2),
+            operand_register64(5),
+        );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_ne!(Operand::simplified(op2), Operand::simplified(ne2));
+        assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
     }
 
     #[test]
