@@ -1688,13 +1688,20 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         use self::operation_helpers::*;
         use crate::operand_helpers::*;
         let variant = (self.get(1) >> 3) & 0x7;
+        let is_64 = Va::SIZE == 8;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
-            _ => self.mem16_32(),
+            _ => match is_64 {
+                true => match variant {
+                    // Call / jump are always 64
+                    2 | 3 | 4 | 5 => MemAccessSize::Mem64,
+                    _ => self.mem16_32(),
+                },
+                false => self.mem16_32(),
+            },
         };
         let (rm, _) = self.parse_modrm(op_size)?;
         let mut out = SmallVec::new();
-        let is_64 = Va::SIZE == 8;
         match variant {
             0 | 1 => {
                 let is_inc = variant == 0;
