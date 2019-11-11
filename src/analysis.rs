@@ -8,7 +8,7 @@ use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
 use crate::disasm::{self, Instruction, Operation};
 use crate::exec_state::{self, Disassembler, ExecutionState, InternMap};
 use crate::exec_state::VirtualAddress as VaTrait;
-use crate::operand::{Operand, OperandContext};
+use crate::operand::{MemAccessSize, Operand, OperandContext};
 use crate::{BinaryFile, BinarySection, VirtualAddress, VirtualAddress64};
 
 quick_error! {
@@ -709,7 +709,6 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                             control.inner.analysis,
                             &mut control.inner.state.0,
                             &control.inner.state.1,
-                            binary,
                             condition.clone(),
                             to.clone(),
                             &instruction,
@@ -946,7 +945,6 @@ impl<'a, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState> Branch<'a, 'e
     fn process_operation(&mut self, op: Operation, ins: &Instruction<Exec::VirtualAddress>) -> Result<(), Error> {
         let state = &mut self.state.0;
         let analysis_state = &self.state.1;
-        let binary = self.analysis.binary;
 
         match op {
             disasm::Operation::Jump { condition, to } => {
@@ -954,7 +952,6 @@ impl<'a, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState> Branch<'a, 'e
                     &mut self.analysis,
                     state,
                     analysis_state,
-                    binary,
                     condition,
                     to,
                     ins,
@@ -1093,23 +1090,26 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
     analysis: &mut FuncAnalysis<'exec, Exec, S>,
     state: &mut Exec,
     analysis_state: &S,
-    binary: &BinaryFile<Exec::VirtualAddress>,
     condition: Rc<Operand>,
     to: Rc<Operand>,
     ins: &Instruction<Exec::VirtualAddress>,
     cfg_out_edge: &mut CfgOutEdges<Exec::VirtualAddress>,
 ) {
     fn is_switch_jump<VirtualAddress: exec_state::VirtualAddress>(
-        to: &Operand,
-    ) -> Option<(VirtualAddress, &Rc<Operand>)> {
-        to.if_memory()
-            .and_then(|mem| mem.address.if_arithmetic_add())
-            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul()))
+        to: &Rc<Operand>,
+    ) -> Option<(VirtualAddress, &Rc<Operand>, u64, u32)> {
+        let (base, mem) = match to.if_arithmetic_add64() {
+            Some((l, r)) => Operand::either(l, r, |x| x.if_constant64())?,
+            None => (0, to),
+        };
+        mem.if_memory()
+            .and_then(|mem| mem.address.if_arithmetic_add64())
+            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul64()))
             .and_then(|((l, r), switch_table)| {
                 let switch_table = switch_table.if_constant64()?;
                 let (c, index) = Operand::either(l, r, |x| x.if_constant())?;
-                if c == VirtualAddress::SIZE {
-                    Some((VirtualAddress::from_u64(switch_table), index))
+                if c == VirtualAddress::SIZE || base != 0 {
+                    Some((VirtualAddress::from_u64(switch_table), index, base, c))
                 } else {
                     None
                 }
@@ -1126,26 +1126,47 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
         Some(_) => {
             let state = state.clone();
             let to = state.resolve(&to, &mut analysis.interner);
-            if let Some((switch_table, index)) = is_switch_jump::<Exec::VirtualAddress>(&to) {
+            let is_switch = is_switch_jump::<Exec::VirtualAddress>(&to);
+            if let Some((switch_table, index, base, case_size)) = is_switch {
                 let mut cases = Vec::new();
-                let reloc_index = binary.relocs.binary_search(&switch_table);
                 let code_offset = analysis.binary.code_section().virtual_address;
                 let code_len = analysis.binary.code_section().data.len() as u32;
-                if let Ok(reloc_index) = reloc_index {
-                    let case_iter = (0u32..)
-                        .take_while(|&x| {
-                            match binary.relocs.get(reloc_index + x as usize) {
-                                Some(&s) => s == switch_table + x * Exec::VirtualAddress::SIZE,
-                                None => false,
-                            }
-                        })
-                        .map(|x| binary.read_address(switch_table + x * Exec::VirtualAddress::SIZE))
-                        .take_while(|x| x.is_ok())
-                        .flat_map(|x| x.ok())
-                        .take_while(|&x| x >= code_offset && x < code_offset + code_len);
-                    for case in case_iter {
-                        analysis.add_unchecked_branch(case, state.clone(), analysis_state.clone());
-                        cases.push(NodeLink::new(case));
+                let mem_size = match case_size {
+                    1 => Some(MemAccessSize::Mem8),
+                    2 => Some(MemAccessSize::Mem16),
+                    4 => Some(MemAccessSize::Mem32),
+                    8 => Some(MemAccessSize::Mem64),
+                    _ => None,
+                };
+                let ctx = analysis.operand_ctx;
+                let switch_table = ctx.constant64(switch_table.as_u64());
+                let base = ctx.constant64(base);
+                if let Some(mem_size) = mem_size {
+                    use crate::operand_helpers::*;
+                    for index in 0u32.. {
+                        let case = operand_add64(
+                            base.clone(),
+                            mem_variable_rc(
+                                mem_size,
+                                operand_add64(
+                                    switch_table.clone(),
+                                    ctx.constant(index * case_size),
+                                ),
+                            ),
+                        );
+                        let addr = state.resolve(&case, &mut analysis.interner).if_constant64()
+                            .map(Exec::VirtualAddress::from_u64)
+                            .filter(|&x| x >= code_offset && x < code_offset + code_len);
+                        if let Some(case) = addr {
+                            analysis.add_unchecked_branch(
+                                case,
+                                state.clone(),
+                                analysis_state.clone(),
+                            );
+                            cases.push(NodeLink::new(case));
+                        } else {
+                            break;
+                        }
                     }
                     if !cases.is_empty() {
                         *cfg_out_edge = CfgOutEdges::Switch(cases, index.clone());
