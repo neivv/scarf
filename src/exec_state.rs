@@ -111,6 +111,7 @@ pub trait ExecutionState<'a> : Clone {
                                         operand_logical_not(condition.clone())
                                     ),
                                 };
+                                let cond = state.resolve(&cond, i);
                                 state.add_extra_constraint(Constraint::new(cond));
                                 state
                             })
@@ -122,6 +123,7 @@ pub trait ExecutionState<'a> : Clone {
                                 left.clone(),
                                 right.clone()
                             ));
+                            let cond = state.resolve(&cond, i);
                             state.add_extra_constraint(Constraint::new(cond));
                             state
                         } else {
@@ -130,6 +132,7 @@ pub trait ExecutionState<'a> : Clone {
                                 operand_logical_not(left.clone()),
                                 operand_logical_not(right.clone()),
                             ));
+                            let cond = state.resolve(&cond, i);
                             state.add_extra_constraint(Constraint::new(cond));
                             state
                         }
@@ -141,6 +144,7 @@ pub trait ExecutionState<'a> : Clone {
                                 left.clone(),
                                 right.clone(),
                             ));
+                            let cond = state.resolve(&cond, i);
                             state.add_extra_constraint(Constraint::new(cond));
                             state
                         } else {
@@ -149,6 +153,7 @@ pub trait ExecutionState<'a> : Clone {
                                 operand_logical_not(left.clone()),
                                 operand_logical_not(right.clone())
                             ));
+                            let cond = state.resolve(&cond, i);
                             state.add_extra_constraint(Constraint::new(cond));
                             state
                         }
@@ -232,7 +237,8 @@ impl VirtualAddress for crate::VirtualAddress64 {
 }
 
 /// The constraint is assumed to be something that can be substituted with 1 if met
-/// (so constraint == constval(1))
+/// (so constraint == constval(1)).
+/// Operand is resolved.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Constraint(pub Rc<Operand>);
 
@@ -241,38 +247,32 @@ impl Constraint {
         Constraint(Operand::simplified(o))
     }
 
-    pub(crate) fn invalidate_dest_operand(&self, dest: &DestOperand) -> Option<Constraint> {
-        match *dest {
-            DestOperand::Register(reg) | DestOperand::Register16(reg) |
-                DestOperand::Register8High(reg) | DestOperand::Register8Low(reg) |
-                DestOperand::Register64(reg) =>
-            {
-                remove_matching_ands(&self.0, &mut |x| *x == OperandType::Register(reg))
+    /// Invalidates any assumptions about memory
+    pub(crate) fn invalidate_memory(&mut self) -> ConstraintFullyInvalid {
+        let result = remove_matching_ands(&self.0, &mut |x| match x {
+            OperandType::Memory(..) => true,
+            _ => false,
+        });
+        match result {
+            Some(s) => {
+                self.0 = s;
+                ConstraintFullyInvalid::No
             }
-            DestOperand::PairEdxEax => None,
-            DestOperand::Xmm(_, _) => {
-                None
-            }
-            DestOperand::Fpu(_) => {
-                None
-            }
-            DestOperand::Flag(flag) => {
-                remove_matching_ands(&self.0, &mut |x| *x == OperandType::Flag(flag))
-            },
-            DestOperand::Memory(_) => {
-                // Assuming that everything may alias with memory
-                remove_matching_ands(&self.0, &mut |x| match x {
-                    OperandType::Memory(..) => true,
-                    _ => false,
-                })
-            }
-        }.map(Constraint::new)
+            None => ConstraintFullyInvalid::Yes,
+        }
     }
 
     pub(crate) fn apply_to(&self, oper: &Rc<Operand>) -> Rc<Operand> {
         let new = apply_constraint_split(&self.0, oper, true);
         Operand::simplified(new)
     }
+}
+
+#[derive(Eq, PartialEq, Copy, Clone)]
+#[must_use]
+pub enum ConstraintFullyInvalid {
+    Yes,
+    No,
 }
 
 /// Constraint invalidation helper

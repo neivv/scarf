@@ -217,18 +217,19 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     }
 
     fn resolve_apply_constraints(&self, op: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand> {
-        let mut stack_op;
-        let mut op_ref = if op.is_simplified() {
+        let stack_op;
+        let op_ref = if op.is_simplified() {
             op
         } else {
             stack_op = Operand::simplified(op.clone());
             &stack_op
         };
+        let val = self.resolve(op_ref, i);
         if let Some(ref constraint) = self.last_jump_extra_constraint {
-            stack_op = constraint.apply_to(op_ref);
-            op_ref = &stack_op;
+            constraint.apply_to(&val)
+        } else {
+            val
         }
-        self.resolve(op_ref, i)
     }
 
     fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
@@ -401,10 +402,13 @@ impl<'a> ExecutionState<'a> {
         dest: &DestOperand,
         interner: &mut InternMap,
     ) -> Destination<'s> {
-        self.last_jump_extra_constraint = match self.last_jump_extra_constraint {
-            Some(ref s) => s.invalidate_dest_operand(dest),
-            None => None,
-        };
+        if let Some(ref mut s) = self.last_jump_extra_constraint {
+            if let DestOperand::Memory(_) = dest {
+                if s.invalidate_memory() == crate::exec_state::ConstraintFullyInvalid::Yes {
+                    self.last_jump_extra_constraint = None;
+                }
+            }
+        }
         self.get_dest(dest, interner)
     }
 
