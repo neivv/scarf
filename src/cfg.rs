@@ -216,6 +216,8 @@ impl<S: CfgState> Cfg<S> {
     /// Can only be called on a graph with all node links being addresses of one of
     /// the nodes in graph.
     pub fn cycles(&mut self) -> Vec<Vec<NodeLink<S::VirtualAddress>>> {
+        // This currently generates a bunch of duplicates which are removed at the end.
+        // Could be better.
         #[derive(Copy, Clone, Eq, PartialEq)]
         enum CheckState {
             Unchecked,
@@ -231,7 +233,7 @@ impl<S: CfgState> Cfg<S> {
         let mut result_first_pos = Vec::new();
         let mut forks = Vec::new();
         let mut pos = self.entry.index();
-        loop {
+        'main_loop: loop {
             let rewind = match nodes[pos] {
                 CheckState::Checked => {
                     // Nothing to find, rewind
@@ -257,7 +259,7 @@ impl<S: CfgState> Cfg<S> {
                     nodes[pos] = CheckState::Checking(chain.len() as u16);
                     chain.push(pos);
                     if chain.len() >= u16::max_value() as usize {
-                        return result;
+                        break 'main_loop;
                     }
                     let out1 = {
                         let node = &self.nodes[pos].1;
@@ -294,7 +296,7 @@ impl<S: CfgState> Cfg<S> {
                 let mut earliest_pos = result_first_pos.last().cloned().unwrap_or(!0);
                 let (rewind_until, other_branch) = match forks.pop() {
                     Some(s) => s,
-                    None => return result,
+                    None => break 'main_loop,
                 };
                 while let Some(rewind) = chain.last().cloned() {
                     if rewind == rewind_until {
@@ -314,6 +316,9 @@ impl<S: CfgState> Cfg<S> {
                 pos = other_branch;
             }
         }
+        result.sort();
+        result.dedup();
+        result
     }
 
     pub fn immediate_postdominator<'a>(
