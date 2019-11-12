@@ -336,6 +336,30 @@ fn movzx_mem8() {
     ]);
 }
 
+#[test]
+fn resolved_constraints_differ() {
+    // Check when the jg/jle pair is reached twice with different constraints
+    test_inline(&[
+        0x39, 0xda, // cmp edx, ebx
+        0x74, 0x04, // je undef_flags
+        0x39, 0xc8, // cmp eax, ecx
+        0xeb, 0x00, // jmp undef_flags (Force next instruction to have undef flags)
+        // undef_flags
+        0x74, 0x09, // je end
+        0x70, 0x07, // jo end
+        0xeb, 0x00, // jmp jg_jle
+        // jg_jle
+        0x7f, 0x03, // jg ret
+        0x7e, 0x01, // jle ret
+        0xcc, // int3
+        // end
+        0x39, 0xc8, // cmp eax, ecx
+        0x7a, 0xf7, // jpe jg_jle
+        0xc3, //ret
+    ], &[
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

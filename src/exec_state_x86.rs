@@ -19,8 +19,12 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         self.memory.maybe_convert_immutable();
     }
 
-    fn add_extra_constraint(&mut self, constraint: Constraint) {
-        self.last_jump_extra_constraint = Some(constraint);
+    fn add_resolved_constraint(&mut self, constraint: Constraint) {
+        self.resolved_constraint = Some(constraint);
+    }
+
+    fn add_unresolved_constraint(&mut self, constraint: Constraint) {
+        self.unresolved_constraint = Some(constraint);
     }
 
     fn move_to(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap) {
@@ -43,15 +47,19 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     }
 
     fn resolve_apply_constraints(&self, op: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand> {
-        let stack_op;
-        let op_ref = if op.is_simplified() {
+        let mut stack_op;
+        let mut op_ref = if op.is_simplified() {
             op
         } else {
             stack_op = Operand::simplified(op.clone());
             &stack_op
         };
+        if let Some(ref constraint) = self.unresolved_constraint {
+            stack_op = constraint.apply_to(op_ref);
+            op_ref = &stack_op;
+        }
         let val = self.resolve(op_ref, i);
-        if let Some(ref constraint) = self.last_jump_extra_constraint {
+        if let Some(ref constraint) = self.resolved_constraint {
             constraint.apply_to(&val)
         } else {
             val
@@ -147,7 +155,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     }
 
     fn value_limits(&self, value: &Rc<Operand>) -> (u64, u64) {
-        if let Some(ref constraint) = self.last_jump_extra_constraint {
+        if let Some(ref constraint) = self.resolved_constraint {
             crate::exec_state::value_limits_recurse(&constraint.0, value)
         } else {
             (0, u64::max_value())
@@ -162,7 +170,8 @@ pub struct ExecutionState<'a> {
     fpu_registers: [InternedOperand; 0x8],
     flags: Flags,
     memory: Memory,
-    last_jump_extra_constraint: Option<Constraint>,
+    resolved_constraint: Option<Constraint>,
+    unresolved_constraint: Option<Constraint>,
     ctx: &'a OperandContext,
     code_sections: Vec<&'a crate::BinarySection<VirtualAddress>>,
 }
@@ -354,7 +363,8 @@ impl<'a> ExecutionState<'a> {
             fpu_registers,
             flags: Flags::initial(ctx, interner),
             memory: Memory::new(),
-            last_jump_extra_constraint: None,
+            resolved_constraint: None,
+            unresolved_constraint: None,
             ctx,
             code_sections: Vec::new(),
         }
@@ -402,7 +412,12 @@ impl<'a> ExecutionState<'a> {
             }
             Operation::Call(_) => {
                 let mut ids = intern_map.many_undef(ctx, 9);
-                self.last_jump_extra_constraint = None;
+                self.unresolved_constraint = None;
+                if let Some(ref mut c) = self.resolved_constraint {
+                    if c.invalidate_memory() == crate::exec_state::ConstraintFullyInvalid::Yes {
+                        self.resolved_constraint = None
+                    }
+                }
                 self.registers[0] = ids.next();
                 self.registers[1] = ids.next();
                 self.registers[2] = ids.next();
@@ -449,10 +464,14 @@ impl<'a> ExecutionState<'a> {
         dest: &DestOperand,
         interner: &mut InternMap,
     ) -> Destination<'s> {
-        if let Some(ref mut s) = self.last_jump_extra_constraint {
+        self.unresolved_constraint = match self.unresolved_constraint {
+            Some(ref s) => s.invalidate_dest_operand(dest),
+            None => None,
+        };
+        if let Some(ref mut s) = self.resolved_constraint {
             if let DestOperand::Memory(_) = dest {
                 if s.invalidate_memory() == crate::exec_state::ConstraintFullyInvalid::Yes {
-                    self.last_jump_extra_constraint = None;
+                    self.resolved_constraint = None;
                 }
             }
         }
@@ -776,9 +795,9 @@ pub fn merge_states<'a: 'r, 'r>(
         )
     };
 
-    let merged_ljec = if old.last_jump_extra_constraint != new.last_jump_extra_constraint {
-        let old_lje = &old.last_jump_extra_constraint;
-        let new_lje = &new.last_jump_extra_constraint;
+    let merged_ljec = if old.unresolved_constraint != new.unresolved_constraint {
+        let old_lje = &old.unresolved_constraint;
+        let new_lje = &new.unresolved_constraint;
         Some(match (old_lje, new_lje, old, new) {
             // If one state has no constraint but matches the constrait of the other
             // state, the constraint should be kept on merge.
@@ -805,7 +824,8 @@ pub fn merge_states<'a: 'r, 'r>(
             .any(|(&a, &b)| !check_eq(a, b)) ||
         !check_flags_eq(&old.flags, &new.flags) ||
         !check_memory_eq(&old.memory, &new.memory, interner) ||
-        merged_ljec.as_ref().map(|x| *x != old.last_jump_extra_constraint).unwrap_or(false);
+        merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) ||
+        (old.resolved_constraint.is_some() && old.resolved_constraint != new.resolved_constraint);
     if changed {
         let mut registers = [InternedOperand(0); 8];
         let mut fpu_registers = [InternedOperand(0); 8];
@@ -848,10 +868,15 @@ pub fn merge_states<'a: 'r, 'r>(
             xmm_registers,
             flags,
             memory: old.memory.merge(&new.memory, interner, old.ctx),
-            last_jump_extra_constraint: merged_ljec.unwrap_or_else(|| {
+            unresolved_constraint: merged_ljec.unwrap_or_else(|| {
                 // They were same, just use one from old
-                old.last_jump_extra_constraint.clone()
+                old.unresolved_constraint.clone()
             }),
+            resolved_constraint: if old.resolved_constraint == new.resolved_constraint {
+                old.resolved_constraint.clone()
+            } else {
+                None
+            },
             ctx: old.ctx,
             code_sections: old.code_sections.clone(),
         })
@@ -882,8 +907,8 @@ fn merge_state_constraints_eq() {
     state_b.move_to(&DestOperand::from_oper(&ctx.flag_o()), constval(1), &mut i);
     state_b.move_to(&DestOperand::from_oper(&ctx.flag_s()), constval(1), &mut i);
     let merged = merge_states(&state_b, &state_a, &mut i).unwrap();
-    assert!(merged.last_jump_extra_constraint.is_some());
-    assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
+    assert!(merged.unresolved_constraint.is_some());
+    assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 }
 
 #[test]
@@ -900,16 +925,16 @@ fn merge_state_constraints_or() {
     let mut state_a = state_a.assume_jump_flag(&sign_or_overflow_flag, true, &mut i);
     state_b.move_to(&DestOperand::from_oper(&ctx.flag_s()), constval(1), &mut i);
     let merged = merge_states(&state_b, &state_a, &mut i).unwrap();
-    assert!(merged.last_jump_extra_constraint.is_some());
-    assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
+    assert!(merged.unresolved_constraint.is_some());
+    assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
     // Should also happen other way, though then state_a must have something that is converted
     // to undef.
     let merged = merge_states(&state_a, &state_b, &mut i).unwrap();
-    assert!(merged.last_jump_extra_constraint.is_some());
-    assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
+    assert!(merged.unresolved_constraint.is_some());
+    assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 
     state_a.move_to(&DestOperand::from_oper(&ctx.flag_c()), constval(1), &mut i);
     let merged = merge_states(&state_a, &state_b, &mut i).unwrap();
-    assert!(merged.last_jump_extra_constraint.is_some());
-    assert_eq!(merged.last_jump_extra_constraint, state_a.last_jump_extra_constraint);
+    assert!(merged.unresolved_constraint.is_some());
+    assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 }

@@ -29,7 +29,13 @@ pub trait ExecutionState<'a> : Clone {
     /// immutable-shared if necessary.
     fn maybe_convert_memory_immutable(&mut self);
     /// Adds an additonal assumption that can't be represented by setting registers/etc.
-    fn add_extra_constraint(&mut self, constraint: Constraint);
+    /// Resolved constraints are useful limiting possible values a variable can have
+    /// (`value_limits`)
+    fn add_resolved_constraint(&mut self, constraint: Constraint);
+    /// Adds an additonal assumption that can't be represented by setting registers/etc.
+    /// Unresolved constraints are useful for knowing that a jump chain such as `jg` followed by
+    /// `jle` ends up always jumping at `jle`.
+    fn add_unresolved_constraint(&mut self, constraint: Constraint);
     fn update(&mut self, operation: &Operation, i: &mut InternMap);
     fn move_to(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap);
     fn ctx(&self) -> &'a OperandContext;
@@ -86,14 +92,14 @@ pub trait ExecutionState<'a> : Clone {
                 match arith.ty {
                     Equal => {
                         let mut state = self.clone();
-                        let cond = match jump {
+                        let unresolved_cond = match jump {
                             true => condition.clone(),
                             false => Operand::simplified(
                                 operand_logical_not(condition.clone())
                             ),
                         };
-                        let cond = state.resolve(&cond, i);
-                        state.add_extra_constraint(Constraint::new(cond));
+                        let resolved_cond = state.resolve(&unresolved_cond, i);
+                        state.add_resolved_constraint(Constraint::new(resolved_cond));
                         let assignable_flag =
                             Operand::either(left, right, |x| {
                                 x.if_constant().filter(|&c| c == 0)
@@ -111,48 +117,54 @@ pub trait ExecutionState<'a> : Clone {
                         if let Some((flag, flag_state)) = assignable_flag {
                             let constant = self.ctx().constant(flag_state as u32);
                             state.move_to(&DestOperand::Flag(flag), constant, i);
+                        } else {
+                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                         }
                         state
                     }
                     Or => {
                         if jump {
                             let mut state = self.clone();
-                            let cond = Operand::simplified(operand_or(
+                            let unresolved_cond = Operand::simplified(operand_or(
                                 left.clone(),
                                 right.clone()
                             ));
-                            let cond = state.resolve(&cond, i);
-                            state.add_extra_constraint(Constraint::new(cond));
+                            let cond = state.resolve(&unresolved_cond, i);
+                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
+                            state.add_resolved_constraint(Constraint::new(cond));
                             state
                         } else {
                             let mut state = self.clone();
-                            let cond = Operand::simplified(operand_and(
+                            let unresolved_cond = Operand::simplified(operand_and(
                                 operand_logical_not(left.clone()),
                                 operand_logical_not(right.clone()),
                             ));
-                            let cond = state.resolve(&cond, i);
-                            state.add_extra_constraint(Constraint::new(cond));
+                            let cond = state.resolve(&unresolved_cond, i);
+                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
+                            state.add_resolved_constraint(Constraint::new(cond));
                             state
                         }
                     }
                     And => {
                         if jump {
                             let mut state = self.clone();
-                            let cond = Operand::simplified(operand_and(
+                            let unresolved_cond = Operand::simplified(operand_and(
                                 left.clone(),
                                 right.clone(),
                             ));
-                            let cond = state.resolve(&cond, i);
-                            state.add_extra_constraint(Constraint::new(cond));
+                            let cond = state.resolve(&unresolved_cond, i);
+                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
+                            state.add_resolved_constraint(Constraint::new(cond));
                             state
                         } else {
                             let mut state = self.clone();
-                            let cond = Operand::simplified(operand_or(
+                            let unresolved_cond = Operand::simplified(operand_or(
                                 operand_logical_not(left.clone()),
                                 operand_logical_not(right.clone())
                             ));
-                            let cond = state.resolve(&cond, i);
-                            state.add_extra_constraint(Constraint::new(cond));
+                            let cond = state.resolve(&unresolved_cond, i);
+                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
+                            state.add_resolved_constraint(Constraint::new(cond));
                             state
                         }
                     }
@@ -242,7 +254,6 @@ impl VirtualAddress for crate::VirtualAddress64 {
 
 /// The constraint is assumed to be something that can be substituted with 1 if met
 /// (so constraint == constval(1)).
-/// Operand is resolved.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Constraint(pub Rc<Operand>);
 
@@ -265,6 +276,35 @@ impl Constraint {
             None => ConstraintFullyInvalid::Yes,
         }
     }
+
+    /// Invalidates any parts of the constraint that depend on unresolved dest.
+    pub(crate) fn invalidate_dest_operand(&self, dest: &DestOperand) -> Option<Constraint> {
+        match *dest {
+            DestOperand::Register(reg) | DestOperand::Register16(reg) |
+                DestOperand::Register8High(reg) | DestOperand::Register8Low(reg) |
+                DestOperand::Register64(reg) =>
+            {
+                remove_matching_ands(&self.0, &mut |x| *x == OperandType::Register(reg))
+             }
+            DestOperand::PairEdxEax => None,
+            DestOperand::Xmm(_, _) => {
+                None
+            }
+            DestOperand::Fpu(_) => {
+                None
+            }
+            DestOperand::Flag(flag) => {
+                remove_matching_ands(&self.0, &mut |x| *x == OperandType::Flag(flag))
+            },
+            DestOperand::Memory(_) => {
+                // Assuming that everything may alias with memory
+                remove_matching_ands(&self.0, &mut |x| match x {
+                    OperandType::Memory(..) => true,
+                    _ => false,
+                })
+            }
+        }.map(Constraint::new)
+     }
 
     pub(crate) fn apply_to(&self, oper: &Rc<Operand>) -> Rc<Operand> {
         let new = apply_constraint_split(&self.0, oper, true);
