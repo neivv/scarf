@@ -145,6 +145,14 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     ) -> Result<Vec<Self::VirtualAddress>, crate::Error> {
         crate::analysis::find_relocs_x86(file)
     }
+
+    fn value_limits(&self, value: &Rc<Operand>) -> (u64, u64) {
+        if let Some(ref constraint) = self.last_jump_extra_constraint {
+            crate::exec_state::value_limits_recurse(&constraint.0, value)
+        } else {
+            (0, u64::max_value())
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

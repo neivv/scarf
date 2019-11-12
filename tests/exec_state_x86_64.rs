@@ -179,6 +179,42 @@ fn test_xadd() {
     ]);
 }
 
+#[test]
+fn test_switch() {
+    let ctx = scarf::operand::OperandContext::new();
+    // 2 cases to ok, 3rd fake
+    // rcx is undef if the cases are run
+    test_inline(&[
+        0x31, 0xc9, // xor ecx, ecx
+        0x48, 0x83, 0xf8, 0x02, // cmp rax, 2
+        0x73, 0x28, // jae end
+        0x48, 0x8d, 0x0d, 0x12, 0x00, 0x00, 0x00, // lea rcx, [switch_table]
+        0x0f, 0xb7, 0x0c, 0x41, // movzx ecx, word [rcx + rax * 2]
+        0x48, 0x8d, 0x05, 0x0d, 0x00, 0x00, 0x00, // lea rax, [fail]
+        0x48, 0x01, 0xc8, // add rax, rcx
+        0x31, 0xc9, // xor ecx, ecx
+        0xff, 0xe0, // jmp rax
+        // switch_table:
+        0x01, 0x00, // case1 - fail
+        0x04, 0x00, // case2 - fail
+        0x00, 0x00, // fail - fail
+        // fail:
+        0xcc, // int3
+        // case1:
+        0x83, 0xc1, 0x06, // add ecx, 6
+        // case2:
+        0x83, 0xc1, 0x06, // add ecx, 6
+        // (Since the test system doesn't merge end states from differend blocks)
+        0xeb, 0x00, // jmp end
+        // end:
+        0x31, 0xc0, // xor eax, eax
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval(0)),
+         (operand_register64(1), ctx.undefined_rc()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

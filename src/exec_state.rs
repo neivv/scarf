@@ -85,36 +85,34 @@ pub trait ExecutionState<'a> : Clone {
                 let right = &arith.right;
                 match arith.ty {
                     Equal => {
-                        Operand::either(left, right, |x| x.if_constant().filter(|&c| c == 0))
-                            .and_then(|(_, other)| {
-                                let (other, flag_state) = other.if_arithmetic_eq()
-                                    .and_then(|(l, r)| {
-                                        Operand::either(l, r, |x| x.if_constant())
-                                            .map(|(c, other)| (other, if c == 0 { jump } else { !jump }))
-                                    })
-                                    .unwrap_or_else(|| (other, !jump));
-                                match other.ty {
-                                    OperandType::Flag(flag) => {
-                                        let mut state = self.clone();
-                                        let constant = self.ctx().constant(flag_state as u32);
-                                        state.move_to(&DestOperand::Flag(flag), constant, i);
-                                        Some(state)
-                                    }
-                                    _ => None,
-                                }
+                        let mut state = self.clone();
+                        let cond = match jump {
+                            true => condition.clone(),
+                            false => Operand::simplified(
+                                operand_logical_not(condition.clone())
+                            ),
+                        };
+                        let cond = state.resolve(&cond, i);
+                        state.add_extra_constraint(Constraint::new(cond));
+                        let assignable_flag =
+                            Operand::either(left, right, |x| {
+                                x.if_constant().filter(|&c| c == 0)
                             })
-                            .unwrap_or_else(|| {
-                                let mut state = self.clone();
-                                let cond = match jump {
-                                    true => condition.clone(),
-                                    false => Operand::simplified(
-                                        operand_logical_not(condition.clone())
-                                    ),
-                                };
-                                let cond = state.resolve(&cond, i);
-                                state.add_extra_constraint(Constraint::new(cond));
-                                state
+                            .map(|(_, other)| {
+                                other.if_arithmetic_eq()
+                                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                                    .map(|(c, other)| (other, if c == 0 { jump } else { !jump }))
+                                    .unwrap_or_else(|| (other, !jump))
                             })
+                            .and_then(|(other, flag_state)| match other.ty {
+                                OperandType::Flag(f) => Some((f, flag_state)),
+                                _ => None,
+                            });
+                        if let Some((flag, flag_state)) = assignable_flag {
+                            let constant = self.ctx().constant(flag_state as u32);
+                            state.move_to(&DestOperand::Flag(flag), constant, i);
+                        }
+                        state
                     }
                     Or => {
                         if jump {
@@ -163,6 +161,12 @@ pub trait ExecutionState<'a> : Clone {
             }
             _ => self.clone(),
         }
+    }
+
+    /// Returns smallest and largest value a *resolved* operand can have
+    /// (Mainly meant to use extra constraint information)
+    fn value_limits(&self, _value: &Rc<Operand>) -> (u64, u64) {
+        (0, u64::max_value())
     }
 
     // Analysis functions, default to no-op
@@ -339,6 +343,60 @@ fn apply_constraint_split(
             let subst_val = constval(if with { 1 } else { 0 });
             Operand::substitute(val, constraint, &subst_val)
         }
+    }
+}
+
+/// Helper for ExecutionState::value_limits implementations with constraints
+pub(crate) fn value_limits_recurse(constraint: &Rc<Operand>, value: &Rc<Operand>) -> (u64, u64) {
+    match constraint.ty {
+        OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith) => {
+            match arith.ty {
+                ArithOpType::And => {
+                    let left = value_limits_recurse(&arith.left, value);
+                    let right = value_limits_recurse(&arith.right, value);
+                    return (left.0.max(right.0), (left.1.min(right.1)));
+                }
+                ArithOpType::GreaterThan => {
+                    if let Some(c) = arith.left.if_constant64() {
+                        if is_subset(value, &arith.right) {
+                            return (0, c);
+                        }
+                    }
+                    if let Some(c) = arith.right.if_constant64() {
+                        if is_subset(value, &arith.left) {
+                            return (c, u64::max_value());
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+        _ => (),
+    }
+    (0, u64::max_value())
+}
+
+/// Returns true if sub == sup & some_const_mask (Eq is also fine)
+/// Not really considering constants for this (value_limits_recurse)
+fn is_subset(sub: &Rc<Operand>, sup: &Rc<Operand>) -> bool {
+    if sub.ty.expr_size() > sup.ty.expr_size() {
+        return false;
+    }
+    match sub.ty {
+        OperandType::Register(r) | OperandType::Register16(r) | OperandType::Register8Low(r) |
+            OperandType::Register64(r) =>
+        {
+            match sup.ty {
+                OperandType::Register(r2) | OperandType::Register16(r2) |
+                    OperandType::Register8Low(r2) | OperandType::Register64(r2) => r == r2,
+                _ => false,
+            }
+        }
+        OperandType::Memory(ref mem) => match sup.if_memory() {
+            Some(mem2) => mem.address == mem2.address,
+            None => false,
+        }
+        _ => false,
     }
 }
 

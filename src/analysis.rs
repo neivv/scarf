@@ -1143,7 +1143,11 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                 let base = ctx.constant64(base);
                 if let Some(mem_size) = mem_size {
                     use crate::operand_helpers::*;
-                    for index in 0u32.. {
+                    let limits = state.value_limits(&index);
+                    let start = limits.0.min(u32::max_value() as u64) as u32;
+                    let end = limits.1.min(u32::max_value() as u64) as u32;
+
+                    for index in start..end {
                         let case = operand_add64(
                             base.clone(),
                             mem_variable_rc(
