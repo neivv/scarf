@@ -1647,6 +1647,106 @@ impl Operand {
         }
     }
 
+    // Simplify or: merge comparisions
+    // Converts
+    // (c > x) | (c == x) to (c + 1 > x),
+    // (x > c) | (x == c) to (x > c + 1).
+    // Cannot do for values that can overflow, so just limit it to constants for now.
+    // (Well, could do (c + 1 > x) | (c == max_value), but that isn't really simpler)
+    fn simplify_or_merge_comparisions(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
+        use self::operand_helpers::*;
+
+        #[derive(Eq, PartialEq, Copy, Clone)]
+        enum MatchType {
+            ConstantGreater,
+            ConstantLess,
+            Equal,
+        }
+
+        fn check_match(op: &Rc<Operand>) -> Option<(u64, &Rc<Operand>, MatchType, bool)> {
+            match op.ty {
+                OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith) => {
+                    let left = &arith.left;
+                    let right = &arith.right;
+                    let is_64 = match op.ty {
+                        OperandType::Arithmetic(..) => false,
+                        _ => true,
+                    };
+                    match arith.ty {
+                        ArithOpType::Equal => {
+                            let (c, other) = Operand::either(left, right, |x| x.if_constant64())?;
+                            return Some((c, other, MatchType::Equal, is_64));
+                        }
+                        ArithOpType::GreaterThan => {
+                            if let Some(c) = left.if_constant64() {
+                                return Some((c, right, MatchType::ConstantGreater, is_64));
+                            }
+                            if let Some(c) = right.if_constant64() {
+                                return Some((c, left, MatchType::ConstantLess, is_64));
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+                _ => (),
+            }
+            None
+        }
+
+        let mut iter = VecDropIter::new(ops);
+        while let Some(mut op) = iter.next() {
+            let mut new = None;
+            if let Some((c, x, ty, is_64)) = check_match(&op) {
+                let mut second = iter.duplicate();
+                while let Some(other_op) = second.next_removable() {
+                    let mut remove = false;
+                    if let Some((c2, x2, ty2, is_64_2)) = check_match(&other_op) {
+                        if c == c2 && x == x2 && is_64 == is_64_2 {
+                            match (ty, ty2) {
+                                (MatchType::ConstantGreater, MatchType::Equal) |
+                                    (MatchType::Equal, MatchType::ConstantGreater) =>
+                                {
+                                    // min/max edge cases can be handled by gt simplification,
+                                    // don't do them here.
+                                    if let Some(new_c) = c.checked_add(1) {
+                                        let merged = if is_64 {
+                                            operand_gt64(ctx.constant64(new_c), x.clone())
+                                        } else {
+                                            operand_gt(ctx.constant(new_c as u32), x.clone())
+                                        };
+                                        new = Some(Operand::simplified(merged));
+                                        remove = true;
+                                    }
+                                }
+                                (MatchType::ConstantLess, MatchType::Equal) |
+                                    (MatchType::Equal, MatchType::ConstantLess) =>
+                                {
+                                    if let Some(new_c) = c.checked_sub(1) {
+                                        let merged = if is_64 {
+                                            operand_gt64(x.clone(), ctx.constant64(new_c))
+                                        } else {
+                                            operand_gt(x.clone(), ctx.constant(new_c as u32))
+                                        };
+                                        new = Some(Operand::simplified(merged));
+                                        remove = true;
+                                    }
+                                }
+                                _ => (),
+                            }
+                        }
+                    }
+                    if remove {
+                        other_op.remove();
+                        break;
+                    }
+                }
+            }
+            if let Some(new) = new {
+                *op = new;
+            }
+        }
+    }
+
     pub fn const_offset(oper: &Rc<Operand>, ctx: &OperandContext) -> Option<(Rc<Operand>, u32)> {
         use crate::operand::operand_helpers::*;
 
@@ -2965,6 +3065,7 @@ fn simplify_or(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
     }
     Operand::simplify_or_merge_child_ands(&mut ops, ctx);
     Operand::simplify_or_merge_mem(&mut ops, ctx);
+    Operand::simplify_or_merge_comparisions(&mut ops, ctx);
     if const_val != 0 {
         ops.push(ctx.constant64(const_val));
     }
@@ -6473,6 +6574,67 @@ mod test {
         );
         let eq1 = constval64(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_gt_or_eq() {
+        use super::operand_helpers::*;
+        let op1 = operand_or(
+            operand_gt(
+                constval64(0x5),
+                operand_register(1),
+            ),
+            operand_eq(
+                constval64(0x5),
+                operand_register(1),
+            ),
+        );
+        let eq1 = operand_gt(
+            constval64(0x6),
+            operand_register(1),
+        );
+        let op2 = operand_or64(
+            operand_gt64(
+                constval64(0x5),
+                operand_register64(1),
+            ),
+            operand_eq64(
+                constval64(0x5),
+                operand_register64(1),
+            ),
+        );
+        // Confirm that 6 > rcx isn't 6 > ecx
+        let ne2 = operand_gt(
+            constval(0x6),
+            operand_register(1),
+        );
+        let ne2b = operand_gt(
+            constval(0x6),
+            operand_register64(1),
+        );
+        let eq2 = operand_gt64(
+            constval(0x6),
+            operand_register64(1),
+        );
+        let op3 = operand_or64(
+            operand_gt64(
+                constval64(0x5_0000_0000),
+                operand_register64(1),
+            ),
+            operand_eq64(
+                constval64(0x5_0000_0000),
+                operand_register64(1),
+            ),
+        );
+        let eq3 = operand_gt64(
+            constval64(0x5_0000_0001),
+            operand_register64(1),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_ne!(Operand::simplified(op2.clone()), Operand::simplified(ne2));
+        assert_ne!(Operand::simplified(op2.clone()), Operand::simplified(ne2b));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+        assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
     }
 
     #[test]
