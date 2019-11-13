@@ -175,7 +175,7 @@ pub trait ExecutionState<'a> : Clone {
         }
     }
 
-    /// Returns smallest and largest value a *resolved* operand can have
+    /// Returns smallest and largest (inclusive) value a *resolved* operand can have
     /// (Mainly meant to use extra constraint information)
     fn value_limits(&self, _value: &Rc<Operand>) -> (u64, u64) {
         (0, u64::max_value())
@@ -397,14 +397,17 @@ pub(crate) fn value_limits_recurse(constraint: &Rc<Operand>, value: &Rc<Operand>
                     return (left.0.max(right.0), (left.1.min(right.1)));
                 }
                 ArithOpType::GreaterThan => {
+                    // 0 > x and x > u64_max should get simplified to 0
                     if let Some(c) = arith.left.if_constant64() {
                         if is_subset(value, &arith.right) {
-                            return (0, c);
+                            debug_assert!(c != 0);
+                            return (0, c.wrapping_sub(1));
                         }
                     }
                     if let Some(c) = arith.right.if_constant64() {
                         if is_subset(value, &arith.left) {
-                            return (c, u64::max_value());
+                            debug_assert!(c != u64::max_value());
+                            return (c.wrapping_add(1), u64::max_value());
                         }
                     }
                 }
