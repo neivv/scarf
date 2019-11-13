@@ -1810,6 +1810,7 @@ impl Operand {
         ctx: &OperandContext,
         swzb_ctx: &mut SimplifyWithZeroBits,
     ) -> Rc<Operand> {
+        use crate::operand_helpers::*;
         if s.simplified {
             return s;
         }
@@ -1851,6 +1852,17 @@ impl Operand {
                             } else {
                                 return ctx.const_0();
                             },
+                            (&OperandType::Constant(0), _) |
+                                (_, &OperandType::Constant(0xffff_ffff)) =>
+                            {
+                                return ctx.const_0()
+                            }
+                            (&OperandType::Constant(0xffff_ffff), _) |
+                                (_, &OperandType::Constant(0)) =>
+                            {
+                                // max > x if x != max, x > 0 if x != 0
+                                return operand_ne(ctx, l, r);
+                            }
                             (&OperandType::Arithmetic(ref arith), _) => {
                                 if arith.ty == ArithOpType::Sub {
                                     if arith.left == r {
@@ -1877,11 +1889,19 @@ impl Operand {
                         let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
                         let l = left.clone();
                         let r = right.clone();
-                        if let (Some(a), Some(b)) = (l.if_constant(), r.if_constant()) {
-                            match a as i32 > b as i32 {
+                        match (l.if_constant(), r.if_constant()) {
+                            (Some(a), Some(b)) => match a as i32 > b as i32 {
                                 true => return ctx.const_1(),
                                 false => return ctx.const_0(),
+                            },
+                            (Some(0x8000_0000), None) | (None, Some(0x7fff_ffff)) => {
+                                return ctx.const_0()
                             }
+                            (Some(0x7fff_ffff), None) | (None, Some(0x8000_0000)) => {
+                                // max > x if x != max, x > 0 if x != 0
+                                return operand_ne(ctx, l, r)
+                            }
+                            _ => (),
                         }
                         let ty = OperandType::Arithmetic(ArithOperand {
                             ty: ArithOpType::GreaterThanSigned,
@@ -2003,25 +2023,31 @@ impl Operand {
                                 }
                             }
                         }
-                        if let (Some(l), Some(r)) = (l.if_constant64(), r.if_constant64()) {
-                            if l > r {
-                                ctx.const_1()
-                            } else {
-                                ctx.const_0()
+                        match (l.if_constant64(), r.if_constant64()) {
+                            (Some(a), Some(b)) => match a > b {
+                                true => return ctx.const_1(),
+                                false => return ctx.const_0(),
+                            },
+                            (Some(0), None) | (None, Some(0xffff_ffff_ffff_ffff)) => {
+                                return ctx.const_0()
                             }
+                            (Some(0xffff_ffff_ffff_ffff), None) | (None, Some(0)) => {
+                                // max > x if x != max, x > 0 if x != 0
+                                return operand_ne64(ctx, l, r)
+                            }
+                            _ => (),
+                        }
+                        let needs_64 =
+                            left.relevant_bits().end > 32 || right.relevant_bits().end > 32;
+                        let arith = ArithOperand {
+                            ty: ArithOpType::GreaterThan,
+                            left,
+                            right,
+                        };
+                        if needs_64 {
+                            Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
                         } else {
-                            let needs_64 =
-                                left.relevant_bits().end > 32 || right.relevant_bits().end > 32;
-                            let arith = ArithOperand {
-                                ty: ArithOpType::GreaterThan,
-                                left,
-                                right,
-                            };
-                            if needs_64 {
-                                Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
-                            } else {
-                                Operand::new_simplified_rc(OperandType::Arithmetic(arith))
-                            }
+                            Operand::new_simplified_rc(OperandType::Arithmetic(arith))
                         }
                     }
                     _ => mark_self_simplified(s),
@@ -4299,6 +4325,10 @@ pub mod operand_helpers {
         operand_arith(Equal, lhs, rhs)
     }
 
+    pub fn operand_ne(ctx: &OperandContext, lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        operand_eq(operand_eq(lhs, rhs), ctx.const_0())
+    }
+
     pub fn operand_gt(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith(GreaterThan, lhs, rhs)
     }
@@ -4377,6 +4407,10 @@ pub mod operand_helpers {
 
     pub fn operand_eq64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith64(Equal, lhs, rhs)
+    }
+
+    pub fn operand_ne64(ctx: &OperandContext, lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        operand_eq(operand_eq64(lhs, rhs), ctx.const_0())
     }
 
     pub fn operand_gt64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
@@ -6635,6 +6669,35 @@ mod test {
         assert_ne!(Operand::simplified(op2.clone()), Operand::simplified(ne2b));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
         assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
+    }
+
+    #[test]
+    fn pointless_gt() {
+        use super::operand_helpers::*;
+        let op1 = operand_gt(
+            constval64(0),
+            operand_register(0),
+        );
+        let eq1 = constval64(0);
+        let op2 = operand_gt(
+            operand_register(0),
+            constval64(u32::max_value() as u64),
+        );
+        let eq2 = constval64(0);
+        let op3 = operand_gt64(
+            operand_register(0),
+            constval64(u64::max_value()),
+        );
+        let eq3 = constval64(0);
+        let op4 = operand_gt64(
+            operand_register(0),
+            constval64(u32::max_value() as u64),
+        );
+        let ne4 = constval64(0);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+        assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
+        assert_ne!(Operand::simplified(op4), Operand::simplified(ne4));
     }
 
     #[test]
