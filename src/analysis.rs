@@ -535,6 +535,11 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
         let constant = self.inner.analysis.operand_ctx.constant(right * size);
         A::Exec::operand_arith_word(crate::ArithOpType::Add, left, constant)
     }
+
+    /// Convenience for cases where `Mem[address]` is needed
+    pub fn mem_word(&self, addr: Rc<Operand>) -> Rc<Operand> {
+        A::Exec::operand_mem_word(addr)
+    }
 }
 
 pub trait Analyzer<'exec> : Sized {
