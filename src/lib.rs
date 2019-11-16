@@ -190,10 +190,18 @@ pub struct BinarySection<Va: exec_state::VirtualAddress> {
 }
 
 impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
+    pub fn base(&self) -> Va {
+        self.base
+    }
+
     /// Panics if code section for some reason would not exist.
     /// Also bad since assumes only one
     pub fn code_section(&self) -> &BinarySection<Va> {
         self.section(b".text\0\0\0").unwrap()
+    }
+
+    pub fn sections<'a>(&'a self) -> impl Iterator<Item = &'a BinarySection<Va>> + 'a {
+        self.sections.iter()
     }
 
     pub fn code_sections<'a>(&'a self) -> impl Iterator<Item = &'a BinarySection<Va>> + 'a {
