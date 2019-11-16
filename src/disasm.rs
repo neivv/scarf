@@ -355,11 +355,10 @@ fn instruction_operations32(
         }
     } else {
         match first_byte {
-            0x10 | 0x11 => s.mov_sse_10_11(),
             0x12 | 0x13 => s.mov_sse_12_13(),
             // Prefetch/nop
             0x18 ..= 0x1f => Ok(SmallVec::new()),
-            0x28 | 0x29 | 0x2b => s.movaps_movntps(),
+            0x10 | 0x11| 0x28 | 0x29 | 0x2b | 0x7e | 0x7f => s.sse_move(),
             0x2c => s.cvttss2si(),
             // rdtsc
             0x31 => {
@@ -380,7 +379,6 @@ fn instruction_operations32(
                     Err(UnknownOpcode(s.data.into()))
                 }
             }
-            0x7e => s.mov_sse_7e(),
             0x80 ..= 0x8f => s.conditional_jmp(s.mem16_32()),
             0x90 ..= 0x9f => s.conditional_set(),
             0xa3 => s.bit_test(false),
@@ -610,11 +608,10 @@ fn instruction_operations64(
         }
     } else {
         match first_byte {
-            0x10 | 0x11 => s.mov_sse_10_11(),
             0x12 | 0x13 => s.mov_sse_12_13(),
             // Prefetch/nop
             0x18 ..= 0x1f => Ok(SmallVec::new()),
-            0x28 | 0x29 | 0x2b => s.movaps_movntps(),
+            0x10 | 0x11| 0x28 | 0x29 | 0x2b | 0x7e | 0x7f => s.sse_move(),
             0x2c => s.cvttss2si(),
             // rdtsc
             0x31 => {
@@ -635,7 +632,6 @@ fn instruction_operations64(
                     Err(UnknownOpcode(s.data.into()))
                 }
             }
-            0x7e => s.mov_sse_7e(),
             0x80 ..= 0x8f => s.conditional_jmp(s.mem16_32()),
             0x90 ..= 0x9f => s.conditional_set(),
             0xa3 => s.bit_test(false),
@@ -1368,25 +1364,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(out)
     }
 
-    fn mov_sse_10_11(&self) -> Result<OperationVec, Error> {
-        use self::operation_helpers::*;
-        let length = match (self.has_prefix(0xf3), self.has_prefix(0xf2)) {
-            // movss
-            (true, false) => 1,
-            // movsd
-            (false, true) => 2,
-            // movups, movupd
-            (false, false) => 4,
-            (true, true) => return Err(Error::UnknownOpcode(self.data.into())),
-        };
-        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let (src, dest) = match self.get(0) == 0x10 {
-            true => (rm, r),
-            false => (r, rm),
-        };
-        Ok((0..length).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
-    }
-
     fn mov_sse_12_13(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         if !self.has_prefix(0x66) {
@@ -1401,14 +1378,36 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok((0..2).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
     }
 
-    fn movaps_movntps(&self) -> Result<OperationVec, Error> {
+    fn sse_move(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let (src, dest) = match self.get(0) == 0x28 {
-            true => (rm, r),
-            false => (r, rm),
+        let (src, dest) = match self.get(0) {
+            0x10 | 0x28 | 0x7e => (&rm, &r),
+            _ => (&r, &rm),
         };
-        Ok((0..4).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
+        let len = match self.get(0) {
+            0x10 | 0x11 => match (self.has_prefix(0xf3), self.has_prefix(0xf2)) {
+                // movss
+                (true, false) => 1,
+                // movsd
+                (false, true) => 2,
+                // movups, movupd
+                (false, false) => 4,
+                (true, true) => return Err(Error::UnknownOpcode(self.data.into())),
+            },
+            0x28 | 0x29 | 0x2b => 4,
+            0x7e => match (self.has_prefix(0xf3), Va::SIZE) {
+                (true, 4) | (_, 8) => 2,
+                (false, 4) => 1,
+                _ => unreachable!(),
+            },
+            0x7f => match self.has_prefix(0xf3) || self.has_prefix(0x66) {
+                true => 4,
+                false => 2,
+            },
+            _ => return Err(Error::UnknownOpcode(self.data.into())),
+        };
+        Ok((0..len).map(|i| mov(self.xmm_variant(dest, i), self.xmm_variant(src, i))).collect())
     }
 
     fn mov_rm_to_xmm_128(&self) -> Result<OperationVec, Error> {
@@ -1416,20 +1415,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
         let (src, dest) = (rm, r);
         Ok((0..4).map(|i| mov(self.xmm_variant(&dest, i), self.xmm_variant(&src, i))).collect())
-    }
-
-    fn mov_sse_7e(&self) -> Result<OperationVec, Error> {
-        use self::operation_helpers::*;
-        if !self.has_prefix(0xf3) {
-            return Err(Error::UnknownOpcode(self.data.into()));
-        }
-        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let mut out = SmallVec::new();
-        out.push(mov(self.xmm_variant(&dest, 0), self.xmm_variant(&rm, 0)));
-        out.push(mov(self.xmm_variant(&dest, 1), self.xmm_variant(&rm, 1)));
-        out.push(mov(self.xmm_variant(&dest, 2), self.xmm_variant(&rm, 2)));
-        out.push(mov(self.xmm_variant(&dest, 3), self.xmm_variant(&rm, 3)));
-        Ok(out)
     }
 
     fn mov_sse_d6(&self) -> Result<OperationVec, Error> {
