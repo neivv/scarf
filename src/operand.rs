@@ -296,7 +296,7 @@ impl fmt::Display for Operand {
                 write!(f, "signext_{}_to_{}({})", from.bits(), to.bits(), val)
             }
             OperandType::Custom(val) => {
-                write!(f, "Custom_{}", val)
+                write!(f, "Custom_{:x}", val)
             }
         }
     }
