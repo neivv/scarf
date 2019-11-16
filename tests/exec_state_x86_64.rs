@@ -215,6 +215,38 @@ fn test_switch() {
     ]);
 }
 
+#[test]
+fn test_negative_offset() {
+    test_inline(&[
+        0xc7, 0x00, 0x05, 0x00, 0x00, 0x00, // mov dword [rax], 5
+        0x48, 0x83, 0xc0, 0x04, // add rax, 4
+        0x8b, 0x48, 0xfc, // mov ecx, [rax - 4]
+        0x48, 0x05, 0x00, 0x01, 0x00, 0x00, // add rax, 100
+        0x03, 0x88, 0xfc, 0xfe, 0xff, 0xff, // add ecx, [rax - 104]
+        0x31, 0xc0, // xor eax, eax
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval(0)),
+         (operand_register64(1), constval(0xa)),
+    ]);
+}
+
+#[test]
+fn test_negative_offset2() {
+    test_inline(&[
+        0xc7, 0x04, 0x10, 0x05, 0x00, 0x00, 0x00, // mov dword [rax + rdx], 5
+        0x48, 0x83, 0xc0, 0x04, // add rax, 4
+        0x8b, 0x4c, 0x10, 0xfc, // mov ecx, [rax + rdx - 4]
+        0x48, 0x05, 0x00, 0x01, 0x00, 0x00, // add rax, 100
+        0x03, 0x8c, 0x10, 0xfc, 0xfe, 0xff, 0xff, // add ecx, [rax + rdx - 104]
+        0x31, 0xc0, // xor eax, eax
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval(0)),
+         (operand_register64(1), constval(0xa)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

@@ -819,9 +819,12 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                         false => reg,
                         true => reg + 8,
                     };
-                    let offset = read_u8(self.slice(2))? as i8 as u32;
-                    let addition =
-                        self.word_add(self.word_register(reg), self.ctx.constant(offset));
+                    let offset = if Va::SIZE == 4 {
+                        self.ctx.constant(read_u8(self.slice(2))? as i8 as u32)
+                    } else {
+                        self.ctx.constant64(read_u8(self.slice(2))? as i8 as u64)
+                    };
+                    let addition = self.word_add(self.word_register(reg), offset);
                     (mem_variable_rc(op_size, addition), 3)
                 }
             },
@@ -832,9 +835,12 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                         false => reg,
                         true => reg + 8,
                     };
-                    let offset = read_u32(self.slice(2))?;
-                    let addition =
-                        self.word_add(self.word_register(reg), self.ctx.constant(offset));
+                    let offset = if Va::SIZE == 4 {
+                        self.ctx.constant(read_u32(self.slice(2))? as i32 as u32)
+                    } else {
+                        self.ctx.constant64(read_u32(self.slice(2))? as i32 as u64)
+                    };
+                    let addition = self.word_add(self.word_register(reg), offset);
                     (mem_variable_rc(op_size, addition), 6)
                 }
             },
@@ -882,7 +888,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let mul = 1 << ((sib >> 6) & 0x3);
         let base_ext = self.prefixes.rex_prefix & 0x1 != 0;
         let (base_reg, size) = match (sib & 0x7, variation) {
-            (5, 0) => (self.ctx.constant(read_u32(self.slice(3))?), 7),
+            (5, 0) => {
+                if Va::SIZE == 4 {
+                    (self.ctx.constant(read_u32(self.slice(3))?), 7)
+                } else {
+                    (self.ctx.constant64(read_u32(self.slice(3))? as i32 as u64), 7)
+                }
+            }
             (reg, _) => {
                 match base_ext {
                     false => (self.word_register(reg), 3),
@@ -908,11 +920,19 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         match variation {
             0 => Ok((mem_variable_rc(op_size, full_mem_op), size)),
             1 => {
-                let constant = self.ctx.constant(read_u8(self.slice(size))? as i8 as u32);
+                let constant = if Va::SIZE == 4 {
+                    self.ctx.constant(read_u8(self.slice(size))? as i8 as u32)
+                } else {
+                    self.ctx.constant64(read_u8(self.slice(size))? as i8 as u64)
+                };
                 Ok((mem_variable_rc(op_size, self.word_add(full_mem_op, constant)), size + 1))
             }
             2 => {
-                let constant = self.ctx.constant(read_u32(self.slice(size))?);
+                let constant = if Va::SIZE == 4 {
+                    self.ctx.constant(read_u32(self.slice(size))?)
+                } else {
+                    self.ctx.constant64(read_u32(self.slice(size))? as i32 as u64)
+                };
                 Ok((mem_variable_rc(op_size, self.word_add(full_mem_op, constant)), size + 4))
             }
             _ => unreachable!(),
