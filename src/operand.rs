@@ -4417,6 +4417,10 @@ pub mod operand_helpers {
         operand_arith64(GreaterThan, lhs, rhs)
     }
 
+    pub fn operand_gt_signed64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        operand_arith64(GreaterThanSigned, lhs, rhs)
+    }
+
     pub fn mem32_norc(val: Rc<Operand>) -> Operand {
         mem_variable(Mem32, val)
     }

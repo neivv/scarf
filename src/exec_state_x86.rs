@@ -8,6 +8,7 @@ use crate::exec_state::{Constraint, InternMap, InternedOperand, Memory, XmmOpera
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::operand::{
     ArithOperand, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType,
+    ArithOpType,
 };
 use crate::{BinaryFile, VirtualAddress};
 
@@ -38,7 +39,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         self.ctx
     }
 
-    fn resolve(&self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand> {
+    fn resolve(&mut self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand> {
         self.resolve(operand, i)
     }
 
@@ -46,7 +47,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         self.update(operation, intern_map)
     }
 
-    fn resolve_apply_constraints(&self, op: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand> {
+    fn resolve_apply_constraints(&mut self, op: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand> {
         let mut stack_op;
         let mut op_ref = if op.is_simplified() {
             op
@@ -74,7 +75,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         self.unresolve_memory(val, i)
     }
 
-    fn merge_states(old: &Self, new: &Self, i: &mut InternMap) -> Option<Self> {
+    fn merge_states(old: &mut Self, new: &mut Self, i: &mut InternMap) -> Option<Self> {
         merge_states(old, new, i)
     }
 
@@ -174,6 +175,7 @@ pub struct ExecutionState<'a> {
     unresolved_constraint: Option<Constraint>,
     ctx: &'a OperandContext,
     code_sections: Vec<&'a crate::BinarySection<VirtualAddress>>,
+    pending_flags: Option<ArithOperand>,
 }
 
 #[derive(Debug, Clone)]
@@ -367,6 +369,7 @@ impl<'a> ExecutionState<'a> {
             unresolved_constraint: None,
             ctx,
             code_sections: Vec::new(),
+            pending_flags: None,
         }
     }
 
@@ -444,7 +447,93 @@ impl<'a> ExecutionState<'a> {
                     self.fpu_registers.rotate_right(1);
                 }
             }
+            Operation::SetFlags(arith, size) => {
+                if *size != MemAccessSize::Mem32 {
+                    return;
+                }
+                let left = self.resolve(&arith.left, intern_map);
+                let right = self.resolve(&arith.right, intern_map);
+                let arith = ArithOperand {
+                    left,
+                    right,
+                    ty: arith.ty,
+                };
+                self.pending_flags = Some(arith);
+            }
         }
+    }
+
+    fn update_flags(&mut self, intern_map: &mut InternMap) {
+        if let Some(arith) = self.pending_flags.take() {
+            self.set_flags(arith, intern_map);
+        }
+    }
+
+    fn set_flags(&mut self, arith: ArithOperand, intern_map: &mut InternMap) {
+        use crate::operand::ArithOpType::*;
+        use crate::operand_helpers::*;
+        let resolved_left = &arith.left;
+        let resolved_right = arith.right;
+        let result = operand_arith(arith.ty, resolved_left.clone(), resolved_right);
+        let result = Operand::simplified(result);
+        match arith.ty {
+            Add => {
+                let carry = operand_gt(resolved_left.clone(), result.clone());
+                let overflow = operand_gt_signed(resolved_left.clone(), result.clone());
+                self.flags.carry = intern_map.intern(Operand::simplified(carry));
+                self.flags.sign = intern_map.intern(Operand::simplified(overflow));
+                self.result_flags(result, intern_map);
+            }
+            Sub => {
+                let carry = operand_gt(result.clone(), resolved_left.clone());
+                let overflow = operand_gt_signed(result.clone(), resolved_left.clone());
+                self.flags.carry = intern_map.intern(Operand::simplified(carry));
+                self.flags.sign = intern_map.intern(Operand::simplified(overflow));
+                self.result_flags(result, intern_map);
+            }
+            Xor | And | Or => {
+                let zero = intern_map.intern(self.ctx.const_0());
+                self.flags.carry = zero;
+                self.flags.overflow = zero;
+                self.result_flags(result, intern_map);
+            }
+            Lsh | Rsh  => {
+                let mut ids = intern_map.many_undef(self.ctx, 2);
+                self.flags.carry = ids.next();
+                self.flags.overflow = ids.next();
+                self.result_flags(result, intern_map);
+            }
+            _ => {
+                let mut ids = intern_map.many_undef(self.ctx, 5);
+                self.flags.zero = ids.next();
+                self.flags.carry = ids.next();
+                self.flags.overflow = ids.next();
+                self.flags.sign = ids.next();
+                self.flags.parity = ids.next();
+            }
+        }
+    }
+
+    fn result_flags(&mut self, result: Rc<Operand>, intern_map: &mut InternMap) {
+        use crate::operand_helpers::*;
+        let ctx = self.ctx;
+        let zero = Operand::simplified(operand_eq(result.clone(), ctx.const_0()));
+        let sign = Operand::simplified(
+            operand_ne64(
+                ctx,
+                operand_and64(
+                    ctx.constant(0x8000_0000),
+                    result.clone(),
+                ),
+                ctx.const_0(),
+            )
+        );
+        let parity = Operand::simplified(
+            operand_arith(ArithOpType::Parity, result, ctx.const_0())
+        );
+        self.flags.zero = intern_map.intern(zero);
+        self.flags.sign = intern_map.intern(sign);
+        self.flags.parity = intern_map.intern(parity);
     }
 
     /// Makes all of memory undefined
@@ -502,14 +591,17 @@ impl<'a> ExecutionState<'a> {
             DestOperand::Xmm(reg, word) => {
                 Destination::Oper(self.xmm_registers[reg as usize].word_mut(word))
             }
-            DestOperand::Flag(flag) => Destination::Oper(match flag {
-                Flag::Zero => &mut self.flags.zero,
-                Flag::Carry => &mut self.flags.carry,
-                Flag::Overflow => &mut self.flags.overflow,
-                Flag::Sign => &mut self.flags.sign,
-                Flag::Parity => &mut self.flags.parity,
-                Flag::Direction => &mut self.flags.direction,
-            }),
+            DestOperand::Flag(flag) => {
+                self.update_flags(intern_map);
+                Destination::Oper(match flag {
+                    Flag::Zero => &mut self.flags.zero,
+                    Flag::Carry => &mut self.flags.carry,
+                    Flag::Overflow => &mut self.flags.overflow,
+                    Flag::Sign => &mut self.flags.sign,
+                    Flag::Parity => &mut self.flags.parity,
+                    Flag::Direction => &mut self.flags.direction,
+                })
+            }
             DestOperand::Memory(ref mem) => {
                 let address = self.resolve(&mem.address, intern_map);
                 Destination::Memory(&mut self.memory, address, mem.size)
@@ -517,7 +609,7 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
-    fn resolve_mem(&self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
+    fn resolve_mem(&mut self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
         use crate::operand::operand_helpers::*;
 
         let address = self.resolve(&mem.address, i);
@@ -604,7 +696,11 @@ impl<'a> ExecutionState<'a> {
             .unwrap_or_else(|| mem_variable_rc(mem.size, address))
     }
 
-    fn resolve_no_simplify(&self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
+    fn resolve_no_simplify(
+        &mut self,
+        value: &Rc<Operand>,
+        interner: &mut InternMap,
+    ) -> Rc<Operand> {
         use crate::operand::operand_helpers::*;
 
         match value.ty {
@@ -641,14 +737,17 @@ impl<'a> ExecutionState<'a> {
             OperandType::Fpu(id) => {
                 interner.operand(self.fpu_registers[id as usize])
             }
-            OperandType::Flag(flag) => interner.operand(match flag {
-                Flag::Zero => self.flags.zero,
-                Flag::Carry => self.flags.carry,
-                Flag::Overflow => self.flags.overflow,
-                Flag::Sign => self.flags.sign,
-                Flag::Parity => self.flags.parity,
-                Flag::Direction => self.flags.direction,
-            }).clone(),
+            OperandType::Flag(flag) => {
+                self.update_flags(interner);
+                interner.operand(match flag {
+                    Flag::Zero => self.flags.zero,
+                    Flag::Carry => self.flags.carry,
+                    Flag::Overflow => self.flags.overflow,
+                    Flag::Sign => self.flags.sign,
+                    Flag::Parity => self.flags.parity,
+                    Flag::Direction => self.flags.direction,
+                }).clone()
+            }
             OperandType::Arithmetic(ref op) => {
                 let ty = OperandType::Arithmetic(ArithOperand {
                     ty: op.ty,
@@ -696,7 +795,7 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
-    pub fn resolve(&self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
+    pub fn resolve(&mut self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
         let x = self.resolve_no_simplify(value, interner);
         if x.is_simplified() {
             return x;
@@ -744,11 +843,14 @@ impl<'a> ExecutionState<'a> {
 /// If `old` and `new` have different fields, and the old field is not undefined,
 /// return `ExecutionState` which has the differing fields replaced with (a separate) undefined.
 pub fn merge_states<'a: 'r, 'r>(
-    old: &'r ExecutionState<'a>,
-    new: &'r ExecutionState<'a>,
+    old: &'r mut ExecutionState<'a>,
+    new: &'r mut ExecutionState<'a>,
     interner: &mut InternMap,
 ) -> Option<ExecutionState<'a>> {
     use crate::operand::operand_helpers::*;
+
+    old.update_flags(interner);
+    new.update_flags(interner);
 
     let check_eq = |a: InternedOperand, b: InternedOperand| {
         a == b || a.is_undefined()
@@ -780,10 +882,11 @@ pub fn merge_states<'a: 'r, 'r>(
         })
     };
 
+    let ctx = old.ctx;
     let merge = |a: InternedOperand, b: InternedOperand, i: &mut InternMap| -> InternedOperand {
         match a == b {
             true => a,
-            false => i.new_undef(old.ctx),
+            false => i.new_undef(ctx),
         }
     };
     let merge_xmm = |a: &XmmOperand, b: &XmmOperand, i: &mut InternMap| -> XmmOperand {
@@ -796,22 +899,32 @@ pub fn merge_states<'a: 'r, 'r>(
     };
 
     let merged_ljec = if old.unresolved_constraint != new.unresolved_constraint {
-        let old_lje = &old.unresolved_constraint;
-        let new_lje = &new.unresolved_constraint;
-        Some(match (old_lje, new_lje, old, new) {
-            // If one state has no constraint but matches the constrait of the other
-            // state, the constraint should be kept on merge.
-            (&None, &Some(ref con), state, _) | (&Some(ref con), &None, _, state) => {
+        let mut result = None;
+        // If one state has no constraint but matches the constrait of the other
+        // state, the constraint should be kept on merge.
+        if old.unresolved_constraint.is_none() {
+            if let Some(ref con) = new.unresolved_constraint {
                 // As long as we're working with flags, limiting to lowest bit
                 // allows simplifying cases like (undef | 1)
-                let lowest_bit = operand_and(old.ctx.const_1(), con.0.clone());
-                match state.resolve_apply_constraints(&lowest_bit, interner).if_constant() {
-                    Some(1) => Some(con.clone()),
-                    _ => None,
+                let lowest_bit = operand_and(ctx.const_1(), con.0.clone());
+                match old.resolve_apply_constraints(&lowest_bit, interner).if_constant() {
+                    Some(1) => result = Some(con.clone()),
+                    _ => (),
                 }
             }
-            _ => None,
-        })
+        }
+        if new.unresolved_constraint.is_none() {
+            if let Some(ref con) = old.unresolved_constraint {
+                // As long as we're working with flags, limiting to lowest bit
+                // allows simplifying cases like (undef | 1)
+                let lowest_bit = operand_and(ctx.const_1(), con.0.clone());
+                match new.resolve_apply_constraints(&lowest_bit, interner).if_constant() {
+                    Some(1) => result = Some(con.clone()),
+                    _ => (),
+                }
+            }
+        }
+        Some(result)
     } else {
         None
     };
@@ -824,8 +937,10 @@ pub fn merge_states<'a: 'r, 'r>(
             .any(|(&a, &b)| !check_eq(a, b)) ||
         !check_flags_eq(&old.flags, &new.flags) ||
         !check_memory_eq(&old.memory, &new.memory, interner) ||
-        merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) ||
-        (old.resolved_constraint.is_some() && old.resolved_constraint != new.resolved_constraint);
+        merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) || (
+            old.resolved_constraint.is_some() &&
+            old.resolved_constraint != new.resolved_constraint
+        );
     if changed {
         let mut registers = [InternedOperand(0); 8];
         let mut fpu_registers = [InternedOperand(0); 8];
@@ -867,7 +982,7 @@ pub fn merge_states<'a: 'r, 'r>(
             fpu_registers,
             xmm_registers,
             flags,
-            memory: old.memory.merge(&new.memory, interner, old.ctx),
+            memory: old.memory.merge(&new.memory, interner, ctx),
             unresolved_constraint: merged_ljec.unwrap_or_else(|| {
                 // They were same, just use one from old
                 old.unresolved_constraint.clone()
@@ -877,7 +992,8 @@ pub fn merge_states<'a: 'r, 'r>(
             } else {
                 None
             },
-            ctx: old.ctx,
+            pending_flags: None,
+            ctx,
             code_sections: old.code_sections.clone(),
         })
     } else {
@@ -903,10 +1019,10 @@ fn merge_state_constraints_eq() {
         ctx.flag_o(),
         ctx.flag_s(),
     ));
-    let state_a = state_a.assume_jump_flag(&sign_eq_overflow_flag, true, &mut i);
+    let mut state_a = state_a.assume_jump_flag(&sign_eq_overflow_flag, true, &mut i);
     state_b.move_to(&DestOperand::from_oper(&ctx.flag_o()), constval(1), &mut i);
     state_b.move_to(&DestOperand::from_oper(&ctx.flag_s()), constval(1), &mut i);
-    let merged = merge_states(&state_b, &state_a, &mut i).unwrap();
+    let merged = merge_states(&mut state_b, &mut state_a, &mut i).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 }
@@ -924,17 +1040,17 @@ fn merge_state_constraints_or() {
     ));
     let mut state_a = state_a.assume_jump_flag(&sign_or_overflow_flag, true, &mut i);
     state_b.move_to(&DestOperand::from_oper(&ctx.flag_s()), constval(1), &mut i);
-    let merged = merge_states(&state_b, &state_a, &mut i).unwrap();
+    let merged = merge_states(&mut state_b, &mut state_a, &mut i).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
     // Should also happen other way, though then state_a must have something that is converted
     // to undef.
-    let merged = merge_states(&state_a, &state_b, &mut i).unwrap();
+    let merged = merge_states(&mut state_a, &mut state_b, &mut i).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 
     state_a.move_to(&DestOperand::from_oper(&ctx.flag_c()), constval(1), &mut i);
-    let merged = merge_states(&state_a, &state_b, &mut i).unwrap();
+    let merged = merge_states(&mut state_a, &mut state_b, &mut i).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 }

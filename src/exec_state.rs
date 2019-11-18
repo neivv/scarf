@@ -39,8 +39,12 @@ pub trait ExecutionState<'a> : Clone {
     fn update(&mut self, operation: &Operation, i: &mut InternMap);
     fn move_to(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap);
     fn ctx(&self) -> &'a OperandContext;
-    fn resolve(&self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand>;
-    fn resolve_apply_constraints(&self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand>;
+    fn resolve(&mut self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand>;
+    fn resolve_apply_constraints(
+        &mut self,
+        operand: &Rc<Operand>,
+        i: &mut InternMap,
+    ) -> Rc<Operand>;
     fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>>;
     fn unresolve_memory(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>>;
     fn initial_state(
@@ -48,7 +52,7 @@ pub trait ExecutionState<'a> : Clone {
         binary: &'a crate::BinaryFile<Self::VirtualAddress>,
         interner: &mut InternMap,
     ) -> Self;
-    fn merge_states(old: &Self, new: &Self, i: &mut InternMap) -> Option<Self>;
+    fn merge_states(old: &mut Self, new: &mut Self, i: &mut InternMap) -> Option<Self>;
 
     /// Updates states as if the call instruction was executed (Push return address to stack)
     ///

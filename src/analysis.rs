@@ -618,12 +618,12 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     }
 
     pub fn analyze<A: Analyzer<'a, State = State, Exec = Exec>>(&mut self, analyzer: &mut A) {
-        while let Some((addr, (exec_state, analysis_state))) = self.pop_next_branch() {
-            let mut state = match self.cfg.get(addr) {
-                Some(old_node) => {
-                    Exec::merge_states(&old_node.state.data.0, &exec_state, &mut self.interner)
+        while let Some((addr, (mut exec_state, analysis_state))) = self.pop_next_branch() {
+            let mut state = match self.cfg.get_state(addr) {
+                Some(state) => {
+                    Exec::merge_states(&mut state.data.0, &mut exec_state, &mut self.interner)
                         .map(|e| {
-                            let mut state = old_node.state.data.1.clone();
+                            let mut state = state.data.1.clone();
                             state.merge(analysis_state);
                             (e, state)
                         })
@@ -744,7 +744,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     fn add_unchecked_branch(
         &mut self,
         addr: Exec::VirtualAddress,
-        exec_state: Exec,
+        mut exec_state: Exec,
         analysis_state: State,
     ) {
         use std::collections::btree_map::Entry;
@@ -756,7 +756,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             Entry::Occupied(mut e) => {
                 let interner = &mut self.interner;
                 let val = e.get_mut();
-                if let Some(new) = Exec::merge_states(&val.0, &exec_state, interner) {
+                if let Some(new) = Exec::merge_states(&mut val.0, &mut exec_state, interner) {
                     val.0 = new;
                     val.1.merge(analysis_state);
                 }
@@ -765,12 +765,12 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     }
 
     pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a, Exec, State>> {
-        while let Some((addr, (exec_state, analysis_state))) = self.pop_next_branch() {
-            let state = match self.cfg.get(addr) {
-                Some(old_node) => {
-                    let old_exec = &old_node.state.data.0;
-                    let old_state = &old_node.state.data.1;
-                    Exec::merge_states(old_exec, &exec_state, &mut self.interner)
+        while let Some((addr, (mut exec_state, analysis_state))) = self.pop_next_branch() {
+            let state = match self.cfg.get_state(addr) {
+                Some(state) => {
+                    let old_exec = &mut state.data.0;
+                    let old_state = &state.data.1;
+                    Exec::merge_states(old_exec, &mut exec_state, &mut self.interner)
                         .map(|exec| (exec, old_state.clone()))
                 }
                 None => Some((exec_state, analysis_state)),
@@ -880,7 +880,7 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
             match self.state {
                 Some(ref mut state) => {
                     let (new, interner) = control.exec_state();
-                    let new_exec = Self::Exec::merge_states(&state.0, new, interner);
+                    let new_exec = Self::Exec::merge_states(&mut state.0, new, interner);
                     if let Some(new_exec) = new_exec {
                         state.0 = new_exec;
                         state.1.merge(control.user_state().clone());
@@ -1129,7 +1129,7 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
             analysis.add_unchecked_branch(address, state.clone(), analysis_state.clone());
         }
         Some(_) => {
-            let state = state.clone();
+            let mut state = state.clone();
             let to = state.resolve(&to, &mut analysis.interner);
             let is_switch = is_switch_jump::<Exec::VirtualAddress>(&to);
             if let Some((switch_table, index, base, case_size)) = is_switch {
@@ -1191,7 +1191,7 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
         }
         None => {
             let no_jump_addr = ins.address() + ins.len() as u32;
-            let jump_state = state.assume_jump_flag(&condition, true, &mut analysis.interner);
+            let mut jump_state = state.assume_jump_flag(&condition, true, &mut analysis.interner);
             let no_jump_state = state.assume_jump_flag(&condition, false, &mut analysis.interner);
             let to = jump_state.resolve(&to, &mut analysis.interner);
             analysis.add_unchecked_branch(no_jump_addr, no_jump_state, analysis_state.clone());

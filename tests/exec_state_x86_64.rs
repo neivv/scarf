@@ -285,7 +285,7 @@ fn test_inner(
 
     println!("{:?}", analysis.errors);
     assert!(analysis.errors.is_empty());
-    let (end_state, mut end_i) = collect_end_state.end_state.unwrap();
+    let (mut end_state, mut end_i) = collect_end_state.end_state.unwrap();
     for i in 0..16 {
         let expected = expected_state.resolve(&operand_register64(i), &mut interner);
         let end = end_state.resolve(&operand_register64(i), &mut end_i);

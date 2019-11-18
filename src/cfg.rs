@@ -43,6 +43,17 @@ impl<S: CfgState> Cfg<S> {
         }
     }
 
+    /// Gets mutable access to state - which is fine as none of the
+    /// CFG functionality uses it for anything; it's purely user data.
+    ///
+    /// Shared access can use `cfg.get().map(|x| &x.state)`
+    pub fn get_state(&mut self, address: S::VirtualAddress) -> Option<&mut S> {
+        match self.nodes.binary_search_by_key(&address, |x| x.0) {
+            Ok(idx) => Some(&mut self.nodes[idx].1.state),
+            _ => None,
+        }
+    }
+
     pub fn entry_link(&self) -> &NodeLink<S::VirtualAddress> {
         &self.entry
     }
