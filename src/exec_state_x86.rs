@@ -167,6 +167,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
 #[derive(Debug, Clone)]
 pub struct ExecutionState<'a> {
     registers: [InternedOperand; 0x8],
+    cached_low_registers: CachedLowRegisters,
     xmm_registers: [XmmOperand; 0x8],
     fpu_registers: [InternedOperand; 0x8],
     flags: Flags,
@@ -176,6 +177,49 @@ pub struct ExecutionState<'a> {
     ctx: &'a OperandContext,
     code_sections: Vec<&'a crate::BinarySection<VirtualAddress>>,
     pending_flags: Option<ArithOperand>,
+}
+
+/// Caches ax/al/ah resolving.
+/// InternedOperand(0) means that a register is not cached.
+#[derive(Debug, Clone)]
+struct CachedLowRegisters {
+    registers: [[InternedOperand; 3]; 8],
+}
+
+impl CachedLowRegisters {
+    fn new() -> CachedLowRegisters {
+        CachedLowRegisters {
+            registers: [[InternedOperand(0); 3]; 8],
+        }
+    }
+
+    fn get_16(&self, register: u8) -> InternedOperand {
+        self.registers[register as usize][0]
+    }
+
+    fn get_low8(&self, register: u8) -> InternedOperand {
+        self.registers[register as usize][1]
+    }
+
+    fn get_high8(&self, register: u8) -> InternedOperand {
+        self.registers[register as usize][2]
+    }
+
+    fn set_16(&mut self, register: u8, value: InternedOperand) {
+        self.registers[register as usize][0] = value;
+    }
+
+    fn set_low8(&mut self, register: u8, value: InternedOperand) {
+        self.registers[register as usize][1] = value;
+    }
+
+    fn set_high8(&mut self, register: u8, value: InternedOperand) {
+        self.registers[register as usize][2] = value;
+    }
+
+    fn invalidate(&mut self, register: u8) {
+        self.registers[register as usize] = [InternedOperand(0); 3];
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -361,6 +405,7 @@ impl<'a> ExecutionState<'a> {
         }
         ExecutionState {
             registers,
+            cached_low_registers: CachedLowRegisters::new(),
             xmm_registers,
             fpu_registers,
             flags: Flags::initial(ctx, interner),
@@ -569,18 +614,26 @@ impl<'a> ExecutionState<'a> {
 
     fn get_dest(&mut self, dest: &DestOperand, intern_map: &mut InternMap) -> Destination {
         match *dest {
-            DestOperand::Register(reg) => Destination::Oper(&mut self.registers[reg.0 as usize]),
+            DestOperand::Register(reg) => {
+                self.cached_low_registers.invalidate(reg.0);
+                Destination::Oper(&mut self.registers[reg.0 as usize])
+            }
             DestOperand::Register16(reg) => {
+                self.cached_low_registers.invalidate(reg.0);
                 Destination::Register16(&mut self.registers[reg.0 as usize])
             }
             DestOperand::Register8High(reg) => {
+                self.cached_low_registers.invalidate(reg.0);
                 Destination::Register8High(&mut self.registers[reg.0 as usize])
             }
             DestOperand::Register8Low(reg) => {
+                self.cached_low_registers.invalidate(reg.0);
                 Destination::Register8Low(&mut self.registers[reg.0 as usize])
             }
             DestOperand::Register64(_) => Destination::Nop,
             DestOperand::PairEdxEax => {
+                self.cached_low_registers.invalidate(0);
+                self.cached_low_registers.invalidate(2);
                 let (eax, rest) = self.registers.split_first_mut().unwrap();
                 let edx = &mut rest[1];
                 Destination::Pair(edx, eax)
@@ -708,26 +761,53 @@ impl<'a> ExecutionState<'a> {
                 interner.operand(self.registers[reg.0 as usize])
             }
             OperandType::Register16(reg) => {
-                operand_and(
-                    interner.operand(self.registers[reg.0 as usize]),
-                    self.ctx.const_ffff(),
-                )
+                let interned = match self.cached_low_registers.get_16(reg.0) {
+                    InternedOperand(0) => {
+                        let op = operand_and(
+                            interner.operand(self.registers[reg.0 as usize]),
+                            self.ctx.const_ffff(),
+                        );
+                        let interned = interner.intern(Operand::simplified(op));
+                        self.cached_low_registers.set_16(reg.0, interned);
+                        interned
+                    }
+                    x => x,
+                };
+                interner.operand(interned)
             }
             OperandType::Register8High(reg) => {
-                operand_rsh(
-                    operand_and(
-                        interner.operand(self.registers[reg.0 as usize]),
-                        self.ctx.const_ff00(),
-                    ),
-                    self.ctx.const_8(),
-                )
-            },
+                let interned = match self.cached_low_registers.get_high8(reg.0) {
+                    InternedOperand(0) => {
+                        let op = operand_rsh(
+                            operand_and(
+                                interner.operand(self.registers[reg.0 as usize]),
+                                self.ctx.const_ff00(),
+                            ),
+                            self.ctx.const_8(),
+                        );
+                        let interned = interner.intern(Operand::simplified(op));
+                        self.cached_low_registers.set_high8(reg.0, interned);
+                        interned
+                    }
+                    x => x,
+                };
+                interner.operand(interned)
+            }
             OperandType::Register8Low(reg) => {
-                operand_and(
-                    interner.operand(self.registers[reg.0 as usize]),
-                    self.ctx.const_ff(),
-                )
-            },
+                let interned = match self.cached_low_registers.get_low8(reg.0) {
+                    InternedOperand(0) => {
+                        let op = operand_and(
+                            interner.operand(self.registers[reg.0 as usize]),
+                            self.ctx.const_ff(),
+                        );
+                        let interned = interner.intern(Operand::simplified(op));
+                        self.cached_low_registers.set_low8(reg.0, interned);
+                        interned
+                    }
+                    x => x,
+                };
+                interner.operand(interned)
+            }
             OperandType::Pair(ref high, ref low) => {
                 pair(self.resolve(&high, interner), self.resolve(&low, interner))
             }
@@ -943,6 +1023,7 @@ pub fn merge_states<'a: 'r, 'r>(
         );
     if changed {
         let mut registers = [InternedOperand(0); 8];
+        let mut cached_low_registers = CachedLowRegisters::new();
         let mut fpu_registers = [InternedOperand(0); 8];
         let mut xmm_registers = [XmmOperand(
             InternedOperand(0),
@@ -964,6 +1045,14 @@ pub fn merge_states<'a: 'r, 'r>(
                 fpu_registers[i] = merge(old.fpu_registers[i], new.fpu_registers[i], interner);
                 xmm_registers[i] =
                     merge_xmm(&old.xmm_registers[i], &new.xmm_registers[i], interner);
+                let old_reg = &old.cached_low_registers.registers[i];
+                let new_reg = &new.cached_low_registers.registers[i];
+                for j in 0..old_reg.len() {
+                    if old_reg[j] == new_reg[j] {
+                        // Doesn't merge things but sets them uncached if they differ
+                        cached_low_registers.registers[i][j] = old_reg[j];
+                    }
+                }
             }
             let mut flags = [
                 (&mut flags.zero, old.flags.zero, new.flags.zero),
@@ -979,6 +1068,7 @@ pub fn merge_states<'a: 'r, 'r>(
         }
         Some(ExecutionState {
             registers,
+            cached_low_registers,
             fpu_registers,
             xmm_registers,
             flags,

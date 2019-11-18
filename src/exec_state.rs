@@ -499,7 +499,7 @@ impl InternMap {
             match self.reverse.entry(val.clone()) {
                 hash_map::Entry::Occupied(e) => *e.get(),
                 hash_map::Entry::Vacant(e) => {
-                    let new = InternedOperand(self.map.len() as u32);
+                    let new = InternedOperand(self.map.len() as u32 + 1);
                     e.insert(new);
                     self.map.push(val);
                     new
@@ -513,9 +513,9 @@ impl InternMap {
             val
         } else {
             match self.reverse.entry(val.clone()) {
-                hash_map::Entry::Occupied(e) => self.map[e.get().0 as usize].clone(),
+                hash_map::Entry::Occupied(e) => self.map[e.get().0 as usize - 1].clone(),
                 hash_map::Entry::Vacant(e) => {
-                    let new = InternedOperand(self.map.len() as u32);
+                    let new = InternedOperand(self.map.len() as u32 + 1);
                     e.insert(new);
                     self.map.push(val.clone());
                     val
@@ -542,7 +542,7 @@ impl InternMap {
             let ty = OperandType::Undefined(operand::UndefinedId(!val.0));
             Operand::new_simplified_rc(ty)
         } else {
-            self.map[val.0 as usize].clone()
+            self.map[val.0 as usize - 1].clone()
         }
     }
 }
