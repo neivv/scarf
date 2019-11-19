@@ -1244,7 +1244,7 @@ impl Operand {
         match operand.ty {
             OperandType::Constant64(c) => ctx.constant(c as u32),
             OperandType::Register64(r) => ctx.register(r.0),
-            OperandType::Arithmetic64(_) | OperandType::Undefined(_) => {
+            OperandType::Arithmetic64(_) | OperandType::Undefined(_) | OperandType::Custom(_) => {
                 self::operand_helpers::operand_and64(operand.clone(), ctx.const_ffffffff())
             }
             _ => operand.clone(),
@@ -2399,7 +2399,10 @@ fn simplify_add_sub(
         },
         None => ctx.const_0(),
     };
-    while let Some((op, neg)) = ops.pop() {
+    while let Some((mut op, neg)) = ops.pop() {
+        if bit_size == 32 {
+            remove_useless_arith32_and(&mut op);
+        }
         let arith = ArithOperand {
             ty: if neg { Sub } else { Add},
             left: tree,
@@ -2458,9 +2461,20 @@ fn simplify_mul(
             ops.push(ctx.constant64(const_product));
         }
     }
+    match ops.len() {
+        0 => return ctx.const_1(),
+        1 => return ops.remove(0),
+        _ => (),
+    };
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_1());
-    while let Some(op) = ops.pop() {
+    if bit_size == 32 {
+        remove_useless_arith32_and(&mut tree);
+    }
+    while let Some(mut op) = ops.pop() {
+        if bit_size == 32 {
+            remove_useless_arith32_and(&mut op);
+        }
         let arith = ArithOperand {
             ty: ArithOpType::Mul,
             left: tree,
@@ -2473,6 +2487,19 @@ fn simplify_mul(
         }
     }
     tree
+}
+
+/// Converts x & ffff_ffff to x.
+/// The assumption is that x is going to be operand in 32-bit arithmetic,
+/// which implies truncation to ffff_ffff
+fn remove_useless_arith32_and(op: &mut Rc<Operand>) {
+    if let Some((l, r)) = op.if_arithmetic_and64() {
+        if let Some((c, other)) = Operand::either(l, r, |x| x.if_constant()) {
+            if c == u32::max_value() {
+                *op = other.clone();
+            }
+        }
+    }
 }
 
 fn simplify_signed_mul(
@@ -2754,7 +2781,10 @@ fn simplify_eq(
                 },
                 None => ctx.const_0(),
             };
-            while let Some((op, neg)) = ops.pop() {
+            while let Some((mut op, neg)) = ops.pop() {
+                if !is_64 {
+                    remove_useless_arith32_and(&mut op);
+                }
                 let arith = ArithOperand {
                     ty: if neg { ArithOpType::Sub } else { ArithOpType::Add },
                     left: tree,
@@ -3124,9 +3154,20 @@ fn simplify_and(
     } else {
         ops.iter().any(|x| x.relevant_bits().end > 32)
     };
+    match ops.len() {
+        0 => return ctx.const_0(),
+        1 => return ops.remove(0),
+        _ => (),
+    };
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_0());
-    while let Some(op) = ops.pop() {
+    if !is_64 {
+        remove_useless_arith32_and(&mut tree);
+    }
+    while let Some(mut op) = ops.pop() {
+        if !is_64 {
+            remove_useless_arith32_and(&mut op);
+        }
         let arith = ArithOperand {
             ty: ArithOpType::And,
             left: tree,
@@ -3172,9 +3213,20 @@ fn simplify_or(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
     } else {
         ops.iter().any(|x| x.relevant_bits().end > 32)
     };
+    match ops.len() {
+        0 => return ctx.const_0(),
+        1 => return ops.remove(0),
+        _ => (),
+    };
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_0());
-    while let Some(op) = ops.pop() {
+    if !is_64 {
+        remove_useless_arith32_and(&mut tree);
+    }
+    while let Some(mut op) = ops.pop() {
+        if !is_64 {
+            remove_useless_arith32_and(&mut op);
+        }
         let arith = ArithOperand {
             ty: ArithOpType::Or,
             left: tree,
@@ -3260,7 +3312,13 @@ fn simplify_lsh(
                         Some(s) => s,
                         None => return ctx.const_0(),
                     };
-                    while let Some(op) = ops.pop() {
+                    if bit_size == 32 {
+                        remove_useless_arith32_and(&mut tree);
+                    }
+                    while let Some(mut op) = ops.pop() {
+                        if bit_size == 32 {
+                            remove_useless_arith32_and(&mut op);
+                        }
                         let arith = ArithOperand {
                             ty: ArithOpType::And,
                             left: tree,
@@ -3453,7 +3511,13 @@ fn simplify_rsh(
                         Some(s) => s,
                         None => return ctx.const_0(),
                     };
-                    while let Some(op) = ops.pop() {
+                    if bit_size == 32 {
+                        remove_useless_arith32_and(&mut tree);
+                    }
+                    while let Some(mut op) = ops.pop() {
+                        if bit_size == 32 {
+                            remove_useless_arith32_and(&mut op);
+                        }
                         let arith = ArithOperand {
                             ty: ArithOpType::And,
                             left: tree,
@@ -4256,6 +4320,11 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
         }
         ops.push(ctx.constant64(const_val));
     }
+    match ops.len() {
+        0 => return ctx.const_0(),
+        1 => return ops.remove(0),
+        _ => (),
+    };
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_0());
     let is_64 = if const_val > u32::max_value() as u64 {
@@ -4263,7 +4332,13 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
     } else {
         ops.iter().any(|x| x.relevant_bits().end > 32)
     };
-    while let Some(op) = ops.pop() {
+    if !is_64 {
+        remove_useless_arith32_and(&mut tree);
+    }
+    while let Some(mut op) = ops.pop() {
+        if !is_64 {
+            remove_useless_arith32_and(&mut op);
+        }
         let arith = ArithOperand {
             ty: ArithOpType::Xor,
             left: tree,
@@ -6825,6 +6900,26 @@ mod test {
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
         assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
         assert_eq!(Operand::simplified(op4), Operand::simplified(eq4));
+    }
+
+    #[test]
+    fn useless_and_32bit() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_mul(
+            operand_and(
+                constval64(0xffff_ffff),
+                ctx.undefined_rc(),
+            ),
+            constval(4),
+        );
+        let result = Operand::simplified(op1);
+        let (l, r) = result.if_arithmetic_mul().unwrap();
+        match (&l.ty, &r.ty) {
+            (&OperandType::Undefined(_), &OperandType::Constant(4)) => (),
+            (&OperandType::Constant(4), &OperandType::Undefined(_)) => (),
+            _ => panic!("Expected undefined, got {}", result),
+        }
     }
 
     #[test]
