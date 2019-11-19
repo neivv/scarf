@@ -2383,21 +2383,26 @@ fn simplify_add_sub(
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     let mut ops = simplify_add_sub_ops(left, right, bit_size, is_sub, ctx);
     let mut tree = match ops.pop() {
-        Some((s, neg)) => match neg {
-            false => mark_self_simplified(s),
-            true => {
-                let arith = ArithOperand {
-                    ty: Sub,
-                    left: ctx.const_0(),
-                    right: s,
-                };
-                if bit_size == 32 {
-                    Operand::new_simplified_rc(OperandType::Arithmetic(arith))
-                } else {
-                    Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
+        Some((mut s, neg)) => {
+            if bit_size == 32 {
+                remove_useless_arith32_and(ctx, &mut s);
+            }
+            match neg {
+                false => mark_self_simplified(s),
+                true => {
+                    let arith = ArithOperand {
+                        ty: Sub,
+                        left: ctx.const_0(),
+                        right: s,
+                    };
+                    if bit_size == 32 {
+                        Operand::new_simplified_rc(OperandType::Arithmetic(arith))
+                    } else {
+                        Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
+                    }
                 }
             }
-        },
+        }
         None => ctx.const_0(),
     };
     while let Some((mut op, neg)) = ops.pop() {
@@ -6974,6 +6979,20 @@ mod test {
         match (&l.ty, &r.ty) {
             (&OperandType::Undefined(_), &OperandType::Constant(4)) => (),
             (&OperandType::Constant(4), &OperandType::Undefined(_)) => (),
+            _ => panic!("Expected undefined, got {}", result),
+        }
+
+        let op2 = operand_sub(
+            operand_and(
+                constval64(0xffff_ffff),
+                ctx.undefined_rc(),
+            ),
+            constval(4),
+        );
+        let result = Operand::simplified(op2);
+        let (l, r) = result.if_arithmetic_sub().unwrap();
+        match (&l.ty, &r.ty) {
+            (&OperandType::Undefined(_), &OperandType::Constant(4)) => (),
             _ => panic!("Expected undefined, got {}", result),
         }
     }
