@@ -3086,7 +3086,9 @@ fn simplify_and(
                 match op.ty {
                     OperandType::Register(r) | OperandType::Register16(r) |
                         OperandType::Register64(r) => {
-                            *op = ctx.register8_high(r.0);
+                            if r.0 < 4 {
+                                *op = ctx.register8_high(r.0);
+                            }
                         }
                     _ => (),
                 }
@@ -4035,7 +4037,7 @@ fn simplify_with_zero_bits(
                 } else {
                     Some(op.clone())
                 }
-            } else if bits.start == 0 && bits.end >= 8 && relevant_bits.end == 16 {
+            } else if bits.start == 0 && bits.end >= 8 && relevant_bits.end == 16 && r.0 < 4{
                 // Can't convert anything other than ax => ah with single zero bit range.
                 Some(ctx.register8_high(r.0))
             } else {
