@@ -1103,8 +1103,13 @@ impl OperandType {
                     trailing..(64 - leading)
                 }
             }
-            OperandType::Register64(..) => 0..64,
-            _ => 0..32,
+            OperandType::Register8High(..) => 8..16,
+            _ => match self.expr_size() {
+                MemAccessSize::Mem8 => 0..8,
+                MemAccessSize::Mem16 => 0..16,
+                MemAccessSize::Mem32 => 0..32,
+                MemAccessSize::Mem64 => 0..64,
+            },
         }
     }
 
@@ -1481,11 +1486,16 @@ impl Operand {
                 {
                     Operand::either(&arith.left, &arith.right, |x| x.if_constant64())
                 }
+                OperandType::Register64(_) => Some((0xffff_ffff_ffff_ffff, op)),
+                OperandType::Register(_) => Some((0xffff_ffff, op)),
+                OperandType::Register16(_) => Some((0xffff, op)),
+                OperandType::Register8High(_) => Some((0xff00, op)),
+                OperandType::Register8Low(_) => Some((0xff, op)),
                 OperandType::Memory(ref mem) => match mem.size {
                     MemAccessSize::Mem8 => Some((0xff, op)),
                     MemAccessSize::Mem16 => Some((0xffff, op)),
                     MemAccessSize::Mem32 => Some((0xffff_ffff, op)),
-                    _ => None,
+                    MemAccessSize::Mem64 => Some((0xffff_ffff_ffff_ffff, op)),
                 }
                 _ => {
                     let bits = op.relevant_bits();
@@ -2801,6 +2811,9 @@ fn simplify_eq_2_ops(
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
                 Operand::either(&arith.left, &arith.right, |x| x.if_constant())
             }
+            OperandType::Register8Low(_) => Some((0xff, x)),
+            OperandType::Register16(_) => Some((0xffff, x)),
+            OperandType::Register8High(_) => Some((0xff00, x)),
             OperandType::Memory(ref mem) => {
                 match mem.size {
                     MemAccessSize::Mem8 => Some((0xff, x)),
@@ -2906,8 +2919,6 @@ fn try_merge_ands(
     use self::operand_helpers::*;
     if a == b {
         return Some(a.clone());
-    } else if a_mask & b_mask != 0 {
-        return None;
     }
     if let Some(a) = a.if_constant64() {
         if let Some(b) = b.if_constant64() {
@@ -2961,7 +2972,44 @@ fn try_merge_ands(
                 None
             }
         }
-        _ => None,
+        _ => {
+            match a.ty {
+                OperandType::Register64(ar) | OperandType::Register(ar) |
+                    OperandType::Register16(ar) | OperandType::Register8Low(ar) |
+                    OperandType::Register8High(ar) =>
+                {
+                    match b.ty {
+                        OperandType::Register64(br) | OperandType::Register(br) |
+                            OperandType::Register16(br) | OperandType::Register8Low(br) |
+                            OperandType::Register8High(br) =>
+                        {
+                            // Merge two parts of same register to one that includes them both.
+                            if ar == br {
+                                let a_bits = a.relevant_bits();
+                                let b_bits = b.relevant_bits();
+                                let high = a_bits.end.max(b_bits.end);
+                                if high > 32 {
+                                    Some(ctx.register64(ar.0))
+                                } else if high > 16 {
+                                    Some(ctx.register(ar.0))
+                                } else {
+                                    // Cannot be anything else than something thats mergeable
+                                    // to Register16; if a == b the function returns at entry.
+                                    debug_assert!(high == 16);
+                                    debug_assert!(a_bits.start == 0 || b_bits.start == 0);
+                                    debug_assert!(a_bits != b_bits);
+                                    Some(ctx.register16(ar.0))
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
     }
 }
 
@@ -2979,16 +3027,40 @@ fn simplify_and(
     let mut ops = vec![];
     Operand::collect_and_ops(left, &mut ops, ctx);
     Operand::collect_and_ops(right, &mut ops, ctx);
-    let mut const_remain = !0u64;
+    let mut const_remain;
     loop {
+        const_remain = !0u64;
         if ops.is_empty() {
             return ctx.const_0();
         }
-        const_remain = ops.iter().flat_map(|x| x.if_constant64())
+        const_remain = ops.iter()
+            .map(|op| match op.ty {
+                OperandType::Constant(c) => c as u64,
+                OperandType::Constant64(c) => c,
+                _ => {
+                    let relevant_bits = op.relevant_bits();
+                    let low = relevant_bits.start;
+                    let high = 64 - relevant_bits.end;
+                    !0 >> low << low << high >> high
+                }
+            })
             .fold(const_remain, |sum, x| sum & x);
         ops.retain(|x| x.if_constant64().is_none());
-        if ops.is_empty() {
+        if ops.is_empty() || const_remain == 0 {
             return ctx.constant64(const_remain);
+        }
+        // Special-case reg -> Register8High conversions as they cannot be handled with a
+        // single zerobit range
+        if const_remain & 0xff00 == const_remain {
+            for op in &mut ops {
+                match op.ty {
+                    OperandType::Register(r) | OperandType::Register16(r) |
+                        OperandType::Register64(r) => {
+                            *op = ctx.register8_high(r.0);
+                        }
+                    _ => (),
+                }
+            }
         }
         ops.sort();
         ops.dedup();
@@ -3886,6 +3958,24 @@ fn simplify_with_zero_bits(
             match new_val {
                 0 => None,
                 c => Some(ctx.constant64(c)),
+            }
+        }
+        OperandType::Register64(r) | OperandType::Register(r) | OperandType::Register16(r) => {
+            if bits.end == 64 {
+                if bits.start <= 8 {
+                    Some(ctx.register8_low(r.0))
+                } else if bits.start <= 16 && relevant_bits.end > 16 {
+                    Some(ctx.register16(r.0))
+                } else if bits.start <= 32 && relevant_bits.end > 32 {
+                    Some(ctx.register(r.0))
+                } else {
+                    Some(op.clone())
+                }
+            } else if bits.start == 0 && bits.end >= 8 && relevant_bits.end == 16 {
+                // Can't convert anything other than ax => ah with single zero bit range.
+                Some(ctx.register8_high(r.0))
+            } else {
+                Some(op.clone())
             }
         }
         OperandType::Memory(ref mem) => {
@@ -5480,7 +5570,7 @@ mod test {
     #[test]
     fn simplify_x_eq_x_add() {
         use super::operand_helpers::*;
-        // The register 2 can be igned as there is no way for the addition to cause lowest
+        // The register 2 can be ignored as there is no way for the addition to cause lowest
         // byte to be equal to what it was. If the constant addition were higher than 0xff,
         // then it couldn't be simplified (effectively the high unknown is able to cause unknown
         // amount of reduction in the constant's effect, but looping the lowest byte around
@@ -6702,6 +6792,39 @@ mod test {
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
         assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
         assert_ne!(Operand::simplified(op4), Operand::simplified(ne4));
+    }
+
+    #[test]
+    fn simplify_reg_and() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and64(
+            operand_register64(0),
+            constval64(0xff),
+        );
+        let eq1 = ctx.register8_low(0);
+        let op2 = operand_and64(
+            operand_register64(0),
+            constval64(0xffff),
+        );
+        let eq2 = ctx.register16(0);
+        let op3 = operand_and64(
+            operand_register64(0),
+            constval64(0xff00),
+        );
+        let eq3 = ctx.register8_high(0);
+        let op4 = operand_and64(
+            operand_register64(0),
+            constval64(0xf),
+        );
+        let eq4 = operand_and(
+            ctx.register8_low(0),
+            constval64(0xf),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+        assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
+        assert_eq!(Operand::simplified(op4), Operand::simplified(eq4));
     }
 
     #[test]
