@@ -432,8 +432,7 @@ impl<'a> ExecutionState<'a> {
         let ctx = self.ctx;
         match operation {
             Operation::Move(dest, value, cond) => {
-                // TODO: disassembly module should give the simplified values always
-                let value = Operand::simplified(value.clone());
+                let value = value.clone();
                 if let Some(cond) = cond {
                     let cond = Operand::simplified(cond.clone());
                     match self.resolve_apply_constraints(&cond, intern_map).if_constant() {
