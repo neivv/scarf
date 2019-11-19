@@ -367,7 +367,11 @@ fn apply_constraint_split(
 ) -> Rc<Operand>{
     use crate::operand::operand_helpers::*;
     match constraint.ty {
-        OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
+        OperandType::Arithmetic(ref arith) if {
+            arith.ty == ArithOpType::And &&
+                arith.left.relevant_bits() == (0..1) &&
+                arith.right.relevant_bits() == (0..1)
+        } => {
             let new = apply_constraint_split(&arith.left, val, with);
             apply_constraint_split(&arith.right, &new, with)
         }
@@ -894,4 +898,26 @@ fn apply_constraint() {
     );
     assert_ne!(Operand::simplified(val.clone()), Operand::simplified(old));
     assert_eq!(Operand::simplified(val), Operand::simplified(eq));
+}
+
+#[test]
+fn apply_constraint_non1bit() {
+    use crate::operand_helpers::*;
+    // This shouldn't cause 0x8000_0000 to be optimized out
+    let constraint = operand_eq(
+        operand_and(
+            constval(0x8000_0000),
+            operand_register(1),
+        ),
+        constval(0),
+    );
+    let val = operand_and(
+        constval(0x8000_0000),
+        operand_sub(
+            operand_register(1),
+            operand_register(2),
+        ),
+    );
+    let val = Operand::simplified(val);
+    assert_eq!(Constraint(constraint).apply_to(&val), val);
 }
