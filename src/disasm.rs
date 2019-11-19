@@ -1791,10 +1791,25 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             2 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, r, imm) = self.parse_modrm_imm(self.mem16_32(), imm_size)?;
+        let op_size = self.mem16_32();
+        let (rm, r, imm) = self.parse_modrm_imm(op_size, imm_size)?;
         // TODO flags, imul only sets c and o on overflow
+        // TODO Signed mul isn't sensible if it doesn't contain operand size
+        // I don't think any of these sizes are correct but w/e
         let mut out = SmallVec::new();
-        out.push(mov(r, operand_signed_mul(rm, imm)));
+        if Va::SIZE == 4 {
+            if op_size != MemAccessSize::Mem32 {
+                out.push(mov(r, operand_signed_mul(rm, imm)));
+            } else {
+                out.push(mov(r, operand_mul(rm, imm)));
+            }
+        } else {
+            if op_size != MemAccessSize::Mem64 {
+                out.push(mov(r, operand_signed_mul64(rm, imm)));
+            } else {
+                out.push(mov(r, operand_mul64(rm, imm)));
+            }
+        }
         Ok(out)
     }
 
@@ -1860,10 +1875,17 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn imul_normal(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
-        let (rm, r) = self.parse_modrm(self.mem16_32())?;
+        let size = self.mem16_32();
+        let (rm, r) = self.parse_modrm(size)?;
         // TODO flags, imul only sets c and o on overflow
         let mut out = SmallVec::new();
-        out.push(signed_mul(r, rm, Va::SIZE == 8));
+        // Signed multiplication should be different only when result is being sign extended.
+        if size.bits() != Va::SIZE * 8 {
+            // TODO Signed mul should actually specify bit size
+            out.push(signed_mul(r, rm, Va::SIZE == 8));
+        } else {
+            out.push(mul(r, rm, Va::SIZE == 8));
+        }
         Ok(out)
     }
 
@@ -2221,6 +2243,10 @@ pub mod operation_helpers {
         let rhs = operand_add64(rhs, flag_c());
         out.push(flags(Sub, dest.clone(), rhs.clone(), is_64));
         out.push(sub(dest, rhs, is_64));
+    }
+
+    pub fn mul(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {
+        make_arith_operation(dest_operand(&dest), Mul, dest, rhs, is_64)
     }
 
     pub fn signed_mul(dest: Rc<Operand>, rhs: Rc<Operand>, is_64: bool) -> Operation {

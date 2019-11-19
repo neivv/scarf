@@ -4611,6 +4611,10 @@ pub mod operand_helpers {
         operand_arith64(Mul, lhs, rhs)
     }
 
+    pub fn operand_signed_mul64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+        operand_arith64(SignedMul, lhs, rhs)
+    }
+
     pub fn operand_and64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith64(And, lhs, rhs)
     }
