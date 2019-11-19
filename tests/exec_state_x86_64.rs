@@ -247,6 +247,25 @@ fn test_negative_offset2() {
     ]);
 }
 
+#[test]
+fn lazy_flag_constraint_invalidation() {
+    let ctx = scarf::operand::OperandContext::new();
+    // Had a bug that lazy flag updates didn't invalidate extra constraints
+    // (So the unrelated cmp -> ja would always be taken)
+    test_inline(&[
+        0x31, 0xf6, // xor esi, esi
+        0x39, 0xc8, // cmp eax, ecx
+        0x76, 0x07, // jbe ret_
+        0x39, 0xca, // cmp edx, ecx
+        0x77, 0x03, // ja ret_
+        0x83, 0xc6, 0x01, // add esi, 1
+        0xeb, 0x00, // jmp ret
+        0xc3, // ret
+    ], &[
+         (operand_register64(6), ctx.undefined_rc()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

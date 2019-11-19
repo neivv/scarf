@@ -473,6 +473,9 @@ impl<'a> ExecutionState<'a> {
                     ty: arith.ty,
                 };
                 self.pending_flags = Some((arith, is_64));
+                // Could try to do smarter invalidation, but since in practice unresolved
+                // constraints always are bunch of flags, invalidate it completely.
+                self.unresolved_constraint = None;
             }
         }
     }
