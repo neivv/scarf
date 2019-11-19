@@ -1122,8 +1122,8 @@ impl OperandType {
             Memory(ref mem) => mem.size,
             Register(..) | Arithmetic(..) | Pair(..) | Xmm(..) | Flag(..) | Constant(..) |
                 ArithmeticHigh(..) | Fpu(..) | ArithmeticF32(..) => MemAccessSize::Mem32,
-            Register16(..) => MemAccessSize::Mem16,
-            Register8High(..) | Register8Low(..) => MemAccessSize::Mem8,
+            Register16(..) | Register8High(..) => MemAccessSize::Mem16,
+            Register8Low(..) => MemAccessSize::Mem8,
             Register64(..) | Constant64(..) | Arithmetic64(..) | Undefined(..) |
                 Custom(..) => MemAccessSize::Mem64,
             SignExtend(_, _from, to) => to,
@@ -1711,7 +1711,8 @@ impl Operand {
                 while let Some(other_op) = second.next_removable() {
                     let mut remove = false;
                     if let Some((c2, x2, ty2, is_64_2)) = check_match(&other_op) {
-                        if c == c2 && x == x2 && is_64 == is_64_2 {
+                        if c == c2 && x == x2 {
+                            let is_64 = is_64 | is_64_2;
                             match (ty, ty2) {
                                 (MatchType::ConstantGreater, MatchType::Equal) |
                                     (MatchType::Equal, MatchType::ConstantGreater) =>
@@ -1850,7 +1851,7 @@ impl Operand {
                     ArithOpType::And => simplify_and(left, right, ctx, swzb_ctx),
                     ArithOpType::Or => simplify_or(left, right, ctx),
                     ArithOpType::Xor => simplify_xor(left, right, ctx),
-                    ArithOpType::Equal => simplify_eq(left, right, 32, ctx),
+                    ArithOpType::Equal => simplify_eq(left, right, ctx),
                     ArithOpType::GreaterThan => {
                         let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
                         let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
@@ -2015,7 +2016,7 @@ impl Operand {
                     ArithOpType::Xor => simplify_xor(left, right, ctx),
                     ArithOpType::Lsh => simplify_lsh(left, right, 64, ctx, swzb_ctx),
                     ArithOpType::Rsh => simplify_rsh(left, right, 64, ctx, swzb_ctx),
-                    ArithOpType::Equal => simplify_eq(left, right, 64, ctx),
+                    ArithOpType::Equal => simplify_eq(left, right, ctx),
                     ArithOpType::GreaterThan => {
                         let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
                         let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
@@ -2729,7 +2730,6 @@ fn simplify_add_sub_ops(
 fn simplify_eq(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
-    bit_size: u8,
     ctx: &OperandContext,
 ) -> Rc<Operand> {
     use self::operand_helpers::*;
@@ -2739,6 +2739,13 @@ fn simplify_eq(
         false => (right, left),
     };
 
+    // Equality is just bit comparision without overflow semantics, even though
+    // this also uses x == y => x - y == 0 property to simplify it.
+    let bit_size = if left.relevant_bits().end > 32 || right.relevant_bits().end > 32 {
+        64
+    } else {
+        32
+    };
     let mut ops = simplify_add_sub_ops(left, right, bit_size, true, ctx);
     let mark_self_simplified = |s: &Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     match ops.len() {
@@ -2958,12 +2965,13 @@ fn simplify_eq_2_ops(
             }
         }
     }
+    let is_64 = bit_size == 64 && left.relevant_bits().end > 32 && right.relevant_bits().end > 32;
     let arith = ArithOperand {
         ty: ArithOpType::Equal,
         left,
         right,
     };
-    if bit_size == 32 {
+    if !is_64 {
         Operand::new_simplified_rc(OperandType::Arithmetic(arith))
     } else {
         Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
@@ -7051,5 +7059,28 @@ mod test {
             assert!(seen.contains(&**o));
         }
         assert_eq!(seen.len(), opers.len());
+    }
+
+    #[test]
+    fn simplify_eq_64_to_32() {
+        use super::operand_helpers::*;
+        let op1 = operand_eq64(
+            operand_register(0),
+            constval(0),
+        );
+        let eq1 = operand_eq(
+            operand_register(0),
+            constval(0),
+        );
+        let op2 = operand_eq64(
+            operand_register(0),
+            operand_register(2),
+        );
+        let eq2 = operand_eq(
+            operand_register(0),
+            operand_register(2),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 }
