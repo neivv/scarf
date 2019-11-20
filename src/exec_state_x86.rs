@@ -292,6 +292,7 @@ impl<'a> Destination<'a> {
                     return;
                 }
                 if let Some((base, offset)) = Operand::const_offset(&addr, ctx) {
+                    let offset = offset as u32;
                     let offset_4 = offset & 3;
                     let offset_rest = offset & !3;
                     if offset_4 != 0 {
@@ -715,6 +716,7 @@ impl<'a> ExecutionState<'a> {
 
         // Use 4-aligned addresses if there's a const offset
         if let Some((base, offset)) = Operand::const_offset(&address, self.ctx) {
+            let offset = offset as u32;
             let offset_4 = offset & 3;
             let offset_rest = offset & !3;
             if offset_4 != 0 {

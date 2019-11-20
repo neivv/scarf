@@ -365,6 +365,7 @@ fn instruction_operations32(
             0x40 ..= 0x4f => s.cmov(),
             0x57 => s.xorps(),
             0x5b => s.cvtdq2ps(),
+            0x60 => s.punpcklbw(),
             0x6e => s.mov_sse_6e(),
             0x6f => {
                 if s.has_prefix(0xf3) || s.has_prefix(0x66) {
@@ -613,6 +614,7 @@ fn instruction_operations64(
             0x40 ..= 0x4f => s.cmov(),
             0x57 => s.xorps(),
             0x5b => s.cvtdq2ps(),
+            0x60 => s.punpcklbw(),
             0x6e => s.mov_sse_6e(),
             0x6f => {
                 if s.has_prefix(0xf3) || s.has_prefix(0x66) {
@@ -1357,15 +1359,127 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(out)
     }
 
-    fn mov_sse_6e(&self) -> Result<OperationVec, Error> {
+    fn punpcklbw(&self) -> Result<OperationVec, Error> {
         use self::operation_helpers::*;
+        use crate::operand_helpers::*;
         if !self.has_prefix(0x66) {
             return Err(Error::UnknownOpcode(self.data.into()));
         }
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
         let mut out = SmallVec::new();
-        out.push(mov(self.xmm_variant(&r, 0), rm));
-        out.push(mov(self.xmm_variant(&r, 1), self.ctx.const_0()));
+        // r.0 = (r.0 & ff) | (rm.0 & ff) << 8 | (r.0 & ff00) << 8 | (rm.0 & ff00) << 10
+        // r.1 = (r.0 & ff_0000) >> 10 | (rm.0 & ff_0000) >> 8 |
+        //      (r.0 & ff00_0000) >> 8 | (rm.0 & ff00_0000)
+        // r.2 = (r.1 & ff) | (rm.1 & ff) << 8 | (r.1 & ff00) << 8 | (rm.1 & ff00) << 10
+        // r.3 = (r.1 & ff_0000) >> 10 | (rm.1 & ff_0000) >> 8 |
+        //      (r.1 & ff00_0000) >> 8 | (rm.1 & ff00_0000)
+        // Do things in reverse to avoid overwriting r0/r1
+        let r0 = self.xmm_variant(&r, 0);
+        let r1 = self.xmm_variant(&r, 1);
+        let r2 = self.xmm_variant(&r, 2);
+        let r3 = self.xmm_variant(&r, 3);
+        let rm0 = self.xmm_variant(&rm, 0);
+        let rm1 = self.xmm_variant(&rm, 1);
+        let c_8 = self.ctx.const_8();
+        let c_10 = self.ctx.constant(0x10);
+        let c_ff = self.ctx.const_ff();
+        let c_ff00 = self.ctx.constant(0xff00);
+        let c_ff_0000 = self.ctx.constant(0xff_0000);
+        let c_ff00_0000 = self.ctx.constant(0xff00_0000);
+        for &(out0, out1, in_r, in_rm) in &[(&r2, &r3, &r1, &rm1), (&r0, &r1, &r0, &rm0)] {
+            out.push(mov(out1.clone(), operand_or(
+                operand_or(
+                    operand_rsh(
+                        operand_and(
+                            in_r.clone(),
+                            c_ff_0000.clone(),
+                        ),
+                        c_10.clone(),
+                    ),
+                    operand_rsh(
+                        operand_and(
+                            in_rm.clone(),
+                            c_ff_0000.clone(),
+                        ),
+                        c_8.clone(),
+                    ),
+                ),
+                operand_or(
+                    operand_rsh(
+                        operand_and(
+                            in_r.clone(),
+                            c_ff00_0000.clone(),
+                        ),
+                        c_8.clone(),
+                    ),
+                    operand_and(
+                        in_rm.clone(),
+                        c_ff00_0000.clone(),
+                    ),
+                ),
+            )));
+            out.push(mov(out0.clone(), operand_or(
+                operand_or(
+                    operand_and(
+                        in_r.clone(),
+                        c_ff.clone(),
+                    ),
+                    operand_lsh(
+                        operand_and(
+                            in_rm.clone(),
+                            c_ff.clone(),
+                        ),
+                        c_8.clone(),
+                    ),
+                ),
+                operand_or(
+                    operand_lsh(
+                        operand_and(
+                            in_r.clone(),
+                            c_ff00.clone(),
+                        ),
+                        c_8.clone(),
+                    ),
+                    operand_lsh(
+                        operand_and(
+                            in_rm.clone(),
+                            c_ff00.clone(),
+                        ),
+                        c_10.clone(),
+                    ),
+                ),
+            )));
+        }
+        Ok(out)
+    }
+
+    fn mov_sse_6e(&self) -> Result<OperationVec, Error> {
+        use self::operation_helpers::*;
+        use crate::operand_helpers::*;
+        if !self.has_prefix(0x66) {
+            return Err(Error::UnknownOpcode(self.data.into()));
+        }
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let mut out = SmallVec::new();
+        out.push(mov(self.xmm_variant(&r, 0), rm.clone()));
+        if self.mem16_32() == MemAccessSize::Mem64 {
+            // Movq
+            let rm_high = match rm.ty {
+                OperandType::Register(r) => {
+                    operand_rsh64(
+                        self.ctx.register64(r.0),
+                        self.ctx.const_20(),
+                    )
+                }
+                OperandType::Memory(ref m) => {
+                    mem32(self.word_add(m.address.clone(), self.ctx.const_4()))
+                }
+                _ => unreachable!(),
+            };
+            out.push(mov(self.xmm_variant(&r, 1), rm_high));
+        } else {
+            out.push(mov(self.xmm_variant(&r, 1), self.ctx.const_0()));
+        }
         out.push(mov(self.xmm_variant(&r, 2), self.ctx.const_0()));
         out.push(mov(self.xmm_variant(&r, 3), self.ctx.const_0()));
         Ok(out)

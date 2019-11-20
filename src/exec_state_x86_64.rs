@@ -160,8 +160,6 @@ impl<'a> Destination<'a> {
             }
             Destination::Memory(mem, addr, size) => {
                 if let Some((base, offset)) = Operand::const_offset(&addr, ctx) {
-                    // TODO const_offset64
-                    let offset = offset as u64;
                     let offset_8 = offset & 7;
                     let offset_rest = offset & !7;
                     if offset_8 != 0 {
@@ -712,8 +710,6 @@ impl<'a> ExecutionState<'a> {
 
         // Use 8-aligned addresses if there's a const offset
         if let Some((base, offset)) = Operand::const_offset(&address, self.ctx) {
-            // TODO u64 Operand::const_offset
-            let offset = offset as u64;
             let offset_8 = offset as u32 & 7;
             let offset_rest = offset & !7;
             if offset_8 != 0 {

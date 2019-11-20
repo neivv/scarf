@@ -266,6 +266,24 @@ fn lazy_flag_constraint_invalidation() {
     ]);
 }
 
+#[test]
+fn punpcklbw() {
+    test_inline(&[
+        0x48, 0xb8, 0x44, 0x33, 0x22, 0x11, 0x78, 0x56, 0x34, 0x12, // mov rax, 12345678_11223344
+        0x66, 0x48, 0x0f, 0x6e, 0xc0, // movq xmm0, rax
+        0x48, 0xb9, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, // mov rcx, 99887766_55443322
+        0x48, 0x89, 0x0c, 0x24, // mov [rsp], rcx
+        0x66, 0x0f, 0x60, 0x04, 0x24, // punpcklbw xmm0, [rsp]
+        0x0f, 0x11, 0x04, 0x24, // movups [rsp], xmm0
+        0x48, 0x8b, 0x04, 0x24, // mov rax, [rsp]
+        0x48, 0x8b, 0x4c, 0x24, 0x08, // mov rcx, [rsp + 8]
+        0xc3, // ret
+    ], &[
+         (operand_register64(0), constval64(0x5511_4422_3333_2244)),
+         (operand_register64(1), constval64(0x9912_8834_7756_6678)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
@@ -275,7 +293,10 @@ impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
     type Exec = ExecutionState<'e>;
     fn operation(&mut self, control: &mut Control<'e, '_, '_, Self>, op: &Operation) {
         println!("@ {:x} {:#?}", control.address(), op);
-        if let Operation::Return(_) = *op {
+        if let Operation::Move(_, val, _) = op {
+            println!("Resolved is {}", control.resolve(val));
+        }
+        if let Operation::Return(_) = op {
             let (state, i) = control.exec_state();
             self.end_state = Some((state.clone(), i.clone()));
         }
