@@ -2288,17 +2288,8 @@ impl Operand {
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
-    /// `OperandType::Arithmetic(ArithOpType::Add(left, right))`
-    pub fn if_arithmetic_add(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
-        self.if_arithmetic(ArithOpType::Add, false)
-    }
-
-    /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Add(left, right))` or `Arithmetic64`
-    ///
-    /// Note that add32(a, b) isn't equal to add64(a, b) wrt overflow, but when matching
-    /// on simplified operands, that distinction isn't usually needed.
-    pub fn if_arithmetic_add64(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+    pub fn if_arithmetic_add(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         self.if_arithmetic(ArithOpType::Add, true)
     }
 

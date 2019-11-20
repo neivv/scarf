@@ -1111,12 +1111,12 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
     fn is_switch_jump<VirtualAddress: exec_state::VirtualAddress>(
         to: &Rc<Operand>,
     ) -> Option<(VirtualAddress, &Rc<Operand>, u64, u32)> {
-        let (base, mem) = match to.if_arithmetic_add64() {
+        let (base, mem) = match to.if_arithmetic_add() {
             Some((l, r)) => Operand::either(l, r, |x| x.if_constant64())?,
             None => (0, to),
         };
         mem.if_memory()
-            .and_then(|mem| mem.address.if_arithmetic_add64())
+            .and_then(|mem| mem.address.if_arithmetic_add())
             .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul64()))
             .and_then(|((l, r), switch_table)| {
                 let switch_table = switch_table.if_constant64()?;
