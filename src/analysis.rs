@@ -540,6 +540,15 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
     pub fn mem_word(&self, addr: Rc<Operand>) -> Rc<Operand> {
         A::Exec::operand_mem_word(addr)
     }
+
+    /// Either `op.if_mem32()` or `op.if_mem64()`, depending on word size
+    pub fn if_mem_word<'a>(&self, op: &'a Rc<Operand>) -> Option<&'a Rc<Operand>> {
+        if <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE == 4 {
+            op.if_mem32()
+        } else {
+            op.if_mem64()
+        }
+    }
 }
 
 pub trait Analyzer<'exec> : Sized {
@@ -1131,7 +1140,7 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
             let mut state = Box::new(state.clone());
             let to = state.0.resolve(&to, &mut analysis.interner);
             let is_switch = is_switch_jump::<Exec::VirtualAddress>(&to);
-            if let Some((switch_table, index, base, case_size)) = is_switch {
+            if let Some((switch_table_addr, index, base_addr, case_size)) = is_switch {
                 let mut cases = Vec::new();
                 let code_offset = analysis.binary.code_section().virtual_address;
                 let code_len = analysis.binary.code_section().data.len() as u32;
@@ -1143,8 +1152,9 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                     _ => None,
                 };
                 let ctx = analysis.operand_ctx;
-                let switch_table = ctx.constant64(switch_table.as_u64());
-                let base = ctx.constant64(base);
+                let switch_table = ctx.constant64(switch_table_addr.as_u64());
+                let base = ctx.constant64(base_addr);
+                let binary = analysis.binary;
                 if let Some(mem_size) = mem_size {
                     use crate::operand_helpers::*;
                     let limits = state.0.value_limits(&index);
@@ -1162,6 +1172,12 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                                 ),
                             ),
                         );
+                        if !binary.relocs.is_empty() {
+                            let addr = switch_table_addr + index * case_size;
+                            if binary.relocs.binary_search(&addr).is_err() {
+                                break;
+                            }
+                        }
                         let addr = state.0.resolve(&case, &mut analysis.interner).if_constant64()
                             .map(Exec::VirtualAddress::from_u64)
                             .filter(|&x| x >= code_offset && x < code_offset + code_len);
