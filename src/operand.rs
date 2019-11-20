@@ -2764,7 +2764,37 @@ fn simplify_eq(
                         }
                     }
                 }
-                let op = mark_self_simplified(&ops[0].0);
+                let mut op = None;
+                // Simplify (x << c2) == 0 to x if c2 cannot shift any bits out
+                match ops[0].0.ty {
+                    OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith)
+                        if arith.ty == ArithOpType::Lsh =>
+                    {
+                        let size = match ops[0].0.ty.expr_size() {
+                            MemAccessSize::Mem64 => 64u32,
+                            _ => 32,
+                        };
+                        if let Some(c2) = arith.right.if_constant() {
+                            if size.saturating_sub(c2) >= arith.left.relevant_bits().end as u32 {
+                                op = Some(arith.left.clone());
+                            }
+                        }
+                    }
+                    OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith)
+                        if arith.ty == ArithOpType::Rsh =>
+                    {
+                        if let Some(c2) = arith.right.if_constant() {
+                            if c2 <= arith.left.relevant_bits().start as u32 {
+                                op = Some(arith.left.clone());
+                            }
+                        }
+                    }
+                    _ => ()
+                }
+                let op = match op {
+                    Some(s) => s,
+                    None => mark_self_simplified(&ops[0].0),
+                };
                 let arith = ArithOperand {
                     ty: ArithOpType::Equal,
                     left: op,
@@ -3211,6 +3241,7 @@ fn simplify_and(
         1 => return ops.remove(0),
         _ => (),
     };
+    ops.sort();
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_0());
     if !is_64 {
@@ -7093,6 +7124,47 @@ mod test {
         let eq2 = operand_eq(
             operand_register(0),
             operand_register(2),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_unnecessary_shift_in_eq_zero() {
+        use super::operand_helpers::*;
+        let op1 = operand_eq(
+            operand_lsh(
+                operand_and(
+                    mem8(operand_register(4)),
+                    constval(8),
+                ),
+                constval(0xc),
+            ),
+            constval(0),
+        );
+        let eq1 = operand_eq(
+            operand_and(
+                mem8(operand_register(4)),
+                constval(8),
+            ),
+            constval(0),
+        );
+        let op2 = operand_eq(
+            operand_rsh(
+                operand_and(
+                    mem8(operand_register(4)),
+                    constval(8),
+                ),
+                constval(1),
+            ),
+            constval(0),
+        );
+        let eq2 = operand_eq(
+            operand_and(
+                mem8(operand_register(4)),
+                constval(8),
+            ),
+            constval(0),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
