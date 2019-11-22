@@ -3483,10 +3483,11 @@ fn simplify_lsh(
                     let zero_bits = (bit_size - constant as u8)..bit_size;
                     let mut ops = vec![];
                     Operand::collect_and_ops(&left, &mut ops, ctx);
-                    let low = zero_bits.start;
+                    let high = zero_bits.start;
+                    let low = left.relevant_bits().start;
                     // If we have and mask of 0xffff,
                     // and lsh is shifting left by 0x10, the mask isn't relevant
-                    let no_op_mask = !(!0u64 >> low << low);
+                    let no_op_mask = !0u64 >> low << low << high >> high;
                     ops.retain(|x| match x.if_constant64() {
                         Some(c) => c != no_op_mask,
                         _ => true,
@@ -3685,13 +3686,14 @@ fn simplify_rsh(
                     let zero_bits = 0..(constant as u8);
                     let mut ops = vec![];
                     Operand::collect_and_ops(&left, &mut ops, ctx);
-                    let high = bit_size - zero_bits.end;
+                    let low = bit_size - zero_bits.end;
+                    let high = bit_size - left.relevant_bits().end;
                     // If we have and mask of 0xffff0000,
                     // and rsh is shifting right by 0x10, the mask isn't relevant
                     let no_op_mask = if bit_size == 32 {
-                        !(!0u32 << high >> high) as u64
+                        (!0u32 >> low << low << high >> high) as u64
                     } else {
-                        !(!0u64 << high >> high)
+                        (!0u64 >> low << low << high >> high)
                     };
                     ops.retain(|x| match x.if_constant64() {
                         Some(c) => c != no_op_mask,
@@ -7328,4 +7330,25 @@ mod test {
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
+
+    #[test]
+    fn simplify_unnecessary_and_in_shifts() {
+        use super::operand_helpers::*;
+        let op1 = operand_rsh(
+            operand_and(
+                operand_lsh(
+                    mem8(constval(0x100)),
+                    constval(0xd),
+                ),
+                constval(0x1f0000),
+            ),
+            constval(0x10),
+        );
+        let eq1 = operand_rsh(
+            mem8(constval(0x100)),
+            constval(0x3),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
 }
