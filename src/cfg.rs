@@ -83,6 +83,9 @@ impl<S: CfgState> Cfg<S> {
 
     /// Tries to replace a block with a jump to another one which starts in middle of current.
     pub fn merge_overlapping_blocks(&mut self) {
+        if self.nodes.is_empty() {
+            return;
+        }
         // TODO: Handle instructions inside instructions
         for i in 0..self.nodes.len() - 1 {
             let (left, rest) = self.nodes.split_at_mut(i + 1);
