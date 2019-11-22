@@ -882,7 +882,7 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
     }
 
     fn branch_end(&mut self, control: &mut Control<'exec, '_, '_, Self>) {
-        self.inner.branch_start(&mut control.cast())
+        self.inner.branch_end(&mut control.cast())
     }
 
     fn operation(&mut self, control: &mut Control<'exec, '_, '_, Self>, op: &Operation) {

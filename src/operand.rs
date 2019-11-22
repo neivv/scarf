@@ -372,14 +372,8 @@ impl ArithOperand {
     /// Helper function for simplification. Take care with behaviour of Arith64 -> Arith
     /// conversion.
     fn truncate_operands_to_32bit(&self, ctx: &OperandContext) -> Option<ArithOperand> {
-        let first_needs_trunc = match self.left.ty.expr_size() {
-            MemAccessSize::Mem8 | MemAccessSize::Mem16 | MemAccessSize::Mem32 => false,
-            MemAccessSize::Mem64 => true,
-        };
-        let second_needs_trunc = match self.right.ty.expr_size() {
-            MemAccessSize::Mem8 | MemAccessSize::Mem16 | MemAccessSize::Mem32 => false,
-            MemAccessSize::Mem64 => true,
-        };
+        let first_needs_trunc = self.left.relevant_bits().end > 32;
+        let second_needs_trunc = self.right.relevant_bits().end > 32;
         if first_needs_trunc || second_needs_trunc {
             let left = if first_needs_trunc {
                 Operand::truncate_to_32bit(&self.left, ctx)
@@ -1241,11 +1235,19 @@ impl Operand {
     }
 
     fn truncate_to_32bit(operand: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+        use self::operand_helpers::*;
         match operand.ty {
             OperandType::Constant64(c) => ctx.constant(c as u32),
             OperandType::Register64(r) => ctx.register(r.0),
-            OperandType::Arithmetic64(_) | OperandType::Undefined(_) | OperandType::Custom(_) => {
-                self::operand_helpers::operand_and64(operand.clone(), ctx.const_ffffffff())
+            OperandType::Arithmetic64(ref arith) => {
+                if arith.left.relevant_bits().end > 32 || arith.right.relevant_bits().end > 32 {
+                    operand_and(operand.clone(), ctx.const_ffffffff())
+                } else {
+                    operand_arith(arith.ty, arith.left.clone(), arith.right.clone())
+                }
+            }
+            OperandType::Undefined(_) | OperandType::Custom(_) => {
+                operand_and(operand.clone(), ctx.const_ffffffff())
             }
             _ => operand.clone(),
         }
@@ -1256,34 +1258,36 @@ impl Operand {
         ops: &mut Vec<(Rc<Operand>, bool)>,
         ctx: &OperandContext,
         negate: bool,
+        bit_size: u8,
     ) {
         fn recurse(
             s: &Rc<Operand>,
             ops: &mut Vec<(Rc<Operand>, bool)>,
             ctx: &OperandContext,
             negate: bool,
+            bit_size: u8,
             trunc_to_32: bool,
         )  {
             match s.ty {
                 OperandType::Arithmetic(ref arith) if {
                     arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
                 } => {
-                    recurse(&arith.left, ops, ctx, negate, true);
+                    recurse(&arith.left, ops, ctx, negate, bit_size, bit_size != 32);
                     let negate_right = match arith.ty {
                         ArithOpType::Add => negate,
                         _ => !negate,
                     };
-                    recurse(&arith.right, ops, ctx, negate_right, true);
+                    recurse(&arith.right, ops, ctx, negate_right, bit_size, bit_size != 32);
                 }
                 OperandType::Arithmetic64(ref arith) if {
                     arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
                 } => {
-                    recurse(&arith.left, ops, ctx, negate, trunc_to_32);
+                    recurse(&arith.left, ops, ctx, negate, bit_size, bit_size != 64);
                     let negate_right = match arith.ty {
                         ArithOpType::Add => negate,
                         _ => !negate,
                     };
-                    recurse(&arith.right, ops, ctx, negate_right, trunc_to_32);
+                    recurse(&arith.right, ops, ctx, negate_right, bit_size, bit_size != 64);
                 }
                 _ => {
                     let mut s = s.clone();
@@ -1292,7 +1296,7 @@ impl Operand {
                         s = Operand::simplified(s);
                         if let OperandType::Arithmetic(ref arith) = s.ty {
                             if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
-                                recurse(&s, ops, ctx, negate, trunc_to_32);
+                                recurse(&s, ops, ctx, negate, bit_size, trunc_to_32);
                                 return;
                             }
                         }
@@ -1301,12 +1305,12 @@ impl Operand {
                         let op = Operand::simplified(Operand::truncate_to_32bit(&s, ctx));
                         ops.push((op, negate));
                     } else {
-                        ops.push((Operand::simplified(s.clone()), negate));
+                        ops.push((s.clone(), negate));
                     }
                 }
             }
         }
-        recurse(s, ops, ctx, negate, false)
+        recurse(s, ops, ctx, negate, bit_size, false)
     }
 
     fn collect_mul_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
@@ -1314,27 +1318,22 @@ impl Operand {
             s: &Rc<Operand>,
             ops: &mut Vec<Rc<Operand>>,
             ctx: &OperandContext,
-            trunc_to_32: bool,
         )  {
             match s.ty {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Mul => {
-                    recurse(&arith.left, ops, ctx, true);
-                    recurse(&arith.right, ops, ctx, true);
+                    recurse(&arith.left, ops, ctx);
+                    recurse(&arith.right, ops, ctx);
                 }
                 OperandType::Arithmetic64(ref arith) if arith.ty == ArithOpType::Mul => {
-                    recurse(&arith.left, ops, ctx, trunc_to_32);
-                    recurse(&arith.right, ops, ctx, trunc_to_32);
+                    recurse(&arith.left, ops, ctx);
+                    recurse(&arith.right, ops, ctx);
                 }
                 _ => {
-                    if trunc_to_32 && s.relevant_bits().end > 32 {
-                        ops.push(Operand::simplified(Operand::truncate_to_32bit(s, ctx)));
-                    } else {
-                        ops.push(Operand::simplified(s.clone()));
-                    }
+                    ops.push(Operand::simplified(s.clone()));
                 }
             }
         }
-        recurse(s, ops, ctx, false)
+        recurse(s, ops, ctx)
     }
 
     fn collect_signed_mul_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
@@ -1354,27 +1353,22 @@ impl Operand {
             s: &Rc<Operand>,
             ops: &mut Vec<Rc<Operand>>,
             ctx: &OperandContext,
-            trunc_to_32: bool,
         )  {
             match s.ty {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
-                    recurse(&arith.left, ops, ctx, true);
-                    recurse(&arith.right, ops, ctx, true);
+                    recurse(&arith.left, ops, ctx);
+                    recurse(&arith.right, ops, ctx);
                 }
                 OperandType::Arithmetic64(ref arith) if arith.ty == ArithOpType::And => {
-                    recurse(&arith.left, ops, ctx, trunc_to_32);
-                    recurse(&arith.right, ops, ctx, trunc_to_32);
+                    recurse(&arith.left, ops, ctx);
+                    recurse(&arith.right, ops, ctx);
                 }
                 _ => {
-                    if trunc_to_32 && s.relevant_bits().end > 32 {
-                        ops.push(Operand::simplified(Operand::truncate_to_32bit(s, ctx)));
-                    } else {
-                        ops.push(Operand::simplified(s.clone()));
-                    }
+                    ops.push(Operand::simplified(s.clone()));
                 }
             }
         }
-        recurse(s, ops, ctx, false)
+        recurse(s, ops, ctx)
     }
 
     fn collect_or_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
@@ -1382,23 +1376,22 @@ impl Operand {
             s: &Rc<Operand>,
             ops: &mut Vec<Rc<Operand>>,
             ctx: &OperandContext,
-            trunc_to_32: bool,
         )  {
             match s.ty {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Or => {
-                    recurse(&arith.left, ops, ctx, true);
-                    recurse(&arith.right, ops, ctx, true);
+                    recurse(&arith.left, ops, ctx);
+                    recurse(&arith.right, ops, ctx);
                 }
                 OperandType::Arithmetic64(ref arith) if arith.ty == ArithOpType::Or => {
-                    recurse(&arith.left, ops, ctx, trunc_to_32);
-                    recurse(&arith.right, ops, ctx, trunc_to_32);
+                    recurse(&arith.left, ops, ctx);
+                    recurse(&arith.right, ops, ctx);
                 }
                 _ => {
                     ops.push(Operand::simplified(s.clone()));
                 }
             }
         }
-        recurse(s, ops, ctx, false)
+        recurse(s, ops, ctx)
     }
 
     fn collect_xor_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
@@ -1406,23 +1399,22 @@ impl Operand {
             s: &Rc<Operand>,
             ops: &mut Vec<Rc<Operand>>,
             ctx: &OperandContext,
-            trunc_to_32: bool,
         )  {
             match s.ty {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Xor => {
-                    recurse(&arith.left, ops, ctx, true);
-                    recurse(&arith.right, ops, ctx, true);
+                    recurse(&arith.left, ops, ctx);
+                    recurse(&arith.right, ops, ctx);
                 }
                 OperandType::Arithmetic64(ref arith) if arith.ty == ArithOpType::Xor => {
-                    recurse(&arith.left, ops, ctx, trunc_to_32);
-                    recurse(&arith.right, ops, ctx, trunc_to_32);
+                    recurse(&arith.left, ops, ctx);
+                    recurse(&arith.right, ops, ctx);
                 }
                 _ => {
                     ops.push(Operand::simplified(s.clone()));
                 }
             }
         }
-        recurse(s, ops, ctx, false)
+        recurse(s, ops, ctx)
     }
 
     // "Simplify bitwise and: merge child ors"
@@ -2777,8 +2769,8 @@ fn simplify_add_sub_ops(
     ctx: &OperandContext,
 ) -> Vec<(Rc<Operand>, bool)> {
     let mut ops = Vec::new();
-    Operand::collect_add_ops(left, &mut ops, ctx, false);
-    Operand::collect_add_ops(right, &mut ops, ctx, is_sub);
+    Operand::collect_add_ops(left, &mut ops, ctx, false, bit_size);
+    Operand::collect_add_ops(right, &mut ops, ctx, is_sub, bit_size);
     let const_sum = ops.iter()
         .flat_map(|&(ref x, neg)| x.if_constant64().map(|x| (x, neg)))
         .fold(0u64, |sum, (x, neg)| match neg {
