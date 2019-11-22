@@ -436,7 +436,7 @@ impl<'a> ExecutionState<'a> {
                 let value = value.clone();
                 if let Some(cond) = cond {
                     let cond = Operand::simplified(cond.clone());
-                    match self.resolve_apply_constraints(&cond, intern_map).if_constant() {
+                    match self.resolve(&cond, intern_map).if_constant() {
                         Some(0) => (),
                         Some(_) => {
                             self.move_to(&dest, value, intern_map);
