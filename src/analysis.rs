@@ -824,39 +824,79 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         Exec::VirtualAddress,
         &mut InternMap,
     ) {
-        while let Some(mut branch) = self.next_branch() {
-            let mut ops = branch.operations();
-            while let Some((a, b, c, d)) = ops.next() {
-                hook(a, b, c, d);
-            }
-        }
+        let mut analyzer = RunHookAnalyzer {
+            phantom: Default::default(),
+            hook: &mut hook,
+        };
+        self.analyze(&mut analyzer);
+
         let mut cfg = self.cfg;
         cfg.merge_overlapping_blocks();
         let binary = self.binary;
         let ctx = self.operand_ctx;
         cfg.resolve_cond_jump_operands(|condition, address, end_address| {
             let mut analysis = FuncAnalysis::new(binary, ctx, address);
-            let mut branch = analysis.next_branch()
-                .expect("New analysis should always have a branch.");
-            let mut ops = branch.operations();
-            while let Some((op, state, address, i)) = ops.next() {
-                hook(op, state, address, i);
-                let final_op = if address == end_address {
-                    true
-                } else {
-                    match *op {
-                        Operation::Jump { .. } | Operation::Return(_) => true,
-                        _ => false,
-                    }
-                };
-                if final_op {
-                    return state.resolve(condition, i);
-                }
-            }
-            return condition.clone();
+            let mut analyzer = FinishAnalyzer {
+                hook: &mut hook,
+                end_address,
+                result: condition.clone(),
+                condition,
+            };
+            analysis.analyze(&mut analyzer);
+            analyzer.result
         });
         cfg.interner = self.interner;
         (cfg, self.errors)
+    }
+}
+
+struct RunHookAnalyzer<'e, F, Exec: ExecutionState<'e>, S: AnalysisState> {
+    phantom: std::marker::PhantomData<(&'e (), *const Exec, *const S)>,
+    hook: F,
+}
+
+impl<'e, F, Exec, S> Analyzer<'e> for RunHookAnalyzer<'e, F, Exec, S>
+where F: FnMut(&Operation, &mut Exec, Exec::VirtualAddress, &mut InternMap),
+      Exec: ExecutionState<'e>,
+      S: AnalysisState,
+{
+    type State = S;
+    type Exec = Exec;
+    fn operation(&mut self, ctrl: &mut Control<'e, '_, '_, Self>, op: &Operation) {
+        let address = ctrl.address();
+        let (state, i) = ctrl.exec_state();
+        (self.hook)(op, state, address, i);
+    }
+}
+
+struct FinishAnalyzer<'a, 'e, F, Exec: ExecutionState<'e>> {
+    hook: F,
+    result: Rc<Operand>,
+    end_address: Exec::VirtualAddress,
+    condition: &'a Rc<Operand>,
+}
+
+impl<'a, 'e, F, Exec: ExecutionState<'e>> Analyzer<'e> for FinishAnalyzer<'a, 'e, F, Exec>
+where F: FnMut(&Operation, &mut Exec, Exec::VirtualAddress, &mut InternMap)
+{
+    type State = DefaultState;
+    type Exec = Exec;
+    fn operation(&mut self, ctrl: &mut Control<'e, '_, '_, Self>, op: &Operation) {
+        let address = ctrl.address();
+        let (state, i) = ctrl.exec_state();
+        (self.hook)(op, state, address, i);
+        let final_op = if address == self.end_address {
+            true
+        } else {
+            match *op {
+                Operation::Jump { .. } | Operation::Return(_) => true,
+                _ => false,
+            }
+        };
+        if final_op {
+            self.result = ctrl.resolve(self.condition);
+            ctrl.end_analysis();
+        }
     }
 }
 
