@@ -454,7 +454,12 @@ fn is_subset(sub: &Rc<Operand>, sup: &Rc<Operand>) -> bool {
 /// Trait for disassembling instructions
 pub trait Disassembler<'disasm_bytes> {
     type VirtualAddress: VirtualAddress;
-    fn new(buf: &'disasm_bytes [u8], pos: usize, address: Self::VirtualAddress) -> Self;
+    fn new(
+        buf: &'disasm_bytes [u8],
+        pos: usize,
+        address: Self::VirtualAddress,
+        ctx: &OperandContext,
+    ) -> Self;
     fn next(&mut self, ctx: &OperandContext) ->
         Result<Instruction<Self::VirtualAddress>, disasm::Error>;
     fn address(&self) -> Self::VirtualAddress;

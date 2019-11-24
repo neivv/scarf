@@ -682,6 +682,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             &section.data,
             rva,
             section.virtual_address,
+            operand_ctx,
         );
 
         let init_state = control.inner.state.clone();
@@ -939,6 +940,7 @@ impl<'a, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState> Branch<'a, 'e
                 &self.analysis.binary.code_section().data,
                 pos,
                 self.analysis.binary.code_section().virtual_address,
+                self.analysis.operand_ctx,
             ),
             current_ins: None,
             ins_pos: 0,

@@ -218,13 +218,6 @@ impl fmt::Display for Operand {
                 7 => write!(f, "di"),
                 x => write!(f, "r16_{}", x),
             },
-            OperandType::Register8High(r) => match r.0 {
-                0 => write!(f, "ah"),
-                1 => write!(f, "ch"),
-                2 => write!(f, "dh"),
-                3 => write!(f, "bh"),
-                x => write!(f, "r8hi_{}", x),
-            },
             OperandType::Register8Low(r) => match r.0 {
                 0 => write!(f, "al"),
                 1 => write!(f, "cl"),
@@ -306,7 +299,6 @@ impl fmt::Display for Operand {
 pub enum OperandType {
     Register(Register),
     Register16(Register),
-    Register8High(Register),
     Register8Low(Register),
     Register64(Register),
     // For div, as it sets eax to (edx:eax / x), and edx to (edx:eax % x)
@@ -412,7 +404,6 @@ struct OperandCtxGlobals {
     registers: [Rc<Operand>; 16],
     registers16: [Rc<Operand>; 16],
     registers8_low: [Rc<Operand>; 16],
-    registers8_high: [Rc<Operand>; 4],
     registers64: [Rc<Operand>; 16],
     flag_z: Rc<Operand>,
     flag_c: Rc<Operand>,
@@ -630,12 +621,6 @@ impl OperandCtxGlobals {
                 Operand::new_simplified_rc(OperandType::Register8Low(Register(14))),
                 Operand::new_simplified_rc(OperandType::Register8Low(Register(15))),
             ],
-            registers8_high: [
-                Operand::new_simplified_rc(OperandType::Register8High(Register(0))),
-                Operand::new_simplified_rc(OperandType::Register8High(Register(1))),
-                Operand::new_simplified_rc(OperandType::Register8High(Register(2))),
-                Operand::new_simplified_rc(OperandType::Register8High(Register(3))),
-            ],
             registers64: [
                 Operand::new_simplified_rc(OperandType::Register64(Register(0))),
                 Operand::new_simplified_rc(OperandType::Register64(Register(1))),
@@ -717,10 +702,6 @@ impl OperandContext {
 
     pub fn register8_low(&self, index: u8) -> Rc<Operand> {
         self.globals.registers8_low[index as usize].clone()
-    }
-
-    pub fn register8_high(&self, index: u8) -> Rc<Operand> {
-        self.globals.registers8_high[index as usize].clone()
     }
 
     pub fn register64(&self, index: u8) -> Rc<Operand> {
@@ -835,7 +816,6 @@ impl fmt::Debug for OperandType {
         match self {
             Register(r) => write!(f, "Register({})", r.0),
             Register16(r) => write!(f, "Register16({})", r.0),
-            Register8High(r) => write!(f, "Register8High({})", r.0),
             Register8Low(r) => write!(f, "Register8Low({})", r.0),
             Register64(r) => write!(f, "Register64({})", r.0),
             Xmm(r, x) => write!(f, "Xmm({}.{})", r, x),
@@ -1097,7 +1077,6 @@ impl OperandType {
                     trailing..(64 - leading)
                 }
             }
-            OperandType::Register8High(..) => 8..16,
             _ => match self.expr_size() {
                 MemAccessSize::Mem8 => 0..8,
                 MemAccessSize::Mem16 => 0..16,
@@ -1116,7 +1095,7 @@ impl OperandType {
             Memory(ref mem) => mem.size,
             Register(..) | Arithmetic(..) | Pair(..) | Xmm(..) | Flag(..) | Constant(..) |
                 ArithmeticHigh(..) | Fpu(..) | ArithmeticF32(..) => MemAccessSize::Mem32,
-            Register16(..) | Register8High(..) => MemAccessSize::Mem16,
+            Register16(..) => MemAccessSize::Mem16,
             Register8Low(..) => MemAccessSize::Mem8,
             Register64(..) | Constant64(..) | Arithmetic64(..) | Undefined(..) |
                 Custom(..) => MemAccessSize::Mem64,
@@ -1517,7 +1496,6 @@ impl Operand {
                 OperandType::Register64(_) => Some((0xffff_ffff_ffff_ffff, op)),
                 OperandType::Register(_) => Some((0xffff_ffff, op)),
                 OperandType::Register16(_) => Some((0xffff, op)),
-                OperandType::Register8High(_) => Some((0xff00, op)),
                 OperandType::Register8Low(_) => Some((0xff, op)),
                 OperandType::Memory(ref mem) => match mem.size {
                     MemAccessSize::Mem8 => Some((0xff, op)),
@@ -1580,7 +1558,6 @@ impl Operand {
         // Return (is_high, reg_id)
         fn is_reg8(op: &Rc<Operand>) -> Option<(bool, u8)> {
             match op.ty {
-                OperandType::Register8High(r) => Some((true, r.0)),
                 OperandType::Register8Low(r) => Some((false, r.0)),
                 _ => None,
             }
@@ -1597,139 +1574,6 @@ impl Operand {
                             new = Some(ctx.register16(r));
                             other_op.remove();
                         }
-                    }
-                }
-            }
-            if let Some(new) = new {
-                *op = new;
-            }
-        }
-    }
-
-    // Simplify or: merge memory
-    // Converts (Mem32[x] >> 8) | (Mem32[x + 4] << 18) to Mem32[x + 1]
-    // Also used for xor since x ^ y == x | y if x and y do not overlap at all.
-    fn simplify_or_merge_mem(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
-        use self::operand_helpers::*;
-
-        // Return (offset, len, value_offset, was_64bit_addr)
-        fn is_offset_mem(
-            op: &Rc<Operand>,
-            ctx: &OperandContext,
-        ) -> Option<(Rc<Operand>, (u64, u32, u32, bool))> {
-            match op.ty {
-                OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith)
-                    if arith.ty == ArithOpType::Lsh =>
-                {
-                    let limit = match op.ty {
-                        OperandType::Arithmetic(..) => 0x20,
-                        _ => 0x40,
-                    };
-                    if let Some(c) = arith.right.if_constant() {
-                        if c & 0x7 == 0 && c < limit {
-                            let bytes = c / 8;
-                            return is_offset_mem(&arith.left, ctx)
-                                .map(|(x, (off, len, val_off, addr_64))| {
-                                    (x, (off, len, val_off + bytes, addr_64))
-                                });
-                        }
-                    }
-                    None
-                }
-                OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith)
-                    if arith.ty == ArithOpType::Rsh =>
-                {
-                    let limit = match op.ty {
-                        OperandType::Arithmetic(..) => 0x20,
-                        _ => 0x40,
-                    };
-                    if let Some(c) = arith.right.if_constant() {
-                        if c & 0x7 == 0 && c < limit {
-                            let bytes = c / 8;
-                            return is_offset_mem(&arith.left, ctx)
-                                .and_then(|(x, (off, len, val_off, addr_64))| {
-                                    if bytes < len {
-                                        let off = off.wrapping_add(bytes as u64);
-                                        Some((x, (off, len - bytes, val_off, addr_64)))
-                                    } else {
-                                        None
-                                    }
-                                });
-                        }
-                    }
-                    None
-                }
-                OperandType::Memory(ref mem) => {
-                    let len = match mem.size {
-                        MemAccessSize::Mem64 => 8,
-                        MemAccessSize::Mem32 => 4,
-                        MemAccessSize::Mem16 => 2,
-                        MemAccessSize::Mem8 => 1,
-                    };
-                    let was_64bit_addr = mem.address.ty.expr_size() == MemAccessSize::Mem64;
-
-                    Some(Operand::const_offset(&mem.address, ctx)
-                        .map(|(val, off)| (val, (off, len, 0, was_64bit_addr)))
-                        .unwrap_or_else(|| (mem.address.clone(), (0, len, 0, was_64bit_addr))))
-                }
-                _ => None,
-            }
-        }
-
-        fn try_merge(
-            val: &Rc<Operand>,
-            shift: (u64, u32, u32, bool),
-            other_shift: (u64, u32, u32, bool),
-            ctx: &OperandContext,
-        ) -> Option<Rc<Operand>> {
-            let (shift, other_shift) = match (shift.2, other_shift.2) {
-                (0, 0) => return None,
-                (0, _) => (shift, other_shift),
-                (_, 0) => (other_shift, shift),
-                _ => return None,
-            };
-            let (off1, len1, _, addr_64) = shift;
-            let (off2, len2, val_off2, addr_64_2) = other_shift;
-            if off1.wrapping_add(len1 as u64) != off2 || len1 != val_off2 {
-                return None;
-            }
-            let addr = if addr_64 || addr_64_2 {
-                operand_add64(val.clone(), ctx.constant64(off1))
-            } else {
-                operand_add(val.clone(), ctx.constant64(off1))
-            };
-            let oper = match (len1 + len2).min(4) {
-                1 => mem_variable_rc(MemAccessSize::Mem8, addr),
-                2 => mem_variable_rc(MemAccessSize::Mem16, addr),
-                3 => operand_and(
-                    mem_variable_rc(MemAccessSize::Mem32, addr),
-                    ctx.constant(0x00ff_ffff),
-                ),
-                4 => mem_variable_rc(MemAccessSize::Mem32, addr),
-                _ => return None,
-            };
-            Some(oper)
-        }
-
-        let mut iter = VecDropIter::new(ops);
-        while let Some(mut op) = iter.next() {
-            let mut new = None;
-            if let Some((val, shift)) = is_offset_mem(&op, ctx) {
-                let mut second = iter.duplicate();
-                while let Some(other_op) = second.next_removable() {
-                    let mut remove = false;
-                    if let Some((other_val, other_shift)) = is_offset_mem(&other_op, ctx) {
-                        if val == other_val {
-                            let result = try_merge(&val, other_shift, shift, ctx);
-                            if let Some(merged) = result {
-                                new = Some(Operand::simplified(merged));
-                                remove = true;
-                            }
-                        }
-                    }
-                    if remove {
-                        other_op.remove();
-                        break;
                     }
                 }
             }
@@ -2454,6 +2298,139 @@ impl Operand {
     }
 }
 
+/// Return (offset, len, value_offset, was_64bit_addr)
+fn is_offset_mem(
+    op: &Rc<Operand>,
+    ctx: &OperandContext,
+) -> Option<(Rc<Operand>, (u64, u32, u32, bool))> {
+    match op.ty {
+        OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith)
+            if arith.ty == ArithOpType::Lsh =>
+        {
+            let limit = match op.ty {
+                OperandType::Arithmetic(..) => 0x20,
+                _ => 0x40,
+            };
+            if let Some(c) = arith.right.if_constant() {
+                if c & 0x7 == 0 && c < limit {
+                    let bytes = c / 8;
+                    return is_offset_mem(&arith.left, ctx)
+                        .map(|(x, (off, len, val_off, addr_64))| {
+                            (x, (off, len, val_off + bytes, addr_64))
+                        });
+                }
+            }
+            None
+        }
+        OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith)
+            if arith.ty == ArithOpType::Rsh =>
+        {
+            let limit = match op.ty {
+                OperandType::Arithmetic(..) => 0x20,
+                _ => 0x40,
+            };
+            if let Some(c) = arith.right.if_constant() {
+                if c & 0x7 == 0 && c < limit {
+                    let bytes = c / 8;
+                    return is_offset_mem(&arith.left, ctx)
+                        .and_then(|(x, (off, len, val_off, addr_64))| {
+                            if bytes < len {
+                                let off = off.wrapping_add(bytes as u64);
+                                Some((x, (off, len - bytes, val_off, addr_64)))
+                            } else {
+                                None
+                            }
+                        });
+                }
+            }
+            None
+        }
+        OperandType::Memory(ref mem) => {
+            let len = match mem.size {
+                MemAccessSize::Mem64 => 8,
+                MemAccessSize::Mem32 => 4,
+                MemAccessSize::Mem16 => 2,
+                MemAccessSize::Mem8 => 1,
+            };
+            let was_64bit_addr = mem.address.ty.expr_size() == MemAccessSize::Mem64;
+
+            Some(Operand::const_offset(&mem.address, ctx)
+                .map(|(val, off)| (val, (off, len, 0, was_64bit_addr)))
+                .unwrap_or_else(|| (mem.address.clone(), (0, len, 0, was_64bit_addr))))
+        }
+        _ => None,
+    }
+}
+
+fn try_merge_memory(
+    val: &Rc<Operand>,
+    shift: (u64, u32, u32, bool),
+    other_shift: (u64, u32, u32, bool),
+    ctx: &OperandContext,
+) -> Option<Rc<Operand>> {
+    use self::operand_helpers::*;
+    let (shift, other_shift) = match (shift.2, other_shift.2) {
+        (0, 0) => return None,
+        (0, _) => (shift, other_shift),
+        (_, 0) => (other_shift, shift),
+        _ => return None,
+    };
+    let (off1, len1, _, addr_64) = shift;
+    let (off2, len2, val_off2, addr_64_2) = other_shift;
+    if off1.wrapping_add(len1 as u64) != off2 || len1 != val_off2 {
+        return None;
+    }
+    let addr = if addr_64 || addr_64_2 {
+        operand_add64(val.clone(), ctx.constant64(off1))
+    } else {
+        operand_add(val.clone(), ctx.constant64(off1))
+    };
+    let oper = match (len1 + len2).min(4) {
+        1 => mem_variable_rc(MemAccessSize::Mem8, addr),
+        2 => mem_variable_rc(MemAccessSize::Mem16, addr),
+        3 => operand_and(
+            mem_variable_rc(MemAccessSize::Mem32, addr),
+            ctx.constant(0x00ff_ffff),
+        ),
+        4 => mem_variable_rc(MemAccessSize::Mem32, addr),
+        _ => return None,
+    };
+    Some(oper)
+}
+
+/// Simplify or: merge memory
+/// Converts (Mem32[x] >> 8) | (Mem32[x + 4] << 18) to Mem32[x + 1]
+/// Also used for xor since x ^ y == x | y if x and y do not overlap at all.
+fn simplify_or_merge_mem(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
+    let mut iter = VecDropIter::new(ops);
+    while let Some(mut op) = iter.next() {
+        let mut new = None;
+        if let Some((val, shift)) = is_offset_mem(&op, ctx) {
+            let mut second = iter.duplicate();
+            while let Some(other_op) = second.next_removable() {
+                let mut remove = false;
+                if let Some((other_val, other_shift)) = is_offset_mem(&other_op, ctx) {
+                    if val == other_val {
+                        let result = try_merge_memory(&val, other_shift, shift, ctx);
+                        if let Some(merged) = result {
+                            new = Some(Operand::simplified(merged));
+                            remove = true;
+                        }
+                    }
+                }
+                if remove {
+                    other_op.remove();
+                    break;
+                }
+            }
+        }
+        if let Some(new) = new {
+            *op = new;
+        }
+    }
+}
+
+
 fn simplify_add_sub(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
@@ -3013,7 +2990,6 @@ fn simplify_eq_2_ops(
             }
             OperandType::Register8Low(_) => Some((0xff, x)),
             OperandType::Register16(_) => Some((0xffff, x)),
-            OperandType::Register8High(_) => Some((0xff00, x)),
             OperandType::Memory(ref mem) => {
                 match mem.size {
                     MemAccessSize::Mem8 => Some((0xff, x)),
@@ -3126,6 +3102,16 @@ fn try_merge_ands(
             return Some(ctx.constant64(a | b));
         }
     }
+    if let Some((val, shift)) = is_offset_mem(a, ctx) {
+        if let Some((other_val, other_shift)) = is_offset_mem(b, ctx) {
+            if val == other_val {
+                let result = try_merge_memory(&val, other_shift, shift, ctx);
+                if let Some(merged) = result {
+                    return Some(merged);
+                }
+            }
+        }
+    }
     match (&a.ty, &b.ty) {
         (&OperandType::Arithmetic(ref c), &OperandType::Arithmetic(ref d)) |
             (&OperandType::Arithmetic64(ref c), &OperandType::Arithmetic64(ref d)) =>
@@ -3176,13 +3162,11 @@ fn try_merge_ands(
         _ => {
             match a.ty {
                 OperandType::Register64(ar) | OperandType::Register(ar) |
-                    OperandType::Register16(ar) | OperandType::Register8Low(ar) |
-                    OperandType::Register8High(ar) =>
+                    OperandType::Register16(ar) | OperandType::Register8Low(ar) =>
                 {
                     match b.ty {
                         OperandType::Register64(br) | OperandType::Register(br) |
-                            OperandType::Register16(br) | OperandType::Register8Low(br) |
-                            OperandType::Register8High(br) =>
+                            OperandType::Register16(br) | OperandType::Register8Low(br) =>
                         {
                             // Merge two parts of same register to one that includes them both.
                             if ar == br {
@@ -3249,21 +3233,6 @@ fn simplify_and(
         ops.retain(|x| x.if_constant64().is_none());
         if ops.is_empty() || const_remain == 0 {
             return ctx.constant64(const_remain);
-        }
-        // Special-case reg -> Register8High conversions as they cannot be handled with a
-        // single zerobit range
-        if const_remain & 0xff00 == const_remain {
-            for op in &mut ops {
-                match op.ty {
-                    OperandType::Register(r) | OperandType::Register16(r) |
-                        OperandType::Register64(r) => {
-                            if r.0 < 4 {
-                                *op = ctx.register8_high(r.0);
-                            }
-                        }
-                    _ => (),
-                }
-            }
         }
         ops.sort();
         ops.dedup();
@@ -3378,7 +3347,7 @@ fn simplify_or(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
     }
     Operand::simplify_or_merge_child_ands(&mut ops, ctx);
     Operand::simplify_or_merge_xors(&mut ops, ctx);
-    Operand::simplify_or_merge_mem(&mut ops, ctx);
+    simplify_or_merge_mem(&mut ops, ctx);
     Operand::simplify_or_merge_comparisions(&mut ops, ctx);
     if const_val != 0 {
         ops.push(ctx.constant64(const_val));
@@ -4261,9 +4230,6 @@ fn simplify_with_zero_bits(
                 } else if bits.start <= 32 && relevant_bits.end > 32 {
                     return Some(ctx.register(r.0));
                 }
-            } else if bits.start == 0 && bits.end >= 8 && relevant_bits.end == 16 && r.0 < 4{
-                // Can't convert anything other than ax => ah with single zero bit range.
-                return Some(ctx.register8_high(r.0));
             }
         }
         OperandType::Memory(ref mem) => {
@@ -4490,7 +4456,7 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
     ops.retain(|x| x.if_constant64().is_none());
     ops.sort();
     simplify_xor_remove_reverting(ops);
-    Operand::simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
+    simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
     Operand::simplify_xor_merge_regs(ops, ctx); // Yes, this is supposed to stay valid for xors.
     if ops.is_empty() {
         return ctx.constant64(const_val);
@@ -7109,11 +7075,6 @@ mod test {
             constval64(0xffff),
         );
         let eq2 = ctx.register16(0);
-        let op3 = operand_and64(
-            operand_register64(0),
-            constval64(0xff00),
-        );
-        let eq3 = ctx.register8_high(0);
         let op4 = operand_and64(
             operand_register64(0),
             constval64(0xf),
@@ -7124,7 +7085,6 @@ mod test {
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
-        assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
         assert_eq!(Operand::simplified(op4), Operand::simplified(eq4));
     }
 

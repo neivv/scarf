@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use lde::Isa;
@@ -39,18 +40,25 @@ pub struct Disassembler32<'a> {
     pos: usize,
     virtual_address: VirtualAddress32,
     is_branching: bool,
+    register_cache: Rc<RegisterCache>,
 }
 
 impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
     type VirtualAddress = VirtualAddress32;
 
-    fn new(buf: &'a [u8], pos: usize, address: VirtualAddress32) -> Disassembler32<'a> {
+    fn new(
+        buf: &'a [u8],
+        pos: usize,
+        address: VirtualAddress32,
+        ctx: &OperandContext,
+    ) -> Disassembler32<'a> {
         assert!(pos < buf.len());
         Disassembler32 {
             buf,
             pos,
             virtual_address: address,
             is_branching: false,
+            register_cache: RegisterCache::get(&ctx),
         }
     }
 
@@ -68,7 +76,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
         }
         let address = self.virtual_address + self.pos as u32;
         let data = &self.buf[self.pos..self.pos + length];
-        let ops = instruction_operations32(address, data, ctx)?;
+        let ops = instruction_operations32(address, data, ctx, &self.register_cache)?;
         let ins = Instruction {
             address,
             ops,
@@ -94,18 +102,25 @@ pub struct Disassembler64<'a> {
     pos: usize,
     virtual_address: VirtualAddress64,
     is_branching: bool,
+    register_cache: Rc<RegisterCache>,
 }
 
 impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
     type VirtualAddress = VirtualAddress64;
 
-    fn new(buf: &'a [u8], pos: usize, address: VirtualAddress64) -> Disassembler64<'a> {
+    fn new(
+        buf: &'a [u8],
+        pos: usize,
+        address: VirtualAddress64,
+        ctx: &OperandContext,
+    ) -> Disassembler64<'a> {
         assert!(pos < buf.len());
         Disassembler64 {
             buf,
             pos,
             virtual_address: address,
             is_branching: false,
+            register_cache: RegisterCache::get(&ctx),
         }
     }
 
@@ -123,7 +138,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
         }
         let address = self.virtual_address + self.pos as u32;
         let data = &self.buf[self.pos..self.pos + length];
-        let ops = instruction_operations64(address, data, ctx)?;
+        let ops = instruction_operations64(address, data, ctx, &self.register_cache)?;
         let ins = Instruction {
             address,
             ops,
@@ -181,18 +196,62 @@ struct InstructionPrefixes {
     prefix_f3: bool,
 }
 
+struct RegisterCache {
+    register8_high: [Rc<Operand>; 4],
+}
+thread_local! {
+    static REGISTER_CACHE: RefCell<Option<Rc<RegisterCache>>> = RefCell::new(None);
+}
+
+impl RegisterCache {
+    fn get(ctx: &OperandContext) -> Rc<RegisterCache> {
+        REGISTER_CACHE.with(|x| {
+            let mut x = x.borrow_mut();
+            x.get_or_insert_with(|| Rc::new(RegisterCache::new(ctx))).clone()
+        })
+    }
+
+    fn new(ctx: &OperandContext) -> RegisterCache {
+        use crate::operand_helpers::*;
+        let reg8_high = |i: u8| -> Rc<Operand> {
+            Operand::simplified(operand_rsh(
+                operand_and(
+                    ctx.const_ff00(),
+                    ctx.register(i),
+                ),
+                ctx.const_8(),
+            ))
+        };
+
+        RegisterCache {
+            register8_high: [
+                reg8_high(0),
+                reg8_high(1),
+                reg8_high(2),
+                reg8_high(3),
+            ],
+        }
+    }
+
+    fn register8_high(&self, i: u8) -> Rc<Operand> {
+        self.register8_high[i as usize].clone()
+    }
+}
+
 struct InstructionOpsState<'a, 'exec: 'a, Va: VirtualAddress> {
     address: Va,
     data: &'a [u8],
     prefixes: InstructionPrefixes,
     len: u8,
     ctx: &'exec OperandContext,
+    register_cache: &'a RegisterCache,
 }
 
 fn instruction_operations32(
     address: VirtualAddress32,
     data: &[u8],
     ctx: &OperandContext,
+    register_cache: &RegisterCache,
 ) -> Result<SmallVec<[Operation; 8]>, Error> {
     use self::Error::*;
     use self::operation_helpers::*;
@@ -239,6 +298,7 @@ fn instruction_operations32(
         prefixes,
         len: instruction_len as u8,
         ctx,
+        register_cache,
     };
     let first_byte = data[0];
     if !is_ext {
@@ -419,6 +479,7 @@ fn instruction_operations64(
     address: VirtualAddress64,
     data: &[u8],
     ctx: &OperandContext,
+    register_cache: &RegisterCache,
 ) -> Result<SmallVec<[Operation; 8]>, Error> {
     use self::Error::*;
     use self::operation_helpers::*;
@@ -467,6 +528,7 @@ fn instruction_operations64(
         prefixes,
         len: instruction_len as u8,
         ctx,
+        register_cache,
     };
     let first_byte = data[0];
     if !is_ext {
@@ -754,7 +816,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn reg_variable_size(&self, register: Register, op_size: MemAccessSize) -> Rc<Operand> {
         if register.0 >= 4 && self.prefixes.rex_prefix == 0 && op_size == MemAccessSize::Mem8 {
-            self.ctx.register8_high(register.0 - 4)
+            self.register_cache.register8_high((register.0 - 4) & 3)
         } else {
             self.ctx.reg_variable_size(register, op_size)
         }
@@ -2567,6 +2629,31 @@ impl DestOperand {
     pub fn from_oper(val: &Operand) -> DestOperand {
         dest_operand(val)
     }
+
+    pub fn as_operand(&self, ctx: &OperandContext) -> Rc<Operand> {
+        use crate::operand::operand_helpers::*;
+        match *self {
+            DestOperand::Register(x) => ctx.register(x.0),
+            DestOperand::Register16(x) => Operand::simplified(
+                operand_and(ctx.register(x.0), ctx.const_ffff())
+            ),
+            DestOperand::Register8High(x) => Operand::simplified(
+                operand_rsh(
+                    operand_and(ctx.register(x.0), ctx.const_ffff()),
+                    ctx.const_8(),
+                )
+            ),
+            DestOperand::Register8Low(x) => Operand::simplified(
+                operand_and(ctx.register(x.0), ctx.const_ff())
+            ),
+            DestOperand::Register64(x) => ctx.register64(x.0),
+            DestOperand::PairEdxEax => pair_edx_eax(),
+            DestOperand::Xmm(x, y) => Rc::new(Operand::new_xmm(x, y)),
+            DestOperand::Fpu(x) => ctx.register_fpu(x),
+            DestOperand::Flag(x) => ctx.flag(x),
+            DestOperand::Memory(ref x) => mem_variable_rc(x.size, x.address.clone()),
+        }
+    }
 }
 
 fn dest_operand(val: &Operand) -> DestOperand {
@@ -2574,7 +2661,6 @@ fn dest_operand(val: &Operand) -> DestOperand {
     match val.ty {
         Register(x) => DestOperand::Register(x),
         Register16(x) => DestOperand::Register16(x),
-        Register8High(x) => DestOperand::Register8High(x),
         Register8Low(x) => DestOperand::Register8Low(x),
         Register64(x) => DestOperand::Register64(x),
         Pair(ref hi, ref low) => {
@@ -2586,27 +2672,52 @@ fn dest_operand(val: &Operand) -> DestOperand {
         Fpu(x) => DestOperand::Fpu(x),
         Flag(x) => DestOperand::Flag(x),
         Memory(ref x) => DestOperand::Memory(x.clone()),
-        ref x => panic!("Invalid value for converting Operand -> DestOperand: {:?}", x),
-    }
-}
-
-impl From<DestOperand> for Operand {
-    fn from(val: DestOperand) -> Operand {
-        use crate::operand::operand_helpers::*;
-        use crate::operand::OperandType::*;
-        let ty = match val {
-            DestOperand::Register(x) => Register(x),
-            DestOperand::Register16(x) => Register16(x),
-            DestOperand::Register8High(x) => Register8High(x),
-            DestOperand::Register8Low(x) => Register8Low(x),
-            DestOperand::Register64(x) => Register64(x),
-            DestOperand::PairEdxEax => Pair(operand_register(2), operand_register(0)),
-            DestOperand::Xmm(x, y) => Xmm(x, y),
-            DestOperand::Fpu(x) => Fpu(x),
-            DestOperand::Flag(x) => Flag(x),
-            DestOperand::Memory(x) => Memory(x),
-        };
-        Operand::new_not_simplified(ty)
+        Arithmetic(ref arith) => {
+            match arith.ty {
+                ArithOpType::And => {
+                    let result = arith.left.if_arithmetic_and()
+                        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                        .and_then(|(c, other)| {
+                            let reg = other.if_register()?;
+                            match c {
+                                0xff => Some(DestOperand::Register8Low(reg)),
+                                0xffff => Some(DestOperand::Register16(reg)),
+                                0xffff_ffff => Some(DestOperand::Register(reg)),
+                                _ => None,
+                            }
+                        });
+                    if let Some(result) = result {
+                        return result;
+                    }
+                }
+                ArithOpType::Rsh => {
+                    if arith.right.if_constant() == Some(8) {
+                        let reg = arith.left.if_arithmetic_and()
+                            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                            .filter(|&(c, _)| c == 0xff00)
+                            .and_then(|(_, other)| match other.ty {
+                                OperandType::Register16(r) => Some(r),
+                                _ => None,
+                            });
+                            //.and_then(|(_, other)| other.if_register());
+                        if let Some(reg) = reg {
+                            return DestOperand::Register8High(reg);
+                        }
+                    }
+                }
+                _ => (),
+            }
+            // Avoid adding operand formatting code in binary for this if it isn't needed
+            // elsewhere.
+            #[cfg(not(debug_assertions))]
+            panic!("Invalid value for converting Operand -> DestOperand");
+            #[cfg(debug_assertions)]
+            panic!("Invalid value for converting Operand -> DestOperand {}", val);
+        }
+        #[cfg(not(debug_assertions))]
+        _ => panic!("Invalid value for converting Operand -> DestOperand"),
+        #[cfg(debug_assertions)]
+        _ => panic!("Invalid value for converting Operand -> DestOperand {}", val),
     }
 }
 
@@ -2622,7 +2733,7 @@ mod test {
 
         let ctx = OperandContext::new();
         let buf = [0x66, 0xc7, 0x47, 0x62, 0x00, 0x20];
-        let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0));
+        let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0), &ctx);
         let ins = disasm.next(&ctx).unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
@@ -2641,7 +2752,7 @@ mod test {
 
         let ctx = OperandContext::new();
         let buf = [0x89, 0x84, 0xb5, 0x18, 0xeb, 0xff, 0xff];
-        let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0));
+        let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0), &ctx);
         let ins = disasm.next(&ctx).unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
@@ -2660,8 +2771,8 @@ mod test {
 
         match op.clone() {
             Operation::Move(d, f, cond) => {
-                let d: Operand = d.into();
-                assert_eq!(Operand::simplified(d.into()), Operand::simplified(dest));
+                let d = d.as_operand(&ctx);
+                assert_eq!(Operand::simplified(d), Operand::simplified(dest));
                 assert_eq!(f, operand_register(0));
                 assert_eq!(cond, None);
             }

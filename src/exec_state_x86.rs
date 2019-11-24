@@ -183,13 +183,13 @@ pub struct ExecutionState<'a> {
 /// InternedOperand(0) means that a register is not cached.
 #[derive(Debug, Clone)]
 struct CachedLowRegisters {
-    registers: [[InternedOperand; 3]; 8],
+    registers: [[InternedOperand; 2]; 8],
 }
 
 impl CachedLowRegisters {
     fn new() -> CachedLowRegisters {
         CachedLowRegisters {
-            registers: [[InternedOperand(0); 3]; 8],
+            registers: [[InternedOperand(0); 2]; 8],
         }
     }
 
@@ -201,10 +201,6 @@ impl CachedLowRegisters {
         self.registers[register as usize][1]
     }
 
-    fn get_high8(&self, register: u8) -> InternedOperand {
-        self.registers[register as usize][2]
-    }
-
     fn set_16(&mut self, register: u8, value: InternedOperand) {
         self.registers[register as usize][0] = value;
     }
@@ -213,12 +209,8 @@ impl CachedLowRegisters {
         self.registers[register as usize][1] = value;
     }
 
-    fn set_high8(&mut self, register: u8, value: InternedOperand) {
-        self.registers[register as usize][2] = value;
-    }
-
     fn invalidate(&mut self, register: u8) {
-        self.registers[register as usize] = [InternedOperand(0); 3];
+        self.registers[register as usize] = [InternedOperand(0); 2];
     }
 }
 
@@ -262,10 +254,21 @@ impl<'a> Destination<'a> {
             }
             Destination::Register8High(o) => {
                 let old = intern_map.operand(*o);
-                *o = intern_map.intern(Operand::simplified(operand_or(
-                    operand_and(old, ctx.const_ffff00ff()),
-                    operand_and(operand_lsh(value, ctx.const_8()), ctx.const_ff00()),
-                )));
+                let masked = if value.relevant_bits().end > 8 {
+                    operand_and(value, ctx.const_ff())
+                } else {
+                    value
+                };
+                let old_bits = old.relevant_bits();
+                let new = if old_bits.start >= 8 && old_bits.end < 16 {
+                    Operand::simplified(operand_lsh(masked, ctx.const_8()))
+                } else {
+                    Operand::simplified(operand_or(
+                        operand_and(old, ctx.const_ffff00ff()),
+                        operand_lsh(masked, ctx.const_8())
+                    ))
+                };
+                *o = intern_map.intern(new);
             }
             Destination::Register8Low(o) => {
                 let old = intern_map.operand(*o);
@@ -451,8 +454,8 @@ impl<'a> ExecutionState<'a> {
                 }
             }
             Operation::Swap(left, right) => {
-                let left_res = self.resolve(&Rc::new(left.clone().into()), intern_map);
-                let right_res = self.resolve(&Rc::new(right.clone().into()), intern_map);
+                let left_res = self.resolve(&left.as_operand(ctx), intern_map);
+                let right_res = self.resolve(&right.as_operand(ctx), intern_map);
                 self.get_dest_invalidate_constraints(&left, intern_map)
                     .set(right_res, intern_map, ctx);
                 self.get_dest_invalidate_constraints(&right, intern_map)
@@ -779,24 +782,6 @@ impl<'a> ExecutionState<'a> {
                 };
                 interner.operand(interned)
             }
-            OperandType::Register8High(reg) => {
-                let interned = match self.cached_low_registers.get_high8(reg.0) {
-                    InternedOperand(0) => {
-                        let op = operand_rsh(
-                            operand_and(
-                                interner.operand(self.registers[reg.0 as usize]),
-                                self.ctx.const_ff00(),
-                            ),
-                            self.ctx.const_8(),
-                        );
-                        let interned = interner.intern(Operand::simplified(op));
-                        self.cached_low_registers.set_high8(reg.0, interned);
-                        interned
-                    }
-                    x => x,
-                };
-                interner.operand(interned)
-            }
             OperandType::Register8Low(reg) => {
                 let interned = match self.cached_low_registers.get_low8(reg.0) {
                     InternedOperand(0) => {
@@ -833,10 +818,12 @@ impl<'a> ExecutionState<'a> {
                 }).clone()
             }
             OperandType::Arithmetic(ref op) => {
+                let left = self.resolve(&op.left, interner);
+                let right = self.resolve(&op.right, interner);
                 let ty = OperandType::Arithmetic(ArithOperand {
                     ty: op.ty,
-                    left: self.resolve(&op.left, interner),
-                    right: self.resolve(&op.right, interner),
+                    left,
+                    right,
                 });
                 Operand::new_not_simplified_rc(ty)
             }
