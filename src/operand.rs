@@ -12,7 +12,7 @@ use serde_derive::{Deserialize, Serialize};
 use crate::bit_misc::{bits_overlap, one_bit_ranges, zero_bit_ranges};
 use crate::vec_drop_iter::VecDropIter;
 
-#[derive(Debug, Clone, Eq, Serialize)]
+#[derive(Clone, Eq, Serialize)]
 pub struct Operand {
     pub ty: OperandType,
     #[serde(skip_serializing)]
@@ -177,6 +177,42 @@ impl Ord for Operand {
 impl PartialOrd for Operand {
     fn partial_cmp(&self, other: &Operand) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl fmt::Debug for Operand {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl fmt::Debug for OperandType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::OperandType::*;
+        match self {
+            Register(r) => write!(f, "Register({})", r.0),
+            Xmm(r, x) => write!(f, "Xmm({}.{})", r, x),
+            Fpu(r) => write!(f, "Fpu({})", r),
+            Flag(r) => write!(f, "Flag({:?})", r),
+            Constant(r) => write!(f, "Constant({:x})", r),
+            Constant64(r) => write!(f, "Constant({:x})", r),
+            Custom(r) => write!(f, "Custom({:x})", r),
+            Undefined(r) => write!(f, "Undefined_{:x}", r.0),
+            Pair(hi, low) => {
+                f.debug_tuple("Pair")
+                    .field(hi)
+                    .field(low)
+                    .finish()
+            }
+            Memory(r) => f.debug_tuple("Memory").field(r).finish(),
+            Arithmetic(r) => f.debug_tuple("Arithmetic").field(r).finish(),
+            Arithmetic64(r) => f.debug_tuple("Arithmetic64").field(r).finish(),
+            ArithmeticF32(r) => f.debug_tuple("ArithmeticF32").field(r).finish(),
+            ArithmeticHigh(r) => f.debug_tuple("ArithmeticHigh").field(r).finish(),
+            SignExtend(a, b, c) => {
+                f.debug_tuple("SignExtend").field(a).field(b).field(c).finish()
+            }
+        }
     }
 }
 
@@ -712,36 +748,6 @@ impl OperandContext {
                 operand,
                 self.constant64(mask),
             ))
-        }
-    }
-}
-
-impl fmt::Debug for OperandType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::OperandType::*;
-        match self {
-            Register(r) => write!(f, "Register({})", r.0),
-            Xmm(r, x) => write!(f, "Xmm({}.{})", r, x),
-            Fpu(r) => write!(f, "Fpu({})", r),
-            Flag(r) => write!(f, "Flag({:?})", r),
-            Constant(r) => write!(f, "Constant({:x})", r),
-            Constant64(r) => write!(f, "Constant64({:x})", r),
-            Custom(r) => write!(f, "Custom({:x})", r),
-            Undefined(r) => write!(f, "Undefined_{:x}", r.0),
-            Pair(hi, low) => {
-                f.debug_tuple("Pair")
-                    .field(hi)
-                    .field(low)
-                    .finish()
-            }
-            Memory(r) => f.debug_tuple("Memory").field(r).finish(),
-            Arithmetic(r) => f.debug_tuple("Arithmetic").field(r).finish(),
-            Arithmetic64(r) => f.debug_tuple("Arithmetic64").field(r).finish(),
-            ArithmeticF32(r) => f.debug_tuple("ArithmeticF32").field(r).finish(),
-            ArithmeticHigh(r) => f.debug_tuple("ArithmeticHigh").field(r).finish(),
-            SignExtend(a, b, c) => {
-                f.debug_tuple("SignExtend").field(a).field(b).field(c).finish()
-            }
         }
     }
 }
