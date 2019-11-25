@@ -254,9 +254,9 @@ fn zero_flag_check(
         collect_add_ops(l, &mut ops, false);
         collect_add_ops(r, &mut ops, true);
         for &mut (ref mut op, ref mut negate) in &mut ops {
-            if let OperandType::Constant(c) = op.ty {
+            if let Some(c) = op.if_constant() {
                 if c > 0x8000_0000 && *negate == false {
-                    *op = constval(0u32.wrapping_sub(c));
+                    *op = constval(0u64.wrapping_sub(c));
                     *negate = true;
                 }
             }
@@ -464,7 +464,7 @@ fn compare_base_op(op: &Rc<Operand>) -> CompareOperands {
             for &mut (ref mut op, ref mut negate) in &mut ops {
                 if let OperandType::Constant(c) = op.ty {
                     if c > 0x8000_0000 && *negate == false {
-                        *op = constval(0u32.wrapping_sub(c));
+                        *op = constval(0u64.wrapping_sub(c));
                         *negate = true;
                     }
                 }

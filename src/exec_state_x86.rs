@@ -98,7 +98,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         );
         self.move_to(
             &DestOperand::from_oper(&mem32(esp)),
-            ctx.constant(ret.0),
+            ctx.constant(ret.0 as u64),
             i,
         );
     }
@@ -115,7 +115,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         let return_address = mem32(operand_ctx.register(4));
         state.move_to(
             &DestOperand::from_oper(&return_address),
-            operand_ctx.constant(binary.code_section().virtual_address.0 + 0x4230),
+            operand_ctx.constant((binary.code_section().virtual_address.0 + 0x4230) as u64),
             interner
         );
 
@@ -364,7 +364,7 @@ impl<'a> Destination<'a> {
                             MemAccessSize::Mem64 => unreachable!(),
                         };
                         let low_base = Operand::simplified(
-                            operand_add(base.clone(), ctx.constant(offset_rest))
+                            operand_add(base.clone(), ctx.constant(offset_rest as u64))
                         );
                         let low_i = intern_map.intern(low_base.clone());
                         let low_old = mem.get(low_i)
@@ -379,7 +379,7 @@ impl<'a> Destination<'a> {
                             operand_and(
                                 operand_lsh(
                                     value.clone(),
-                                    ctx.constant(8 * offset_4),
+                                    ctx.constant(8 * offset_4 as u64),
                                 ),
                                 ctx.constant(mask),
                             ),
@@ -394,7 +394,7 @@ impl<'a> Destination<'a> {
                             let high_base = Operand::simplified(
                                 operand_add(
                                     base.clone(),
-                                    ctx.constant(offset_rest.wrapping_add(4)),
+                                    ctx.constant(offset_rest.wrapping_add(4) as u64),
                                 )
                             );
                             let high_i = intern_map.intern(high_base.clone());
@@ -406,7 +406,7 @@ impl<'a> Destination<'a> {
                                 operand_and(
                                     operand_rsh(
                                         value,
-                                        ctx.constant(0x20 - 8 * offset_4),
+                                        ctx.constant((0x20 - 8 * offset_4) as u64),
                                     ),
                                     ctx.constant(mask),
                                 ),
@@ -757,7 +757,7 @@ impl<'a> ExecutionState<'a> {
             MemAccessSize::Mem32 => 4,
             MemAccessSize::Mem64 => unreachable!(),
         };
-        if let Some(c) = address.if_constant() {
+        if let Some(c) = address.if_constant().map(|c| c as u32) {
             // Simplify constants stored in code section (constant switch jumps etc)
             if let Some(end) = c.checked_add(size_bytes) {
                 let section = self.code_sections.iter().find(|s| {
@@ -775,7 +775,7 @@ impl<'a> ExecutionState<'a> {
                         }
                         MemAccessSize::Mem64 => unreachable!(),
                     };
-                    return self.ctx.constant(val);
+                    return self.ctx.constant(val as u64);
                 }
             }
         }
@@ -787,20 +787,26 @@ impl<'a> ExecutionState<'a> {
             let offset_rest = offset & !3;
             if offset_4 != 0 {
                 let low_base = Operand::simplified(
-                    operand_add(base.clone(), self.ctx.constant(offset_rest))
+                    operand_add(base.clone(), self.ctx.constant(offset_rest as u64))
                 );
                 let low = self.memory.get(i.intern(low_base.clone()))
                     .map(|x| i.operand(x))
                     .unwrap_or_else(|| mem32(low_base));
-                let low = operand_rsh(low, self.ctx.constant(offset_4 * 8));
+                let low = operand_rsh(low, self.ctx.constant((offset_4 * 8) as u64));
                 let combined = if offset_4 + size_bytes > 4 {
                     let high_base = Operand::simplified(
-                        operand_add(base.clone(), self.ctx.constant(offset_rest.wrapping_add(4)))
+                        operand_add(
+                            base.clone(),
+                            self.ctx.constant(offset_rest.wrapping_add(4) as u64),
+                        )
                     );
                     let high = self.memory.get(i.intern(high_base.clone()))
                         .map(|x| i.operand(x))
                         .unwrap_or_else(|| mem32(high_base));
-                    let high = operand_lsh(high, self.ctx.constant(0x20 - offset_4 * 8));
+                    let high = operand_lsh(
+                        high,
+                        self.ctx.constant((0x20 - offset_4 * 8) as u64),
+                    );
                     operand_or(low, high)
                 } else {
                     low
@@ -829,11 +835,9 @@ impl<'a> ExecutionState<'a> {
     ) -> Option<Rc<Operand>> {
         use crate::operand::operand_helpers::*;
         let (const_op, c, other) = match left.ty {
-            OperandType::Constant(c) => (left, c as u64, right),
-            OperandType::Constant64(c) => (left, c, right),
+            OperandType::Constant(c) => (left, c, right),
             _ => match right.ty {
-                OperandType::Constant(c) => (right, c as u64, left),
-                OperandType::Constant64(c) => (right, c, left),
+                OperandType::Constant(c) => (right, c, left),
                 _ => return None,
             }
         };
@@ -960,7 +964,6 @@ impl<'a> ExecutionState<'a> {
                 Operand::new_not_simplified_rc(ty)
             }
             OperandType::Constant(_) => value.clone(),
-            OperandType::Constant64(_) => value.clone(),
             OperandType::Custom(_) => value.clone(),
             OperandType::Memory(ref mem) => {
                 self.resolve_mem(mem, interner)

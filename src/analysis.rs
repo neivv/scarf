@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::convert::TryFrom;
 use std::rc::Rc;
 
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -523,7 +524,7 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
     /// Convenience for cases where `address + CONST * REG_SIZE` is needed
     pub fn const_word_offset(&self, left: Rc<Operand>, right: u32) -> Rc<Operand> {
         let size = <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE;
-        let constant = self.inner.analysis.operand_ctx.constant(right * size);
+        let constant = self.inner.analysis.operand_ctx.constant(right as u64 * size as u64);
         A::Exec::operand_arith_word(crate::ArithOpType::Add, left, constant)
     }
 
@@ -1098,7 +1099,7 @@ fn try_add_branch<'exec, Exec: ExecutionState<'exec>, S: AnalysisState>(
     to: Rc<Operand>,
     address: Exec::VirtualAddress,
 ) -> Option<Exec::VirtualAddress> {
-    match to.if_constant64() {
+    match to.if_constant() {
         Some(s) => {
             let address = Exec::VirtualAddress::from_u64(s);
             let code_offset = analysis.binary.code_section().virtual_address;
@@ -1141,19 +1142,26 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
     ins: &Instruction<Exec::VirtualAddress>,
     cfg_out_edge: &mut CfgOutEdges<Exec::VirtualAddress>,
 ) {
+    /// Returns address of the table,
+    /// operand that is being used to index the table,
+    /// constant that is being added to any values read from the table,
+    /// and size in bytes of one value in table.
+    /// E.g. dest = ret.2 + read_'ret.3'_bytes(ret.0 + ret.1 * ret.3)
     fn is_switch_jump<VirtualAddress: exec_state::VirtualAddress>(
         to: &Rc<Operand>,
     ) -> Option<(VirtualAddress, &Rc<Operand>, u64, u32)> {
         let (base, mem) = match to.if_arithmetic_add() {
-            Some((l, r)) => Operand::either(l, r, |x| x.if_constant64())?,
+            Some((l, r)) => Operand::either(l, r, |x| x.if_constant())?,
             None => (0, to),
         };
         mem.if_memory()
             .and_then(|mem| mem.address.if_arithmetic_add())
             .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul64()))
             .and_then(|((l, r), switch_table)| {
-                let switch_table = switch_table.if_constant64()?;
-                let (c, index) = Operand::either(l, r, |x| x.if_constant())?;
+                let switch_table = switch_table.if_constant()?;
+                let (c, index) = Operand::either(l, r, {
+                    |x| x.if_constant().and_then(|c| u32::try_from(c).ok())
+                })?;
                 if c == VirtualAddress::SIZE || base != 0 {
                     Some((VirtualAddress::from_u64(switch_table), index, base, c))
                 } else {
@@ -1185,8 +1193,8 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                     _ => None,
                 };
                 let ctx = analysis.operand_ctx;
-                let switch_table = ctx.constant64(switch_table_addr.as_u64());
-                let base = ctx.constant64(base_addr);
+                let switch_table = ctx.constant(switch_table_addr.as_u64());
+                let base = ctx.constant(base_addr);
                 let binary = analysis.binary;
                 if let Some(mem_size) = mem_size {
                     use crate::operand_helpers::*;
@@ -1201,7 +1209,7 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                                 mem_size,
                                 operand_add64(
                                     switch_table.clone(),
-                                    ctx.constant(index * case_size),
+                                    ctx.constant(index as u64 * case_size as u64),
                                 ),
                             ),
                         );
@@ -1211,7 +1219,7 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                                 break;
                             }
                         }
-                        let addr = state.0.resolve(&case, &mut analysis.interner).if_constant64()
+                        let addr = state.0.resolve(&case, &mut analysis.interner).if_constant()
                             .map(Exec::VirtualAddress::from_u64)
                             .filter(|&x| x >= code_offset && x < code_offset + code_len);
                         if let Some(case) = addr {

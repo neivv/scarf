@@ -120,7 +120,7 @@ pub trait ExecutionState<'a> : Clone {
                                 _ => None,
                             });
                         if let Some((flag, flag_state)) = assignable_flag {
-                            let constant = self.ctx().constant(flag_state as u32);
+                            let constant = self.ctx().constant(flag_state as u64);
                             state.move_to(&DestOperand::Flag(flag), constant, i);
                         } else {
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
@@ -407,13 +407,13 @@ pub(crate) fn value_limits_recurse(constraint: &Rc<Operand>, value: &Rc<Operand>
                 }
                 ArithOpType::GreaterThan => {
                     // 0 > x and x > u64_max should get simplified to 0
-                    if let Some(c) = arith.left.if_constant64() {
+                    if let Some(c) = arith.left.if_constant() {
                         if is_subset(value, &arith.right) {
                             debug_assert!(c != 0);
                             return (0, c.wrapping_sub(1));
                         }
                     }
-                    if let Some(c) = arith.right.if_constant64() {
+                    if let Some(c) = arith.right.if_constant() {
                         if is_subset(value, &arith.left) {
                             debug_assert!(c != u64::max_value());
                             return (c.wrapping_add(1), u64::max_value());

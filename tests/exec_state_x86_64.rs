@@ -98,7 +98,7 @@ fn test_64bit_regs() {
     ], &[
          (operand_register(0), constval(0)),
          (operand_register(1), constval(0x88)),
-         (operand_register(15), constval64(0xc_0000_000c)),
+         (operand_register(15), constval(0xc_0000_000c)),
     ]);
 }
 
@@ -126,7 +126,7 @@ fn test_movsxd() {
         0x4c, 0x63, 0x5c, 0x24, 0x28, // movsxd r11, dword [rsp + 28]
         0xc3, // ret
     ], &[
-         (operand_register(11), constval64(0xffff_ffff_ff44_ff44)),
+         (operand_register(11), constval(0xffff_ffff_ff44_ff44)),
     ]);
 }
 
@@ -157,7 +157,7 @@ fn test_bt() {
         0xcc, // int3
         0xc3, // ret
     ], &[
-         (operand_register(0), constval64(0xffff_0000_0000)),
+         (operand_register(0), constval(0xffff_0000_0000)),
          (operand_register(1), constval(0x28)),
     ]);
 }
@@ -279,8 +279,8 @@ fn punpcklbw() {
         0x48, 0x8b, 0x4c, 0x24, 0x08, // mov rcx, [rsp + 8]
         0xc3, // ret
     ], &[
-         (operand_register(0), constval64(0x5511_4422_3333_2244)),
-         (operand_register(1), constval64(0x9912_8834_7756_6678)),
+         (operand_register(0), constval(0x5511_4422_3333_2244)),
+         (operand_register(1), constval(0x9912_8834_7756_6678)),
     ]);
 }
 

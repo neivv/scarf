@@ -135,7 +135,7 @@ impl<'a> Destination<'a> {
                     Operand::simplified(masked)
                 } else {
                     Operand::simplified(operand_or(
-                        operand_and(old, ctx.constant64(0xffff_ffff_ffff_0000)),
+                        operand_and(old, ctx.constant(0xffff_ffff_ffff_0000)),
                         masked,
                     ))
                 };
@@ -153,7 +153,7 @@ impl<'a> Destination<'a> {
                     Operand::simplified(operand_lsh(masked, ctx.const_8()))
                 } else {
                     Operand::simplified(operand_or(
-                        operand_and64(old, ctx.constant64(0xffff_ffff_ffff_00ff)),
+                        operand_and64(old, ctx.constant(0xffff_ffff_ffff_00ff)),
                         operand_lsh(masked, ctx.const_8())
                     ))
                 };
@@ -171,7 +171,7 @@ impl<'a> Destination<'a> {
                     Operand::simplified(masked)
                 } else {
                     Operand::simplified(operand_or(
-                        operand_and(old, ctx.constant64(0xffff_ffff_ffff_ff00)),
+                        operand_and(old, ctx.constant(0xffff_ffff_ffff_ff00)),
                         masked,
                     ))
                 };
@@ -194,7 +194,7 @@ impl<'a> Destination<'a> {
                             MemAccessSize::Mem8 => 8,
                         };
                         let low_base = Operand::simplified(
-                            operand_add64(base.clone(), ctx.constant64(offset_rest))
+                            operand_add64(base.clone(), ctx.constant(offset_rest))
                         );
                         let low_i = intern_map.intern(low_base.clone());
                         let low_old = mem.get(low_i)
@@ -209,13 +209,13 @@ impl<'a> Destination<'a> {
                             operand_and64(
                                 operand_lsh64(
                                     value.clone(),
-                                    ctx.constant(8 * offset_8 as u32),
+                                    ctx.constant(8 * offset_8),
                                 ),
-                                ctx.constant64(mask),
+                                ctx.constant(mask),
                             ),
                             operand_and64(
                                 low_old,
-                                ctx.constant64(!mask),
+                                ctx.constant(!mask),
                             ),
                         ));
                         mem.set(low_i, intern_map.intern(low_value));
@@ -224,7 +224,7 @@ impl<'a> Destination<'a> {
                             let high_base = Operand::simplified(
                                 operand_add64(
                                     base.clone(),
-                                    ctx.constant64(offset_rest.wrapping_add(8)),
+                                    ctx.constant(offset_rest.wrapping_add(8)),
                                 )
                             );
                             let high_i = intern_map.intern(high_base.clone());
@@ -236,13 +236,13 @@ impl<'a> Destination<'a> {
                                 operand_and64(
                                     operand_rsh64(
                                         value,
-                                        ctx.constant(0x80 - 8 * offset_8 as u32),
+                                        ctx.constant(0x80 - 8 * offset_8),
                                     ),
-                                    ctx.constant64(mask),
+                                    ctx.constant(mask),
                                 ),
                                 operand_and64(
                                     high_old,
-                                    ctx.constant64(!mask),
+                                    ctx.constant(!mask),
                                 ),
                             ));
                             mem.set(high_i, intern_map.intern(high_value));
@@ -350,7 +350,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         );
         self.move_to(
             &DestOperand::from_oper(&mem64(rsp)),
-            ctx.constant64(ret.0),
+            ctx.constant(ret.0),
             i,
         );
     }
@@ -593,7 +593,7 @@ impl<'a> ExecutionState<'a> {
                 operand_ne64(
                     ctx,
                     operand_and64(
-                        ctx.constant64(0x8000_0000_0000_0000),
+                        ctx.constant(0x8000_0000_0000_0000),
                         result.clone(),
                     ),
                     ctx.const_0(),
@@ -716,7 +716,7 @@ impl<'a> ExecutionState<'a> {
             MemAccessSize::Mem32 => 4,
             MemAccessSize::Mem64 => 8,
         };
-        if let Some(c) = address.if_constant64() {
+        if let Some(c) = address.if_constant() {
             // Simplify constants stored in code section (constant switch jumps etc)
             if let Some(end) = c.checked_add(size_bytes as u64) {
                 let section = self.code_sections.iter().find(|s| {
@@ -737,7 +737,7 @@ impl<'a> ExecutionState<'a> {
                             (&section.data[offset..]).read_u64::<LE>().unwrap_or(0)
                         }
                     };
-                    return self.ctx.constant64(val);
+                    return self.ctx.constant(val);
                 }
             }
         }
@@ -748,23 +748,26 @@ impl<'a> ExecutionState<'a> {
             let offset_rest = offset & !7;
             if offset_8 != 0 {
                 let low_base = Operand::simplified(
-                    operand_add64(base.clone(), self.ctx.constant64(offset_rest))
+                    operand_add64(base.clone(), self.ctx.constant(offset_rest))
                 );
                 let low = self.memory.get(i.intern(low_base.clone()))
                     .map(|x| i.operand(x))
                     .unwrap_or_else(|| mem64(low_base));
-                let low = operand_rsh64(low, self.ctx.constant(offset_8 * 8));
+                let low = operand_rsh64(low, self.ctx.constant(offset_8 as u64 * 8));
                 let combined = if offset_8 + size_bytes > 8 {
                     let high_base = Operand::simplified(
                         operand_add64(
                             base.clone(),
-                            self.ctx.constant64(offset_rest.wrapping_add(8)),
+                            self.ctx.constant(offset_rest.wrapping_add(8)),
                         )
                     );
                     let high = self.memory.get(i.intern(high_base.clone()))
                         .map(|x| i.operand(x))
                         .unwrap_or_else(|| mem64(high_base));
-                    let high = operand_lsh64(high, self.ctx.constant(0x40 - offset_8 * 8));
+                    let high = operand_lsh64(
+                        high,
+                        self.ctx.constant((0x40 - offset_8 * 8) as u64),
+                    );
                     operand_or64(low, high)
                 } else {
                     low
@@ -792,11 +795,9 @@ impl<'a> ExecutionState<'a> {
     ) -> Option<Rc<Operand>> {
         use crate::operand::operand_helpers::*;
         let (const_op, c, other) = match left.ty {
-            OperandType::Constant(c) => (left, c as u64, right),
-            OperandType::Constant64(c) => (left, c, right),
+            OperandType::Constant(c) => (left, c, right),
             _ => match right.ty {
-                OperandType::Constant(c) => (right, c as u64, left),
-                OperandType::Constant64(c) => (right, c, left),
+                OperandType::Constant(c) => (right, c, left),
                 _ => return None,
             }
         };
@@ -933,7 +934,6 @@ impl<'a> ExecutionState<'a> {
                 Operand::new_not_simplified_rc(ty)
             }
             OperandType::Constant(_) => value.clone(),
-            OperandType::Constant64(_) => value.clone(),
             OperandType::Custom(_) => value.clone(),
             OperandType::Memory(ref mem) => {
                 self.resolve_mem(mem, interner)

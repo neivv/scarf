@@ -406,6 +406,27 @@ fn psllq() {
     ]);
 }
 
+#[test]
+fn negative_offset() {
+    let ctx = scarf::operand::OperandContext::new();
+    // Had a bug that lazy flag updates didn't invalidate extra constraints
+    // (So the unrelated cmp -> ja would always be taken)
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0xb0, 0x09, // mov al, 9
+        0x8b, 0x0d, 0x00, 0x34, 0x12, 0x00, // mov ecx [123400]
+        0x89, 0xca, // mov edx, ecx
+        0x8d, 0x49, 0x01, // lea ecx, [ecx + 1]
+        0x88, 0x41, 0xff, // mov [ecx - 1], al
+        0x8a, 0x02, // mov al, [edx]
+        0xc3, // ret
+    ], &[
+         (operand_register(0), ctx.constant(9)),
+         (operand_register(1), operand_add(mem32(ctx.constant(0x123400)), ctx.constant(1))),
+         (operand_register(2), mem32(ctx.constant(0x123400))),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
