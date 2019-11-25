@@ -38,6 +38,7 @@ pub trait ExecutionState<'a> : Clone {
     fn add_unresolved_constraint(&mut self, constraint: Constraint);
     fn update(&mut self, operation: &Operation, i: &mut InternMap);
     fn move_to(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap);
+    fn move_resolved(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap);
     fn ctx(&self) -> &'a OperandContext;
     fn resolve(&mut self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand>;
     fn resolve_apply_constraints(
@@ -284,12 +285,12 @@ impl Constraint {
     /// Invalidates any parts of the constraint that depend on unresolved dest.
     pub(crate) fn invalidate_dest_operand(&self, dest: &DestOperand) -> Option<Constraint> {
         match *dest {
-            DestOperand::Register(reg) | DestOperand::Register16(reg) |
+            DestOperand::Register32(reg) | DestOperand::Register16(reg) |
                 DestOperand::Register8High(reg) | DestOperand::Register8Low(reg) |
                 DestOperand::Register64(reg) =>
             {
                 remove_matching_ands(&self.0, &mut |x| *x == OperandType::Register(reg))
-             }
+            }
             DestOperand::PairEdxEax => None,
             DestOperand::Xmm(_, _) => {
                 None
@@ -434,20 +435,11 @@ fn is_subset(sub: &Rc<Operand>, sup: &Rc<Operand>) -> bool {
         return false;
     }
     match sub.ty {
-        OperandType::Register(r) | OperandType::Register16(r) | OperandType::Register8Low(r) |
-            OperandType::Register64(r) =>
-        {
-            match sup.ty {
-                OperandType::Register(r2) | OperandType::Register16(r2) |
-                    OperandType::Register8Low(r2) | OperandType::Register64(r2) => r == r2,
-                _ => false,
-            }
-        }
         OperandType::Memory(ref mem) => match sup.if_memory() {
             Some(mem2) => mem.address == mem2.address,
             None => false,
         }
-        _ => false,
+        _ => sub == sup,
     }
 }
 

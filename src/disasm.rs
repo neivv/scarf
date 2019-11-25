@@ -197,8 +197,12 @@ struct InstructionPrefixes {
 }
 
 struct RegisterCache {
+    register8_low: [Rc<Operand>; 16],
     register8_high: [Rc<Operand>; 4],
+    register16: [Rc<Operand>; 16],
+    register32: [Rc<Operand>; 16],
 }
+
 thread_local! {
     static REGISTER_CACHE: RefCell<Option<Rc<RegisterCache>>> = RefCell::new(None);
 }
@@ -213,6 +217,12 @@ impl RegisterCache {
 
     fn new(ctx: &OperandContext) -> RegisterCache {
         use crate::operand_helpers::*;
+        let reg8_low = |i: u8| -> Rc<Operand> {
+            Operand::simplified(operand_and(
+                ctx.const_ff(),
+                ctx.register(i),
+            ))
+        };
         let reg8_high = |i: u8| -> Rc<Operand> {
             Operand::simplified(operand_rsh(
                 operand_and(
@@ -222,19 +232,61 @@ impl RegisterCache {
                 ctx.const_8(),
             ))
         };
+        let reg16 = |i: u8| -> Rc<Operand> {
+            Operand::simplified(operand_and(
+                ctx.const_ffff(),
+                ctx.register(i),
+            ))
+        };
+        let reg32 = |i: u8| -> Rc<Operand> {
+            Operand::simplified(operand_and(
+                ctx.const_ffffffff(),
+                ctx.register(i),
+            ))
+        };
 
         RegisterCache {
+            register8_low: [
+                reg8_low(0), reg8_low(1), reg8_low(2), reg8_low(3),
+                reg8_low(4), reg8_low(5), reg8_low(6), reg8_low(7),
+                reg8_low(8), reg8_low(9), reg8_low(10), reg8_low(11),
+                reg8_low(12), reg8_low(13), reg8_low(14), reg8_low(15),
+            ],
             register8_high: [
                 reg8_high(0),
                 reg8_high(1),
                 reg8_high(2),
                 reg8_high(3),
             ],
+            register16: [
+                reg16(0), reg16(1), reg16(2), reg16(3),
+                reg16(4), reg16(5), reg16(6), reg16(7),
+                reg16(8), reg16(9), reg16(10), reg16(11),
+                reg16(12), reg16(13), reg16(14), reg16(15),
+            ],
+            register32: [
+                reg32(0), reg32(1), reg32(2), reg32(3),
+                reg32(4), reg32(5), reg32(6), reg32(7),
+                reg32(8), reg32(9), reg32(10), reg32(11),
+                reg32(12), reg32(13), reg32(14), reg32(15),
+            ],
         }
+    }
+
+    fn register8_low(&self, i: u8) -> Rc<Operand> {
+        self.register8_low[i as usize].clone()
     }
 
     fn register8_high(&self, i: u8) -> Rc<Operand> {
         self.register8_high[i as usize].clone()
+    }
+
+    fn register16(&self, i: u8) -> Rc<Operand> {
+        self.register16[i as usize].clone()
+    }
+
+    fn register32(&self, i: u8) -> Rc<Operand> {
+        self.register32[i as usize].clone()
     }
 }
 
@@ -581,7 +633,7 @@ fn instruction_operations64(
                     out.push(and(eax, ctx.const_ffff(), false));
                     out.push(neg_sign_extend_op);
                 } else {
-                    let rax = ctx.register64(0);
+                    let rax = ctx.register(0);
                     let signed_max = ctx.const_7fffffff();
                     let cond = operand_gt(rax.clone(), signed_max);
                     let neg_sign_extend =
@@ -606,8 +658,8 @@ fn instruction_operations64(
                     out.push(mov(edx, ctx.const_0()));
                     out.push(neg_sign_extend_op);
                 } else {
-                    let rax = ctx.register64(0);
-                    let rdx = ctx.register64(2);
+                    let rax = ctx.register(0);
+                    let rdx = ctx.register(2);
                     let signed_max = ctx.constant64(0x7fff_ffff_ffff_ffff);
                     let cond = operand_gt64(rax, signed_max);
                     let neg_sign_extend_op =
@@ -776,14 +828,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
     }
 
-    fn word_register(&self, register: u8) -> Rc<Operand> {
-        if Va::SIZE == 4 || self.has_prefix(0x67) {
-            self.ctx.register(register)
-        } else {
-            self.ctx.register64(register)
-        }
-    }
-
     fn word_add(&self, left: Rc<Operand>, right: Rc<Operand>) -> Rc<Operand> {
         use crate::operand::operand_helpers::*;
         if Va::SIZE == 4 {
@@ -810,7 +854,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     self.word_add(mem.address.clone(), constval(bytes * u32::from(i))),
                 )
             }
-            _ => panic!("Cannot xmm {:?}", op),
+            _ => {
+                if let Some((reg, _)) = op.if_and_masked_register() {
+                    operand_xmm(reg.0, i)
+                } else {
+                    panic!("Cannot xmm {:?}", op);
+                }
+            }
         }
     }
 
@@ -818,7 +868,12 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         if register.0 >= 4 && self.prefixes.rex_prefix == 0 && op_size == MemAccessSize::Mem8 {
             self.register_cache.register8_high((register.0 - 4) & 3)
         } else {
-            self.ctx.reg_variable_size(register, op_size)
+            match op_size {
+                MemAccessSize::Mem8 => self.register_cache.register8_low(register.0),
+                MemAccessSize::Mem16 => self.register_cache.register16(register.0),
+                MemAccessSize::Mem32 => self.register_cache.register32(register.0),
+                MemAccessSize::Mem64 => self.ctx.register(register.0),
+            }
         }
     }
 
@@ -859,7 +914,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                         false => reg,
                         true => reg + 8,
                     };
-                    (mem_variable_rc(op_size, self.word_register(reg)), 2)
+                    (mem_variable_rc(op_size, self.ctx.register(reg)), 2)
                 }
             },
             1 => match rm_val {
@@ -874,7 +929,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     } else {
                         self.ctx.constant64(read_u8(self.slice(2))? as i8 as u64)
                     };
-                    let addition = self.word_add(self.word_register(reg), offset);
+                    let addition = self.word_add(self.ctx.register(reg), offset);
                     (mem_variable_rc(op_size, addition), 3)
                 }
             },
@@ -890,7 +945,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     } else {
                         self.ctx.constant64(read_u32(self.slice(2))? as i32 as u64)
                     };
-                    let addition = self.word_add(self.word_register(reg), offset);
+                    let addition = self.word_add(self.ctx.register(reg), offset);
                     (mem_variable_rc(op_size, addition), 6)
                 }
             },
@@ -947,8 +1002,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             }
             (reg, _) => {
                 match base_ext {
-                    false => (self.word_register(reg), 3),
-                    true => (self.word_register(8 + reg), 3),
+                    false => (self.ctx.register(reg), 3),
+                    true => (self.ctx.register(8 + reg), 3),
                 }
             }
         };
@@ -959,9 +1014,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let full_mem_op = if reg != 4 {
             let scale_reg = if mul != 1 {
-                operand_mul(self.word_register(reg), self.ctx.constant(mul))
+                operand_mul(self.ctx.register(reg), self.ctx.constant(mul))
             } else {
-                self.word_register(reg)
+                self.ctx.register(reg)
             };
             self.word_add(scale_reg, base_reg)
         } else {
@@ -994,7 +1049,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let byte = self.get(0);
         let is_inc = byte < 0x48;
         let reg = byte & 0x7;
-        let reg = self.ctx.reg_variable_size(Register(reg), self.mem16_32());
+        let reg = self.reg_variable_size(Register(reg), self.mem16_32());
         let mut out = SmallVec::new();
         let is_64 = Va::SIZE == 8;
         out.push(match is_inc {
@@ -1160,7 +1215,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let constant = read_variable_size_64(self.slice(1), op_size)?;
         let mut out = SmallVec::new();
-        let register = self.ctx.reg_variable_size(Register(register), op_size);
+        let register = self.reg_variable_size(Register(register), op_size);
         out.push(mov(register, self.ctx.constant64(constant)));
         Ok(out)
     }
@@ -1212,10 +1267,18 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             OperandType::Memory(ref mem) => {
                 mem_variable_rc(op_size, mem.address.clone())
             }
-            OperandType::Register(r) | OperandType::Register16(r) => {
+            OperandType::Register(r) => {
                 self.reg_variable_size(r, op_size)
             }
-            _ => rm.clone(),
+            _ => {
+                let reg = rm.if_arithmetic_and()
+                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_register()))
+                    .map(|(r, _)| r);
+                match reg {
+                    Some(s) => self.reg_variable_size(s, op_size),
+                    None => rm.clone(),
+                }
+            }
         };
 
         let mut out = SmallVec::new();
@@ -1240,10 +1303,18 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let (rm, r) = self.parse_modrm(self.mem16_32())?;
         let rm = match rm.ty {
             OperandType::Memory(ref mem) => mem_variable_rc(op_size, mem.address.clone()),
-            OperandType::Register(r) | OperandType::Register16(r) => {
+            OperandType::Register(r) => {
                 self.reg_variable_size(r, op_size)
             }
-            _ => rm.clone(),
+            _ => {
+                let reg = rm.if_arithmetic_and()
+                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_register()))
+                    .map(|(r, _)| r);
+                match reg {
+                    Some(s) => self.reg_variable_size(s, op_size),
+                    None => rm.clone(),
+                }
+            }
         };
         let mut out = SmallVec::new();
         if is_rm_short_r_register(&rm, &r) {
@@ -1527,16 +1598,25 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         if self.mem16_32() == MemAccessSize::Mem64 {
             // Movq
             let rm_high = match rm.ty {
-                OperandType::Register(r) => {
+                OperandType::Register(reg) => {
                     operand_rsh64(
-                        self.ctx.register64(r.0),
+                        self.ctx.register(reg.0),
                         self.ctx.const_20(),
                     )
                 }
                 OperandType::Memory(ref m) => {
                     mem32(self.word_add(m.address.clone(), self.ctx.const_4()))
                 }
-                _ => unreachable!(),
+                _ => {
+                    if let Some((reg, _)) = rm.if_and_masked_register() {
+                        operand_rsh64(
+                            self.ctx.register(reg.0),
+                            self.ctx.const_20(),
+                        )
+                    } else {
+                        unreachable!();
+                    }
+                }
             };
             out.push(mov(self.xmm_variant(&r, 1), rm_high));
         } else {
@@ -1633,7 +1713,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             let (low, high) = Operand::to_xmm_64(&dest, 0);
             let rm = Operand::to_xmm_32(&rm, 0);
             make_arith_operation(
-                dest_operand(&low),
+                dest_operand(&high),
                 ArithOpType::Or,
                 operand_lsh(high, rm.clone()),
                 operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
@@ -1649,7 +1729,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             let (low, high) = Operand::to_xmm_64(&dest, 1);
             let rm = Operand::to_xmm_32(&rm, 0);
             make_arith_operation(
-                dest_operand(&low),
+                dest_operand(&high),
                 ArithOpType::Or,
                 operand_lsh(high, rm.clone()),
                 operand_rsh(low, operand_sub(self.ctx.const_20(), rm)),
@@ -1906,7 +1986,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     out.push(sub(esp.clone(), self.ctx.const_4(), is_64));
                     out.push(mov(mem32(esp), rm));
                 } else {
-                    let rsp = self.ctx.register64(4);
+                    let rsp = self.ctx.register(4);
                     out.push(sub(rsp.clone(), self.ctx.const_8(), is_64));
                     out.push(mov(mem64(rsp), rm));
                 }
@@ -1944,7 +2024,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let (rm, _) = self.parse_modrm(op_size)?;
         let shift_count = match self.get(0) & 2 {
             0 => self.ctx.const_1(),
-            _ => self.ctx.reg_variable_size(Register(1), operand::MemAccessSize::Mem8),
+            _ => self.reg_variable_size(Register(1), operand::MemAccessSize::Mem8),
         };
         let op_gen: &dyn ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
             0 => &ROL_OPS,
@@ -2154,11 +2234,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let mut out = SmallVec::new();
         let is_64 = Va::SIZE != 4;
-        let esp = if Va::SIZE == 4 {
-            self.ctx.register(4)
-        } else {
-            self.ctx.register64(4)
-        };
+        let esp = self.ctx.register(4);
         match is_push {
             true => {
                 if Va::SIZE == 4 {
@@ -2166,7 +2242,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     out.push(mov(mem32(esp), self.ctx.register(reg)));
                 } else {
                     out.push(sub(esp.clone(), self.ctx.const_8(), is_64));
-                    out.push(mov(mem64(esp), self.ctx.register64(reg)));
+                    out.push(mov(mem64(esp), self.ctx.register(reg)));
                 }
             }
             false => {
@@ -2174,7 +2250,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     out.push(mov(self.ctx.register(reg), mem32(esp.clone())));
                     out.push(add(esp, self.ctx.const_4(), is_64));
                 } else {
-                    out.push(mov(self.ctx.register64(reg), mem64(esp.clone())));
+                    out.push(mov(self.ctx.register(reg), mem64(esp.clone())));
                     out.push(add(esp, self.ctx.const_8(), is_64));
                 }
             }
@@ -2191,11 +2267,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let constant = read_variable_size_32(self.slice(1), imm_size)? as u32;
         let mut out = SmallVec::new();
-        let esp = if Va::SIZE == 4 {
-            self.ctx.register(4)
-        } else {
-            self.ctx.register64(4)
-        };
+        let esp = self.ctx.register(4);
         out.push(sub(esp.clone(), self.ctx.const_4(), Va::SIZE == 8));
         out.push(mov(mem32(esp), self.ctx.constant(constant)));
         Ok(out)
@@ -2274,9 +2346,14 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec, VirtualAddress64> {
 /// Checks if r is a register, and rm is the equivalent short register
 fn is_rm_short_r_register(rm: &Rc<Operand>, r: &Rc<Operand>) -> bool {
     use crate::operand::OperandType::*;
+    let (rm_c, rm) = rm.if_arithmetic_and()
+        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant64()))
+        .unwrap_or_else(|| (u64::max_value(), rm));
+    let (r_c, r) = r.if_arithmetic_and()
+        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant64()))
+        .unwrap_or_else(|| (u64::max_value(), r));
     match (&rm.ty, &r.ty) {
-        (&Register8Low(s), &Register(l)) | (&Register8Low(s), &Register16(l)) => l == s,
-        (&Register16(s), &Register(l)) => l == s,
+        (&Register(a), &Register(b)) => a == b && rm_c < r_c,
         _ => false,
     }
 }
@@ -2613,11 +2690,11 @@ fn make_arith_operation(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DestOperand {
-    Register(Register),
+    Register64(Register),
+    Register32(Register),
     Register16(Register),
     Register8High(Register),
     Register8Low(Register),
-    Register64(Register),
     PairEdxEax,
     Xmm(u8, u8),
     Fpu(u8),
@@ -2633,7 +2710,9 @@ impl DestOperand {
     pub fn as_operand(&self, ctx: &OperandContext) -> Rc<Operand> {
         use crate::operand::operand_helpers::*;
         match *self {
-            DestOperand::Register(x) => ctx.register(x.0),
+            DestOperand::Register32(x) => Operand::simplified(
+                operand_and(ctx.register(x.0), ctx.const_ffffffff())
+            ),
             DestOperand::Register16(x) => Operand::simplified(
                 operand_and(ctx.register(x.0), ctx.const_ffff())
             ),
@@ -2646,7 +2725,7 @@ impl DestOperand {
             DestOperand::Register8Low(x) => Operand::simplified(
                 operand_and(ctx.register(x.0), ctx.const_ff())
             ),
-            DestOperand::Register64(x) => ctx.register64(x.0),
+            DestOperand::Register64(x) => ctx.register(x.0),
             DestOperand::PairEdxEax => pair_edx_eax(),
             DestOperand::Xmm(x, y) => Rc::new(Operand::new_xmm(x, y)),
             DestOperand::Fpu(x) => ctx.register_fpu(x),
@@ -2659,10 +2738,7 @@ impl DestOperand {
 fn dest_operand(val: &Operand) -> DestOperand {
     use crate::operand::OperandType::*;
     match val.ty {
-        Register(x) => DestOperand::Register(x),
-        Register16(x) => DestOperand::Register16(x),
-        Register8Low(x) => DestOperand::Register8Low(x),
-        Register64(x) => DestOperand::Register64(x),
+        Register(x) => DestOperand::Register64(x),
         Pair(ref hi, ref low) => {
             assert_eq!(hi.ty, Register(crate::operand::Register(2)));
             assert_eq!(low.ty, Register(crate::operand::Register(0)));
@@ -2675,14 +2751,13 @@ fn dest_operand(val: &Operand) -> DestOperand {
         Arithmetic(ref arith) => {
             match arith.ty {
                 ArithOpType::And => {
-                    let result = arith.left.if_arithmetic_and()
-                        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                    let result = Operand::either(&arith.left, &arith.right, |x| x.if_constant())
                         .and_then(|(c, other)| {
                             let reg = other.if_register()?;
                             match c {
                                 0xff => Some(DestOperand::Register8Low(reg)),
                                 0xffff => Some(DestOperand::Register16(reg)),
-                                0xffff_ffff => Some(DestOperand::Register(reg)),
+                                0xffff_ffff => Some(DestOperand::Register32(reg)),
                                 _ => None,
                             }
                         });
@@ -2695,11 +2770,7 @@ fn dest_operand(val: &Operand) -> DestOperand {
                         let reg = arith.left.if_arithmetic_and()
                             .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
                             .filter(|&(c, _)| c == 0xff00)
-                            .and_then(|(_, other)| match other.ty {
-                                OperandType::Register16(r) => Some(r),
-                                _ => None,
-                            });
-                            //.and_then(|(_, other)| other.if_register());
+                            .and_then(|(_, other)| other.if_register());
                         if let Some(reg) = reg {
                             return DestOperand::Register8High(reg);
                         }
@@ -2773,7 +2844,10 @@ mod test {
             Operation::Move(d, f, cond) => {
                 let d = d.as_operand(&ctx);
                 assert_eq!(Operand::simplified(d), Operand::simplified(dest));
-                assert_eq!(f, operand_register(0));
+                assert_eq!(
+                    f,
+                    Operand::simplified(operand_and(operand_register(0), constval(0xffff_ffff))),
+                );
                 assert_eq!(cond, None);
             }
             _ => panic!("Unexpected op {:?}", op),

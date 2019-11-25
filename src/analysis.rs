@@ -515,15 +515,6 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
         }
     }
 
-    /// Create an full-sized register operand.
-    pub fn register(&self, index: u8) -> Rc<Operand> {
-        if <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE == 4 {
-            self.inner.analysis.operand_ctx.register(index)
-        } else {
-            self.inner.analysis.operand_ctx.register64(index)
-        }
-    }
-
     /// Create an arithmetic add with size of VirtualAddress.
     pub fn operand_add(&self, left: Rc<Operand>, right: Rc<Operand>) -> Rc<Operand> {
         A::Exec::operand_arith_word(crate::ArithOpType::Add, left, right)

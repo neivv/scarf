@@ -35,6 +35,14 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         dest.set(resolved, i, ctx);
     }
 
+    fn move_resolved(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap) {
+        let value = Operand::simplified(value);
+        let ctx = self.ctx;
+        self.unresolved_constraint = None;
+        let dest = self.get_dest(dest, i, true);
+        dest.set(value, i, ctx);
+    }
+
     fn ctx(&self) -> &'a OperandContext {
         self.ctx
     }
@@ -233,7 +241,33 @@ enum Destination<'a> {
     Register8Low(&'a mut InternedOperand),
     Pair(&'a mut InternedOperand, &'a mut InternedOperand),
     Memory(&'a mut Memory, Rc<Operand>, MemAccessSize),
-    Nop,
+}
+
+/// Masks arithmetic operations to 32-bit, but keeps registers/undefined as they are.
+/// Also removes 0xffff_ffff masks from them.
+fn masked_to_32bit(value: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+    use crate::operand::operand_helpers::*;
+    // Allow undefined to be stored as is due to it mattering state merging
+    // and interning. Hopefully won't cause issues..
+    if value.relevant_bits().end > 32 {
+        if value.is_undefined() || value.if_register().is_some() {
+            value.clone()
+        } else {
+            operand_and(value.clone(), ctx.const_ffffffff())
+        }
+    } else {
+        let const_mask = value.if_arithmetic_and()
+            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()));
+        if let Some((0xffff_ffff, other)) = const_mask {
+            if other.is_undefined() || other.if_register().is_some() {
+                other.clone()
+            } else {
+                value.clone()
+            }
+        } else {
+            value.clone()
+        }
+    }
 }
 
 impl<'a> Destination<'a> {
@@ -241,16 +275,26 @@ impl<'a> Destination<'a> {
         use crate::operand::operand_helpers::*;
         match self {
             Destination::Oper(o) => {
-                *o = intern_map.intern(Operand::simplified(value));
+                let masked = masked_to_32bit(&value, ctx);
+                *o = intern_map.intern(Operand::simplified(masked));
             }
             Destination::Register16(o) => {
                 let old = intern_map.operand(*o);
-                *o = intern_map.intern(Operand::simplified(
-                    operand_or(
+                let masked = if value.relevant_bits().end > 16 {
+                    operand_and(value, ctx.const_ffff())
+                } else {
+                    value
+                };
+                let old_bits = old.relevant_bits();
+                let new = if old_bits.end <= 16 {
+                    Operand::simplified(masked)
+                } else {
+                    Operand::simplified(operand_or(
                         operand_and(old, ctx.const_ffff0000()),
-                        operand_and(value, ctx.const_ffff()),
-                    )
-                ));
+                        masked,
+                    ))
+                };
+                *o = intern_map.intern(new);
             }
             Destination::Register8High(o) => {
                 let old = intern_map.operand(*o);
@@ -260,7 +304,7 @@ impl<'a> Destination<'a> {
                     value
                 };
                 let old_bits = old.relevant_bits();
-                let new = if old_bits.start >= 8 && old_bits.end < 16 {
+                let new = if old_bits.start >= 8 && old_bits.end <= 16 {
                     Operand::simplified(operand_lsh(masked, ctx.const_8()))
                 } else {
                     Operand::simplified(operand_or(
@@ -272,12 +316,21 @@ impl<'a> Destination<'a> {
             }
             Destination::Register8Low(o) => {
                 let old = intern_map.operand(*o);
-                *o = intern_map.intern(Operand::simplified(
-                    operand_or(
+                let masked = if value.relevant_bits().end > 8 {
+                    operand_and(value, ctx.const_ff())
+                } else {
+                    value
+                };
+                let old_bits = old.relevant_bits();
+                let new = if old_bits.end <= 8 {
+                    Operand::simplified(masked)
+                } else {
+                    Operand::simplified(operand_or(
                         operand_and(old, ctx.const_ffffff00()),
-                        operand_and(value, ctx.const_ff()),
-                    )
-                ));
+                        masked,
+                    ))
+                };
+                *o = intern_map.intern(new);
             }
             Destination::Pair(high, low) => {
                 let (val_high, val_low) = Operand::pair(&value);
@@ -285,6 +338,11 @@ impl<'a> Destination<'a> {
                 *low = intern_map.intern(Operand::simplified(val_low));
             }
             Destination::Memory(mem, addr, size) => {
+                let addr = if addr.relevant_bits().end > 32 {
+                    Operand::simplified(operand_and(addr, ctx.const_ffffffff()))
+                } else {
+                    addr
+                };
                 if size == MemAccessSize::Mem64 {
                     // Split into two u32 sets
                     Destination::Memory(mem, addr.clone(), MemAccessSize::Mem32)
@@ -371,7 +429,6 @@ impl<'a> Destination<'a> {
                 });
                 mem.set(addr, intern_map.intern(value));
             }
-            Destination::Nop => (),
         }
     }
 }
@@ -592,13 +649,6 @@ impl<'a> ExecutionState<'a> {
         self.memory = Memory::new();
     }
 
-    pub fn move_no_resolve(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap) {
-        let value = Operand::simplified(value);
-        let ctx = self.ctx;
-        let dest = self.get_dest_invalidate_constraints(dest, i);
-        dest.set(value, i, ctx);
-    }
-
     fn get_dest_invalidate_constraints<'s>(
         &'s mut self,
         dest: &DestOperand,
@@ -615,12 +665,17 @@ impl<'a> ExecutionState<'a> {
                 }
             }
         }
-        self.get_dest(dest, interner)
+        self.get_dest(dest, interner, false)
     }
 
-    fn get_dest(&mut self, dest: &DestOperand, intern_map: &mut InternMap) -> Destination {
+    fn get_dest(
+        &mut self,
+        dest: &DestOperand,
+        intern_map: &mut InternMap,
+        dest_is_resolved: bool,
+    ) -> Destination {
         match *dest {
-            DestOperand::Register(reg) => {
+            DestOperand::Register32(reg) | DestOperand::Register64(reg) => {
                 self.cached_low_registers.invalidate(reg.0);
                 Destination::Oper(&mut self.registers[reg.0 as usize])
             }
@@ -636,7 +691,6 @@ impl<'a> ExecutionState<'a> {
                 self.cached_low_registers.invalidate(reg.0);
                 Destination::Register8Low(&mut self.registers[reg.0 as usize])
             }
-            DestOperand::Register64(_) => Destination::Nop,
             DestOperand::PairEdxEax => {
                 self.cached_low_registers.invalidate(0);
                 self.cached_low_registers.invalidate(2);
@@ -662,7 +716,11 @@ impl<'a> ExecutionState<'a> {
                 })
             }
             DestOperand::Memory(ref mem) => {
-                let address = self.resolve(&mem.address, intern_map);
+                let address = if dest_is_resolved {
+                    mem.address.clone()
+                } else {
+                    self.resolve(&mem.address, intern_map)
+                };
                 Destination::Memory(&mut self.memory, address, mem.size)
             }
         }
@@ -672,6 +730,11 @@ impl<'a> ExecutionState<'a> {
         use crate::operand::operand_helpers::*;
 
         let address = self.resolve(&mem.address, i);
+        let address = if address.relevant_bits().end > 32 {
+            Operand::simplified(operand_and(address, self.ctx.const_ffffffff()))
+        } else {
+            address
+        };
         if MemAccessSize::Mem64 == mem.size {
             // Split into 2 32-bit resolves
             return operand_or64(
@@ -756,6 +819,75 @@ impl<'a> ExecutionState<'a> {
             .unwrap_or_else(|| mem_variable_rc(mem.size, address))
     }
 
+    /// Checks cached/caches `reg & ff` masks.
+    /// Also checking ffff_ffff for just register directly
+    fn try_resolve_partial_register(
+        &mut self,
+        left: &Rc<Operand>,
+        right: &Rc<Operand>,
+        interner: &mut InternMap,
+    ) -> Option<Rc<Operand>> {
+        use crate::operand::operand_helpers::*;
+        let (const_op, c, other) = match left.ty {
+            OperandType::Constant(c) => (left, c as u64, right),
+            OperandType::Constant64(c) => (left, c, right),
+            _ => match right.ty {
+                OperandType::Constant(c) => (right, c as u64, left),
+                OperandType::Constant64(c) => (right, c, left),
+                _ => return None,
+            }
+        };
+        let reg = other.if_register()?;
+        if c <= 0xff {
+            let interned = match self.cached_low_registers.get_low8(reg.0) {
+                InternedOperand(0) => {
+                    let op = operand_and(
+                        interner.operand(self.registers[reg.0 as usize]),
+                        self.ctx.const_ff(),
+                    );
+                    let interned = interner.intern(Operand::simplified(op));
+                    self.cached_low_registers.set_low8(reg.0, interned);
+                    interned
+                }
+                x => x,
+            };
+            let op = interner.operand(interned);
+            if c == 0xff {
+                Some(op)
+            } else {
+                Some(operand_and(op, const_op.clone()))
+            }
+        } else if c <= 0xffff {
+            let interned = match self.cached_low_registers.get_16(reg.0) {
+                InternedOperand(0) => {
+                    let op = operand_and(
+                        interner.operand(self.registers[reg.0 as usize]),
+                        self.ctx.const_ffff(),
+                    );
+                    let interned = interner.intern(Operand::simplified(op));
+                    self.cached_low_registers.set_16(reg.0, interned);
+                    interned
+                }
+                x => x,
+            };
+            let op = interner.operand(interned);
+            if c == 0xffff {
+                Some(op)
+            } else {
+                Some(operand_and(op, const_op.clone()))
+            }
+        } else if c <= 0xffff_ffff {
+            let op = interner.operand(self.registers[reg.0 as usize]);
+            if c == 0xffff_ffff {
+                Some(op)
+            } else {
+                Some(operand_and(op, const_op.clone()))
+            }
+        } else {
+            None
+        }
+    }
+
     fn resolve_no_simplify(
         &mut self,
         value: &Rc<Operand>,
@@ -764,38 +896,8 @@ impl<'a> ExecutionState<'a> {
         use crate::operand::operand_helpers::*;
 
         match value.ty {
-            OperandType::Register(reg) | OperandType::Register64(reg) => {
+            OperandType::Register(reg) => {
                 interner.operand(self.registers[reg.0 as usize])
-            }
-            OperandType::Register16(reg) => {
-                let interned = match self.cached_low_registers.get_16(reg.0) {
-                    InternedOperand(0) => {
-                        let op = operand_and(
-                            interner.operand(self.registers[reg.0 as usize]),
-                            self.ctx.const_ffff(),
-                        );
-                        let interned = interner.intern(Operand::simplified(op));
-                        self.cached_low_registers.set_16(reg.0, interned);
-                        interned
-                    }
-                    x => x,
-                };
-                interner.operand(interned)
-            }
-            OperandType::Register8Low(reg) => {
-                let interned = match self.cached_low_registers.get_low8(reg.0) {
-                    InternedOperand(0) => {
-                        let op = operand_and(
-                            interner.operand(self.registers[reg.0 as usize]),
-                            self.ctx.const_ff(),
-                        );
-                        let interned = interner.intern(Operand::simplified(op));
-                        self.cached_low_registers.set_low8(reg.0, interned);
-                        interned
-                    }
-                    x => x,
-                };
-                interner.operand(interned)
             }
             OperandType::Pair(ref high, ref low) => {
                 pair(self.resolve(&high, interner), self.resolve(&low, interner))
@@ -818,6 +920,12 @@ impl<'a> ExecutionState<'a> {
                 }).clone()
             }
             OperandType::Arithmetic(ref op) => {
+                if op.ty == ArithOpType::And {
+                    let r = self.try_resolve_partial_register(&op.left, &op.right, interner);
+                    if let Some(r) = r {
+                        return r;
+                    }
+                };
                 let left = self.resolve(&op.left, interner);
                 let right = self.resolve(&op.right, interner);
                 let ty = OperandType::Arithmetic(ArithOperand {

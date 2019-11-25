@@ -379,6 +379,33 @@ fn lazy_flag_constraint_invalidation() {
     ]);
 }
 
+#[test]
+fn psllq() {
+    // ecx:eax = 1212_1212_4545_4545 << 20
+    // ebx:edx = 8800_8800_9999_9999 << 20
+    test_inline(&[
+        0xc7, 0x04, 0xe4, 0x45, 0x45, 0x45, 0x45, // mov [esp], 4545_4545
+        0xc7, 0x44, 0xe4, 0x04, 0x12, 0x12, 0x12, 0x12, // mov [esp + 4], 1212_1212
+        0xc7, 0x44, 0xe4, 0x08, 0x99, 0x99, 0x99, 0x99, // mov [esp + 8], 9999_9999
+        0xc7, 0x44, 0xe4, 0x0c, 0x00, 0x88, 0x00, 0x88, // mov [esp + c], 8800_8800
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0xc7, 0x04, 0xe4, 0x10, 0x00, 0x00, 0x00, // mov [esp], 10
+        0xc7, 0x44, 0xe4, 0x04, 0x00, 0x00, 0x00, 0x00, // mov [esp + 4], 0
+        0x66, 0x0f, 0xf3, 0x04, 0xe4, // psllq xmm0, [esp]
+        0x0f, 0x11, 0x04, 0xe4, // movups [esp], xmm0
+        0x8b, 0x04, 0xe4, // mov eax, [esp]
+        0x8b, 0x4c, 0xe4, 0x04, // mov ecx, [esp + 4]
+        0x8b, 0x54, 0xe4, 0x08, // mov edx, [esp + 8]
+        0x8b, 0x5c, 0xe4, 0x0c, // mov ebx, [esp + c]
+        0xc3, // ret
+    ], &[
+         (operand_register(0), constval(0x4545_0000)),
+         (operand_register(1), constval(0x1212_4545)),
+         (operand_register(2), constval(0x9999_0000)),
+         (operand_register(3), constval(0x8800_9999)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
@@ -388,6 +415,9 @@ impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
     type Exec = ExecutionState<'e>;
     fn operation(&mut self, control: &mut Control<'e, '_, '_, Self>, op: &Operation) {
         println!("@ {:x} {:#?}", control.address(), op);
+        if let Operation::Move(_, val, _) = op {
+            println!("Resolved is {}", control.resolve(val));
+        }
         if let Operation::Return(_) = *op {
             let (state, i) = control.exec_state();
             self.end_state = Some((state.clone(), i.clone()));
@@ -429,7 +459,7 @@ fn test_inner(
                 OperandType::Undefined(_) => true,
                 _ => false,
             };
-            assert!(expected_is_ud);
+            assert!(expected_is_ud, "Register {}: got undef {} expected {}", i, end, expected);
         } else {
             assert_eq!(expected, end, "Register {}: got {} expected {}", i, end, expected);
         }

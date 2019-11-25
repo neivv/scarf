@@ -186,17 +186,6 @@ impl fmt::Display for Operand {
 
         match self.ty {
             OperandType::Register(r) => match r.0 {
-                0 => write!(f, "eax"),
-                1 => write!(f, "ecx"),
-                2 => write!(f, "edx"),
-                3 => write!(f, "ebx"),
-                4 => write!(f, "esp"),
-                5 => write!(f, "ebp"),
-                6 => write!(f, "esi"),
-                7 => write!(f, "edi"),
-                x => write!(f, "r32_{}", x),
-            },
-            OperandType::Register64(r) => match r.0 {
                 0 => write!(f, "rax"),
                 1 => write!(f, "rcx"),
                 2 => write!(f, "rdx"),
@@ -206,24 +195,6 @@ impl fmt::Display for Operand {
                 6 => write!(f, "rsi"),
                 7 => write!(f, "rdi"),
                 x => write!(f, "r{}", x),
-            },
-            OperandType::Register16(r) => match r.0 {
-                0 => write!(f, "ax"),
-                1 => write!(f, "cx"),
-                2 => write!(f, "dx"),
-                3 => write!(f, "bx"),
-                4 => write!(f, "sp"),
-                5 => write!(f, "bp"),
-                6 => write!(f, "si"),
-                7 => write!(f, "di"),
-                x => write!(f, "r16_{}", x),
-            },
-            OperandType::Register8Low(r) => match r.0 {
-                0 => write!(f, "al"),
-                1 => write!(f, "cl"),
-                2 => write!(f, "dl"),
-                3 => write!(f, "bl"),
-                x => write!(f, "r8lo_{}", x),
             },
             OperandType::Pair(ref hi, ref low) => write!(f, "{}:{}", hi, low),
             OperandType::Xmm(reg, subword) => write!(f, "xmm{}.{}", reg, subword),
@@ -298,9 +269,6 @@ impl fmt::Display for Operand {
 #[derive(Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
 pub enum OperandType {
     Register(Register),
-    Register16(Register),
-    Register8Low(Register),
-    Register64(Register),
     // For div, as it sets eax to (edx:eax / x), and edx to (edx:eax % x)
     Pair(Rc<Operand>, Rc<Operand>),
     Xmm(u8, u8),
@@ -402,9 +370,6 @@ pub struct OperandContext {
 struct OperandCtxGlobals {
     constants: OperandCtxConstants,
     registers: [Rc<Operand>; 16],
-    registers16: [Rc<Operand>; 16],
-    registers8_low: [Rc<Operand>; 16],
-    registers64: [Rc<Operand>; 16],
     flag_z: Rc<Operand>,
     flag_c: Rc<Operand>,
     flag_o: Rc<Operand>,
@@ -585,60 +550,6 @@ impl OperandCtxGlobals {
                 Operand::new_simplified_rc(OperandType::Register(Register(14))),
                 Operand::new_simplified_rc(OperandType::Register(Register(15))),
             ],
-            registers16: [
-                Operand::new_simplified_rc(OperandType::Register16(Register(0))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(1))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(2))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(3))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(4))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(5))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(6))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(7))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(8))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(9))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(10))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(11))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(12))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(13))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(14))),
-                Operand::new_simplified_rc(OperandType::Register16(Register(15))),
-            ],
-            registers8_low: [
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(0))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(1))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(2))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(3))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(4))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(5))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(6))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(7))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(8))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(9))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(10))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(11))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(12))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(13))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(14))),
-                Operand::new_simplified_rc(OperandType::Register8Low(Register(15))),
-            ],
-            registers64: [
-                Operand::new_simplified_rc(OperandType::Register64(Register(0))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(1))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(2))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(3))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(4))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(5))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(6))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(7))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(8))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(9))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(10))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(11))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(12))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(13))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(14))),
-                Operand::new_simplified_rc(OperandType::Register64(Register(15))),
-            ],
         }
     }
 }
@@ -696,29 +607,8 @@ impl OperandContext {
         self.globals.registers[index as usize].clone()
     }
 
-    pub fn register16(&self, index: u8) -> Rc<Operand> {
-        self.globals.registers16[index as usize].clone()
-    }
-
-    pub fn register8_low(&self, index: u8) -> Rc<Operand> {
-        self.globals.registers8_low[index as usize].clone()
-    }
-
-    pub fn register64(&self, index: u8) -> Rc<Operand> {
-        self.globals.registers64[index as usize].clone()
-    }
-
     pub fn register_fpu(&self, index: u8) -> Rc<Operand> {
         Operand::new_simplified_rc(OperandType::Fpu(index))
-    }
-
-    pub fn reg_variable_size(&self, reg: Register, size: MemAccessSize) -> Rc<Operand> {
-        match size {
-            MemAccessSize::Mem64 => self.register64(reg.0),
-            MemAccessSize::Mem32 => self.register(reg.0),
-            MemAccessSize::Mem16 => self.register16(reg.0),
-            MemAccessSize::Mem8 => self.register8_low(reg.0),
-        }
     }
 
     pub fn const_0(&self) -> Rc<Operand> {
@@ -808,6 +698,22 @@ impl OperandContext {
         let id = self.new_undefined_id();
         Operand::new_simplified_rc(OperandType::Undefined(UndefinedId(id)))
     }
+
+    /// Returns operand limited to low `size` bits
+    pub fn truncate(&self, operand: Rc<Operand>, size: u8) -> Rc<Operand> {
+        use self::operand_helpers::*;
+        if operand.relevant_bits().end <= size {
+            operand
+        } else {
+            let low = operand.relevant_bits().start;
+            let high = 64 - size;
+            let mask = !0u64 << high >> high >> low << low;
+            Operand::simplified(operand_and(
+                operand,
+                self.constant64(mask),
+            ))
+        }
+    }
 }
 
 impl fmt::Debug for OperandType {
@@ -815,9 +721,6 @@ impl fmt::Debug for OperandType {
         use self::OperandType::*;
         match self {
             Register(r) => write!(f, "Register({})", r.0),
-            Register16(r) => write!(f, "Register16({})", r.0),
-            Register8Low(r) => write!(f, "Register8Low({})", r.0),
-            Register64(r) => write!(f, "Register64({})", r.0),
             Xmm(r, x) => write!(f, "Xmm({}.{})", r, x),
             Fpu(r) => write!(f, "Fpu({})", r),
             Flag(r) => write!(f, "Flag({:?})", r),
@@ -856,7 +759,7 @@ impl OperandType {
                 MemAccessSize::Mem32 => 16,
                 MemAccessSize::Mem64 => 32,
             },
-            OperandType::Register(_) | OperandType::Flag(_) | OperandType::Undefined(_) => 32,
+            OperandType::Register(_) | OperandType::Flag(_) | OperandType::Undefined(_) => 64,
             OperandType::Arithmetic(ref arith) => match arith.ty {
                 ArithOpType::And | ArithOpType::Or | ArithOpType::Xor => {
                     min(
@@ -1093,11 +996,9 @@ impl OperandType {
         use self::OperandType::*;
         match *self {
             Memory(ref mem) => mem.size,
-            Register(..) | Arithmetic(..) | Pair(..) | Xmm(..) | Flag(..) | Constant(..) |
+            Arithmetic(..) | Pair(..) | Xmm(..) | Flag(..) | Constant(..) |
                 ArithmeticHigh(..) | Fpu(..) | ArithmeticF32(..) => MemAccessSize::Mem32,
-            Register16(..) => MemAccessSize::Mem16,
-            Register8Low(..) => MemAccessSize::Mem8,
-            Register64(..) | Constant64(..) | Arithmetic64(..) | Undefined(..) |
+            Register(..) | Constant64(..) | Arithmetic64(..) | Undefined(..) |
                 Custom(..) => MemAccessSize::Mem64,
             SignExtend(_, _from, to) => to,
         }
@@ -1139,6 +1040,13 @@ impl Operand {
 
     pub(crate) fn is_simplified(&self) -> bool {
         self.simplified
+    }
+
+    pub fn is_undefined(&self) -> bool {
+        match self.ty {
+            OperandType::Undefined(_) => true,
+            _ => false,
+        }
     }
 
     pub fn pair(s: &Rc<Operand>) -> (Rc<Operand>, Rc<Operand>) {
@@ -1186,11 +1094,22 @@ impl Operand {
                 }
             },
             OperandType::Register(reg) => {
-                let low = Operand::new_simplified(OperandType::Xmm(reg.0, word * 2)).into();
-                let high = Operand::new_simplified(OperandType::Xmm(reg.0, word * 2 + 1)).into();
+                let low = operand_xmm(reg.0, word * 2);
+                let high = operand_xmm(reg.0, word * 2 + 1);
                 (low, high)
             }
-            _ => panic!("Invalid value passed to to_xmm_64: {:?}", s),
+            _ => {
+                if let Some((reg, _)) = s.if_and_masked_register() {
+                    let low = operand_xmm(reg.0, word * 2);
+                    let high = operand_xmm(reg.0, word * 2 + 1);
+                    (low, high)
+                } else {
+                    #[cfg(debug_assertions)]
+                    panic!("Cannot convert {} to 64-bit xmm", s);
+                    #[cfg(not(debug_assertions))]
+                    panic!("Cannot convert to 64-bit xmm");
+                }
+            }
         }
     }
 
@@ -1217,7 +1136,6 @@ impl Operand {
         use self::operand_helpers::*;
         match operand.ty {
             OperandType::Constant64(c) => ctx.constant(c as u32),
-            OperandType::Register64(r) => ctx.register(r.0),
             OperandType::Arithmetic64(ref arith) => {
                 if arith.left.relevant_bits().end > 32 || arith.right.relevant_bits().end > 32 {
                     operand_and(operand.clone(), ctx.const_ffffffff())
@@ -1493,10 +1411,6 @@ impl Operand {
                 {
                     Operand::either(&arith.left, &arith.right, |x| x.if_constant64())
                 }
-                OperandType::Register64(_) => Some((0xffff_ffff_ffff_ffff, op)),
-                OperandType::Register(_) => Some((0xffff_ffff, op)),
-                OperandType::Register16(_) => Some((0xffff, op)),
-                OperandType::Register8Low(_) => Some((0xff, op)),
                 OperandType::Memory(ref mem) => match mem.size {
                     MemAccessSize::Mem8 => Some((0xff, op)),
                     MemAccessSize::Mem16 => Some((0xffff, op)),
@@ -1545,37 +1459,6 @@ impl Operand {
                         &mut SimplifyWithZeroBits::default(),
                     )
                 );
-            }
-            if let Some(new) = new {
-                *op = new;
-            }
-        }
-    }
-
-    // Simplify xor: merge regs
-    // Converts ah | al => ax
-    fn simplify_xor_merge_regs(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
-        // Return (is_high, reg_id)
-        fn is_reg8(op: &Rc<Operand>) -> Option<(bool, u8)> {
-            match op.ty {
-                OperandType::Register8Low(r) => Some((false, r.0)),
-                _ => None,
-            }
-        }
-
-        let mut iter = VecDropIter::new(ops);
-        while let Some(mut op) = iter.next() {
-            let mut new = None;
-            if let Some((is_high, r)) = is_reg8(&op) {
-                let mut second = iter.duplicate();
-                while let Some(other_op) = second.next_removable() {
-                    if let Some((is_high2, r2)) = is_reg8(&other_op) {
-                        if r == r2 && is_high != is_high2 {
-                            new = Some(ctx.register16(r));
-                            other_op.remove();
-                        }
-                    }
-                }
             }
             if let Some(new) = new {
                 *op = new;
@@ -2127,14 +2010,6 @@ impl Operand {
         }
     }
 
-    /// Returns `Some(r)` if `self.ty` is `OperandType::Register64(r)`
-    pub fn if_register64(&self) -> Option<Register> {
-        match self.ty {
-            OperandType::Register64(r) => Some(r),
-            _ => None,
-        }
-    }
-
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)`
     pub fn if_memory(&self) -> Option<&MemAccess> {
         match self.ty {
@@ -2283,6 +2158,17 @@ impl Operand {
 
     pub fn if_arithmetic_or64(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
         self.if_arithmetic(ArithOpType::Or, true)
+    }
+
+    /// Returns `Some((register, constant))` if operand is an and mask of register
+    /// with constant.
+    ///
+    /// Useful for detecting 32-bit register which is represented as `Register(r) & ffff_ffff`.
+    pub fn if_and_masked_register(&self) -> Option<(Register, u64)> {
+        let (l, r) = self.if_arithmetic_and()?;
+        let (reg, other) = Operand::either(l, r, |x| x.if_register())?;
+        let other = other.if_constant64()?;
+        Some((reg, other))
     }
 
     /// If either of `a` or `b` matches the filter-map `f`, return the mapped result and the other
@@ -2602,9 +2488,6 @@ fn remove_useless_arith32_and(ctx: &OperandContext, op: &mut Rc<Operand>) {
                     _ => (),
                 }
             }
-        }
-        OperandType::Register64(r) => {
-            *op = ctx.register(r.0);
         }
         OperandType::Constant64(c) => {
             *op = ctx.constant(c as u32);
@@ -2988,8 +2871,6 @@ fn simplify_eq_2_ops(
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
                 Operand::either(&arith.left, &arith.right, |x| x.if_constant())
             }
-            OperandType::Register8Low(_) => Some((0xff, x)),
-            OperandType::Register16(_) => Some((0xffff, x)),
             OperandType::Memory(ref mem) => {
                 match mem.size {
                     MemAccessSize::Mem8 => Some((0xff, x)),
@@ -3159,42 +3040,7 @@ fn try_merge_ands(
                 None
             }
         }
-        _ => {
-            match a.ty {
-                OperandType::Register64(ar) | OperandType::Register(ar) |
-                    OperandType::Register16(ar) | OperandType::Register8Low(ar) =>
-                {
-                    match b.ty {
-                        OperandType::Register64(br) | OperandType::Register(br) |
-                            OperandType::Register16(br) | OperandType::Register8Low(br) =>
-                        {
-                            // Merge two parts of same register to one that includes them both.
-                            if ar == br {
-                                let a_bits = a.relevant_bits();
-                                let b_bits = b.relevant_bits();
-                                let high = a_bits.end.max(b_bits.end);
-                                if high > 32 {
-                                    Some(ctx.register64(ar.0))
-                                } else if high > 16 {
-                                    Some(ctx.register(ar.0))
-                                } else {
-                                    // Cannot be anything else than something thats mergeable
-                                    // to Register16; if a == b the function returns at entry.
-                                    debug_assert!(high == 16);
-                                    debug_assert!(a_bits.start == 0 || b_bits.start == 0);
-                                    debug_assert!(a_bits != b_bits);
-                                    Some(ctx.register16(ar.0))
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    }
-                }
-                _ => None,
-            }
-        }
+        _ => None,
     }
 }
 
@@ -3442,56 +3288,45 @@ fn simplify_lsh(
             match arith.ty {
                 ArithOpType::And => {
                     let zero_bits = (bit_size - constant as u8)..bit_size;
-                    let mut ops = vec![];
-                    Operand::collect_and_ops(&left, &mut ops, ctx);
-                    let high = zero_bits.start;
-                    let low = left.relevant_bits().start;
-                    // If we have and mask of 0xffff,
-                    // and lsh is shifting left by 0x10, the mask isn't relevant
-                    let no_op_mask = !0u64 >> low << low << high >> high;
-                    ops.retain(|x| match x.if_constant64() {
-                        Some(c) => c != no_op_mask,
-                        _ => true,
-                    });
-                    ops.sort();
-                    let single_operand = ops.len() == 1;
-                    let mut tree = match ops.pop() {
-                        Some(s) => s,
-                        None => return ctx.const_0(),
+                    // Simplify (x & mask) << c to (x << c) & (mask << c)
+                    // if x is multiplication.
+                    // (Could do for others, though at least ((x & mask) << c) == 0
+                    // is better than ((x << c) & (mask << c)) == 0
+                    // So only use muls where the shift may disappear.
+                    let const_other =
+                        Operand::either(&arith.left, &arith.right, |x| x.if_constant64());
+                    if let Some((c, other)) = const_other {
+                        let high = 64 - zero_bits.start;
+                        let low = left.relevant_bits().start;
+                        let no_op_mask = !0u64 >> low << low << high >> high;
+                        if c == no_op_mask || other.if_arithmetic_mul().is_some() {
+                            let new = simplify_lsh(&other, &right, bit_size, ctx, swzb_ctx);
+                            if c == no_op_mask {
+                                return new;
+                            } else {
+                                let arith = ArithOperand {
+                                    ty: ArithOpType::And,
+                                    left: new,
+                                    right: ctx.constant64(c << constant),
+                                };
+                                let op = if bit_size == 32 {
+                                    Operand::new_simplified_rc(OperandType::Arithmetic(arith))
+                                } else {
+                                    Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
+                                };
+                                return op;
+                            }
+                        }
+                    }
+                    let arith = ArithOperand {
+                        ty: ArithOpType::Lsh,
+                        left: left.clone(),
+                        right: right.clone(),
                     };
                     if bit_size == 32 {
-                        remove_useless_arith32_and(ctx, &mut tree);
-                    }
-                    while let Some(mut op) = ops.pop() {
-                        if bit_size == 32 {
-                            remove_useless_arith32_and(ctx, &mut op);
-                        }
-                        let arith = ArithOperand {
-                            ty: ArithOpType::And,
-                            left: tree,
-                            right: op,
-                        };
-                        if bit_size == 32 {
-                            tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
-                        } else {
-                            tree = Operand::new_simplified_rc(OperandType::Arithmetic64(arith));
-                        }
-                    }
-                    // If we got rid of the mask, the remaining operand may simplify further,
-                    // otherwise avoid recursion.
-                    if single_operand {
-                        simplify_lsh(&tree, &right, bit_size, ctx, swzb_ctx)
+                        Operand::new_simplified_rc(OperandType::Arithmetic(arith))
                     } else {
-                        let arith = ArithOperand {
-                            ty: ArithOpType::Lsh,
-                            left: tree,
-                            right: right.clone(),
-                        };
-                        if bit_size == 32 {
-                            Operand::new_simplified_rc(OperandType::Arithmetic(arith))
-                        } else {
-                            Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
-                        }
+                        Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
                     }
                 }
                 ArithOpType::Xor => {
@@ -4221,17 +4056,6 @@ fn simplify_with_zero_bits(
                 c => Some(ctx.constant64(c)),
             };
         }
-        OperandType::Register64(r) | OperandType::Register(r) | OperandType::Register16(r) => {
-            if bits.end == 64 {
-                if bits.start <= 8 {
-                    return Some(ctx.register8_low(r.0));
-                } else if bits.start <= 16 && relevant_bits.end > 16 {
-                    return Some(ctx.register16(r.0));
-                } else if bits.start <= 32 && relevant_bits.end > 32 {
-                    return Some(ctx.register(r.0));
-                }
-            }
-        }
         OperandType::Memory(ref mem) => {
             if bits.start == 0 && bits.end >= relevant_bits.end {
                 return None;
@@ -4274,6 +4098,22 @@ fn simplify_with_one_bits(
             let right = &arith.right;
             match arith.ty {
                 ArithOpType::And => {
+                    let const_other = Operand::either(left, right, |x| x.if_constant64());
+                    if let Some((c, other)) = const_other {
+                        // one_bits | (other & c) can be transformed to other & (c | one_bits)
+                        // if c | one_bits is all ones for other's relevant bits, const mask
+                        // can be removed.
+                        let low = bits.start;
+                        let high = 64 - bits.end;
+                        let mask = !0u64 >> low << low << high >> high;
+                        let other_rel_bits = other.relevant_bits();
+                        let low = other_rel_bits.start;
+                        let high = 64 - other_rel_bits.end;
+                        let nop_mask = !0u64 >> low << low << high >> high;
+                        if c | mask == nop_mask {
+                            return simplify_with_one_bits(other, bits, ctx);
+                        }
+                    }
                     let left = simplify_with_one_bits(left, bits, ctx);
                     let right = simplify_with_one_bits(right, bits, ctx);
                     match (left, right) {
@@ -4457,7 +4297,6 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
     ops.sort();
     simplify_xor_remove_reverting(ops);
     simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
-    Operand::simplify_xor_merge_regs(ops, ctx); // Yes, this is supposed to stay valid for xors.
     if ops.is_empty() {
         return ctx.constant64(const_val);
     }
@@ -4612,10 +4451,6 @@ pub mod operand_helpers {
 
     pub fn operand_register(num: u8) -> Rc<Operand> {
         OperandContext::new().register(num)
-    }
-
-    pub fn operand_register64(num: u8) -> Rc<Operand> {
-        OperandContext::new().register64(num)
     }
 
     pub fn operand_xmm(num: u8, word: u8) -> Rc<Operand> {
@@ -4893,48 +4728,6 @@ mod test {
     }
 
     #[test]
-    fn simplify_signed_mul() {
-        // It's same as unsigned until sign extension is needed
-        use super::operand_helpers::*;
-        let op1 = operand_add(constval(5), operand_sub(operand_register(2), constval(5)));
-        assert_eq!(Operand::simplified(op1), operand_register(2));
-        // (5 * r2) + (5 - (5 + r2)) == (5 * r2) - r2
-        let op1 = operand_signed_mul(
-            operand_signed_mul(constval(5), operand_register(2)),
-            operand_signed_mul(
-                constval(5),
-                operand_add(constval(5), operand_register(2)),
-            )
-        );
-        let eq1 = operand_signed_mul(
-            constval(25),
-            operand_signed_mul(
-                operand_register(2),
-                operand_add(constval(5), operand_register(2)),
-            ),
-        );
-        let op2 = operand_signed_mul(
-            operand_register(1),
-            operand_register(2),
-        );
-        let eq2 = operand_mul(
-            operand_register(1),
-            operand_register(2),
-        );
-        let op3 = operand_signed_mul(
-            Operand::new_simplified_rc(OperandType::Register16(Register(1))),
-            Operand::new_simplified_rc(OperandType::Register16(Register(2))),
-        );
-        let ne3 = operand_mul(
-            Operand::new_simplified_rc(OperandType::Register16(Register(1))),
-            Operand::new_simplified_rc(OperandType::Register16(Register(2))),
-        );
-        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
-        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
-        assert_ne!(Operand::simplified(op3), Operand::simplified(ne3));
-    }
-
-    #[test]
     fn simplify_and_or_chain() {
         use super::operand_helpers::*;
         let mem8 = |x| mem_variable_rc(MemAccessSize::Mem8, x);
@@ -5113,21 +4906,21 @@ mod test {
         use super::operand_helpers::*;
         let op1 = operand_or(
             operand_and(
-                operand_register(4),
+                mem32(operand_register(4)),
                 constval(0xffff0000),
             ),
             operand_and(
-                operand_register(4),
+                mem32(operand_register(4)),
                 constval(0x0000ffff),
             )
         );
         let op2 = operand_or(
             operand_and(
-                operand_register(4),
+                mem32(operand_register(4)),
                 constval(0xffff00ff),
             ),
             operand_and(
-                operand_register(4),
+                mem32(operand_register(4)),
                 constval(0x0000ffff),
             )
         );
@@ -5145,8 +4938,8 @@ mod test {
             operand_register(4),
             constval(0x00ffffff),
         );
-        assert_eq!(Operand::simplified(op1), operand_register(4));
-        assert_eq!(Operand::simplified(op2), operand_register(4));
+        assert_eq!(Operand::simplified(op1), mem32(operand_register(4)));
+        assert_eq!(Operand::simplified(op2), mem32(operand_register(4)));
         assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
     }
 
@@ -5280,13 +5073,13 @@ mod test {
         use super::operand_helpers::*;
         let op = operand_and(
             operand_rsh(
-                operand_register(1),
+                mem32(operand_register(1)),
                 constval(0x10),
             ),
             constval(0xffff),
         );
         let eq = operand_rsh(
-            operand_register(1),
+            mem32(operand_register(1)),
             constval(0x10),
         );
         assert_eq!(Operand::simplified(op), Operand::simplified(eq));
@@ -5327,30 +5120,31 @@ mod test {
     #[test]
     fn simplify_add_x_x_64() {
         use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
         let op = operand_add64(
-            operand_register64(1),
-            operand_register64(1),
+            ctx.register(1),
+            ctx.register(1),
         );
         let eq = operand_mul64(
-            operand_register64(1),
+            ctx.register(1),
             constval(2),
         );
-        let neq = operand_register64(1);
+        let neq = ctx.register(1);
         let op2 = operand_add64(
             operand_sub64(
                 operand_add64(
-                    operand_register64(1),
-                    operand_register64(1),
+                    ctx.register(1),
+                    ctx.register(1),
                 ),
-                operand_register64(1),
+                ctx.register(1),
             ),
             operand_add64(
-                operand_register64(1),
-                operand_register64(1),
+                ctx.register(1),
+                ctx.register(1),
             ),
         );
         let eq2 = operand_mul64(
-            operand_register64(1),
+            ctx.register(1),
             constval(3),
         );
         assert_eq!(Operand::simplified(op.clone()), Operand::simplified(eq));
@@ -5578,13 +5372,13 @@ mod test {
         );
         let op7 = operand_lsh(
             operand_and(
-                operand_register(1),
+                mem32(constval(1)),
                 constval(0xffff),
             ),
             constval(0x10),
         );
         let eq7 = operand_lsh(
-            operand_register(1),
+            mem32(constval(1)),
             constval(0x10),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
@@ -5823,13 +5617,13 @@ mod test {
         let op1 = operand_eq(
             constval(0),
             operand_sub(
-                operand_register(1),
-                operand_register(2),
+                mem32(operand_register(1)),
+                mem32(operand_register(2)),
             ),
         );
         let eq1 = operand_eq(
-            operand_register(1),
-            operand_register(2),
+            mem32(operand_register(1)),
+            mem32(operand_register(2)),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
@@ -6001,40 +5795,41 @@ mod test {
     #[test]
     fn simplify_gt2() {
         use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
         let op1 = operand_gt(
             operand_sub(
-                operand_register(5),
-                operand_register(2),
+                ctx.register(5),
+                ctx.register(2),
             ),
-            operand_register(5),
+            ctx.register(5),
         );
         let eq1 = operand_gt(
-            operand_register(2),
-            operand_register(5),
+            ctx.register(2),
+            ctx.register(5),
         );
         // Checking for signed gt requires sign == overflow, unlike
         // unsigned where it's just carry == 1
         let op2 = operand_gt_signed(
             operand_sub(
-                operand_register(5),
-                operand_register(2),
+                ctx.register(5),
+                ctx.register(2),
             ),
-            operand_register(5),
+            ctx.register(5),
         );
         let ne2 = operand_gt_signed(
-            operand_register(2),
-            operand_register(5),
+            ctx.register(2),
+            ctx.register(5),
         );
         let op3 = operand_gt64(
             operand_sub64(
-                operand_register64(5),
-                operand_register64(2),
+                ctx.register(5),
+                ctx.register(2),
             ),
-            operand_register64(5),
+            ctx.register(5),
         );
         let eq3 = operand_gt64(
-            operand_register64(2),
-            operand_register64(5),
+            ctx.register(2),
+            ctx.register(5),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_ne!(Operand::simplified(op2), Operand::simplified(ne2));
@@ -6265,7 +6060,7 @@ mod test {
             ),
         );
         let eq1 = mem32(
-            operand_add(
+            operand_add64(
                 operand_register(1),
                 constval(1),
             ),
@@ -6288,7 +6083,7 @@ mod test {
             ),
         );
         let eq2 = mem32(
-            operand_sub(
+            operand_sub64(
                 operand_register(1),
                 constval(3),
             ),
@@ -6660,16 +6455,16 @@ mod test {
                     constval(0xfff),
                     operand_xor(
                         constval(0x423),
-                        operand_register(1),
+                        mem32(operand_register(1)),
                     ),
                 ),
                 operand_and(
                     constval(0xffff_f000),
-                    operand_register(1),
+                    mem32(operand_register(1)),
                 ),
             )
         );
-        let eq2 = operand_register(1);
+        let eq2 = mem32(operand_register(1));
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
@@ -6847,10 +6642,10 @@ mod test {
         );
         let eq1 = constval(0x12456);
         let op2 = operand_and64(
-            operand_register(0),
+            mem32(operand_register(0)),
             constval(!0),
         );
-        let eq2 = operand_register(0);
+        let eq2 = mem32(operand_register(0));
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
@@ -6859,8 +6654,8 @@ mod test {
     fn short_and_is_32() {
         use super::operand_helpers::*;
         let op1 = Operand::simplified(operand_and(
-            operand_register(0),
-            operand_register(1),
+            mem32(operand_register(0)),
+            mem32(operand_register(1)),
         ));
         match op1.ty {
             OperandType::Arithmetic(..) => (),
@@ -6873,9 +6668,9 @@ mod test {
         use super::operand_helpers::*;
         let op1 = operand_and(
             constval(0xffff_ffff),
-            operand_register(1),
+            mem32(operand_register(1)),
         );
-        let eq1 = operand_register(1);
+        let eq1 = mem32(operand_register(1));
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
@@ -6896,16 +6691,17 @@ mod test {
     #[test]
     fn or_64() {
         use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
         let op1 = Operand::simplified(operand_or64(
             constval64(0xffff_0000_0000),
             constval64(0x12456),
         ));
         let eq1 = constval64(0xffff_0001_2456);
         let op2 = Operand::simplified(operand_or64(
-            operand_register64(0),
+            ctx.register(0),
             constval(0),
         ));
-        let eq2 = operand_register64(0);
+        let eq2 = ctx.register(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
@@ -6974,6 +6770,7 @@ mod test {
     #[test]
     fn simplify_gt_or_eq() {
         use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
         let op1 = operand_or(
             operand_gt(
                 constval64(0x5),
@@ -6991,11 +6788,11 @@ mod test {
         let op2 = operand_or64(
             operand_gt64(
                 constval64(0x5),
-                operand_register64(1),
+                ctx.register(1),
             ),
             operand_eq64(
                 constval64(0x5),
-                operand_register64(1),
+                ctx.register(1),
             ),
         );
         // Confirm that 6 > rcx isn't 6 > ecx
@@ -7005,25 +6802,25 @@ mod test {
         );
         let ne2b = operand_gt(
             constval(0x6),
-            operand_register64(1),
+            ctx.register(1),
         );
         let eq2 = operand_gt64(
             constval(0x6),
-            operand_register64(1),
+            ctx.register(1),
         );
         let op3 = operand_or64(
             operand_gt64(
                 constval64(0x5_0000_0000),
-                operand_register64(1),
+                ctx.register(1),
             ),
             operand_eq64(
                 constval64(0x5_0000_0000),
-                operand_register64(1),
+                ctx.register(1),
             ),
         );
         let eq3 = operand_gt64(
             constval64(0x5_0000_0001),
-            operand_register64(1),
+            ctx.register(1),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_ne!(Operand::simplified(op2.clone()), Operand::simplified(ne2));
@@ -7059,33 +6856,6 @@ mod test {
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
         assert_eq!(Operand::simplified(op3), Operand::simplified(eq3));
         assert_ne!(Operand::simplified(op4), Operand::simplified(ne4));
-    }
-
-    #[test]
-    fn simplify_reg_and() {
-        use super::operand_helpers::*;
-        let ctx = &OperandContext::new();
-        let op1 = operand_and64(
-            operand_register64(0),
-            constval64(0xff),
-        );
-        let eq1 = ctx.register8_low(0);
-        let op2 = operand_and64(
-            operand_register64(0),
-            constval64(0xffff),
-        );
-        let eq2 = ctx.register16(0);
-        let op4 = operand_and64(
-            operand_register64(0),
-            constval64(0xf),
-        );
-        let eq4 = operand_and(
-            ctx.register8_low(0),
-            constval64(0xf),
-        );
-        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
-        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
-        assert_eq!(Operand::simplified(op4), Operand::simplified(eq4));
     }
 
     #[test]
@@ -7125,6 +6895,7 @@ mod test {
     #[test]
     fn and_64_to_32() {
         use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
         let op1 = operand_and64(
             operand_register(0),
             constval(0xf9124),
@@ -7135,8 +6906,8 @@ mod test {
         );
         let op2 = operand_and64(
             operand_add64(
-                operand_register64(0),
-                operand_register64(2),
+                ctx.register(0),
+                ctx.register(2),
             ),
             constval(0xf9124),
         );
@@ -7303,4 +7074,40 @@ mod test {
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
+    #[test]
+    fn simplify_set_bit_masked() {
+        use super::operand_helpers::*;
+        let op1 = operand_or(
+            operand_and(
+                mem16(constval(0x1000)),
+                constval(0xffef),
+            ),
+            constval(0x10),
+        );
+        let eq1 = operand_or(
+            mem16(constval(0x1000)),
+            constval(0x10),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_masked_mul_lsh() {
+        use super::operand_helpers::*;
+        let op1 = operand_lsh(
+            operand_and(
+                operand_mul(
+                    mem32(constval(0x1000)),
+                    constval(9),
+                ),
+                constval(0x3fff_ffff),
+            ),
+            constval(0x2),
+        );
+        let eq1 = operand_mul(
+            mem32(constval(0x1000)),
+            constval(0x24),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
 }
