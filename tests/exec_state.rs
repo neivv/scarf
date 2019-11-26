@@ -306,8 +306,14 @@ fn div_mod() {
         0xc3, //ret
     ], &[
         (operand_register(1), constval(7)),
-        (operand_register(2), operand_mod(operand_register(0), constval(7))),
-        (operand_register(0), operand_div(operand_register(0), constval(7))),
+        (operand_register(2), operand_mod(
+            operand_and(operand_register(0), constval(0xffff_ffff)),
+            constval(7),
+        )),
+        (operand_register(0), operand_div(
+            operand_and(operand_register(0), constval(0xffff_ffff)),
+            constval(7),
+        )),
     ]);
 }
 

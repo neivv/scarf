@@ -291,7 +291,6 @@ impl Constraint {
             {
                 remove_matching_ands(&self.0, &mut |x| *x == OperandType::Register(reg))
             }
-            DestOperand::PairEdxEax => None,
             DestOperand::Xmm(_, _) => {
                 None
             }

@@ -239,7 +239,6 @@ enum Destination<'a> {
     Register16(&'a mut InternedOperand),
     Register8High(&'a mut InternedOperand),
     Register8Low(&'a mut InternedOperand),
-    Pair(&'a mut InternedOperand, &'a mut InternedOperand),
     Memory(&'a mut Memory, Rc<Operand>, MemAccessSize),
 }
 
@@ -331,11 +330,6 @@ impl<'a> Destination<'a> {
                     ))
                 };
                 *o = intern_map.intern(new);
-            }
-            Destination::Pair(high, low) => {
-                let (val_high, val_low) = Operand::pair(&value);
-                *high = intern_map.intern(Operand::simplified(val_high));
-                *low = intern_map.intern(Operand::simplified(val_low));
             }
             Destination::Memory(mem, addr, size) => {
                 let addr = if addr.relevant_bits().end > 32 {
@@ -510,13 +504,14 @@ impl<'a> ExecutionState<'a> {
                     self.move_to(&dest, value, intern_map);
                 }
             }
-            Operation::Swap(left, right) => {
-                let left_res = self.resolve(&left.as_operand(ctx), intern_map);
-                let right_res = self.resolve(&right.as_operand(ctx), intern_map);
-                self.get_dest_invalidate_constraints(&left, intern_map)
-                    .set(right_res, intern_map, ctx);
-                self.get_dest_invalidate_constraints(&right, intern_map)
-                    .set(left_res, intern_map, ctx);
+            Operation::MoveSet(moves) => {
+                let resolved: Vec<Rc<Operand>> = moves.iter()
+                    .map(|x| self.resolve(&x.1, intern_map))
+                    .collect();
+                for (tp, val) in moves.iter().zip(resolved.into_iter()) {
+                    self.get_dest_invalidate_constraints(&tp.0, intern_map)
+                        .set(val, intern_map, ctx);
+                }
             }
             Operation::Call(_) => {
                 let mut ids = intern_map.many_undef(ctx, 9);
@@ -691,13 +686,6 @@ impl<'a> ExecutionState<'a> {
                 self.cached_low_registers.invalidate(reg.0);
                 Destination::Register8Low(&mut self.registers[reg.0 as usize])
             }
-            DestOperand::PairEdxEax => {
-                self.cached_low_registers.invalidate(0);
-                self.cached_low_registers.invalidate(2);
-                let (eax, rest) = self.registers.split_first_mut().unwrap();
-                let edx = &mut rest[1];
-                Destination::Pair(edx, eax)
-            }
             DestOperand::Fpu(id) => {
                 Destination::Oper(&mut self.fpu_registers[id as usize])
             }
@@ -828,7 +816,6 @@ impl<'a> ExecutionState<'a> {
     }
 
     /// Checks cached/caches `reg & ff` masks.
-    /// Also checking ffff_ffff for just register directly
     fn try_resolve_partial_register(
         &mut self,
         left: &Rc<Operand>,
@@ -882,13 +869,6 @@ impl<'a> ExecutionState<'a> {
             } else {
                 Some(operand_and(op, const_op.clone()))
             }
-        } else if c <= 0xffff_ffff {
-            let op = interner.operand(self.registers[reg.0 as usize]);
-            if c == 0xffff_ffff {
-                Some(op)
-            } else {
-                Some(operand_and(op, const_op.clone()))
-            }
         } else {
             None
         }
@@ -899,14 +879,9 @@ impl<'a> ExecutionState<'a> {
         value: &Rc<Operand>,
         interner: &mut InternMap,
     ) -> Rc<Operand> {
-        use crate::operand::operand_helpers::*;
-
         match value.ty {
             OperandType::Register(reg) => {
                 interner.operand(self.registers[reg.0 as usize])
-            }
-            OperandType::Pair(ref high, ref low) => {
-                pair(self.resolve(&high, interner), self.resolve(&low, interner))
             }
             OperandType::Xmm(reg, word) => {
                 interner.operand(self.xmm_registers[reg as usize].word(word))
@@ -951,14 +926,6 @@ impl<'a> ExecutionState<'a> {
             }
             OperandType::ArithmeticF32(ref op) => {
                 let ty = OperandType::ArithmeticF32(ArithOperand {
-                    ty: op.ty,
-                    left: self.resolve(&op.left, interner),
-                    right: self.resolve(&op.right, interner),
-                });
-                Operand::new_not_simplified_rc(ty)
-            }
-            OperandType::ArithmeticHigh(ref op) => {
-                let ty = OperandType::ArithmeticHigh(ArithOperand {
                     ty: op.ty,
                     left: self.resolve(&op.left, interner),
                     right: self.resolve(&op.right, interner),

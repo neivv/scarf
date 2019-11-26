@@ -1171,7 +1171,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let (rm, r) = self.parse_modrm(op_size)?;
         let mut out = SmallVec::new();
         if rm != r {
-            out.push(Operation::Swap(dest_operand(&r), dest_operand(&rm)));
+            out.push(Operation::MoveSet(vec![
+                (dest_operand(&r), rm.clone()),
+                (dest_operand(&rm), r.clone()),
+            ]));
         }
         Ok(out)
     }
@@ -1339,14 +1342,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn various_f7(&self) -> Result<OperationVec, Error> {
-        use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
         let op_size = match self.get(0) & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, _) = self.parse_modrm(op_size)?;
         let variant = (self.get(1) >> 3) & 0x7;
+        let (rm, _) = self.parse_modrm(op_size)?;
         let mut out = SmallVec::new();
         let is_64 = Va::SIZE == 8;
         match variant {
@@ -1364,16 +1366,53 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 let dest = dest_operand(&rm);
                 out.push(make_arith_operation(dest, ArithOpType::Sub, self.ctx.const_0(), rm, is_64));
             }
-            4 => {
-                out.push(mov(pair_edx_eax(), operand_mul(self.ctx.register(0), rm)));
-            },
-            5 => {
-                out.push(mov(pair_edx_eax(), operand_signed_mul(self.ctx.register(0), rm)));
+            4 | 5 => {
+                // TODO signed mul
+                // No way to represent rdx = imul_128(rax, rm) >> 64,
+                // Just set to undefined for now.
+                // Could alternatively either Special or add Arithmetic64High.
+                let eax = self.reg_variable_size(Register(0), op_size);
+                let edx = self.reg_variable_size(Register(2), op_size);
+                let multiply = operand_mul(eax.clone(), rm);
+                if op_size == MemAccessSize::Mem64 {
+                    out.push(Operation::MoveSet(vec![
+                        (DestOperand::from_oper(&edx), self.ctx.undefined_rc()),
+                        (DestOperand::from_oper(&eax), multiply),
+                    ]));
+                } else {
+                    let size = self.ctx.constant(op_size.bits() as u64);
+                    out.push(Operation::MoveSet(vec![
+                        (DestOperand::from_oper(&edx), operand_rsh64(multiply.clone(), size)),
+                        (DestOperand::from_oper(&eax), multiply),
+                    ]));
+                }
             },
             6 => {
-                let div = operand_div(pair_edx_eax(), rm.clone());
-                let modulo = operand_mod(pair_edx_eax(), rm);
-                out.push(mov(pair_edx_eax(), pair(modulo, div)));
+                // edx = edx:eax % rm, eax = edx:eax / rm
+                let eax = self.reg_variable_size(Register(0), op_size);
+                let edx = self.reg_variable_size(Register(2), op_size);
+                let size = self.ctx.constant(op_size.bits() as u64);
+                let div;
+                let modulo;
+                if op_size == MemAccessSize::Mem64 {
+                    // Difficult to do unless rdx is known to be 0
+                    div = self.ctx.undefined_rc();
+                    modulo = self.ctx.undefined_rc();
+                } else {
+                    let pair = operand_or64(
+                        operand_lsh64(
+                            edx.clone(),
+                            size,
+                        ),
+                        eax.clone(),
+                    );
+                    div = operand_div64(pair.clone(), rm.clone());
+                    modulo = operand_mod64(pair, rm);
+                }
+                out.push(Operation::MoveSet(vec![
+                    (DestOperand::from_oper(&edx), modulo),
+                    (DestOperand::from_oper(&eax), div),
+                ]));
             }
             _ => return Err(Error::UnknownOpcode(self.data.into())),
         }
@@ -2652,7 +2691,6 @@ pub mod operation_helpers {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
     Move(DestOperand, Rc<Operand>, Option<Rc<Operand>>),
-    Swap(DestOperand, DestOperand),
     Call(Rc<Operand>),
     Jump { condition: Rc<Operand>, to: Rc<Operand> },
     Return(u32),
@@ -2663,6 +2701,9 @@ pub enum Operation {
     /// (And it does for odd cases like inc), it would mean generating 5
     /// additional operations for each instruction, so special-case flags.
     SetFlags(ArithOperand, MemAccessSize),
+    /// Like Move, but evaluate all operands before assigning over any.
+    /// Used for mul/div/swap.
+    MoveSet(Vec<(DestOperand, Rc<Operand>)>),
 }
 
 fn make_f32_operation(
@@ -2699,7 +2740,6 @@ pub enum DestOperand {
     Register16(Register),
     Register8High(Register),
     Register8Low(Register),
-    PairEdxEax,
     Xmm(u8, u8),
     Fpu(u8),
     Flag(Flag),
@@ -2730,7 +2770,6 @@ impl DestOperand {
                 operand_and(ctx.register(x.0), ctx.const_ff())
             ),
             DestOperand::Register64(x) => ctx.register(x.0),
-            DestOperand::PairEdxEax => pair_edx_eax(),
             DestOperand::Xmm(x, y) => Rc::new(Operand::new_xmm(x, y)),
             DestOperand::Fpu(x) => ctx.register_fpu(x),
             DestOperand::Flag(x) => ctx.flag(x),
@@ -2743,11 +2782,6 @@ fn dest_operand(val: &Operand) -> DestOperand {
     use crate::operand::OperandType::*;
     match val.ty {
         Register(x) => DestOperand::Register64(x),
-        Pair(ref hi, ref low) => {
-            assert_eq!(hi.ty, Register(crate::operand::Register(2)));
-            assert_eq!(low.ty, Register(crate::operand::Register(0)));
-            DestOperand::PairEdxEax
-        }
         Xmm(x, y) => DestOperand::Xmm(x, y),
         Fpu(x) => DestOperand::Fpu(x),
         Flag(x) => DestOperand::Flag(x),
