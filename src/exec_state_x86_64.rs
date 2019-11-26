@@ -22,7 +22,7 @@ pub struct ExecutionState<'a> {
     unresolved_constraint: Option<Constraint>,
     resolved_constraint: Option<Constraint>,
     ctx: &'a OperandContext,
-    code_sections: Vec<&'a crate::BinarySection<VirtualAddress64>>,
+    binary: Option<&'a BinaryFile<VirtualAddress64>>,
     /// Lazily update flags since a lot of instructions set them and
     /// they get discarded later.
     pending_flags: Option<(ArithOperand, bool)>,
@@ -417,7 +417,7 @@ impl<'a> ExecutionState<'a> {
             unresolved_constraint: None,
             resolved_constraint: None,
             ctx,
-            code_sections: Vec::new(),
+            binary: None,
             pending_flags: None,
         }
     }
@@ -428,7 +428,7 @@ impl<'a> ExecutionState<'a> {
         interner: &mut InternMap,
     ) -> ExecutionState<'b> {
         let mut result = ExecutionState::new(ctx, interner);
-        result.code_sections = binary.code_sections().collect();
+        result.binary = Some(binary);
         result
     }
 
@@ -719,9 +719,11 @@ impl<'a> ExecutionState<'a> {
         if let Some(c) = address.if_constant() {
             // Simplify constants stored in code section (constant switch jumps etc)
             if let Some(end) = c.checked_add(size_bytes as u64) {
-                let section = self.code_sections.iter().find(|s| {
-                    s.virtual_address.0 <= c &&
-                        s.virtual_address.0 + s.virtual_size as u64 >= end
+                let section = self.binary.and_then(|b| {
+                    b.code_sections().find(|s| {
+                        s.virtual_address.0 <= c &&
+                            s.virtual_address.0 + s.virtual_size as u64 >= end
+                    })
                 });
                 if let Some(section) = section {
                     let offset = (c - section.virtual_address.0) as usize;
@@ -1151,7 +1153,7 @@ pub fn merge_states<'a: 'r, 'r>(
             },
             pending_flags: None,
             ctx,
-            code_sections: old.code_sections.clone(),
+            binary: old.binary,
         })
     } else {
         None

@@ -677,28 +677,29 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             operand_ctx,
         );
 
-        let init_state = control.inner.state.clone();
+        let init_state = Box::new(control.inner.state.clone());
         let mut cfg_out_edge = CfgOutEdges::None;
         // skip_operation from branch_start is no-op, clear the flag here
         // if it was set by user code
         control.inner.skip_operation = false;
         'branch_loop: loop {
-            let instruction = loop {
+            let mut instruction;
+            loop {
                 let address = disasm.address();
                 control.inner.address = address;
-                let ins = match disasm.next(operand_ctx) {
+                instruction = match disasm.next(operand_ctx) {
                     Ok(o) => o,
                     Err(disasm::Error::Branch) => {
                         break 'branch_loop;
                     }
                     Err(e) => {
-                        control.inner.analysis.errors.push((address, e.into()));
+                        control.inner.analysis.add_error(address, e);
                         break 'branch_loop;
                     }
                 };
-                control.inner.instruction_length = ins.len() as u8;
-                if !ins.ops().is_empty() {
-                    break ins;
+                control.inner.instruction_length = instruction.len() as u8;
+                if !instruction.ops().is_empty() {
+                    break;
                 }
             };
             for op in instruction.ops() {
@@ -731,7 +732,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         control.inner.analysis.cfg.add_node(addr, CfgNode {
             out_edges: cfg_out_edge,
             state: CfgState {
-                data: Box::new(init_state),
+                data: init_state,
                 phantom: Default::default(),
             },
             end_address: control.inner.address, // Is this correct?
@@ -740,6 +741,11 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
         analyzer.branch_end(&mut control);
         control.inner.end
+    }
+
+    #[cold]
+    fn add_error(&mut self, address: Exec::VirtualAddress, error: disasm::Error) {
+        self.errors.push((address, error.into()));
     }
 
     fn add_unchecked_branch(

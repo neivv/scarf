@@ -2,7 +2,6 @@ use std::cell::Cell;
 use std::cmp::{max, min, Ordering};
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::mem;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -432,39 +431,33 @@ impl<'a> IterVariant<'a> for Iter<'a> {
 fn iter_variant_next<'a, T: IterVariant<'a>>(s: &mut T) -> Option<&'a Operand> {
     use self::OperandType::*;
 
-    let inner = match mem::replace(s.state(), None) {
-        Some(s) => s,
+    let inner = match s.state() {
+        Some(ref mut s) => s,
         None => return None,
     };
     let next = inner.pos;
 
-    *s.state() = match next.ty {
+    match next.ty {
         Arithmetic(ref arith) | ArithmeticHigh(ref arith) => {
-            Some(IterState {
-                pos: &arith.left,
-                rhs: Some(Box::new(IterState {
-                    pos: &arith.right,
-                    rhs: inner.rhs,
-                })),
-            })
+            inner.pos = &arith.left;
+            inner.stack.push(&arith.right);
         },
-        Memory(ref m) => {
-            Some(IterState {
-                pos: &m.address,
-                rhs: inner.rhs,
-            })
+        Memory(ref m) if T::descend_to_mem_addr() => {
+            inner.pos = &m.address;
         }
         Pair(ref hi, ref low) => {
-            Some(IterState {
-                pos: hi,
-                rhs: Some(Box::new(IterState {
-                    pos: low,
-                    rhs: inner.rhs,
-                })),
-            })
+            inner.pos = hi;
+            inner.stack.push(low);
         }
-        _ => inner.rhs.map(|x| *x),
-    };
+        _ => {
+            match inner.stack.pop() {
+                Some(s) => inner.pos = s,
+                _ => {
+                    *s.state() = None;
+                }
+            }
+        }
+    }
     Some(next)
 }
 
@@ -480,7 +473,7 @@ impl<'a> IterVariant<'a> for IterNoMemAddr<'a> {
 
 struct IterState<'a> {
     pos: &'a Operand,
-    rhs: Option<Box<IterState<'a>>>,
+    stack: Vec<&'a Operand>,
 }
 
 impl<'a> Iterator for Iter<'a> {
@@ -1095,14 +1088,14 @@ impl Operand {
     pub fn iter(&self) -> Iter {
         Iter(Some(IterState {
             pos: self,
-            rhs: None,
+            stack: Vec::new(),
         }))
     }
 
     pub fn iter_no_mem_addr(&self) -> IterNoMemAddr {
         IterNoMemAddr(Some(IterState {
             pos: self,
-            rhs: None,
+            stack: Vec::new(),
         }))
     }
 

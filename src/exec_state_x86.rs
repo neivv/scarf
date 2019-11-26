@@ -183,7 +183,7 @@ pub struct ExecutionState<'a> {
     resolved_constraint: Option<Constraint>,
     unresolved_constraint: Option<Constraint>,
     ctx: &'a OperandContext,
-    code_sections: Vec<&'a crate::BinarySection<VirtualAddress>>,
+    binary: Option<&'a BinaryFile<VirtualAddress>>,
     pending_flags: Option<ArithOperand>,
 }
 
@@ -474,7 +474,7 @@ impl<'a> ExecutionState<'a> {
             resolved_constraint: None,
             unresolved_constraint: None,
             ctx,
-            code_sections: Vec::new(),
+            binary: None,
             pending_flags: None,
         }
     }
@@ -485,7 +485,7 @@ impl<'a> ExecutionState<'a> {
         interner: &mut InternMap,
     ) -> ExecutionState<'b> {
         let mut result = ExecutionState::new(ctx, interner);
-        result.code_sections = binary.code_sections().collect();
+        result.binary = Some(binary);
         result
     }
 
@@ -760,8 +760,10 @@ impl<'a> ExecutionState<'a> {
         if let Some(c) = address.if_constant().map(|c| c as u32) {
             // Simplify constants stored in code section (constant switch jumps etc)
             if let Some(end) = c.checked_add(size_bytes) {
-                let section = self.code_sections.iter().find(|s| {
-                    s.virtual_address.0 <= c && s.virtual_address.0 + s.virtual_size >= end
+                let section = self.binary.and_then(|b| {
+                    b.code_sections().find(|s| {
+                        s.virtual_address.0 <= c && s.virtual_address.0 + s.virtual_size >= end
+                    })
                 });
                 if let Some(section) = section {
                     let offset = (c - section.virtual_address.0) as usize;
@@ -1186,7 +1188,7 @@ pub fn merge_states<'a: 'r, 'r>(
             },
             pending_flags: None,
             ctx,
-            code_sections: old.code_sections.clone(),
+            binary: old.binary,
         })
     } else {
         None
