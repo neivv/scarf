@@ -3505,60 +3505,30 @@ fn simplify_rsh(
             match arith.ty {
                 ArithOpType::And => {
                     let zero_bits = 0..(constant as u8);
-                    let mut ops = vec![];
-                    Operand::collect_and_ops(&left, &mut ops, ctx);
-                    let low = bit_size - zero_bits.end;
-                    let high = bit_size - left.relevant_bits().end;
-                    // If we have and mask of 0xffff0000,
-                    // and rsh is shifting right by 0x10, the mask isn't relevant
-                    let no_op_mask = if bit_size == 32 {
-                        (!0u32 >> low << low << high >> high) as u64
-                    } else {
-                        (!0u64 >> low << low << high >> high)
-                    };
-                    ops.retain(|x| match x.if_constant() {
-                        Some(c) => c != no_op_mask,
-                        _ => true,
-                    });
-                    ops.sort();
-                    let single_operand = ops.len() == 1;
-                    let mut tree = match ops.pop() {
-                        Some(s) => s,
-                        None => return ctx.const_0(),
+                    let const_other =
+                        Operand::either(&arith.left, &arith.right, |x| x.if_constant());
+                    if let Some((c, other)) = const_other {
+                        let low = zero_bits.end;
+                        let high = 64 - other.relevant_bits().end;
+                        let no_op_mask = if bit_size == 64 {
+                            !0u64 >> low << low << high >> high
+                        } else {
+                            (!0u32 as u64) >> low << low << high >> high
+                        };
+                        if c == no_op_mask {
+                            let new = simplify_rsh(&other, &right, bit_size, ctx, swzb_ctx);
+                            return new;
+                        }
+                    }
+                    let arith = ArithOperand {
+                        ty: ArithOpType::Rsh,
+                        left: left.clone(),
+                        right: right.clone(),
                     };
                     if bit_size == 32 {
-                        remove_useless_arith32_and(ctx, &mut tree);
-                    }
-                    while let Some(mut op) = ops.pop() {
-                        if bit_size == 32 {
-                            remove_useless_arith32_and(ctx, &mut op);
-                        }
-                        let arith = ArithOperand {
-                            ty: ArithOpType::And,
-                            left: tree,
-                            right: op,
-                        };
-                        if bit_size == 32 {
-                            tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
-                        } else {
-                            tree = Operand::new_simplified_rc(OperandType::Arithmetic64(arith));
-                        }
-                    }
-                    // If we got rid of the mask, the remaining operand may simplify further,
-                    // otherwise avoid recursion.
-                    if single_operand {
-                        simplify_rsh(&tree, &right, bit_size, ctx, swzb_ctx)
+                        Operand::new_simplified_rc(OperandType::Arithmetic(arith))
                     } else {
-                        let arith = ArithOperand {
-                            ty: ArithOpType::Rsh,
-                            left: tree,
-                            right: right.clone(),
-                        };
-                        if bit_size == 32 {
-                            Operand::new_simplified_rc(OperandType::Arithmetic(arith))
-                        } else {
-                            Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
-                        }
+                        Operand::new_simplified_rc(OperandType::Arithmetic64(arith))
                     }
                 }
                 ArithOpType::Xor => {
@@ -7140,6 +7110,24 @@ mod test {
             ),
         );
         let eq1 = ctx.const_0();
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_rsh() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_rsh(
+            operand_and(
+                mem8(ctx.constant(0x900)),
+                ctx.constant(0xf8),
+            ),
+            ctx.constant(3),
+        );
+        let eq1 = operand_rsh(
+            mem8(ctx.constant(0x900)),
+            ctx.constant(3),
+        );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
