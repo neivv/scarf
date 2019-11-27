@@ -6,7 +6,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use quick_error::quick_error;
 
 use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
-use crate::disasm::{self, Instruction, Operation};
+use crate::disasm::{self, Operation};
 use crate::exec_state::{self, Disassembler, ExecutionState, InternMap};
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::operand::{MemAccessSize, Operand, OperandContext};
@@ -718,7 +718,8 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                             &mut control.inner.state,
                             condition.clone(),
                             to.clone(),
-                            &instruction,
+                            instruction.address(),
+                            instruction.len(),
                             &mut cfg_out_edge,
                         );
                     }
@@ -959,7 +960,9 @@ pub struct Branch<'a, 'exec: 'a, Exec: ExecutionState<'exec>, State: AnalysisSta
 pub struct Operations<'a, 'branch: 'a, 'exec: 'branch, Exec: ExecutionState<'exec>, S: AnalysisState> {
     branch: &'a mut Branch<'branch, 'exec, Exec, S>,
     disasm: Exec::Disassembler,
-    current_ins: Option<Instruction<Exec::VirtualAddress>>,
+    ins_ops: Vec<Operation>,
+    ins_len: u32,
+    address: Exec::VirtualAddress,
     ins_pos: usize,
 }
 
@@ -980,8 +983,10 @@ impl<'a, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState> Branch<'a, 'e
                 self.analysis.binary.code_section().virtual_address,
                 self.analysis.operand_ctx,
             ),
-            current_ins: None,
+            ins_ops: Vec::new(),
+            address: Exec::VirtualAddress::from_u64(0),
             ins_pos: 0,
+            ins_len: 0,
             branch: self,
         }
     }
@@ -998,7 +1003,12 @@ impl<'a, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState> Branch<'a, 'e
         });
     }
 
-    fn process_operation(&mut self, op: Operation, ins: &Instruction<Exec::VirtualAddress>) -> Result<(), Error> {
+    fn process_operation(
+        &mut self,
+        op: Operation,
+        address: Exec::VirtualAddress,
+        instruction_len: u32,
+    ) -> Result<(), Error> {
         match op {
             disasm::Operation::Jump { condition, to } => {
                 update_analysis_for_jump(
@@ -1006,7 +1016,8 @@ impl<'a, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState> Branch<'a, 'e
                     &mut self.state,
                     condition,
                     to,
-                    ins,
+                    address,
+                    instruction_len,
                     &mut self.cfg_out_edge,
                 );
             }
@@ -1037,26 +1048,23 @@ impl<'a, 'branch, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState>
             return None;
         }
         let mut yield_ins = false;
-        if let Some(ref ins) = self.current_ins  {
-            let op = &ins.ops()[self.ins_pos];
-            if let Err(e) = self.branch.process_operation(op.clone(), ins) {
-                self.branch.analysis.errors.push((ins.address(), e));
-                self.branch.end_block(ins.address());
+        if !self.ins_ops.is_empty() {
+            let op = &self.ins_ops[self.ins_pos];
+            if let Err(e) = self.branch.process_operation(op.clone(), self.address, self.ins_len) {
+                self.branch.analysis.errors.push((self.address, e));
+                self.branch.end_block(self.address);
                 return None;
             }
             self.ins_pos += 1;
-            yield_ins = self.ins_pos < ins.ops().len();
+            yield_ins = self.ins_pos < self.ins_ops.len();
         }
         if yield_ins {
-            if let Some(ref ins) = self.current_ins {
-                let state = &mut self.branch.state.0;
-                let interner = &mut self.branch.analysis.interner;
-                let op = &ins.ops()[self.ins_pos];
-                return Some((op, state, ins.address(), interner));
-            }
+            let state = &mut self.branch.state.0;
+            let interner = &mut self.branch.analysis.interner;
+            let op = &self.ins_ops[self.ins_pos];
+            return Some((op, state, self.address, interner));
         }
 
-        let instruction;
         loop {
             let address = self.disasm.address();
             let ins = match self.disasm.next(&self.branch.analysis.operand_ctx) {
@@ -1072,17 +1080,17 @@ impl<'a, 'branch, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState>
                 }
             };
             if !ins.ops().is_empty() {
-                instruction = ins;
+                self.address = ins.address();
+                self.ins_len = ins.len();
+                self.ins_ops = ins.ops().into();
                 break;
             }
         }
-        self.current_ins = Some(instruction);
         self.ins_pos = 0;
-        let ins = self.current_ins.as_ref().unwrap();
         let state = &mut self.branch.state.0;
         let interner = &mut self.branch.analysis.interner;
-        let op = &ins.ops()[0];
-        Some((op, state, ins.address(), interner))
+        let op = &self.ins_ops[0];
+        Some((op, state, self.address, interner))
     }
 
     pub fn current_address(&self) -> Exec::VirtualAddress {
@@ -1145,7 +1153,8 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
     state: &mut (Exec, S),
     condition: Rc<Operand>,
     to: Rc<Operand>,
-    ins: &Instruction<Exec::VirtualAddress>,
+    address: Exec::VirtualAddress,
+    instruction_len: u32,
     cfg_out_edge: &mut CfgOutEdges<Exec::VirtualAddress>,
 ) {
     /// Returns address of the table,
@@ -1179,7 +1188,7 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
     state.0.maybe_convert_memory_immutable();
     match state.0.resolve_apply_constraints(&condition, &mut analysis.interner).if_constant() {
         Some(0) => {
-            let address = ins.address() + ins.len() as u32;
+            let address = address + instruction_len;
             *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
             analysis.add_unchecked_branch(address, Box::new(state.clone()));
         }
@@ -1240,14 +1249,14 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                     }
                 }
             } else {
-                let dest = try_add_branch(analysis, state.clone(), to.clone(), ins.address());
+                let dest = try_add_branch(analysis, state.clone(), to.clone(), address);
                 *cfg_out_edge = CfgOutEdges::Single(
                     dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
                 );
             }
         }
         None => {
-            let no_jump_addr = ins.address() + ins.len() as u32;
+            let no_jump_addr = address + instruction_len;
             let mut jump_state = state.0.assume_jump_flag(&condition, true, &mut analysis.interner);
             let no_jump_state = state.0.assume_jump_flag(&condition, false, &mut analysis.interner);
             let to = jump_state.resolve(&to, &mut analysis.interner);
@@ -1256,7 +1265,7 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                 Box::new((no_jump_state, state.1.clone())),
             );
             let s = Box::new((jump_state, state.1.clone()));
-            let dest = try_add_branch(analysis, s, to, ins.address());
+            let dest = try_add_branch(analysis, s, to, address);
             *cfg_out_edge = CfgOutEdges::Branch(
                 NodeLink::new(no_jump_addr),
                 OutEdgeCondition {
