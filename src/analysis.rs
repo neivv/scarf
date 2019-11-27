@@ -618,24 +618,38 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         }
     }
 
-    pub fn analyze<A: Analyzer<'a, State = State, Exec = Exec>>(&mut self, analyzer: &mut A) {
+    fn pop_next_branch_merge_with_cfg(
+        &mut self,
+    ) -> Option<(Exec::VirtualAddress, Box<(Exec, State)>)> {
         while let Some((addr, mut branch_state)) = self.pop_next_branch() {
-            let mut state = match self.cfg.get_state(addr) {
+            match self.cfg.get_state(addr) {
                 Some(state) => {
-                    Exec::merge_states(&mut state.data.0, &mut branch_state.0, &mut self.interner)
-                        .map(|e| {
-                            let mut state = state.data.1.clone();
-                            state.merge(branch_state.1);
-                            (e, state)
-                        })
+                    let merged = Exec::merge_states(
+                        &mut state.data.0,
+                        &mut branch_state.0,
+                        &mut self.interner,
+                    );
+                    match merged {
+                        Some(s) => {
+                            let mut user_state = state.data.1.clone();
+                            user_state.merge(branch_state.1);
+                            return Some((addr, Box::new((s, user_state))));
+                        }
+                        // No change, take another branch
+                        None => (),
+                    }
                 }
-                None => Some(*branch_state),
-            };
-            if let Some(ref mut state) = state {
-                let end = self.analyze_branch(analyzer, addr, state);
-                if end == Some(End::Function) {
-                    break;
-                }
+                None => return Some((addr, branch_state)),
+            }
+        }
+        None
+    }
+
+    pub fn analyze<A: Analyzer<'a, State = State, Exec = Exec>>(&mut self, analyzer: &mut A) {
+        while let Some((addr, state)) = self.pop_next_branch_merge_with_cfg() {
+            let end = self.analyze_branch(analyzer, addr, state);
+            if end == Some(End::Function) {
+                break;
             }
         }
     }
@@ -644,7 +658,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         &mut self,
         analyzer: &mut A,
         addr: Exec::VirtualAddress,
-        state: &'b mut (Exec, State),
+        mut state: Box<(Exec, State)>,
     ) -> Option<End> {
         let binary = self.binary;
         let section = match binary.section_by_addr(addr) {
@@ -658,7 +672,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             address: addr,
             instruction_length: 0,
             skip_operation: false,
-            state,
+            state: &mut state,
             end: None,
         };
         let mut control = Control {
@@ -682,26 +696,20 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         // skip_operation from branch_start is no-op, clear the flag here
         // if it was set by user code
         control.inner.skip_operation = false;
-        'branch_loop: loop {
-            let mut instruction;
-            loop {
-                let address = disasm.address();
-                control.inner.address = address;
-                instruction = match disasm.next(operand_ctx) {
-                    Ok(o) => o,
-                    Err(disasm::Error::Branch) => {
-                        break 'branch_loop;
-                    }
-                    Err(e) => {
-                        control.inner.analysis.add_error(address, e);
-                        break 'branch_loop;
-                    }
-                };
-                control.inner.instruction_length = instruction.len() as u8;
-                if !instruction.ops().is_empty() {
-                    break;
+        let mut current_address;
+        let end = 'branch_loop: loop {
+            let address = disasm.address();
+            current_address = address;
+            control.inner.address = address;
+            let instruction = match disasm.next(operand_ctx) {
+                Ok(o) => o,
+                Err(e) => {
+                    control.inner.analysis.add_error(address, e);
+                    analyzer.branch_end(&mut control);
+                    break 'branch_loop control.inner.end;
                 }
             };
+            control.inner.instruction_length = instruction.len() as u8;
             for op in instruction.ops() {
                 analyzer.operation(&mut control, op);
                 if control.inner.skip_operation {
@@ -713,35 +721,41 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                 }
                 match op {
                     disasm::Operation::Jump { condition, to } => {
+                        analyzer.branch_end(&mut control);
+                        let end = control.inner.end;
+                        // control goes out of scope here
                         update_analysis_for_jump(
-                            control.inner.analysis,
-                            &mut control.inner.state,
+                            self,
+                            state,
                             condition.clone(),
                             to.clone(),
                             instruction.address(),
                             instruction.len(),
                             &mut cfg_out_edge,
                         );
+                        break 'branch_loop end;
                     }
-                    disasm::Operation::Return(_) => (),
+                    disasm::Operation::Return(_) => {
+                        analyzer.branch_end(&mut control);
+                        break 'branch_loop control.inner.end;
+                    }
                     o => {
                         control.inner.state.0.update(o, &mut control.inner.analysis.interner);
                     }
                 }
             }
-        }
-        control.inner.analysis.cfg.add_node(addr, CfgNode {
+        };
+        self.cfg.add_node(addr, CfgNode {
             out_edges: cfg_out_edge,
             state: CfgState {
                 data: init_state,
                 phantom: Default::default(),
             },
-            end_address: control.inner.address, // Is this correct?
+            end_address: current_address, // Is this correct?
             distance: 0,
         });
 
-        analyzer.branch_end(&mut control);
-        control.inner.end
+        end
     }
 
     #[cold]
@@ -772,30 +786,14 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     }
 
     pub fn next_branch<'b>(&'b mut self) -> Option<Branch<'b, 'a, Exec, State>> {
-        while let Some((addr, mut branch_state)) = self.pop_next_branch() {
-            let state = match self.cfg.get_state(addr) {
-                Some(state) => {
-                    let old_exec = &mut state.data.0;
-                    let old_state = &state.data.1;
-                    Exec::merge_states(old_exec, &mut branch_state.0, &mut self.interner)
-                        .map(|exec| {
-                            let mut new_custom_state = old_state.clone();
-                            new_custom_state.merge(branch_state.1);
-                            Box::new((exec, new_custom_state))
-                        })
-                }
-                None => Some(branch_state),
-            };
-
-            if let Some(state) = state {
-                return Some(Branch {
-                    analysis: self,
-                    addr,
-                    init_state: Some(state.clone()),
-                    state: state,
-                    cfg_out_edge: CfgOutEdges::None,
-                })
-            }
+        while let Some((addr, state)) = self.pop_next_branch_merge_with_cfg() {
+            return Some(Branch {
+                analysis: self,
+                addr,
+                init_state: Some(state.clone()),
+                state: state,
+                cfg_out_edge: CfgOutEdges::None,
+            })
         }
         None
     }
@@ -1013,7 +1011,7 @@ impl<'a, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState> Branch<'a, 'e
             disasm::Operation::Jump { condition, to } => {
                 update_analysis_for_jump(
                     &mut self.analysis,
-                    &mut self.state,
+                    self.state.clone(),
                     condition,
                     to,
                     address,
@@ -1150,7 +1148,7 @@ fn try_add_branch<'exec, Exec: ExecutionState<'exec>, S: AnalysisState>(
 // error if a branch has something after the jump.
 fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState>(
     analysis: &mut FuncAnalysis<'exec, Exec, S>,
-    state: &mut (Exec, S),
+    mut state: Box<(Exec, S)>,
     condition: Rc<Operand>,
     to: Rc<Operand>,
     address: Exec::VirtualAddress,
@@ -1190,10 +1188,9 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
         Some(0) => {
             let address = address + instruction_len;
             *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
-            analysis.add_unchecked_branch(address, Box::new(state.clone()));
+            analysis.add_unchecked_branch(address, state);
         }
         Some(_) => {
-            let mut state = Box::new(state.clone());
             let to = state.0.resolve(&to, &mut analysis.interner);
             let is_switch = is_switch_jump::<Exec::VirtualAddress>(&to);
             if let Some((switch_table_addr, index, base_addr, case_size)) = is_switch {
