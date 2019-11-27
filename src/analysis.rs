@@ -654,19 +654,28 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         }
     }
 
+    fn create_disassembler(&self, address: Exec::VirtualAddress) -> Option<Exec::Disassembler> {
+        let section = self.binary.section_by_addr(address)?;
+        let rva = (address.as_u64() - section.virtual_address.as_u64()) as usize;
+        Some(Exec::Disassembler::new(
+            &section.data,
+            rva,
+            section.virtual_address,
+            self.operand_ctx,
+        ))
+    }
+
     fn analyze_branch<'b, A: Analyzer<'a, State = State, Exec = Exec>>(
         &mut self,
         analyzer: &mut A,
         addr: Exec::VirtualAddress,
         mut state: Box<(Exec, State)>,
     ) -> Option<End> {
-        let binary = self.binary;
-        let section = match binary.section_by_addr(addr) {
-            Some(s) => s,
-            None => return None,
-        };
+        // Disasm contains SmallVec, avoid unwrapping Option which likely would
+        // end up causing a memcpy.
+        let mut disasm = self.create_disassembler(addr);
+        let disasm = disasm.as_mut()?;
 
-        let operand_ctx = self.operand_ctx;
         let mut inner = ControlInner {
             analysis: self,
             address: addr,
@@ -683,14 +692,6 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             return control.inner.end;
         }
 
-        let rva = (addr.as_u64() - section.virtual_address.as_u64()) as usize;
-        let mut disasm = Exec::Disassembler::new(
-            &section.data,
-            rva,
-            section.virtual_address,
-            operand_ctx,
-        );
-
         let init_state = Box::new(control.inner.state.clone());
         let mut cfg_out_edge = CfgOutEdges::None;
         // skip_operation from branch_start is no-op, clear the flag here
@@ -701,7 +702,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             let address = disasm.address();
             current_address = address;
             control.inner.address = address;
-            let instruction = match disasm.next(operand_ctx) {
+            let instruction = match disasm.next() {
                 Ok(o) => o,
                 Err(e) => {
                     control.inner.analysis.add_error(address, e);
@@ -1065,7 +1066,7 @@ impl<'a, 'branch, 'exec: 'a, Exec: ExecutionState<'exec>, S: AnalysisState>
 
         loop {
             let address = self.disasm.address();
-            let ins = match self.disasm.next(&self.branch.analysis.operand_ctx) {
+            let ins = match self.disasm.next() {
                 Ok(o) => o,
                 Err(disasm::Error::Branch) => {
                     self.branch.end_block(address);

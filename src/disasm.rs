@@ -47,6 +47,7 @@ pub struct Disassembler32<'a> {
     is_branching: bool,
     register_cache: Rc<RegisterCache>,
     ops_buffer: SmallVec<[Operation; 8]>,
+    ctx: &'a OperandContext,
 }
 
 impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
@@ -56,7 +57,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
         buf: &'a [u8],
         pos: usize,
         address: VirtualAddress32,
-        ctx: &OperandContext,
+        ctx: &'a OperandContext,
     ) -> Disassembler32<'a> {
         assert!(pos < buf.len());
         Disassembler32 {
@@ -66,13 +67,11 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
             is_branching: false,
             register_cache: RegisterCache::get(&ctx),
             ops_buffer: SmallVec::new(),
+            ctx,
         }
     }
 
-    fn next<'s>(
-        &'s mut self,
-        ctx: &OperandContext,
-    ) -> Result<Instruction<'s, VirtualAddress32>, Error> {
+    fn next<'s>(&'s mut self) -> Result<Instruction<'s, VirtualAddress32>, Error> {
         if self.is_branching {
             return Err(Error::Branch);
         }
@@ -87,7 +86,13 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
         let address = self.virtual_address + self.pos as u32;
         let data = &self.buf[self.pos..self.pos + length];
         self.ops_buffer.clear();
-        instruction_operations32(address, data, ctx, &mut self.ops_buffer, &self.register_cache)?;
+        instruction_operations32(
+            address,
+            data,
+            self.ctx,
+            &mut self.ops_buffer,
+            &self.register_cache,
+        )?;
         let ins = Instruction {
             address,
             ops: &self.ops_buffer,
@@ -115,6 +120,7 @@ pub struct Disassembler64<'a> {
     is_branching: bool,
     register_cache: Rc<RegisterCache>,
     ops_buffer: SmallVec<[Operation; 8]>,
+    ctx: &'a OperandContext,
 }
 
 impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
@@ -124,7 +130,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
         buf: &'a [u8],
         pos: usize,
         address: VirtualAddress64,
-        ctx: &OperandContext,
+        ctx: &'a OperandContext,
     ) -> Disassembler64<'a> {
         assert!(pos < buf.len());
         Disassembler64 {
@@ -134,13 +140,11 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
             is_branching: false,
             register_cache: RegisterCache::get(&ctx),
             ops_buffer: SmallVec::new(),
+            ctx,
         }
     }
 
-    fn next<'s>(
-        &'s mut self,
-        ctx: &OperandContext,
-    ) -> Result<Instruction<'s, VirtualAddress64>, Error> {
+    fn next<'s>(&'s mut self) -> Result<Instruction<'s, VirtualAddress64>, Error> {
         if self.is_branching {
             return Err(Error::Branch);
         }
@@ -155,7 +159,13 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
         let address = self.virtual_address + self.pos as u32;
         let data = &self.buf[self.pos..self.pos + length];
         self.ops_buffer.clear();
-        instruction_operations64(address, data, ctx, &mut self.ops_buffer, &self.register_cache)?;
+        instruction_operations64(
+            address,
+            data,
+            self.ctx,
+            &mut self.ops_buffer,
+            &self.register_cache,
+        )?;
         let ins = Instruction {
             address,
             ops: &self.ops_buffer,
@@ -2878,7 +2888,7 @@ mod test {
         let ctx = OperandContext::new();
         let buf = [0x66, 0xc7, 0x47, 0x62, 0x00, 0x20];
         let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0), &ctx);
-        let ins = disasm.next(&ctx).unwrap();
+        let ins = disasm.next().unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
         let dest = mem_variable(
@@ -2897,7 +2907,7 @@ mod test {
         let ctx = OperandContext::new();
         let buf = [0x89, 0x84, 0xb5, 0x18, 0xeb, 0xff, 0xff];
         let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0), &ctx);
-        let ins = disasm.next(&ctx).unwrap();
+        let ins = disasm.next().unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
         let dest = mem32(

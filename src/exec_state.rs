@@ -449,9 +449,12 @@ pub trait Disassembler<'disasm_bytes> {
         buf: &'disasm_bytes [u8],
         pos: usize,
         address: Self::VirtualAddress,
-        ctx: &OperandContext,
+        // Should this use a separate lifetime for clarity?
+        // 'disasm_bytes does still in practice always refer to &BinaryFile as well,
+        // so it should be ok.
+        ctx: &'disasm_bytes OperandContext,
     ) -> Self;
-    fn next(&mut self, ctx: &OperandContext) ->
+    fn next(&mut self) ->
         Result<Instruction<Self::VirtualAddress>, disasm::Error>;
     fn address(&self) -> Self::VirtualAddress;
 }
