@@ -55,6 +55,9 @@ fn switch_but_constant_case() {
     let analysis = Analysis::new(&binary, &ctx, func);
     let (mut cfg, errors) = analysis.finish();
     cfg.calculate_distances();
+    for e in &errors {
+        println!("Error: {:#?}", e);
+    }
     assert!(errors.is_empty());
     for node in cfg.nodes() {
         println!("Node {:?}", node);
