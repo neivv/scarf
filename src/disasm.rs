@@ -507,7 +507,7 @@ fn instruction_operations32_main(
             Ok(())
         }
         0xc6 | 0xc7 => {
-            s.generic_arith_with_imm_op(&MOV_OPS, match s.get(0) {
+            s.generic_arith_with_imm_op(&MOV_OPS, match first_byte {
                 0xc6 => MemAccessSize::Mem8,
                 _ => s.mem16_32(),
             })
@@ -559,7 +559,7 @@ fn instruction_operations32_main(
         0x1a4 => s.shld_imm(),
         0x1ac => s.shrd_imm(),
         0x1ae => {
-            match (s.get(1) >> 3) & 0x7 {
+            match (s.read_u8(1)? >> 3) & 0x7 {
                 // Memory fences
                 // (5 is also xrstor though)
                 5 | 6 | 7 => Ok(()),
@@ -784,7 +784,7 @@ fn instruction_operations64_main(
             Ok(())
         }
         0xc6 | 0xc7 => {
-            s.generic_arith_with_imm_op(&MOV_OPS, match s.get(0) {
+            s.generic_arith_with_imm_op(&MOV_OPS, match first_byte {
                 0xc6 => MemAccessSize::Mem8,
                 _ => s.mem16_32(),
             })
@@ -834,7 +834,7 @@ fn instruction_operations64_main(
         0x1a4 => s.shld_imm(),
         0x1ac => s.shrd_imm(),
         0x1ae => {
-            match (s.get(1) >> 3) & 0x7 {
+            match (s.read_u8(1)? >> 3) & 0x7 {
                 // Memory fences
                 // (5 is also xrstor though)
                 5 | 6 | 7 => Ok(()),
@@ -894,10 +894,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 false
             }
         }
-    }
-
-    fn get(&self, idx: usize) -> u8 {
-        self.data[idx]
     }
 
     fn mem16_32(&self) -> MemAccessSize {
@@ -1349,7 +1345,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn inc_dec_op(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
-        let byte = self.get(0);
+        let byte = self.read_u8(0)?;
         let is_inc = byte < 0x48;
         let reg_id = byte & 0x7;
         let op_size = self.mem16_32();
@@ -1410,69 +1406,72 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(())
     }
 
-    fn condition(&self) -> Rc<Operand> {
+    fn condition(&mut self) -> Result<Rc<Operand>, Failed> {
         use crate::operand::operand_helpers::*;
         let ctx = self.ctx;
-        match self.get(0) & 0xf {
+        let cond_id = self.read_u8(0)? & 0xf;
+        let zero = ctx.const_0();
+        Ok(match cond_id {
             // jo, jno
-            0x0 => operand_logical_not(operand_eq(ctx.flag_o(), ctx.const_0())),
-            0x1 => operand_eq(ctx.flag_o(), ctx.const_0()),
+            0x0 => operand_logical_not(operand_eq(ctx.flag_o(), zero)),
+            0x1 => operand_eq(ctx.flag_o(), zero),
             // jb, jnb (jae) (jump if carry)
-            0x2 => operand_logical_not(operand_eq(ctx.flag_c(), ctx.const_0())),
-            0x3 => operand_eq(ctx.flag_c(), ctx.const_0()),
+            0x2 => operand_logical_not(operand_eq(ctx.flag_c(), zero)),
+            0x3 => operand_eq(ctx.flag_c(), zero),
             // je, jne
-            0x4 => operand_logical_not(operand_eq(ctx.flag_z(), ctx.const_0())),
-            0x5 => operand_eq(ctx.flag_z(), ctx.const_0()),
+            0x4 => operand_logical_not(operand_eq(ctx.flag_z(), zero)),
+            0x5 => operand_eq(ctx.flag_z(), zero),
             // jbe, jnbe (ja)
             0x6 => operand_or(
-                operand_logical_not(operand_eq(ctx.flag_z(), ctx.const_0())),
-                operand_logical_not(operand_eq(ctx.flag_c(), ctx.const_0())),
+                operand_logical_not(operand_eq(ctx.flag_z(), zero.clone())),
+                operand_logical_not(operand_eq(ctx.flag_c(), zero)),
             ),
             0x7 => operand_and(
-                operand_eq(ctx.flag_z(), ctx.const_0()),
-                operand_eq(ctx.flag_c(), ctx.const_0()),
+                operand_eq(ctx.flag_z(), zero.clone()),
+                operand_eq(ctx.flag_c(), zero),
             ),
             // js, jns
-            0x8 => operand_logical_not(operand_eq(ctx.flag_s(), ctx.const_0())),
-            0x9 => operand_eq(ctx.flag_s(), ctx.const_0()),
+            0x8 => operand_logical_not(operand_eq(ctx.flag_s(), zero)),
+            0x9 => operand_eq(ctx.flag_s(), zero),
             // jpe, jpo
-            0xa => operand_logical_not(operand_eq(ctx.flag_p(), ctx.const_0())),
-            0xb => operand_eq(ctx.flag_p(), ctx.const_0()),
+            0xa => operand_logical_not(operand_eq(ctx.flag_p(), zero)),
+            0xb => operand_eq(ctx.flag_p(), zero),
             // jl, jnl (jge)
             0xc => operand_logical_not(operand_eq(ctx.flag_s(), ctx.flag_o())),
             0xd => operand_eq(ctx.flag_s(), ctx.flag_o()),
             // jle, jnle (jg)
             0xe => operand_or(
-                operand_logical_not(operand_eq(ctx.flag_z(), ctx.const_0())),
+                operand_logical_not(operand_eq(ctx.flag_z(), zero)),
                 operand_logical_not(operand_eq(ctx.flag_s(), ctx.flag_o())),
             ),
             0xf => operand_and(
-                operand_eq(ctx.flag_z(), ctx.const_0()),
+                operand_eq(ctx.flag_z(), zero),
                 operand_eq(ctx.flag_s(), ctx.flag_o()),
             ),
             _ => unreachable!(),
-        }
+        })
     }
 
     fn cmov(&mut self) -> Result<(), Failed> {
         let (rm, r) = self.parse_modrm(self.mem16_32())?;
+        let condition = Some(self.condition()?);
         self.output(Operation::Move(
             r.dest_operand(),
             self.rm_to_operand(&rm),
-            Some(self.condition()),
+            condition,
         ));
         Ok(())
     }
 
     fn conditional_set(&mut self) -> Result<(), Failed> {
-        let condition = self.condition();
+        let condition = self.condition()?;
         let (rm, _) = self.parse_modrm(MemAccessSize::Mem8)?;
         self.output(Operation::Move(self.rm_to_dest_operand(&rm), condition, None));
         Ok(())
     }
 
     fn xchg(&mut self) -> Result<(), Failed> {
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
@@ -1498,13 +1497,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn move_mem_eax(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
         let constant = self.read_variable_size_64(1, op_size)?;
         let constant = self.ctx.constant(constant);
-        let eax_left = self.get(0) & 0x2 == 0;
+        let eax_left = self.read_u8(0)? & 0x2 == 0;
         self.output(match eax_left {
             true => mov_to_reg(0, mem_variable_rc(op_size, constant)),
             false => mov_to_mem(op_size, constant, self.ctx.register(0)),
@@ -1514,14 +1513,14 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn move_const_to_reg(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
-        let op_size = match self.get(0) & 0x8 {
+        let op_size = match self.read_u8(0)? & 0x8 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
         let register = if self.prefixes.rex_prefix & 0x1 != 0 {
-            8 + (self.get(0) & 0x7)
+            8 + (self.read_u8(0)? & 0x7)
         } else {
-            self.get(0) & 0x7
+            self.read_u8(0)? & 0x7
         };
         let constant = self.read_variable_size_64(1, op_size)?;
         self.output(mov_to_reg_variable_size(op_size, register, self.ctx.constant(constant)));
@@ -1532,7 +1531,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         &mut self,
         make_arith: fn(DestAndOperand, Rc<Operand>, &mut OperationVec, bool),
     ) -> Result<(), Failed> {
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
@@ -1553,13 +1552,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         &mut self,
         make_arith: fn(DestAndOperand, Rc<Operand>, &mut OperationVec, bool),
     ) -> Result<(), Failed> {
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
         let (rm, r) = self.parse_modrm(op_size)?;
         let r = r.to_rm();
-        let rm_left = self.get(0) & 0x3 < 2;
+        let rm_left = self.read_u8(0)? & 0x3 < 2;
         let (left, right) = match rm_left {
             true => (&rm, &r),
             false => (&r, &rm),
@@ -1605,7 +1604,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn movzx(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
 
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => MemAccessSize::Mem16,
         };
@@ -1637,11 +1636,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn various_f7(&mut self) -> Result<(), Failed> {
         use crate::operand::operand_helpers::*;
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let variant = (self.get(1) >> 3) & 0x7;
+        let variant = (self.read_u8(1)? >> 3) & 0x7;
         let (rm, _) = self.parse_modrm(op_size)?;
         let rm = self.rm_to_dest_and_operand(&rm);
         let is_64 = Va::SIZE == 8;
@@ -1718,7 +1717,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn various_0f_ba(&mut self) -> Result<(), Failed> {
-        let variant = (self.get(1) >> 3) & 0x7;
+        let variant = (self.read_u8(1)? >> 3) & 0x7;
         match variant {
             4 => self.bit_test(true),
             6 => self.btr(true),
@@ -1962,11 +1961,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         use self::operation_helpers::*;
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
         let r = r.to_rm();
-        let (src, dest) = match self.get(0) {
+        let (src, dest) = match self.read_u8(0)? {
             0x10 | 0x28 | 0x7e | 0x13 => (&rm, &r),
             _ => (&r, &rm),
         };
-        let len = match self.get(0) {
+        let len = match self.read_u8(0)? {
             0x10 | 0x11 => match (self.has_prefix(0xf3), self.has_prefix(0xf2)) {
                 // movss
                 (true, false) => 1,
@@ -2135,7 +2134,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn various_d8(&mut self) -> Result<(), Failed> {
-        let byte = self.get(1);
+        let byte = self.read_u8(1)?;
         let variant = (byte >> 3) & 0x7;
         let (rm, _) = self.parse_modrm(MemAccessSize::Mem32)?;
         let op_ty = match variant {
@@ -2164,7 +2163,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn various_d9(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
-        let byte = self.get(1);
+        let byte = self.read_u8(1)?;
         let variant = (byte >> 3) & 0x7;
         if variant == 6 && byte == 0xf6 || byte == 0xf7 {
             // Fincstp, fdecstp
@@ -2220,9 +2219,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn various_fe_ff(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
-        let variant = (self.get(1) >> 3) & 0x7;
+        let variant = (self.read_u8(1)? >> 3) & 0x7;
         let is_64 = Va::SIZE == 8;
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => match is_64 {
                 true => match variant {
@@ -2262,7 +2261,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn bitwise_with_imm_op(&mut self) -> Result<(), Failed> {
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
@@ -2270,7 +2269,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         if imm.ty == OperandType::Constant(0) {
             return Ok(());
         }
-        let op_gen: &dyn ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
+        let op_gen: &dyn ArithOperationGenerator = match (self.read_u8(1)? >> 3) & 0x7 {
             0 => &ROL_OPS,
             1 => &ROR_OPS,
             4 | 6 => &LSH_OPS,
@@ -2282,16 +2281,16 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn bitwise_compact_op(&mut self) -> Result<(), Failed> {
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
         let (rm, _) = self.parse_modrm(op_size)?;
-        let shift_count = match self.get(0) & 2 {
+        let shift_count = match self.read_u8(0)? & 2 {
             0 => self.ctx.const_1(),
             _ => self.reg_variable_size(Register(1), operand::MemAccessSize::Mem8),
         };
-        let op_gen: &dyn ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
+        let op_gen: &dyn ArithOperationGenerator = match (self.read_u8(1)? >> 3) & 0x7 {
             0 => &ROL_OPS,
             1 => &ROR_OPS,
             4 | 6 => &LSH_OPS,
@@ -2308,7 +2307,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn signed_multiply_rm_imm(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
-        let imm_size = match self.get(0) & 0x2 {
+        let imm_size = match self.read_u8(0)? & 0x2 {
             2 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
@@ -2411,7 +2410,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn arith_with_imm_op(&mut self) -> Result<(), Failed> {
-        let op_gen: &dyn ArithOperationGenerator = match (self.get(1) >> 3) & 0x7 {
+        let op_gen: &dyn ArithOperationGenerator = match (self.read_u8(1)? >> 3) & 0x7 {
             0 => &ADD_OPS,
             1 => &OR_OPS,
             2 => &ADC_OPS,
@@ -2422,7 +2421,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             7 => &CMP_OPS,
             _ => unreachable!(),
         };
-        let imm_size = match self.get(0) & 0x3 {
+        let imm_size = match self.read_u8(0)? & 0x3 {
             0 | 2 | 3 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
@@ -2434,7 +2433,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         op_gen: &dyn ArithOperationGenerator,
         imm_size: MemAccessSize,
     ) -> Result<(), Failed> {
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
@@ -2448,7 +2447,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn eax_imm_cmp<F>(&mut self, ops: F) -> Result<(), Failed>
     where F: FnOnce(DestAndOperand, Rc<Operand>, &mut OperationVec, bool),
     {
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
@@ -2467,11 +2466,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn generic_cmp_op<F>(&mut self, ops: F) -> Result<(), Failed>
     where F: FnOnce(DestAndOperand, Rc<Operand>, &mut OperationVec, bool),
     {
-        let op_size = match self.get(0) & 0x1 {
+        let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let rm_left = self.get(0) & 0x3 < 2;
+        let rm_left = self.read_u8(0)? & 0x3 < 2;
         let (rm, r) = self.parse_modrm(op_size)?;
         let r = r.to_rm();
         let (left, right) = match rm_left {
@@ -2488,7 +2487,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn pushpop_reg_op(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
-        let byte = self.get(0);
+        let byte = self.read_u8(0)?;
         let is_push = byte < 0x58;
         let reg = if self.prefixes.rex_prefix & 0x1 == 0 {
             byte & 0x7
@@ -2523,7 +2522,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn push_imm(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
-        let imm_size = match self.get(0) {
+        let imm_size = match self.read_u8(0)? {
             0x68 => self.mem16_32(),
             _ => MemAccessSize::Mem8,
         };
@@ -2541,7 +2540,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec, VirtualAddress32> {
         let offset = self.read_variable_size_signed(1, op_size)?;
         let from = self.address.0.wrapping_add(self.len() as u32);
         let to = self.ctx.constant(from.wrapping_add(offset) as u64);
-        self.output(Operation::Jump { condition: self.condition(), to });
+        let condition = self.condition()?;
+        self.output(Operation::Jump { condition, to });
         Ok(())
     }
 
@@ -2574,7 +2574,8 @@ impl<'a, 'exec: 'a> InstructionOpsState<'a, 'exec, VirtualAddress64> {
     fn conditional_jmp(&mut self, op_size: MemAccessSize) -> Result<(), Failed> {
         let offset = self.read_variable_size_signed(1, op_size)? as i32 as i64 as u64;
         let to = self.ctx.constant((self.address.0 + self.len() as u64).wrapping_add(offset));
-        self.output(Operation::Jump { condition: self.condition(), to });
+        let condition = self.condition()?;
+        self.output(Operation::Jump { condition, to });
         Ok(())
     }
 
