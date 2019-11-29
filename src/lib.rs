@@ -10,6 +10,7 @@ mod disasm;
 pub mod exec_state;
 pub mod exec_state_x86;
 pub mod exec_state_x86_64;
+mod light_byteorder;
 pub mod operand;
 mod vec_drop_iter;
 

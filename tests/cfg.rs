@@ -24,7 +24,7 @@ fn switch_cfg() {
     cfg.calculate_distances();
     assert!(errors.is_empty());
     for node in cfg.nodes() {
-        println!("Node {:?}", node);
+        println!("Node {:#?}", node);
     }
     let switch_outs = cfg.nodes().filter_map(|x| match x.node.out_edges {
         CfgOutEdges::Switch(ref cases, _) => Some((x, cases.clone())),
