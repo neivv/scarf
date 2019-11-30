@@ -358,6 +358,12 @@ where F: FnMut(&OperandType) -> bool,
     }
 }
 
+fn other_if_eq_zero(op: &Rc<Operand>) -> Option<&Rc<Operand>> {
+    op.if_arithmetic_eq()
+        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant().filter(|&c| c == 0)))
+        .map(|x| x.1)
+}
+
 /// Splits the constraint at ands that can be applied separately
 /// Also can handle logical nots
 fn apply_constraint_split(
@@ -375,6 +381,29 @@ fn apply_constraint_split(
             let new = apply_constraint_split(&arith.left, val, with);
             apply_constraint_split(&arith.right, &new, with)
         }
+        OperandType::Arithmetic(ref arith) if {
+            arith.ty == ArithOpType::Or &&
+                arith.left.relevant_bits() == (0..1) &&
+                arith.right.relevant_bits() == (0..1)
+        } => {
+            // If constraint is (x == 0) | (y == 0),
+            // (x & y) can be replaced with 0
+            let x = other_if_eq_zero(&arith.left);
+            let y = other_if_eq_zero(&arith.right);
+            if let (Some(x), Some(y)) = (x, y) {
+                // Check also for (x & y) == 0 (Replaced with 1)
+                let (cmp, subst) = other_if_eq_zero(val)
+                    .map(|x| (x, 1))
+                    .unwrap_or_else(|| (val, 0));
+                if let Some((l, r)) = cmp.if_arithmetic_and() {
+                    if (l == x && r == y) || (l == y && r == x) {
+                        return constval(subst);
+                    }
+                }
+            }
+            let subst_val = constval(if with { 1 } else { 0 });
+            Operand::substitute(val, constraint, &subst_val)
+        }
         OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Equal => {
             let (l, r) = (&arith.left, &arith.right);
             let other = Operand::either(l, r, |x| x.if_constant().filter(|&c| c == 0))
@@ -382,7 +411,6 @@ fn apply_constraint_split(
             if let Some(other) = other {
                 apply_constraint_split(other, val, !with)
             } else {
-                // TODO OperandContext
                 let subst_val = constval(if with { 1 } else { 0 });
                 Operand::substitute(val, constraint, &subst_val)
             }
@@ -919,4 +947,39 @@ fn apply_constraint_non1bit() {
     );
     let val = Operand::simplified(val);
     assert_eq!(Constraint(constraint).apply_to(&val), val);
+}
+
+#[test]
+fn apply_constraint_or() {
+    use crate::operand::operand_helpers::*;
+    let ctx = &crate::operand::OperandContext::new();
+    let constraint = operand_or(
+        operand_ne(
+            ctx,
+            ctx.flag_o(),
+            ctx.flag_s(),
+        ),
+        operand_ne(
+            ctx,
+            ctx.flag_z(),
+            ctx.const_0(),
+        ),
+    );
+    let val = operand_eq(
+        operand_and(
+            operand_eq(
+                ctx.flag_o(),
+                ctx.flag_s(),
+            ),
+            operand_eq(
+                ctx.flag_z(),
+                ctx.const_0(),
+            ),
+        ),
+        ctx.const_0(),
+    );
+    let val = Operand::simplified(val);
+    let applied = Constraint(constraint).apply_to(&val);
+    let eq = constval(1);
+    assert_eq!(Operand::simplified(applied), Operand::simplified(eq));
 }

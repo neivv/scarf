@@ -1411,45 +1411,37 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let ctx = self.ctx;
         let cond_id = self.read_u8(0)? & 0xf;
         let zero = ctx.const_0();
-        Ok(match cond_id {
+        let zero2 = zero.clone();
+        let cond = match cond_id >> 1 {
             // jo, jno
-            0x0 => operand_logical_not(operand_eq(ctx.flag_o(), zero)),
-            0x1 => operand_eq(ctx.flag_o(), zero),
+            0x0 => operand_eq(ctx.flag_o(), zero),
             // jb, jnb (jae) (jump if carry)
-            0x2 => operand_logical_not(operand_eq(ctx.flag_c(), zero)),
-            0x3 => operand_eq(ctx.flag_c(), zero),
+            0x1 => operand_eq(ctx.flag_c(), zero),
             // je, jne
-            0x4 => operand_logical_not(operand_eq(ctx.flag_z(), zero)),
-            0x5 => operand_eq(ctx.flag_z(), zero),
+            0x2 => operand_eq(ctx.flag_z(), zero),
             // jbe, jnbe (ja)
-            0x6 => operand_or(
-                operand_logical_not(operand_eq(ctx.flag_z(), zero.clone())),
-                operand_logical_not(operand_eq(ctx.flag_c(), zero)),
-            ),
-            0x7 => operand_and(
+            0x3 => operand_and(
                 operand_eq(ctx.flag_z(), zero.clone()),
                 operand_eq(ctx.flag_c(), zero),
             ),
             // js, jns
-            0x8 => operand_logical_not(operand_eq(ctx.flag_s(), zero)),
-            0x9 => operand_eq(ctx.flag_s(), zero),
+            0x4 => operand_eq(ctx.flag_s(), zero),
             // jpe, jpo
-            0xa => operand_logical_not(operand_eq(ctx.flag_p(), zero)),
-            0xb => operand_eq(ctx.flag_p(), zero),
+            0x5 => operand_eq(ctx.flag_p(), zero),
             // jl, jnl (jge)
-            0xc => operand_logical_not(operand_eq(ctx.flag_s(), ctx.flag_o())),
-            0xd => operand_eq(ctx.flag_s(), ctx.flag_o()),
+            0x6 => operand_eq(ctx.flag_s(), ctx.flag_o()),
             // jle, jnle (jg)
-            0xe => operand_or(
-                operand_logical_not(operand_eq(ctx.flag_z(), zero)),
-                operand_logical_not(operand_eq(ctx.flag_s(), ctx.flag_o())),
-            ),
-            0xf => operand_and(
+            0x7 => operand_and(
                 operand_eq(ctx.flag_z(), zero),
                 operand_eq(ctx.flag_s(), ctx.flag_o()),
             ),
             _ => unreachable!(),
-        })
+        };
+        if cond_id & 1 == 0 {
+            Ok(operand_eq(cond, zero2))
+        } else {
+            Ok(cond)
+        }
     }
 
     fn cmov(&mut self) -> Result<(), Failed> {
