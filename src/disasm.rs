@@ -419,29 +419,27 @@ fn instruction_operations32_main(
             0x20 | 0x21 | 0x22 | 0x23 | 0x24 | 0x25 |
             0x28 | 0x29 | 0x2a | 0x2b | 0x2c | 0x2d |
             0x30 | 0x31 | 0x32 | 0x33 | 0x34 | 0x35 |
+            0x38 | 0x39 | 0x3a | 0x3b | 0x3c | 0x3d |
             0x88 | 0x89 | 0x8a | 0x8b =>
         {
-            // Avoid ridiculous generic binary bloat
-            let ops: for<'x> fn(_, _, &'x mut _, bool) = match first_byte {
-                0x00 | 0x01 | 0x02 | 0x03 | 0x04 | 0x05 => add_ops,
-                0x08 | 0x09 | 0x0a | 0x0b | 0x0c | 0x0d => or_ops,
-                0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 => adc_ops,
-                0x18 | 0x19 | 0x1a | 0x1b | 0x1c | 0x1d => sbb_ops,
-                0x20 | 0x21 | 0x22 | 0x23 | 0x24 | 0x25 => and_ops,
-                0x28 | 0x29 | 0x2a | 0x2b | 0x2c | 0x2d => sub_ops,
-                0x30 | 0x31 | 0x32 | 0x33 | 0x34 | 0x35 => xor_ops,
-                0x88 | 0x89 | 0x8a | 0x8b | _ => mov_ops,
+            let arith = match first_byte / 8 {
+                0 => ArithOperation::Add,
+                1 => ArithOperation::Or,
+                2 => ArithOperation::Adc,
+                3 => ArithOperation::Sbb,
+                4 => ArithOperation::And,
+                5 => ArithOperation::Sub,
+                6 => ArithOperation::Xor,
+                7 => ArithOperation::Cmp,
+                _ => ArithOperation::Move,
             };
             let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
             if eax_imm_arith {
-                s.eax_imm_arith(ops)
+                s.eax_imm_arith(arith)
             } else {
-                s.generic_arith_op(ops)
+                s.generic_arith_op(arith)
             }
         }
-
-        0x38 | 0x39 | 0x3a | 0x3b => s.generic_cmp_op(cmp_ops),
-        0x3c | 0x3d => s.eax_imm_cmp(cmp_ops),
         0x40 | 0x41 | 0x42 | 0x43 | 0x44 | 0x45 | 0x46 | 0x47 |
             0x48 | 0x49 | 0x4a | 0x4b | 0x4c | 0x4d | 0x4e | 0x4f => s.inc_dec_op(),
         0x50 | 0x51 | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x57 |
@@ -455,7 +453,7 @@ fn instruction_operations32_main(
         }
         0x80 | 0x81 | 0x82 | 0x83 => s.arith_with_imm_op(),
         // Test
-        0x84 | 0x85 => s.generic_cmp_op(test_ops),
+        0x84 | 0x85 => s.generic_arith_op(ArithOperation::Test),
         0x86 | 0x87 => s.xchg(),
         0x8d => s.lea(),
         0x90 => Ok(()),
@@ -494,7 +492,7 @@ fn instruction_operations32_main(
             s.output(Operation::Special(s.data.into()));
             Ok(())
         }
-        0xa8 | 0xa9 => s.eax_imm_cmp(test_ops),
+        0xa8 | 0xa9 => s.eax_imm_arith(ArithOperation::Test),
         0xb0 | 0xb1 | 0xb2 | 0xb3 | 0xb4 | 0xb5 | 0xb6 | 0xb7 |
             0xb8 | 0xb9 | 0xba | 0xbb | 0xbc | 0xbd | 0xbe | 0xbf => s.move_const_to_reg(),
         0xc0 | 0xc1 => s.bitwise_with_imm_op(),
@@ -507,7 +505,7 @@ fn instruction_operations32_main(
             Ok(())
         }
         0xc6 | 0xc7 => {
-            s.generic_arith_with_imm_op(&MOV_OPS, match first_byte {
+            s.generic_arith_with_imm_op(ArithOperation::Move, match first_byte {
                 0xc6 => MemAccessSize::Mem8,
                 _ => s.mem16_32(),
             })
@@ -675,29 +673,27 @@ fn instruction_operations64_main(
             0x20 | 0x21 | 0x22 | 0x23 | 0x24 | 0x25 |
             0x28 | 0x29 | 0x2a | 0x2b | 0x2c | 0x2d |
             0x30 | 0x31 | 0x32 | 0x33 | 0x34 | 0x35 |
+            0x38 | 0x39 | 0x3a | 0x3b | 0x3c | 0x3d |
             0x88 | 0x89 | 0x8a | 0x8b =>
         {
-            // Avoid ridiculous generic binary bloat
-            let ops: for<'x> fn(_, _, &'x mut _, bool) = match first_byte {
-                0x00 | 0x01 | 0x02 | 0x03 | 0x04 | 0x05 => add_ops,
-                0x08 | 0x09 | 0x0a | 0x0b | 0x0c | 0x0d => or_ops,
-                0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 => adc_ops,
-                0x18 | 0x19 | 0x1a | 0x1b | 0x1c | 0x1d => sbb_ops,
-                0x20 | 0x21 | 0x22 | 0x23 | 0x24 | 0x25 => and_ops,
-                0x28 | 0x29 | 0x2a | 0x2b | 0x2c | 0x2d => sub_ops,
-                0x30 | 0x31 | 0x32 | 0x33 | 0x34 | 0x35 => xor_ops,
-                0x88 | 0x89 | 0x8a | 0x8b | _ => mov_ops,
+            let arith = match first_byte / 8 {
+                0 => ArithOperation::Add,
+                1 => ArithOperation::Or,
+                2 => ArithOperation::Adc,
+                3 => ArithOperation::Sbb,
+                4 => ArithOperation::And,
+                5 => ArithOperation::Sub,
+                6 => ArithOperation::Xor,
+                7 => ArithOperation::Cmp,
+                _ => ArithOperation::Move,
             };
-                let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
-                if eax_imm_arith {
-                    s.eax_imm_arith(ops)
-                } else {
-                    s.generic_arith_op(ops)
-                }
+            let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
+            if eax_imm_arith {
+                s.eax_imm_arith(arith)
+            } else {
+                s.generic_arith_op(arith)
             }
-
-        0x38 | 0x39 | 0x3a | 0x3b => s.generic_cmp_op(cmp_ops),
-        0x3c | 0x3d => s.eax_imm_cmp(cmp_ops),
+        }
         0x40 | 0x41 | 0x42 | 0x43 | 0x44 | 0x45 | 0x46 | 0x47 |
             0x48 | 0x49 | 0x4a | 0x4b | 0x4c | 0x4d | 0x4e | 0x4f => Ok(()),
         0x50 | 0x51 | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x57 |
@@ -712,7 +708,7 @@ fn instruction_operations64_main(
         }
         0x80 | 0x81 | 0x82 | 0x83 => s.arith_with_imm_op(),
         // Test
-        0x84 | 0x85 => s.generic_cmp_op(test_ops),
+        0x84 | 0x85 => s.generic_arith_op(ArithOperation::Test),
         0x86 | 0x87 => s.xchg(),
         0x8d => s.lea(),
         0x90 => Ok(()),
@@ -771,7 +767,7 @@ fn instruction_operations64_main(
             s.output(Operation::Special(s.data.into()));
             Ok(())
         }
-        0xa8 | 0xa9 => s.eax_imm_cmp(test_ops),
+        0xa8 | 0xa9 => s.eax_imm_arith(ArithOperation::Test),
         0xb0 | 0xb1 | 0xb2 | 0xb3 | 0xb4 | 0xb5 | 0xb6 | 0xb7 |
             0xb8 | 0xb9 | 0xba | 0xbb | 0xbc | 0xbd | 0xbe | 0xbf => s.move_const_to_reg(),
         0xc0 | 0xc1 => s.bitwise_with_imm_op(),
@@ -784,7 +780,7 @@ fn instruction_operations64_main(
             Ok(())
         }
         0xc6 | 0xc7 => {
-            s.generic_arith_with_imm_op(&MOV_OPS, match first_byte {
+            s.generic_arith_with_imm_op(ArithOperation::Move, match first_byte {
                 0xc6 => MemAccessSize::Mem8,
                 _ => s.mem16_32(),
             })
@@ -1480,9 +1476,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn xadd(&mut self) -> Result<(), Failed> {
-        use self::operation_helpers::*;
         self.xchg()?;
-        self.generic_arith_op(add_ops)?;
+        self.generic_arith_op(ArithOperation::Add)?;
         Ok(())
     }
 
@@ -1519,31 +1514,149 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(())
     }
 
-    fn eax_imm_arith(
+    fn do_arith_operation(
         &mut self,
-        make_arith: fn(DestAndOperand, Rc<Operand>, &mut OperationVec, bool),
-    ) -> Result<(), Failed> {
+        arith: ArithOperation,
+        lhs: &ModRm_Rm,
+        rhs: Rc<Operand>,
+    ) {
+        use self::operation_helpers::*;
+        use crate::operand_helpers::*;
+        let dest = self.rm_to_dest_and_operand(lhs);
+        let is_64 = Va::SIZE == 8;
+        match arith {
+            ArithOperation::Add | ArithOperation::Adc => {
+                let rhs = match arith {
+                    ArithOperation::Adc => operand_add64(rhs, self.ctx.flag_c()),
+                    _ => rhs,
+                };
+                self.output(flags(ArithOpType::Add, dest.op.clone(), rhs.clone(), is_64));
+                self.output(add(dest, rhs, is_64));
+            }
+            ArithOperation::Sub | ArithOperation::Sbb | ArithOperation::Cmp => {
+                let rhs = match arith {
+                    ArithOperation::Sbb => operand_add64(rhs, self.ctx.flag_c()),
+                    _ => rhs,
+                };
+                self.output(flags(ArithOpType::Sub, dest.op.clone(), rhs.clone(), is_64));
+                if arith != ArithOperation::Cmp {
+                    self.output(sub(dest, rhs, is_64));
+                }
+            }
+            ArithOperation::And | ArithOperation::Test => {
+                self.output(flags(ArithOpType::And, dest.op.clone(), rhs.clone(), is_64));
+                if arith != ArithOperation::Test {
+                    self.output(and(dest, rhs, is_64));
+                }
+            }
+            ArithOperation::Or => {
+                self.output(flags(ArithOpType::Or, dest.op.clone(), rhs.clone(), is_64));
+                self.output(or(dest, rhs, is_64));
+            }
+            ArithOperation::Xor => {
+                self.output(flags(ArithOpType::Xor, dest.op.clone(), rhs.clone(), is_64));
+                self.output(xor(dest, rhs, is_64));
+            }
+            ArithOperation::Move => {
+                if dest.op != rhs {
+                    self.output(mov(dest.dest, rhs));
+                }
+            }
+            ArithOperation::LeftShift => {
+                self.output(flags(ArithOpType::Lsh, dest.op.clone(), rhs.clone(), is_64));
+                self.output(
+                    make_arith_operation(dest.dest, ArithOpType::Lsh, dest.op, rhs, is_64)
+                );
+            }
+            ArithOperation::RightShift => {
+                self.output(flags(ArithOpType::Rsh, dest.op.clone(), rhs.clone(), is_64));
+                self.output(
+                    make_arith_operation(dest.dest, ArithOpType::Rsh, dest.op, rhs, is_64)
+                );
+            }
+            ArithOperation::RightShiftArithmetic => {
+                // TODO flags, using IntToFloat to cheat
+                self.output(flags(ArithOpType::IntToFloat, dest.op.clone(), rhs.clone(), is_64));
+                if is_64 {
+                    let sign_bit = self.ctx.constant(0x8000_0000_0000_0000);
+                    let is_positive = operand_eq64(
+                        operand_and(sign_bit.clone(), dest.op.clone()),
+                        self.ctx.const_0(),
+                    );
+                    self.output(Operation::Move(
+                        dest.dest.clone(),
+                        operand_or(operand_rsh64(dest.op.clone(), rhs.clone()), sign_bit),
+                        Some(operand_logical_not(is_positive.clone())),
+                    ));
+                    self.output(Operation::Move(
+                        dest.dest,
+                        operand_rsh64(dest.op, rhs),
+                        Some(is_positive),
+                    ));
+                } else {
+                    let sign_bit = self.ctx.constant(0x8000_0000);
+                    let is_positive = operand_eq(
+                        operand_and(sign_bit.clone(), dest.op.clone()),
+                        self.ctx.const_0(),
+                    );
+                    self.output(Operation::Move(
+                        dest.dest.clone(),
+                        operand_or(operand_rsh(dest.op.clone(), rhs.clone()), sign_bit),
+                        Some(operand_logical_not(is_positive.clone())),
+                    ));
+                    self.output(Operation::Move(
+                        dest.dest,
+                        operand_rsh(dest.op, rhs),
+                        Some(is_positive),
+                    ));
+                }
+            }
+            ArithOperation::RotateLeft => {
+                // rol(x, y) == (x << y) | (x >> (0x20 - y))
+                let left;
+                let right;
+                if is_64 {
+                    left = operand_lsh64(dest.op.clone(), rhs.clone());
+                    right = operand_rsh64(dest.op, operand_sub64(self.ctx.constant(0x40), rhs));
+                } else {
+                    left = operand_lsh(dest.op.clone(), rhs.clone());
+                    right = operand_rsh(dest.op, operand_sub(self.ctx.const_20(), rhs));
+                }
+                // TODO set overflow if 1bit??
+                self.output(make_arith_operation(dest.dest, ArithOpType::Or, left, right, is_64));
+            }
+            ArithOperation::RotateRight => {
+                // ror(x, y) == (x >> y) | (x << (0x20 - y))
+                let left;
+                let right;
+                if is_64 {
+                    left = operand_rsh64(dest.op.clone(), rhs.clone());
+                    right = operand_lsh64(dest.op, operand_sub64(self.ctx.constant(0x40), rhs));
+                } else {
+                    left = operand_rsh(dest.op.clone(), rhs.clone());
+                    right = operand_lsh(dest.op, operand_sub(self.ctx.const_20(), rhs));
+                }
+                // TODO set overflow if 1bit??
+                self.output(make_arith_operation(dest.dest, ArithOpType::Or, left, right, is_64));
+            }
+        }
+    }
+
+    fn eax_imm_arith(&mut self, arith: ArithOperation) -> Result<(), Failed> {
         let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let dest = DestAndOperand {
-            op: self.reg_variable_size(Register(0), op_size),
-            dest: DestOperand::reg_variable_size(0, op_size),
-        };
         let imm = self.read_variable_size_32(1, op_size)?;
         let val = self.ctx.constant(imm);
-        let is_64 = Va::SIZE == 8;
-        make_arith(dest, val, &mut self.out, is_64);
+        let rm = ModRm_Rm::reg_variable_size(0, op_size);
+        self.do_arith_operation(arith, &rm, val);
         Ok(())
     }
 
     /// Also mov even though I'm not sure if I should count it as no-op arith or a separate
     /// thing.
-    fn generic_arith_op(
-        &mut self,
-        make_arith: fn(DestAndOperand, Rc<Operand>, &mut OperationVec, bool),
-    ) -> Result<(), Failed> {
+    fn generic_arith_op(&mut self, arith: ArithOperation) -> Result<(), Failed> {
         let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
@@ -1555,10 +1668,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             true => (&rm, &r),
             false => (&r, &rm),
         };
-        let left = self.rm_to_dest_and_operand(left);
         let right = self.rm_to_operand(right);
-        let is_64 = Va::SIZE == 8;
-        make_arith(left, right, &mut self.out, is_64);
+        self.do_arith_operation(arith, left, right);
         Ok(())
     }
 
@@ -1637,7 +1748,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let rm = self.rm_to_dest_and_operand(&rm);
         let is_64 = Va::SIZE == 8;
         match variant {
-            0 | 1 => return self.generic_arith_with_imm_op(&TEST_OPS, op_size),
+            0 | 1 => return self.generic_arith_with_imm_op(ArithOperation::Test, op_size),
             2 => {
                 // Not
                 let constant = self.ctx.constant(!0u64);
@@ -2261,15 +2372,15 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         if imm.ty == OperandType::Constant(0) {
             return Ok(());
         }
-        let op_gen: &dyn ArithOperationGenerator = match (self.read_u8(1)? >> 3) & 0x7 {
-            0 => &ROL_OPS,
-            1 => &ROR_OPS,
-            4 | 6 => &LSH_OPS,
-            5 => &RSH_OPS,
-            7 => &SAR_OPS,
+        let arith = match (self.read_u8(1)? >> 3) & 0x7 {
+            0 => ArithOperation::RotateLeft,
+            1 => ArithOperation::RotateRight,
+            4 | 6 => ArithOperation::LeftShift,
+            5 => ArithOperation::RightShift,
+            7 => ArithOperation::RightShiftArithmetic,
             _ => return Err(self.unknown_opcode()),
         };
-        self.generic_arith_with_imm_op(op_gen, MemAccessSize::Mem8)
+        self.generic_arith_with_imm_op(arith, MemAccessSize::Mem8)
     }
 
     fn bitwise_compact_op(&mut self) -> Result<(), Failed> {
@@ -2282,17 +2393,15 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 => self.ctx.const_1(),
             _ => self.reg_variable_size(Register(1), operand::MemAccessSize::Mem8),
         };
-        let op_gen: &dyn ArithOperationGenerator = match (self.read_u8(1)? >> 3) & 0x7 {
-            0 => &ROL_OPS,
-            1 => &ROR_OPS,
-            4 | 6 => &LSH_OPS,
-            5 => &RSH_OPS,
-            7 => &SAR_OPS,
+        let arith = match (self.read_u8(1)? >> 3) & 0x7 {
+            0 => ArithOperation::RotateLeft,
+            1 => ArithOperation::RotateRight,
+            4 | 6 => ArithOperation::LeftShift,
+            5 => ArithOperation::RightShift,
+            7 => ArithOperation::RightShiftArithmetic,
             _ => return Err(self.unknown_opcode()),
         };
-        let is_64 = Va::SIZE == 8;
-        let rm = self.rm_to_dest_and_operand(&rm);
-        op_gen.operation(rm, shift_count, self.out, is_64);
+        self.do_arith_operation(arith, &rm, shift_count);
         Ok(())
     }
 
@@ -2402,27 +2511,27 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn arith_with_imm_op(&mut self) -> Result<(), Failed> {
-        let op_gen: &dyn ArithOperationGenerator = match (self.read_u8(1)? >> 3) & 0x7 {
-            0 => &ADD_OPS,
-            1 => &OR_OPS,
-            2 => &ADC_OPS,
-            3 => &SBB_OPS,
-            4 => &AND_OPS,
-            5 => &SUB_OPS,
-            6 => &XOR_OPS,
-            7 => &CMP_OPS,
+        let arith = match (self.read_u8(1)? >> 3) & 0x7 {
+            0 => ArithOperation::Add,
+            1 => ArithOperation::Or,
+            2 => ArithOperation::Adc,
+            3 => ArithOperation::Sbb,
+            4 => ArithOperation::And,
+            5 => ArithOperation::Sub,
+            6 => ArithOperation::Xor,
+            7 => ArithOperation::Cmp,
             _ => unreachable!(),
         };
         let imm_size = match self.read_u8(0)? & 0x3 {
             0 | 2 | 3 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        self.generic_arith_with_imm_op(op_gen, imm_size)
+        self.generic_arith_with_imm_op(arith, imm_size)
     }
 
     fn generic_arith_with_imm_op(
         &mut self,
-        op_gen: &dyn ArithOperationGenerator,
+        arith: ArithOperation,
         imm_size: MemAccessSize,
     ) -> Result<(), Failed> {
         let op_size = match self.read_u8(0)? & 0x1 {
@@ -2430,49 +2539,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             _ => self.mem16_32(),
         };
         let (rm, _, imm) = self.parse_modrm_imm(op_size, imm_size)?;
-        let rm = self.rm_to_dest_and_operand(&rm);
-        let is_64 = Va::SIZE == 8;
-        op_gen.operation(rm, imm, self.out, is_64);
-        Ok(())
-    }
-
-    fn eax_imm_cmp<F>(&mut self, ops: F) -> Result<(), Failed>
-    where F: FnOnce(DestAndOperand, Rc<Operand>, &mut OperationVec, bool),
-    {
-        let op_size = match self.read_u8(0)? & 0x1 {
-            0 => MemAccessSize::Mem8,
-            _ => self.mem16_32(),
-        };
-        let eax = DestAndOperand {
-            dest: DestOperand::reg_variable_size(0, op_size),
-            op: self.reg_variable_size(Register(0), op_size),
-        };
-        let imm = self.read_variable_size_32(1, op_size)?;
-        let val = self.ctx.constant(imm);
-        let is_64 = Va::SIZE == 8;
-        ops(eax, val, self.out, is_64);
-        Ok(())
-    }
-
-
-    fn generic_cmp_op<F>(&mut self, ops: F) -> Result<(), Failed>
-    where F: FnOnce(DestAndOperand, Rc<Operand>, &mut OperationVec, bool),
-    {
-        let op_size = match self.read_u8(0)? & 0x1 {
-            0 => MemAccessSize::Mem8,
-            _ => self.mem16_32(),
-        };
-        let rm_left = self.read_u8(0)? & 0x3 < 2;
-        let (rm, r) = self.parse_modrm(op_size)?;
-        let r = r.to_rm();
-        let (left, right) = match rm_left {
-            true => (&rm, &r),
-            false => (&r, &rm),
-        };
-        let left = self.rm_to_dest_and_operand(left);
-        let right = self.rm_to_operand(right);
-        let is_64 = Va::SIZE == 8;
-        ops(left, right, self.out, is_64);
+        self.do_arith_operation(arith, &rm, imm);
         Ok(())
     }
 
@@ -2599,49 +2666,12 @@ fn is_rm_short_r_register(rm: &ModRm_Rm, r: ModRm_R) -> bool {
     !rm.is_memory() && rm.base == r.0 && rm.size.bits() < r.1.bits()
 }
 
-trait ArithOperationGenerator {
-    fn operation(&self, _: DestAndOperand, _: Rc<Operand>, _: &mut OperationVec, _64bit: bool);
-}
-
-macro_rules! arith_op_generator {
-    ($stname: ident, $name:ident, $op:ident) => {
-        struct $name;
-        impl ArithOperationGenerator for $name {
-            fn operation(&self, a: DestAndOperand, b: Rc<Operand>, c: &mut OperationVec, d: bool) {
-                self::operation_helpers::$op(a, b, c, d)
-            }
-        }
-        static $stname: $name = $name;
-    }
-}
-arith_op_generator!(ADD_OPS, AddOps, add_ops);
-arith_op_generator!(ADC_OPS, AdcOps, adc_ops);
-arith_op_generator!(OR_OPS, OrOps, or_ops);
-arith_op_generator!(AND_OPS, AndOps, and_ops);
-arith_op_generator!(SUB_OPS, SubOps, sub_ops);
-arith_op_generator!(SBB_OPS, SbbOps, sbb_ops);
-arith_op_generator!(XOR_OPS, XorOps, xor_ops);
-arith_op_generator!(CMP_OPS, CmpOps, cmp_ops);
-arith_op_generator!(TEST_OPS, TestOps, test_ops);
-arith_op_generator!(MOV_OPS, MovOps, mov_ops);
-arith_op_generator!(ROL_OPS, RolOps, rol_ops);
-arith_op_generator!(ROR_OPS, RorOps, ror_ops);
-arith_op_generator!(LSH_OPS, LshOps, lsh_ops);
-arith_op_generator!(RSH_OPS, RshOps, rsh_ops);
-arith_op_generator!(SAR_OPS, SarOps, sar_ops);
-
 pub mod operation_helpers {
     use std::rc::Rc;
 
     use crate::operand::ArithOpType::*;
-    use crate::operand::{
-        Flag, Operand, OperandType, MemAccessSize, ArithOpType, ArithOperand, Register,
-    };
-    use crate::operand::operand_helpers::*;
-    use super::{
-        DestOperand, make_arith_operation, Operation, OperationVec,
-        DestAndOperand,
-    };
+    use crate::operand::{Operand, MemAccessSize, ArithOpType, ArithOperand, Register};
+    use super::{DestOperand, make_arith_operation, Operation, DestAndOperand};
 
     pub fn mov_to_reg(dest: u8, from: Rc<Operand>) -> Operation {
         Operation::Move(DestOperand::Register64(Register(dest)), from, None)
@@ -2677,44 +2707,12 @@ pub mod operation_helpers {
         Operation::Move(dest, from, None)
     }
 
-    pub fn mov_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, _64: bool) {
-        if dest.op != rhs {
-            out.push(mov(dest.dest, rhs));
-        }
-    }
-
     pub fn add(dest: DestAndOperand, rhs: Rc<Operand>, is_64: bool) -> Operation {
         make_arith_operation(dest.dest, Add, dest.op, rhs, is_64)
     }
 
-    pub fn add_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        out.push(flags(Add, dest.op.clone(), rhs.clone(), is_64));
-        out.push(add(dest, rhs, is_64));
-    }
-
-    pub fn adc_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        let rhs = operand_add64(rhs, flag_c());
-        out.push(flags(Add, dest.op.clone(), rhs.clone(), is_64));
-        out.push(add(dest, rhs, is_64));
-    }
-
     pub fn sub(dest: DestAndOperand, rhs: Rc<Operand>, is_64: bool) -> Operation {
         make_arith_operation(dest.dest, Sub, dest.op, rhs, is_64)
-    }
-
-    pub fn sub_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        out.push(flags(Sub, dest.op.clone(), rhs.clone(), is_64));
-        out.push(sub(dest, rhs, is_64));
-    }
-
-    pub fn cmp_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        out.push(flags(Sub, dest.op, rhs, is_64));
-    }
-
-    pub fn sbb_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        let rhs = operand_add64(rhs, flag_c());
-        out.push(flags(Sub, dest.op.clone(), rhs.clone(), is_64));
-        out.push(sub(dest, rhs, is_64));
     }
 
     pub fn mul(dest: DestAndOperand, rhs: Rc<Operand>, is_64: bool) -> Operation {
@@ -2729,118 +2727,23 @@ pub mod operation_helpers {
         make_arith_operation(dest.dest, Xor, dest.op, rhs, is_64)
     }
 
-    pub fn xor_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        out.push(flags(Xor, dest.op.clone(), rhs.clone(), is_64));
-        out.push(xor(dest, rhs, is_64));
-    }
-
-    pub fn rol_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        // rol(x, y) == (x << y) | (x >> (32 - y))
-        let left;
-        let right;
-        if is_64 {
-            left = operand_lsh64(dest.op.clone(), rhs.clone());
-            right = operand_rsh64(dest.op, operand_sub64(constval(64), rhs));
-        } else {
-            left = operand_lsh(dest.op.clone(), rhs.clone());
-            right = operand_rsh(dest.op, operand_sub(constval(32), rhs));
-        }
-        // TODO set overflow if 1bit??
-        out.push(make_arith_operation(dest.dest, Or, left, right, is_64));
-    }
-
-    pub fn ror_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        // ror(x, y) == (x >> y) | (x << (32 - y))
-        let left;
-        let right;
-        if is_64 {
-            left = operand_rsh64(dest.op.clone(), rhs.clone());
-            right = operand_lsh64(dest.op, operand_sub64(constval(64), rhs));
-        } else {
-            left = operand_rsh(dest.op.clone(), rhs.clone());
-            right = operand_lsh(dest.op, operand_sub(constval(32), rhs));
-        }
-        // TODO set overflow if 1bit??
-        out.push(make_arith_operation(dest.dest, Or, left, right, is_64));
-    }
-
     pub fn lsh(dest: DestAndOperand, rhs: Rc<Operand>, is_64: bool) -> Operation {
         make_arith_operation(dest.dest, Lsh, dest.op, rhs, is_64)
-    }
-
-    pub fn lsh_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        out.push(flags(Lsh, dest.op.clone(), rhs.clone(), is_64));
-        out.push(make_arith_operation(dest.dest, Lsh, dest.op, rhs, is_64));
     }
 
     pub fn rsh(dest: DestAndOperand, rhs: Rc<Operand>, is_64: bool) -> Operation {
         make_arith_operation(dest.dest, Rsh, dest.op, rhs, is_64)
     }
 
-    pub fn rsh_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        out.push(flags(Rsh, dest.op.clone(), rhs.clone(), is_64));
-        out.push(rsh(dest, rhs, is_64));
-    }
-
-    pub fn sar_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        // TODO flags, using IntToFloat to cheat
-        out.push(flags(IntToFloat, dest.op.clone(), rhs.clone(), is_64));
-        if is_64 {
-            let is_positive = operand_eq64(
-                operand_and(constval(0x8000_0000_0000_0000), dest.op.clone()),
-                constval(0),
-            );
-            out.push(Operation::Move(
-                dest.dest.clone(),
-                operand_or(operand_rsh64(dest.op.clone(), rhs.clone()), constval(0x8000_0000_0000_0000)),
-                Some(operand_logical_not(is_positive.clone())),
-            ));
-            out.push(Operation::Move(
-                dest.dest,
-                operand_rsh64(dest.op, rhs),
-                Some(is_positive),
-            ));
-        } else {
-            let is_positive = operand_eq(
-                operand_and(constval(0x8000_0000), dest.op.clone()),
-                constval(0),
-            );
-            out.push(Operation::Move(
-                dest.dest.clone(),
-                operand_or(operand_rsh(dest.op.clone(), rhs.clone()), constval(0x8000_0000)),
-                Some(operand_logical_not(is_positive.clone())),
-            ));
-            out.push(Operation::Move(
-                dest.dest,
-                operand_rsh(dest.op, rhs),
-                Some(is_positive),
-            ));
-        }
-    }
-
     pub fn or(dest: DestAndOperand, rhs: Rc<Operand>, is_64: bool) -> Operation {
         make_arith_operation(dest.dest, Or, dest.op, rhs, is_64)
-    }
-
-    pub fn or_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        out.push(flags(Or, dest.op.clone(), rhs.clone(), is_64));
-        out.push(or(dest, rhs, is_64));
     }
 
     pub fn and(dest: DestAndOperand, rhs: Rc<Operand>, is_64: bool) -> Operation {
         make_arith_operation(dest.dest, And, dest.op, rhs, is_64)
     }
 
-    pub fn and_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        out.push(flags(And, dest.op.clone(), rhs.clone(), is_64));
-        out.push(and(dest, rhs, is_64));
-    }
-
-    pub fn test_ops(dest: DestAndOperand, rhs: Rc<Operand>, out: &mut OperationVec, is_64: bool) {
-        out.push(flags(And, dest.op, rhs, is_64));
-    }
-
-    fn flags(ty: ArithOpType, left: Rc<Operand>, right: Rc<Operand>, is_64: bool) -> Operation {
+    pub fn flags(ty: ArithOpType, left: Rc<Operand>, right: Rc<Operand>, is_64: bool) -> Operation {
         let arith = ArithOperand {
             ty,
             left,
@@ -2851,14 +2754,6 @@ pub mod operation_helpers {
         } else {
             Operation::SetFlags(arith, MemAccessSize::Mem32)
         }
-    }
-
-    thread_local! {
-        static FLAG_C: Rc<Operand> = Operand::new_simplified_rc(OperandType::Flag(Flag::Carry));
-    }
-
-    pub(crate) fn flag_c() -> Rc<Operand> {
-        FLAG_C.with(|x| x.clone())
     }
 }
 
@@ -2878,6 +2773,28 @@ pub enum Operation {
     /// Like Move, but evaluate all operands before assigning over any.
     /// Used for mul/div/swap.
     MoveSet(Vec<(DestOperand, Rc<Operand>)>),
+}
+
+/// Operations which operate on 2 operands, (almost always) writing to lhs.
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum ArithOperation {
+    // First 8 are same order as x86 internally, maybe compiler can optimize
+    // some matches.
+    Add,
+    Or,
+    Adc,
+    Sbb,
+    And,
+    Sub,
+    Xor,
+    Cmp,
+    Move,
+    Test,
+    RotateLeft,
+    RotateRight,
+    LeftShift,
+    RightShift,
+    RightShiftArithmetic,
 }
 
 fn make_f32_operation(
@@ -3002,6 +2919,16 @@ impl ModRm_Rm {
 
     fn constant_base(&self) -> bool {
         self.base == u8::max_value()
+    }
+
+    fn reg_variable_size(reg: u8, size: MemAccessSize) -> ModRm_Rm {
+        ModRm_Rm {
+            size: RegisterSize::from_mem_access_size(size),
+            base: reg,
+            index: u8::max_value(),
+            index_mul: 0,
+            constant: 0,
+        }
     }
 }
 
