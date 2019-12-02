@@ -150,18 +150,28 @@ fn comparision_from_operand(
                     } else {
                         if let Some((lc, ll, lr)) = comparision_from_operand(l) {
                             if let Some((rc, rl, rr)) = comparision_from_operand(r) {
-                                if let Some(op1) = sign_flag_check(lc, &ll, &lr) {
-                                    if let Some(op2) = overflow_flag_check(rc, &rl, &rr) {
-                                        if let Some(op1) = op1.decide_with_lhs(&op2.0) {
-                                            if op1 == op2 {
-                                                return Some((
-                                                    Comparision::SignedGreaterOrEqual,
-                                                    op1.0,
-                                                    op1.1,
-                                                ));
-                                            }
-                                        }
-                                    }
+                                let result = sign_flag_check(lc, &ll, &lr)
+                                    .and_then(|x| Some((x, overflow_flag_check(rc, &rl, &rr)?)))
+                                    .and_then(|(op1, op2)| {
+                                        op1.decide_with_lhs(&op2.0)
+                                            .filter(|op1_new| *op1_new == op2)
+                                    })
+                                    .or_else(|| {
+                                        sign_flag_check(rc, &rl, &rr)
+                                            .and_then(|x| {
+                                                Some((x, overflow_flag_check(lc, &ll, &lr)?))
+                                            })
+                                            .and_then(|(op1, op2)| {
+                                                op1.decide_with_lhs(&op2.0)
+                                                    .filter(|op1_new| *op1_new == op2)
+                                            })
+                                    });
+                                if let Some(op1) = result {
+                                    return Some((
+                                        Comparision::SignedGreaterOrEqual,
+                                        op1.0,
+                                        op1.1,
+                                    ));
                                 }
                             }
                         }
@@ -173,7 +183,15 @@ fn comparision_from_operand(
                         if op.0.ty == OperandType::Constant(0x7fff_ffff) {
                             Some((Comparision::SignedLessThan, op.1, constval(0)))
                         } else {
-                            Some((Comparision::LessThan, op.0, op.1))
+                            // Maybe this check doesn't belong here?
+                            // Maybe start of ArithOpType::GreaterThan match arm should do
+                            // the y > x + 8000_0000 check that overflow_flag_check
+                            // currently does?
+                            if let Some(op) = overflow_flag_check(Comparision::GreaterThan, l, r) {
+                                Some((Comparision::SignedLessThan, op.0, op.1))
+                            } else {
+                                Some((Comparision::LessThan, op.0, op.1))
+                            }
                         }
                     } else {
                         if r.ty == OperandType::Constant(0x7fff_ffff) {
@@ -182,13 +200,6 @@ fn comparision_from_operand(
                         } else {
                             Some((Comparision::GreaterThan, l.clone(), r.clone()))
                         }
-                    }
-                }
-                ArithOpType::GreaterThanSigned => {
-                    if let Some(op) = overflow_flag_check(Comparision::SignedGreaterThan, l, r) {
-                        Some((Comparision::SignedLessThan, op.0, op.1))
-                    } else {
-                        Some((Comparision::SignedGreaterThan, l.clone(), r.clone()))
                     }
                 }
                 ArithOpType::Or => {
@@ -267,6 +278,8 @@ fn zero_flag_check(
     }
 }
 
+/// Return CompareOperands for `x` if comp(l, r) is equivalent to `sign(x)`
+/// (`signed_less(x, 0)` or `unsigned_less(i32_max, x)`)
 fn sign_flag_check(
     comp: Comparision,
     l: &Rc<Operand>,
@@ -289,6 +302,9 @@ fn sign_flag_check(
     }
 }
 
+/// Carry / unsigned wraparound is done for subtraction (cmp) as
+/// flag_carry = x - y > x
+/// Extract (y, x).
 fn carry_flag_check(
     comp: Comparision,
     l: &Rc<Operand>,
@@ -315,11 +331,35 @@ fn carry_flag_check(
     }
 }
 
+/// Check either
+///
+/// #1
+/// `(x - y) sgt x`
+///
+/// or
+///
+/// #2
+/// `y ugt (x + 8000_0000)`
+///     => `(x - y + 8000_0000) ugt (x + 8000_0000)`    (*)
+///     => `(x - y) sgt x`
+///
+/// or
+///
+/// #3
+/// `(x + c) ugt (x + 8000_0000)`
+///     => `(x - (8000_0000 - c)) sgt x`   (y = 8000_0000 - c)
+///
+/// (*) Undoes `(x - y) ugt x` <=> `y ugt x` simplification
+///
+/// as ways to implement overflow flag set.
+///
+/// returns (x, y)
 fn overflow_flag_check(
     comp: Comparision,
     l: &Rc<Operand>,
     r: &Rc<Operand>
 ) -> Option<(Rc<Operand>, Rc<Operand>)> {
+    use crate::operand_helpers::*;
     match comp {
         Comparision::SignedGreaterThan => {
             let op = compare_base_op(l);
@@ -335,6 +375,46 @@ fn overflow_flag_check(
                 Some(op)
             } else {
                 Some((l.clone(), r.clone()))
+            }
+        }
+        Comparision::GreaterThan => {
+            let mut ops = Vec::new();
+            collect_add_ops(r, &mut ops, false);
+            let constant_idx = ops.iter().position(|x| {
+                x.0.if_constant() == Some(0x8000_0000) && x.1 == false
+            });
+            if let Some(i) = constant_idx {
+                ops.remove(i);
+            } else {
+                return None;
+            }
+            // Matching #3 if left contains all of ops,
+            // #2 otherwise.
+            let mut left_ops = Vec::new();
+            collect_add_ops(l, &mut left_ops, false);
+            let left_has_all_ops = ops.iter().all(|r| {
+                match left_ops.iter().position(|l| l == r) {
+                    Some(s) => {
+                        left_ops.remove(s);
+                        true
+                    }
+                    None => false,
+                }
+            });
+            let left_constant = match left_ops.len() {
+                0 => Some(0),
+                1 => left_ops[0].0.if_constant().map(|c| match left_ops[0].1 {
+                    true => 0u64.wrapping_sub(c),
+                    false => c,
+                }),
+                _ => None,
+            };
+            let tree = add_operands_to_tree(ops);
+            if left_has_all_ops && left_constant.is_some() {
+                let constant = 0x8000_0000u64.wrapping_sub(left_constant.unwrap_or(0));
+                Some((tree, constval(constant)))
+            } else {
+                Some((tree, l.clone()))
             }
         }
         _ => None,
@@ -375,6 +455,7 @@ enum CompareOperands {
 }
 
 impl CompareOperands {
+    // Returns (l, r) of eq comparision???
     fn decide(self) -> (Rc<Operand>, Rc<Operand>) {
         use crate::operand::operand_helpers::*;
         match self {
@@ -393,6 +474,11 @@ impl CompareOperands {
         }
     }
 
+    /// Lhs is expected to be `x` in `x < x - y`, the one without addition,
+    /// while `self` is expected to be longer one `x - y`.
+    /// In that case it extracts `x` and `y`.
+    /// Not necessarily left hand of operation if operation is LessThan. etc.
+    /// Return (x, y) if matching.
     fn decide_with_lhs(self, lhs: &Rc<Operand>) -> Option<(Rc<Operand>, Rc<Operand>)> {
         match self {
             CompareOperands::Certain(l, r) => {
@@ -523,12 +609,24 @@ fn recognize_compare_operands() {
                 ),
                 constval(0x7fff_ffff),
             ),
-            operand_gt_signed(
-                operand_sub(
-                    operand_register(2),
-                    operand_register(4),
+            operand_gt(
+                operand_and(
+                    operand_add(
+                        operand_sub(
+                            operand_register(2),
+                            operand_register(4),
+                        ),
+                        constval(0x8000_0000),
+                    ),
+                    constval(0xffff_ffff),
                 ),
-                operand_register(2),
+                operand_and(
+                    operand_add(
+                        operand_register(2),
+                        constval(0x8000_0000),
+                    ),
+                    constval(0xffff_ffff),
+                ),
             ),
         ),
     ));
@@ -546,9 +644,21 @@ fn recognize_compare_operands() {
                 operand_register(2),
                 constval(0x7fff_ffff),
             ),
-            operand_gt_signed(
-                operand_register(2),
-                operand_register(2),
+            operand_gt(
+                operand_and(
+                    operand_add(
+                        operand_register(2),
+                        constval(0x8000_0000),
+                    ),
+                    constval(0xffff_ffff),
+                ),
+                operand_and(
+                    operand_add(
+                        operand_register(2),
+                        constval(0x8000_0000),
+                    ),
+                    constval(0xffff_ffff),
+                ),
             ),
         ),
     ));
@@ -571,17 +681,29 @@ fn recognize_compare_operands() {
                 ),
                 constval(0x7fff_ffff),
             ),
-            operand_gt_signed(
-                operand_sub(
-                    operand_register(4),
+            operand_gt(
+                operand_and(
                     operand_add(
-                        operand_register(2),
-                        constval(123),
+                        operand_sub(
+                            operand_register(4),
+                            operand_add(
+                                operand_register(2),
+                                constval(123),
+                            ),
+                        ),
+                        constval(0x8000_0000),
                     ),
+                    constval(0xffff_ffff),
                 ),
-                operand_sub(
-                    operand_register(4),
-                    operand_register(2),
+                operand_and(
+                    operand_add(
+                        operand_sub(
+                            operand_register(4),
+                            operand_register(2),
+                        ),
+                        constval(0x8000_0000),
+                    ),
+                    constval(0xffff_ffff),
                 ),
             ),
         ),

@@ -259,7 +259,6 @@ impl fmt::Display for Operand {
                     Rsh => write!(f, "({} >> {})", l, r),
                     Equal => write!(f, "({} == {})", l, r),
                     GreaterThan => write!(f, "({} > {})", l, r),
-                    GreaterThanSigned => write!(f, "gt_signed({}, {})", l, r),
                     SignedMul => write!(f, "mul_signed({}, {})", l, r),
                     Parity => write!(f, "parity({})", l),
                     FloatToInt => write!(f, "float_to_int({})", l),
@@ -327,7 +326,6 @@ pub enum ArithOpType {
     Equal,
     Parity,
     GreaterThan,
-    GreaterThanSigned,
     IntToFloat,
     FloatToInt,
 }
@@ -336,7 +334,7 @@ impl ArithOperand {
     pub fn is_compare_op(&self) -> bool {
         use self::ArithOpType::*;
         match self.ty {
-            Equal | GreaterThan | GreaterThanSigned => true,
+            Equal | GreaterThan => true,
             _ => false,
         }
     }
@@ -765,7 +763,7 @@ impl OperandType {
                 MemAccessSize::Mem64 => 0..64,
             },
             OperandType::Arithmetic(ref arith) => match arith.ty {
-                ArithOpType::Equal | ArithOpType::GreaterThan | ArithOpType::GreaterThanSigned => {
+                ArithOpType::Equal | ArithOpType::GreaterThan => {
                     0..1
                 }
                 ArithOpType::Lsh => {
@@ -844,7 +842,7 @@ impl OperandType {
                 _ => 0..32,
             },
             OperandType::Arithmetic64(ref arith) => match arith.ty {
-                ArithOpType::Equal | ArithOpType::GreaterThan | ArithOpType::GreaterThanSigned => {
+                ArithOpType::Equal | ArithOpType::GreaterThan => {
                     0..1
                 }
                 ArithOpType::Lsh => {
@@ -1610,6 +1608,9 @@ impl Operand {
                         let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
                         let l = left.clone();
                         let r = right.clone();
+                        if l == r {
+                            return ctx.const_0();
+                        }
                         match (&l.ty, &r.ty) {
                             (&OperandType::Constant(a), &OperandType::Constant(b)) => if a > b {
                                 return ctx.const_1();
@@ -1643,32 +1644,6 @@ impl Operand {
                         }
                         let ty = OperandType::Arithmetic(ArithOperand {
                             ty: ArithOpType::GreaterThan,
-                            left,
-                            right,
-                        });
-                        Operand::new_simplified_rc(ty)
-                    }
-                    ArithOpType::GreaterThanSigned => {
-                        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-                        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
-                        let l = left.clone();
-                        let r = right.clone();
-                        match (l.if_constant(), r.if_constant()) {
-                            (Some(a), Some(b)) => match a as i32 > b as i32 {
-                                true => return ctx.const_1(),
-                                false => return ctx.const_0(),
-                            },
-                            (Some(0x8000_0000), None) | (None, Some(0x7fff_ffff)) => {
-                                return ctx.const_0()
-                            }
-                            (Some(0x7fff_ffff), None) | (None, Some(0x8000_0000)) => {
-                                // max > x if x != max, x > 0 if x != 0
-                                return operand_ne(ctx, l, r)
-                            }
-                            _ => (),
-                        }
-                        let ty = OperandType::Arithmetic(ArithOperand {
-                            ty: ArithOpType::GreaterThanSigned,
                             left,
                             right,
                         });
@@ -1765,6 +1740,9 @@ impl Operand {
                         let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
                         let l = left.clone();
                         let r = right.clone();
+                        if l == r {
+                            return ctx.const_0();
+                        }
                         if let OperandType::Arithmetic64(ref arith) = l.ty {
                             if arith.ty == ArithOpType::Sub {
                                 if arith.left == r {
@@ -4420,10 +4398,6 @@ pub mod operand_helpers {
         operand_arith(GreaterThan, lhs, rhs)
     }
 
-    pub fn operand_gt_signed(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(GreaterThanSigned, lhs, rhs)
-    }
-
     pub fn operand_or(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith(Or, lhs, rhs)
     }
@@ -4514,10 +4488,6 @@ pub mod operand_helpers {
 
     pub fn operand_gt64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith64(GreaterThan, lhs, rhs)
-    }
-
-    pub fn operand_gt_signed64(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith64(GreaterThanSigned, lhs, rhs)
     }
 
     pub fn mem32_norc(val: Rc<Operand>) -> Operand {
@@ -4770,15 +4740,6 @@ mod test {
         let op2 = operand_gt(constval(4), constval(!2));
         assert_eq!(Operand::simplified(op1), constval(1));
         assert_eq!(Operand::simplified(op2), constval(0));
-    }
-
-    #[test]
-    fn simplify_gt_signed() {
-        use super::operand_helpers::*;
-        let op1 = operand_gt_signed(constval(4), constval(2));
-        let op2 = operand_gt_signed(constval(4), constval(!2));
-        assert_eq!(Operand::simplified(op1), constval(1));
-        assert_eq!(Operand::simplified(op2), constval(1));
     }
 
     #[test]
@@ -5700,16 +5661,40 @@ mod test {
         );
         // Checking for signed gt requires sign == overflow, unlike
         // unsigned where it's just carry == 1
-        let op2 = operand_gt_signed(
-            operand_sub(
-                ctx.register(5),
-                ctx.register(2),
+        let op2 = operand_gt(
+            operand_and(
+                operand_add(
+                    operand_sub(
+                        ctx.register(5),
+                        ctx.register(2),
+                    ),
+                    ctx.constant(0x8000_0000),
+                ),
+                ctx.constant(0xffff_ffff),
             ),
-            ctx.register(5),
+            operand_and(
+                operand_add(
+                    ctx.register(5),
+                    ctx.constant(0x8000_0000),
+                ),
+                ctx.constant(0xffff_ffff),
+            ),
         );
-        let ne2 = operand_gt_signed(
-            ctx.register(2),
-            ctx.register(5),
+        let ne2 = operand_gt(
+            operand_and(
+                operand_add(
+                    ctx.register(2),
+                    ctx.constant(0x8000_0000),
+                ),
+                ctx.constant(0xffff_ffff),
+            ),
+            operand_and(
+                operand_add(
+                    ctx.register(5),
+                    ctx.constant(0x8000_0000),
+                ),
+                ctx.constant(0xffff_ffff),
+            ),
         );
         let op3 = operand_gt64(
             operand_sub64(
@@ -7120,5 +7105,17 @@ mod test {
         let ne1 = ctx.register(0);
         assert_eq!(Operand::simplified(op1.clone()), Operand::simplified(eq1));
         assert_ne!(Operand::simplified(op1), Operand::simplified(ne1));
+    }
+
+    #[test]
+    fn gt_same() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_gt(
+            ctx.register(6),
+            ctx.register(6),
+        );
+        let eq1 = constval(0);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }

@@ -184,7 +184,7 @@ pub struct ExecutionState<'a> {
     unresolved_constraint: Option<Constraint>,
     ctx: &'a OperandContext,
     binary: Option<&'a BinaryFile<VirtualAddress>>,
-    pending_flags: Option<ArithOperand>,
+    pending_flags: Option<(ArithOperand, MemAccessSize)>,
 }
 
 /// Caches ax/al/ah resolving.
@@ -548,9 +548,6 @@ impl<'a> ExecutionState<'a> {
                 }
             }
             Operation::SetFlags(arith, size) => {
-                if *size != MemAccessSize::Mem32 {
-                    return;
-                }
                 let left = self.resolve(&arith.left, intern_map);
                 let right = self.resolve(&arith.right, intern_map);
                 let arith = ArithOperand {
@@ -558,7 +555,7 @@ impl<'a> ExecutionState<'a> {
                     right,
                     ty: arith.ty,
                 };
-                self.pending_flags = Some(arith);
+                self.pending_flags = Some((arith, *size));
                 // Could try to do smarter invalidation, but since in practice unresolved
                 // constraints always are bunch of flags, invalidate it completely.
                 self.unresolved_constraint = None;
@@ -567,29 +564,58 @@ impl<'a> ExecutionState<'a> {
     }
 
     fn update_flags(&mut self, intern_map: &mut InternMap) {
-        if let Some(arith) = self.pending_flags.take() {
-            self.set_flags(arith, intern_map);
+        if let Some((arith, size)) = self.pending_flags.take() {
+            self.set_flags(arith, size, intern_map);
         }
     }
 
-    fn set_flags(&mut self, arith: ArithOperand, intern_map: &mut InternMap) {
+    fn set_flags(
+        &mut self,
+        arith: ArithOperand,
+        size: MemAccessSize,
+        intern_map: &mut InternMap,
+    ) {
         use crate::operand::ArithOpType::*;
         use crate::operand_helpers::*;
         let resolved_left = &arith.left;
         let resolved_right = arith.right;
         let result = operand_arith(arith.ty, resolved_left.clone(), resolved_right);
         let result = Operand::simplified(result);
+        let ctx = self.ctx;
+        let gt_signed = |left, right| {
+            let (mask, offset) = match size {
+                MemAccessSize::Mem8 => (ctx.const_ff(), ctx.constant(0x80)),
+                MemAccessSize::Mem16 =>  (ctx.const_ffff(), ctx.constant(0x8000)),
+                MemAccessSize::Mem32 | _ =>  (ctx.const_ffffffff(), ctx.constant(0x8000_0000)),
+            };
+            operand_gt(
+                operand_and(
+                    operand_add(
+                        left,
+                        offset.clone(),
+                    ),
+                    mask.clone(),
+                ),
+                operand_and(
+                    operand_add(
+                        right,
+                        offset,
+                    ),
+                    mask,
+                ),
+            )
+        };
         match arith.ty {
             Add => {
                 let carry = operand_gt(resolved_left.clone(), result.clone());
-                let overflow = operand_gt_signed(resolved_left.clone(), result.clone());
+                let overflow = gt_signed(resolved_left.clone(), result.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.sign = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, intern_map);
             }
             Sub => {
                 let carry = operand_gt(result.clone(), resolved_left.clone());
-                let overflow = operand_gt_signed(result.clone(), resolved_left.clone());
+                let overflow = gt_signed(result.clone(), resolved_left.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.sign = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, intern_map);

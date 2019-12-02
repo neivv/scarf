@@ -25,7 +25,7 @@ pub struct ExecutionState<'a> {
     binary: Option<&'a BinaryFile<VirtualAddress64>>,
     /// Lazily update flags since a lot of instructions set them and
     /// they get discarded later.
-    pending_flags: Option<(ArithOperand, bool)>,
+    pending_flags: Option<(ArithOperand, MemAccessSize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -488,7 +488,6 @@ impl<'a> ExecutionState<'a> {
             Operation::Special(_) => {
             }
             Operation::SetFlags(arith, size) => {
-                let is_64 = *size == MemAccessSize::Mem64;
                 let left = self.resolve(&arith.left, intern_map);
                 let right = self.resolve(&arith.right, intern_map);
                 let arith = ArithOperand {
@@ -496,7 +495,7 @@ impl<'a> ExecutionState<'a> {
                     right,
                     ty: arith.ty,
                 };
-                self.pending_flags = Some((arith, is_64));
+                self.pending_flags = Some((arith, *size));
                 // Could try to do smarter invalidation, but since in practice unresolved
                 // constraints always are bunch of flags, invalidate it completely.
                 self.unresolved_constraint = None;
@@ -508,47 +507,86 @@ impl<'a> ExecutionState<'a> {
     /// Must be called before accessing (both read or write) arithmetic flags.
     /// Obvously can just zero pending_flags if all flags are written over though.
     fn update_flags(&mut self, intern_map: &mut InternMap) {
-        if let Some((arith, is_64)) = self.pending_flags.take() {
-            self.set_flags(arith, is_64, intern_map);
+        if let Some((arith, size)) = self.pending_flags.take() {
+            self.set_flags(arith, size, intern_map);
         }
     }
 
-    fn set_flags(&mut self, arith: ArithOperand, is_64: bool, intern_map: &mut InternMap) {
+    fn set_flags(
+        &mut self,
+        arith: ArithOperand,
+        size: MemAccessSize,
+        intern_map: &mut InternMap,
+    ) {
         use crate::operand::ArithOpType::*;
         use crate::operand_helpers::*;
         let resolved_left = &arith.left;
         let resolved_right = arith.right;
+        let is_64 = size == MemAccessSize::Mem64;
         let result = if is_64 {
             operand_arith64(arith.ty, resolved_left.clone(), resolved_right)
         } else {
             operand_arith(arith.ty, resolved_left.clone(), resolved_right)
         };
+        let ctx = self.ctx;
+        let gt_signed = |left, right| {
+            let (mask, offset) = match size {
+                MemAccessSize::Mem8 => (ctx.const_ff(), ctx.constant(0x80)),
+                MemAccessSize::Mem16 =>  (ctx.const_ffff(), ctx.constant(0x8000)),
+                MemAccessSize::Mem32 =>  (ctx.const_ffffffff(), ctx.constant(0x8000_0000)),
+                MemAccessSize::Mem64 => {
+                    let offset = ctx.constant(0x8000_0000_0000_0000);
+                    return operand_gt64(
+                        operand_add64(
+                            left,
+                            offset.clone(),
+                        ),
+                        operand_add64(
+                            right,
+                            offset,
+                        ),
+                    );
+                }
+            };
+            operand_gt(
+                operand_and(
+                    operand_add(
+                        left,
+                        offset.clone(),
+                    ),
+                    mask.clone(),
+                ),
+                operand_and(
+                    operand_add(
+                        right,
+                        offset,
+                    ),
+                    mask,
+                ),
+            )
+        };
         let result = Operand::simplified(result);
         match arith.ty {
             Add => {
                 let carry;
-                let overflow;
                 if is_64 {
                     carry = operand_gt64(resolved_left.clone(), result.clone());
-                    overflow = operand_gt_signed64(resolved_left.clone(), result.clone());
                 } else {
                     carry = operand_gt(resolved_left.clone(), result.clone());
-                    overflow = operand_gt_signed(resolved_left.clone(), result.clone());
                 }
+                let overflow = gt_signed(resolved_left.clone(), result.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.sign = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, is_64, intern_map);
             }
             Sub => {
                 let carry;
-                let overflow;
                 if is_64 {
                     carry = operand_gt64(result.clone(), resolved_left.clone());
-                    overflow = operand_gt_signed64(result.clone(), resolved_left.clone());
                 } else {
                     carry = operand_gt(result.clone(), resolved_left.clone());
-                    overflow = operand_gt_signed(result.clone(), resolved_left.clone());
                 }
+                let overflow = gt_signed(resolved_left.clone(), result.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.sign = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, is_64, intern_map);
