@@ -70,16 +70,6 @@ pub trait ExecutionState<'a> : Clone {
         }
     }
 
-    /// Creates either Arithmetic or Arithmetic64 based on VirtualAddress size
-    fn operand_arith_word(ty: ArithOpType, left: Rc<Operand>, right: Rc<Operand>) -> Rc<Operand> {
-        use crate::operand_helpers::*;
-        if <Self::VirtualAddress as VirtualAddress>::SIZE == 4 {
-            operand_arith(ty, left, right)
-        } else {
-            operand_arith64(ty, left, right)
-        }
-    }
-
     /// Returns state with the condition assumed to be true/false.
     fn assume_jump_flag(
         &self,
@@ -425,7 +415,7 @@ fn apply_constraint_split(
 /// Helper for ExecutionState::value_limits implementations with constraints
 pub(crate) fn value_limits_recurse(constraint: &Rc<Operand>, value: &Rc<Operand>) -> (u64, u64) {
     match constraint.ty {
-        OperandType::Arithmetic(ref arith) | OperandType::Arithmetic64(ref arith) => {
+        OperandType::Arithmetic(ref arith) => {
             match arith.ty {
                 ArithOpType::And => {
                     let left = value_limits_recurse(&arith.left, value);

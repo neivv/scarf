@@ -152,7 +152,7 @@ impl<'a> Destination<'a> {
                     Operand::simplified(operand_lsh(masked, ctx.const_8()))
                 } else {
                     Operand::simplified(operand_or(
-                        operand_and64(old, ctx.constant(0xffff_ffff_ffff_00ff)),
+                        operand_and(old, ctx.constant(0xffff_ffff_ffff_00ff)),
                         operand_lsh(masked, ctx.const_8())
                     ))
                 };
@@ -188,7 +188,7 @@ impl<'a> Destination<'a> {
                             MemAccessSize::Mem8 => 8,
                         };
                         let low_base = Operand::simplified(
-                            operand_add64(base.clone(), ctx.constant(offset_rest))
+                            operand_add(base.clone(), ctx.constant(offset_rest))
                         );
                         let low_i = intern_map.intern(low_base.clone());
                         let low_old = mem.get(low_i)
@@ -199,15 +199,15 @@ impl<'a> Destination<'a> {
                         let mask_high = (mask_low + size_bits).min(0x40);
                         let mask = !0 >> mask_low << mask_low <<
                             (0x40 - mask_high) >> (0x40 - mask_high);
-                        let low_value = Operand::simplified(operand_or64(
-                            operand_and64(
-                                operand_lsh64(
+                        let low_value = Operand::simplified(operand_or(
+                            operand_and(
+                                operand_lsh(
                                     value.clone(),
                                     ctx.constant(8 * offset_8),
                                 ),
                                 ctx.constant(mask),
                             ),
-                            operand_and64(
+                            operand_and(
                                 low_old,
                                 ctx.constant(!mask),
                             ),
@@ -216,7 +216,7 @@ impl<'a> Destination<'a> {
                         let needs_high = mask_low + size_bits > 0x40;
                         if needs_high {
                             let high_base = Operand::simplified(
-                                operand_add64(
+                                operand_add(
                                     base.clone(),
                                     ctx.constant(offset_rest.wrapping_add(8)),
                                 )
@@ -226,15 +226,15 @@ impl<'a> Destination<'a> {
                                 .map(|x| intern_map.operand(x))
                                 .unwrap_or_else(|| mem64(high_base));
                             let mask = !0 >> (0x40 - (mask_low + size_bits - 0x40));
-                            let high_value = Operand::simplified(operand_or64(
-                                operand_and64(
-                                    operand_rsh64(
+                            let high_value = Operand::simplified(operand_or(
+                                operand_and(
+                                    operand_rsh(
                                         value,
                                         ctx.constant(0x80 - 8 * offset_8),
                                     ),
                                     ctx.constant(mask),
                                 ),
-                                operand_and64(
+                                operand_and(
                                     high_old,
                                     ctx.constant(!mask),
                                 ),
@@ -339,7 +339,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         let rsp = ctx.register(4);
         self.move_to(
             &DestOperand::from_oper(&rsp),
-            operand_sub64(rsp.clone(), ctx.const_8()),
+            operand_sub(rsp.clone(), ctx.const_8()),
             i,
         );
         self.move_to(
@@ -522,12 +522,7 @@ impl<'a> ExecutionState<'a> {
         use crate::operand_helpers::*;
         let resolved_left = &arith.left;
         let resolved_right = arith.right;
-        let is_64 = size == MemAccessSize::Mem64;
-        let result = if is_64 {
-            operand_arith64(arith.ty, resolved_left.clone(), resolved_right)
-        } else {
-            operand_arith(arith.ty, resolved_left.clone(), resolved_right)
-        };
+
         let ctx = self.ctx;
         let gt_signed = |left, right| {
             let (mask, offset) = match size {
@@ -536,12 +531,12 @@ impl<'a> ExecutionState<'a> {
                 MemAccessSize::Mem32 =>  (ctx.const_ffffffff(), ctx.constant(0x8000_0000)),
                 MemAccessSize::Mem64 => {
                     let offset = ctx.constant(0x8000_0000_0000_0000);
-                    return operand_gt64(
-                        operand_add64(
+                    return operand_gt(
+                        operand_add(
                             left,
                             offset.clone(),
                         ),
-                        operand_add64(
+                        operand_add(
                             right,
                             offset,
                         ),
@@ -565,46 +560,39 @@ impl<'a> ExecutionState<'a> {
                 ),
             )
         };
+        let result = operand_arith(arith.ty, resolved_left.clone(), resolved_right);
         let result = Operand::simplified(result);
         match arith.ty {
             Add => {
                 let carry;
-                if is_64 {
-                    carry = operand_gt64(resolved_left.clone(), result.clone());
-                } else {
-                    carry = operand_gt(resolved_left.clone(), result.clone());
-                }
                 let overflow = gt_signed(resolved_left.clone(), result.clone());
+                carry = operand_gt(resolved_left.clone(), result.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.sign = intern_map.intern(Operand::simplified(overflow));
-                self.result_flags(result, is_64, intern_map);
+                self.result_flags(result, size, intern_map);
             }
             Sub => {
                 let carry;
-                if is_64 {
-                    carry = operand_gt64(result.clone(), resolved_left.clone());
-                } else {
-                    carry = operand_gt(result.clone(), resolved_left.clone());
-                }
                 let overflow = gt_signed(resolved_left.clone(), result.clone());
+                carry = operand_gt(result.clone(), resolved_left.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.sign = intern_map.intern(Operand::simplified(overflow));
-                self.result_flags(result, is_64, intern_map);
+                self.result_flags(result, size, intern_map);
             }
             Xor | And | Or => {
-                let zero = intern_map.intern(self.ctx.const_0());
+                let zero = intern_map.intern(ctx.const_0());
                 self.flags.carry = zero;
                 self.flags.overflow = zero;
-                self.result_flags(result, is_64, intern_map);
+                self.result_flags(result, size, intern_map);
             }
             Lsh | Rsh  => {
-                let mut ids = intern_map.many_undef(self.ctx, 2);
+                let mut ids = intern_map.many_undef(ctx, 2);
                 self.flags.carry = ids.next();
                 self.flags.overflow = ids.next();
-                self.result_flags(result, is_64, intern_map);
+                self.result_flags(result, size, intern_map);
             }
             _ => {
-                let mut ids = intern_map.many_undef(self.ctx, 5);
+                let mut ids = intern_map.many_undef(ctx, 5);
                 self.flags.zero = ids.next();
                 self.flags.carry = ids.next();
                 self.flags.overflow = ids.next();
@@ -614,37 +602,32 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
-    fn result_flags(&mut self, result: Rc<Operand>, is_64: bool, intern_map: &mut InternMap) {
+    fn result_flags(
+        &mut self,
+        result: Rc<Operand>,
+        size: MemAccessSize,
+        intern_map: &mut InternMap,
+    ) {
         use crate::operand_helpers::*;
-        let zero;
-        let sign;
         let parity;
         let ctx = self.ctx;
-        if is_64 {
-            zero = Operand::simplified(operand_eq64(result.clone(), ctx.const_0()));
-            sign = Operand::simplified(
-                operand_ne64(
-                    ctx,
-                    operand_and64(
-                        ctx.constant(0x8000_0000_0000_0000),
-                        result.clone(),
-                    ),
-                    ctx.const_0(),
-                )
-            );
-        } else {
-            zero = Operand::simplified(operand_eq(result.clone(), ctx.const_0()));
-            sign = Operand::simplified(
-                operand_ne64(
-                    ctx,
-                    operand_and64(
-                        ctx.constant(0x8000_0000),
-                        result.clone(),
-                    ),
-                    ctx.const_0(),
-                )
-            );
+        let zero = Operand::simplified(operand_eq(result.clone(), ctx.const_0()));
+        let sign_bit = match size {
+            MemAccessSize::Mem8 => 0x80,
+            MemAccessSize::Mem16 => 0x8000,
+            MemAccessSize::Mem32 => 0x8000_0000,
+            MemAccessSize::Mem64 => 0x8000_0000_0000_0000,
         };
+        let sign = Operand::simplified(
+            operand_ne(
+                ctx,
+                operand_and(
+                    ctx.constant(sign_bit),
+                    result.clone(),
+                ),
+                ctx.const_0(),
+            )
+        );
         // Parity is defined to be just lowest byte so it doesn't need special handling for
         // 64 bits.
         parity = Operand::simplified(
@@ -776,15 +759,15 @@ impl<'a> ExecutionState<'a> {
             let offset_rest = offset & !7;
             if offset_8 != 0 {
                 let low_base = Operand::simplified(
-                    operand_add64(base.clone(), self.ctx.constant(offset_rest))
+                    operand_add(base.clone(), self.ctx.constant(offset_rest))
                 );
                 let low = self.memory.get(i.intern(low_base.clone()))
                     .map(|x| i.operand(x))
                     .unwrap_or_else(|| mem64(low_base));
-                let low = operand_rsh64(low, self.ctx.constant(offset_8 as u64 * 8));
+                let low = operand_rsh(low, self.ctx.constant(offset_8 as u64 * 8));
                 let combined = if offset_8 + size_bytes > 8 {
                     let high_base = Operand::simplified(
-                        operand_add64(
+                        operand_add(
                             base.clone(),
                             self.ctx.constant(offset_rest.wrapping_add(8)),
                         )
@@ -792,11 +775,11 @@ impl<'a> ExecutionState<'a> {
                     let high = self.memory.get(i.intern(high_base.clone()))
                         .map(|x| i.operand(x))
                         .unwrap_or_else(|| mem64(high_base));
-                    let high = operand_lsh64(
+                    let high = operand_lsh(
                         high,
                         self.ctx.constant((0x40 - offset_8 * 8) as u64),
                     );
-                    operand_or64(low, high)
+                    operand_or(low, high)
                 } else {
                     low
                 };
@@ -929,14 +912,6 @@ impl<'a> ExecutionState<'a> {
                     ty: op.ty,
                     left,
                     right,
-                });
-                Operand::new_not_simplified_rc(ty)
-            }
-            OperandType::Arithmetic64(ref op) => {
-                let ty = OperandType::Arithmetic64(ArithOperand {
-                    ty: op.ty,
-                    left: self.resolve(&op.left, interner),
-                    right: self.resolve(&op.right, interner),
                 });
                 Operand::new_not_simplified_rc(ty)
             }

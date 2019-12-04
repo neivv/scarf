@@ -242,18 +242,34 @@ enum Destination<'a> {
     Memory(&'a mut Memory, Rc<Operand>, MemAccessSize),
 }
 
-/// Masks arithmetic operations to 32-bit, but keeps registers/undefined as they are.
-/// Also removes 0xffff_ffff masks from them.
-fn masked_to_32bit(value: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+/// Removes 0xffff_ffff masks from registers/undefined,
+/// converts x + u64_const to x + u32_const.
+///
+/// The main idea is that it is assumed that arithmetic add/sub/mul won't overflow
+/// when stored to operands. If the arithmetic result is used as a part of another
+/// operation whose meaning changes based on high bits (div/mod/rsh/eq/gt), then
+/// the result is explicitly masked. (Add / sub constants larger than u32::max will
+/// be still truncated eagerly)
+fn as_32bit_value(value: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
     use crate::operand::operand_helpers::*;
-    // Allow undefined to be stored as is due to it mattering state merging
-    // and interning. Hopefully won't cause issues..
     if value.relevant_bits().end > 32 {
-        if value.is_undefined() || value.if_register().is_some() {
-            value.clone()
-        } else {
-            operand_and(value.clone(), ctx.const_ffffffff())
+        if let Some((l, r)) = value.if_arithmetic_add() {
+            // Uh, relying that simplification places constant on the right
+            // always. Should be made a explicit guarantee.
+            if let Some(c) = r.if_constant() {
+                if c > u32::max_value() as u64 {
+                    let truncated = c as u32 as u64;
+                    return Operand::simplified(operand_add(l.clone(), ctx.constant(truncated)));
+                }
+            }
         }
+        if let Some(c) = value.if_constant() {
+            if c > u32::max_value() as u64 {
+                let truncated = c as u32 as u64;
+                return ctx.constant(truncated);
+            }
+        }
+        value.clone()
     } else {
         let const_mask = value.if_arithmetic_and()
             .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()));
@@ -269,13 +285,17 @@ fn masked_to_32bit(value: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
     }
 }
 
+fn sext32_64(val: u32) -> u64 {
+    val as i32 as i64 as u64
+}
+
 impl<'a> Destination<'a> {
     fn set(self, value: Rc<Operand>, intern_map: &mut InternMap, ctx: &OperandContext) {
         use crate::operand::operand_helpers::*;
+        let value = as_32bit_value(&value, ctx);
         match self {
             Destination::Oper(o) => {
-                let masked = masked_to_32bit(&value, ctx);
-                *o = intern_map.intern(Operand::simplified(masked));
+                *o = intern_map.intern(Operand::simplified(value));
             }
             Destination::Register16(o) => {
                 let old = intern_map.operand(*o);
@@ -332,24 +352,19 @@ impl<'a> Destination<'a> {
                 *o = intern_map.intern(new);
             }
             Destination::Memory(mem, addr, size) => {
-                let addr = if addr.relevant_bits().end > 32 {
-                    Operand::simplified(operand_and(addr, ctx.const_ffffffff()))
-                } else {
-                    addr
-                };
                 if size == MemAccessSize::Mem64 {
                     // Split into two u32 sets
                     Destination::Memory(mem, addr.clone(), MemAccessSize::Mem32)
-                        .set(operand_and64(value.clone(), ctx.const_ffffffff()), intern_map, ctx);
+                        .set(operand_and(value.clone(), ctx.const_ffffffff()), intern_map, ctx);
                     let addr = operand_add(addr, ctx.const_4());
                     Destination::Memory(mem, addr, MemAccessSize::Mem32)
-                        .set(operand_rsh64(value, ctx.constant(32)), intern_map, ctx);
+                        .set(operand_rsh(value, ctx.constant(32)), intern_map, ctx);
                     return;
                 }
                 if let Some((base, offset)) = Operand::const_offset(&addr, ctx) {
                     let offset = offset as u32;
                     let offset_4 = offset & 3;
-                    let offset_rest = offset & !3;
+                    let offset_rest = sext32_64(offset & !3);
                     if offset_4 != 0 {
                         let size_bits = match size {
                             MemAccessSize::Mem32 => 32,
@@ -358,7 +373,7 @@ impl<'a> Destination<'a> {
                             MemAccessSize::Mem64 => unreachable!(),
                         };
                         let low_base = Operand::simplified(
-                            operand_add(base.clone(), ctx.constant(offset_rest as u64))
+                            operand_add(base.clone(), ctx.constant(offset_rest))
                         );
                         let low_i = intern_map.intern(low_base.clone());
                         let low_old = mem.get(low_i)
@@ -388,7 +403,7 @@ impl<'a> Destination<'a> {
                             let high_base = Operand::simplified(
                                 operand_add(
                                     base.clone(),
-                                    ctx.constant(offset_rest.wrapping_add(4) as u64),
+                                    ctx.constant(offset_rest.wrapping_add(4)),
                                 )
                             );
                             let high_i = intern_map.intern(high_base.clone());
@@ -611,26 +626,26 @@ impl<'a> ExecutionState<'a> {
                 let overflow = gt_signed(resolved_left.clone(), result.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.sign = intern_map.intern(Operand::simplified(overflow));
-                self.result_flags(result, intern_map);
+                self.result_flags(result, size, intern_map);
             }
             Sub => {
                 let carry = operand_gt(result.clone(), resolved_left.clone());
                 let overflow = gt_signed(result.clone(), resolved_left.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.sign = intern_map.intern(Operand::simplified(overflow));
-                self.result_flags(result, intern_map);
+                self.result_flags(result, size, intern_map);
             }
             Xor | And | Or => {
                 let zero = intern_map.intern(self.ctx.const_0());
                 self.flags.carry = zero;
                 self.flags.overflow = zero;
-                self.result_flags(result, intern_map);
+                self.result_flags(result, size, intern_map);
             }
             Lsh | Rsh  => {
                 let mut ids = intern_map.many_undef(self.ctx, 2);
                 self.flags.carry = ids.next();
                 self.flags.overflow = ids.next();
-                self.result_flags(result, intern_map);
+                self.result_flags(result, size, intern_map);
             }
             _ => {
                 let mut ids = intern_map.many_undef(self.ctx, 5);
@@ -643,15 +658,26 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
-    fn result_flags(&mut self, result: Rc<Operand>, intern_map: &mut InternMap) {
+    fn result_flags(
+        &mut self,
+        result: Rc<Operand>,
+        size: MemAccessSize,
+        intern_map: &mut InternMap,
+    ) {
         use crate::operand_helpers::*;
         let ctx = self.ctx;
         let zero = Operand::simplified(operand_eq(result.clone(), ctx.const_0()));
+        let sign_bit = match size {
+            MemAccessSize::Mem8 => 0x80,
+            MemAccessSize::Mem16 => 0x8000,
+            MemAccessSize::Mem32 => 0x8000_0000,
+            MemAccessSize::Mem64 => 0x8000_0000_0000_0000,
+        };
         let sign = Operand::simplified(
-            operand_ne64(
+            operand_ne(
                 ctx,
-                operand_and64(
-                    ctx.constant(0x8000_0000),
+                operand_and(
+                    ctx.constant(sign_bit),
                     result.clone(),
                 ),
                 ctx.const_0(),
@@ -744,17 +770,12 @@ impl<'a> ExecutionState<'a> {
         use crate::operand::operand_helpers::*;
 
         let address = self.resolve(&mem.address, i);
-        let address = if address.relevant_bits().end > 32 {
-            Operand::simplified(operand_and(address, self.ctx.const_ffffffff()))
-        } else {
-            address
-        };
         if MemAccessSize::Mem64 == mem.size {
             // Split into 2 32-bit resolves
-            return operand_or64(
-                operand_lsh64(
+            return operand_or(
+                operand_lsh(
                     self.resolve_mem(&MemAccess {
-                        address: operand_add64(mem.address.clone(), self.ctx.const_4()),
+                        address: operand_add(mem.address.clone(), self.ctx.const_4()),
                         size: MemAccessSize::Mem32,
                     }, i),
                     self.ctx.constant(32),
@@ -800,10 +821,10 @@ impl<'a> ExecutionState<'a> {
         if let Some((base, offset)) = Operand::const_offset(&address, self.ctx) {
             let offset = offset as u32;
             let offset_4 = offset & 3;
-            let offset_rest = offset & !3;
+            let offset_rest = sext32_64(offset & !3);
             if offset_4 != 0 {
                 let low_base = Operand::simplified(
-                    operand_add(base.clone(), self.ctx.constant(offset_rest as u64))
+                    operand_add(base.clone(), self.ctx.constant(offset_rest))
                 );
                 let low = self.memory.get(i.intern(low_base.clone()))
                     .map(|x| i.operand(x))
@@ -813,7 +834,7 @@ impl<'a> ExecutionState<'a> {
                     let high_base = Operand::simplified(
                         operand_add(
                             base.clone(),
-                            self.ctx.constant(offset_rest.wrapping_add(4) as u64),
+                            self.ctx.constant(offset_rest.wrapping_add(4)),
                         )
                     );
                     let high = self.memory.get(i.intern(high_base.clone()))
@@ -942,14 +963,6 @@ impl<'a> ExecutionState<'a> {
                 });
                 Operand::new_not_simplified_rc(ty)
             }
-            OperandType::Arithmetic64(ref op) => {
-                let ty = OperandType::Arithmetic64(ArithOperand {
-                    ty: op.ty,
-                    left: self.resolve(&op.left, interner),
-                    right: self.resolve(&op.right, interner),
-                });
-                Operand::new_not_simplified_rc(ty)
-            }
             OperandType::ArithmeticF32(ref op) => {
                 let ty = OperandType::ArithmeticF32(ArithOperand {
                     ty: op.ty,
@@ -973,9 +986,16 @@ impl<'a> ExecutionState<'a> {
     }
 
     pub fn resolve(&mut self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
-        let x = self.resolve_no_simplify(value, interner);
+        let mut x = self.resolve_no_simplify(value, interner);
+        // Assuming that as_32bit_value isn't necessary if the
+        // returned value is simplified; Simplified values
+        // must have come from values stored in ExecutionState,
+        // which have already called as_32bit_value before storing.
         if x.is_simplified() {
             return x;
+        }
+        if x.relevant_bits().end > 32 {
+            x = as_32bit_value(&x, self.ctx);
         }
         let operand = Operand::simplified(x);
         // Intern in case the simplification created a very deeply different operand tree,
@@ -1240,4 +1260,33 @@ fn merge_state_constraints_or() {
     let merged = merge_states(&mut state_a, &mut state_b, &mut i).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
+}
+
+#[test]
+fn test_as_32bit_value() {
+    use crate::operand::operand_helpers::*;
+    let ctx = &crate::operand::OperandContext::new();
+    let op = Operand::simplified(
+        operand_add(
+            ctx.register(0),
+            ctx.constant(0x1_0000_0000),
+        ),
+    );
+    let expected = ctx.register(0);
+    assert_eq!(as_32bit_value(&op, ctx), expected);
+
+    let op = Operand::simplified(
+        operand_and(
+            ctx.register(0),
+            ctx.constant(0xffff_ffff),
+        ),
+    );
+    let expected = ctx.register(0);
+    assert_eq!(as_32bit_value(&op, ctx), expected);
+
+    let op = Operand::simplified(
+        ctx.constant(0x1_0000_0000),
+    );
+    let expected = ctx.constant(0);
+    assert_eq!(as_32bit_value(&op, ctx), expected);
 }

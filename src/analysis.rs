@@ -516,16 +516,12 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
         }
     }
 
-    /// Create an arithmetic add with size of VirtualAddress.
-    pub fn operand_add(&self, left: Rc<Operand>, right: Rc<Operand>) -> Rc<Operand> {
-        A::Exec::operand_arith_word(crate::ArithOpType::Add, left, right)
-    }
-
     /// Convenience for cases where `address + CONST * REG_SIZE` is needed
     pub fn const_word_offset(&self, left: Rc<Operand>, right: u32) -> Rc<Operand> {
+        use crate::operand_helpers::*;
         let size = <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE;
         let constant = self.inner.analysis.operand_ctx.constant(right as u64 * size as u64);
-        A::Exec::operand_arith_word(crate::ArithOpType::Add, left, constant)
+        operand_add(left, constant)
     }
 
     /// Convenience for cases where `Mem[address]` is needed
@@ -1170,7 +1166,7 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
         };
         mem.if_memory()
             .and_then(|mem| mem.address.if_arithmetic_add())
-            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul64()))
+            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul()))
             .and_then(|((l, r), switch_table)| {
                 let switch_table = switch_table.if_constant()?;
                 let (c, index) = Operand::either(l, r, {
@@ -1216,11 +1212,11 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                     let end = limits.1.min(u32::max_value() as u64) as u32;
 
                     for index in start..=end {
-                        let case = operand_add64(
+                        let case = operand_add(
                             base.clone(),
                             mem_variable_rc(
                                 mem_size,
-                                operand_add64(
+                                operand_add(
                                     switch_table.clone(),
                                     ctx.constant(index as u64 * case_size as u64),
                                 ),
