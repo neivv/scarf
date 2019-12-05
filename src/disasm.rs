@@ -456,6 +456,7 @@ fn instruction_operations32_main(
         0x84 | 0x85 => s.generic_arith_op(ArithOperation::Test),
         0x86 | 0x87 => s.xchg(),
         0x8d => s.lea(),
+        0x8f => s.pop_rm(),
         0x90 => Ok(()),
         // Cwde
         0x98 => {
@@ -711,6 +712,7 @@ fn instruction_operations64_main(
         0x84 | 0x85 => s.generic_arith_op(ArithOperation::Test),
         0x86 | 0x87 => s.xchg(),
         0x8d => s.lea(),
+        0x8f => s.pop_rm(),
         0x90 => Ok(()),
         0x98 => {
             let eax = s.dest_and_op_register(0);
@@ -2341,6 +2343,22 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 }
             }
             _ => return Err(self.unknown_opcode()),
+        }
+        Ok(())
+    }
+
+    fn pop_rm(&mut self) -> Result<(), Failed> {
+        use self::operation_helpers::*;
+        use crate::operand_helpers::*;
+        let (rm, _) = self.parse_modrm(self.mem16_32())?;
+        let dest = self.dest_and_op_register(4);
+        let esp = dest.op.clone();
+        if Va::SIZE == 4 {
+            self.output(mov(self.rm_to_dest_operand(&rm), mem32(esp)));
+            self.output(add(dest, self.ctx.const_4()));
+        } else {
+            self.output(mov(self.rm_to_dest_operand(&rm), mem64(esp)));
+            self.output(add(dest, self.ctx.const_8()));
         }
         Ok(())
     }

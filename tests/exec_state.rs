@@ -433,6 +433,44 @@ fn negative_offset() {
     ]);
 }
 
+#[test]
+fn push_pop() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0x89, 0xe0, // mov eax, esp
+        0x50, // push eax
+        0xff, 0x34, 0xe4, // push dword [esp]
+        0x50, // push eax
+        0x68, 0x90, 0x00, 0x00, 0x00, // push 90
+        0x50, // push eax
+        0x50, // push eax
+        0xc7, 0x00, 0x80, 0x00, 0x00, 0x00, // mov dword [eax], 80
+        0x8b, 0x4c, 0xe4, 0x18, // mov ecx, [esp + 18]
+        0x8b, 0x50, 0xf0, // mov edx, [eax - 10]
+        0x5b, // pop ebx
+        0x8f, 0x45, 0x00, // pop dword [ebp]
+        0x5b, // pop ebx
+        0x8f, 0x45, 0x00, // pop dword [ebp]
+        0x5b, // pop ebx
+        0x8f, 0x45, 0x00, // pop dword [ebp]
+        // esp = esp_at_start = eax
+        0x5b, // pop ebx
+        0x8f, 0x45, 0x00, // pop dword [ebp]
+        0x5b, // pop ebx
+        0x8f, 0x45, 0x00, // pop dword [ebp]
+        // esp = eax + 10
+        0xc7, 0x00, 0x22, 0x00, 0x00, 0x00, // mov dword [eax], 22
+        0x8b, 0x5c, 0xe4, 0xf0, // mov ebx, [esp - 10]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.register(4)),
+         (ctx.register(1), ctx.constant(0x80)),
+         (ctx.register(2), ctx.constant(0x90)),
+         (ctx.register(3), ctx.constant(0x22)),
+         (ctx.register(4), operand_add(ctx.register(4), ctx.constant(0x10))),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
