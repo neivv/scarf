@@ -9,6 +9,7 @@ use serde::{Deserialize as DeserializeTrait, Deserializer};
 use serde_derive::{Deserialize, Serialize};
 
 use crate::bit_misc::{bits_overlap, one_bit_ranges, zero_bit_ranges};
+use crate::heapsort;
 use crate::vec_drop_iter::VecDropIter;
 
 #[derive(Clone, Eq, Serialize)]
@@ -1976,7 +1977,7 @@ fn simplify_mul(
     if ops.is_empty() {
         return ctx.constant(const_product);
     }
-    ops.sort();
+    heapsort::sort(&mut ops);
     if const_product != 1 {
         if ops.len() == 1 {
             if simplify_mul_should_apply_constant(&ops[0]) {
@@ -2143,7 +2144,7 @@ fn simplify_add_sub_ops(
             break;
         }
     }
-    ops.sort();
+    heapsort::sort(&mut ops);
     simplify_add_merge_muls(&mut ops, ctx);
     let const_sum = const_sum & and_mask.unwrap_or(u64::max_value());
     if ops.is_empty() {
@@ -2164,8 +2165,8 @@ fn simplify_add_sub_ops(
     }
     // Place non-negated terms last so the simplified result doesn't become
     // (0 - x) + y
-    ops.sort_by(|&(ref a_val, a_neg), &(ref b_val, b_neg)| {
-        (b_neg, b_val).cmp(&(a_neg, a_val))
+    heapsort::sort_by(&mut ops, |&(ref a_val, a_neg), &(ref b_val, b_neg)| {
+        (b_neg, b_val) < (a_neg, a_val)
     });
     (ops, and_mask)
 }
@@ -2564,7 +2565,7 @@ fn simplify_and(
             return ctx.constant(const_remain);
         }
 
-        ops.sort();
+        heapsort::sort(&mut ops);
         ops.dedup();
 
         // Prefer (rax & 0xff) << 1 over (rax << 1) & 0x1fe.
@@ -2635,7 +2636,7 @@ fn simplify_and(
         1 => return ops.remove(0),
         _ => (),
     };
-    ops.sort();
+    heapsort::sort(&mut ops);
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_0());
     while let Some(op) = ops.pop() {
@@ -2661,7 +2662,7 @@ fn simplify_or(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
     if ops.is_empty() {
         return ctx.constant(const_val);
     }
-    ops.sort();
+    heapsort::sort(&mut ops);
     ops.dedup();
     for bits in one_bit_ranges(const_val) {
         vec_filter_map(&mut ops, |op| simplify_with_one_bits(&op, &bits, ctx));
@@ -3587,7 +3588,7 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
     let const_val = ops.iter().flat_map(|x| x.if_constant())
         .fold(0u64, |sum, x| sum ^ x);
     ops.retain(|x| x.if_constant().is_none());
-    ops.sort();
+    heapsort::sort(&mut *ops);
     simplify_xor_remove_reverting(ops);
     simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
     if ops.is_empty() {
