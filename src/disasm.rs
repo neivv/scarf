@@ -1643,7 +1643,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let imm = self.read_variable_size_32(1, op_size)?;
         let val = self.ctx.constant(imm);
-        let rm = ModRm_Rm::reg_variable_size(0, op_size);
+        let mut rm = ModRm_Rm::reg_variable_size(0, op_size);
+        self.skip_unnecessary_32bit_operand_masking(&mut rm, arith);
         self.do_arith_operation(arith, &rm, val);
         Ok(())
     }
@@ -1655,8 +1656,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, r) = self.parse_modrm(op_size)?;
-        let r = r.to_rm();
+        let (mut rm, r) = self.parse_modrm(op_size)?;
+        let mut r = r.to_rm();
+        self.skip_unnecessary_32bit_operand_masking(&mut r, arith);
+        self.skip_unnecessary_32bit_operand_masking(&mut rm, arith);
         let rm_left = self.read_u8(0)? & 0x3 < 2;
         let (left, right) = match rm_left {
             true => (&rm, &r),
@@ -2529,6 +2532,25 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         self.generic_arith_with_imm_op(arith, imm_size)
     }
 
+    /// Skips and masking arith input on x86 by converting register
+    /// to full size if the high bits of arithmetic cannot affect
+    /// low 32 bits of the result.
+    fn skip_unnecessary_32bit_operand_masking(
+        &mut self,
+        rm: &mut ModRm_Rm,
+        arith: ArithOperation,
+    ) {
+        use self::ArithOperation::*;
+        if Va::SIZE == 4 && !rm.is_memory() && rm.size == RegisterSize::R32 {
+            match arith {
+                Add | Or | Adc | Sbb | And | Sub | Xor | Cmp | Move | Test | LeftShift => {
+                    rm.size = RegisterSize::R64;
+                }
+                RightShift | RightShiftArithmetic | RotateLeft | RotateRight => (),
+            }
+        }
+    }
+
     fn generic_arith_with_imm_op(
         &mut self,
         arith: ArithOperation,
@@ -2538,7 +2560,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, _, imm) = self.parse_modrm_imm(op_size, imm_size)?;
+        let (mut rm, _, imm) = self.parse_modrm_imm(op_size, imm_size)?;
+        self.skip_unnecessary_32bit_operand_masking(&mut rm, arith);
         self.do_arith_operation(arith, &rm, imm);
         Ok(())
     }
@@ -2838,7 +2861,7 @@ struct ModRm_Rm {
     constant: u32,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 enum RegisterSize {
     Low8,
     High8,
@@ -3093,10 +3116,7 @@ mod test {
             Operation::Move(d, f, cond) => {
                 let d = d.as_operand(&ctx);
                 assert_eq!(Operand::simplified(d), Operand::simplified(dest));
-                assert_eq!(
-                    f,
-                    Operand::simplified(operand_and(operand_register(0), constval(0xffff_ffff))),
-                );
+                assert_eq!(f, ctx.register(0));
                 assert_eq!(cond, None);
             }
             _ => panic!("Unexpected op {:?}", op),

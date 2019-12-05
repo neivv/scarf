@@ -471,6 +471,25 @@ fn push_pop() {
     ]);
 }
 
+#[test]
+fn stack_sub() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0x89, 0xe0, // mov eax, esp
+        0x50, // push eax
+        0x83, 0xec, 0x10, // sub esp, 10
+        0x50, // push eax
+        0x83, 0xec, 0x10, // sub esp, 10
+        0xc7, 0x00, 0x80, 0x00, 0x00, 0x00, // mov dword [eax], 80
+        0x8b, 0x4c, 0xe4, 0x28, // mov ecx, [esp + 28]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.register(4)),
+         (ctx.register(1), ctx.constant(0x80)),
+         (ctx.register(4), operand_sub(ctx.register(4), ctx.constant(0x28))),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
