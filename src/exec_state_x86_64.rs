@@ -568,7 +568,7 @@ impl<'a> ExecutionState<'a> {
                 let overflow = gt_signed(resolved_left.clone(), result.clone());
                 carry = operand_gt(resolved_left.clone(), result.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
-                self.flags.sign = intern_map.intern(Operand::simplified(overflow));
+                self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);
             }
             Sub => {
@@ -576,7 +576,7 @@ impl<'a> ExecutionState<'a> {
                 let overflow = gt_signed(resolved_left.clone(), result.clone());
                 carry = operand_gt(result.clone(), resolved_left.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
-                self.flags.sign = intern_map.intern(Operand::simplified(overflow));
+                self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);
             }
             Xor | And | Or => {

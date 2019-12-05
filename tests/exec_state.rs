@@ -490,6 +490,35 @@ fn stack_sub() {
     ]);
 }
 
+#[test]
+fn overflow_not_set_bug() {
+    let ctx = scarf::operand::OperandContext::new();
+    // Had a bug that made the `jl maybe` never be taken
+    test_inline(&[
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x0f, 0xbf, 0x46, 0x16, // movsx eax, word [esi + 16]
+        0x89, 0xc1, // mov ecx, eax,
+        0xc1, 0xf9, 0x05, // sar ecx, 5
+        0x85, 0xc9, // test ecx, ecx
+        0x79, 0x04, // jns more
+        0x33, 0xc9, // xor ecx, ecx
+        0xeb, 0x12, // jmp end
+        // more:
+        0x0f, 0xb7, 0x82, 0xe6, 0x00, 0x00, 0x00, // movzx eax word [edx + e6]
+        0x3b, 0xc8, // cmp ecx, eax
+        0x7c, 0x02, // jl maybe
+        0xeb, 0x07, // jmp end
+        0xbf, 0x02, 0x00, 0x00, 0x00, // mov edi, 2
+        0xeb, 0x00, // jmp end
+        // end:
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.undefined_rc()),
+         (ctx.register(1), ctx.undefined_rc()),
+         (ctx.register(7), ctx.undefined_rc()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

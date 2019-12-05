@@ -1517,14 +1517,14 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         use self::operation_helpers::*;
         use crate::operand_helpers::*;
         let dest = self.rm_to_dest_and_operand(lhs);
-        let is_64 = Va::SIZE == 8;
+        let size = lhs.size.to_mem_access_size();
         match arith {
             ArithOperation::Add | ArithOperation::Adc => {
                 let rhs = match arith {
                     ArithOperation::Adc => operand_add(rhs, self.ctx.flag_c()),
                     _ => rhs,
                 };
-                self.output(flags(ArithOpType::Add, dest.op.clone(), rhs.clone(), is_64));
+                self.output(flags(ArithOpType::Add, dest.op.clone(), rhs.clone(), size));
                 self.output(add(dest, rhs));
             }
             ArithOperation::Sub | ArithOperation::Sbb | ArithOperation::Cmp => {
@@ -1532,23 +1532,23 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     ArithOperation::Sbb => operand_add(rhs, self.ctx.flag_c()),
                     _ => rhs,
                 };
-                self.output(flags(ArithOpType::Sub, dest.op.clone(), rhs.clone(), is_64));
+                self.output(flags(ArithOpType::Sub, dest.op.clone(), rhs.clone(), size));
                 if arith != ArithOperation::Cmp {
                     self.output(sub(dest, rhs));
                 }
             }
             ArithOperation::And | ArithOperation::Test => {
-                self.output(flags(ArithOpType::And, dest.op.clone(), rhs.clone(), is_64));
+                self.output(flags(ArithOpType::And, dest.op.clone(), rhs.clone(), size));
                 if arith != ArithOperation::Test {
                     self.output(and(dest, rhs));
                 }
             }
             ArithOperation::Or => {
-                self.output(flags(ArithOpType::Or, dest.op.clone(), rhs.clone(), is_64));
+                self.output(flags(ArithOpType::Or, dest.op.clone(), rhs.clone(), size));
                 self.output(or(dest, rhs));
             }
             ArithOperation::Xor => {
-                self.output(flags(ArithOpType::Xor, dest.op.clone(), rhs.clone(), is_64));
+                self.output(flags(ArithOpType::Xor, dest.op.clone(), rhs.clone(), size));
                 self.output(xor(dest, rhs));
             }
             ArithOperation::Move => {
@@ -1557,79 +1557,67 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 }
             }
             ArithOperation::LeftShift => {
-                self.output(flags(ArithOpType::Lsh, dest.op.clone(), rhs.clone(), is_64));
+                self.output(flags(ArithOpType::Lsh, dest.op.clone(), rhs.clone(), size));
                 self.output(
                     make_arith_operation(dest.dest, ArithOpType::Lsh, dest.op, rhs)
                 );
             }
             ArithOperation::RightShift => {
-                self.output(flags(ArithOpType::Rsh, dest.op.clone(), rhs.clone(), is_64));
+                self.output(flags(ArithOpType::Rsh, dest.op.clone(), rhs.clone(), size));
                 self.output(
                     make_arith_operation(dest.dest, ArithOpType::Rsh, dest.op, rhs)
                 );
             }
             ArithOperation::RightShiftArithmetic => {
                 // TODO flags, using IntToFloat to cheat
-                self.output(flags(ArithOpType::IntToFloat, dest.op.clone(), rhs.clone(), is_64));
-                if is_64 {
-                    let sign_bit = self.ctx.constant(0x8000_0000_0000_0000);
-                    let is_positive = operand_eq(
-                        operand_and(sign_bit.clone(), dest.op.clone()),
-                        self.ctx.const_0(),
-                    );
-                    self.output(Operation::Move(
-                        dest.dest.clone(),
-                        operand_or(operand_rsh(dest.op.clone(), rhs.clone()), sign_bit),
-                        Some(operand_logical_not(is_positive.clone())),
-                    ));
-                    self.output(Operation::Move(
-                        dest.dest,
-                        operand_rsh(dest.op, rhs),
-                        Some(is_positive),
-                    ));
-                } else {
-                    let sign_bit = self.ctx.constant(0x8000_0000);
-                    let is_positive = operand_eq(
-                        operand_and(sign_bit.clone(), dest.op.clone()),
-                        self.ctx.const_0(),
-                    );
-                    self.output(Operation::Move(
-                        dest.dest.clone(),
-                        operand_or(operand_rsh(dest.op.clone(), rhs.clone()), sign_bit),
-                        Some(operand_logical_not(is_positive.clone())),
-                    ));
-                    self.output(Operation::Move(
-                        dest.dest,
-                        operand_rsh(dest.op, rhs),
-                        Some(is_positive),
-                    ));
-                }
+                self.output(flags(ArithOpType::IntToFloat, dest.op.clone(), rhs.clone(), size));
+                let sign_bit = match size {
+                    MemAccessSize::Mem64 => 0x8000_0000_0000_0000,
+                    MemAccessSize::Mem32 => 0x8000_0000,
+                    MemAccessSize::Mem16 => 0x8000,
+                    MemAccessSize::Mem8 => 0x80,
+                };
+                let sign_bit = self.ctx.constant(sign_bit);
+                let is_positive = operand_eq(
+                    operand_and(sign_bit.clone(), dest.op.clone()),
+                    self.ctx.const_0(),
+                );
+                self.output(Operation::Move(
+                    dest.dest.clone(),
+                    operand_or(operand_rsh(dest.op.clone(), rhs.clone()), sign_bit),
+                    Some(operand_logical_not(is_positive.clone())),
+                ));
+                self.output(Operation::Move(
+                    dest.dest,
+                    operand_rsh(dest.op, rhs),
+                    Some(is_positive),
+                ));
             }
             ArithOperation::RotateLeft => {
                 // rol(x, y) == (x << y) | (x >> (0x20 - y))
-                let left;
-                let right;
-                if is_64 {
-                    left = operand_lsh(dest.op.clone(), rhs.clone());
-                    right = operand_rsh(dest.op, operand_sub(self.ctx.constant(0x40), rhs));
-                } else {
-                    left = operand_lsh(dest.op.clone(), rhs.clone());
-                    right = operand_rsh(dest.op, operand_sub(self.ctx.const_20(), rhs));
-                }
+                let bits = match size {
+                    MemAccessSize::Mem64 => 0x40,
+                    MemAccessSize::Mem32 => 0x20,
+                    MemAccessSize::Mem16 => 0x10,
+                    MemAccessSize::Mem8 => 0x8,
+                };
+                let bits = self.ctx.constant(bits);
+                let left = operand_lsh(dest.op.clone(), rhs.clone());
+                let right = operand_rsh(dest.op, operand_sub(bits, rhs));
                 // TODO set overflow if 1bit??
                 self.output(make_arith_operation(dest.dest, ArithOpType::Or, left, right));
             }
             ArithOperation::RotateRight => {
                 // ror(x, y) == (x >> y) | (x << (0x20 - y))
-                let left;
-                let right;
-                if is_64 {
-                    left = operand_rsh(dest.op.clone(), rhs.clone());
-                    right = operand_lsh(dest.op, operand_sub(self.ctx.constant(0x40), rhs));
-                } else {
-                    left = operand_rsh(dest.op.clone(), rhs.clone());
-                    right = operand_lsh(dest.op, operand_sub(self.ctx.const_20(), rhs));
-                }
+                let bits = match size {
+                    MemAccessSize::Mem64 => 0x40,
+                    MemAccessSize::Mem32 => 0x20,
+                    MemAccessSize::Mem16 => 0x10,
+                    MemAccessSize::Mem8 => 0x8,
+                };
+                let bits = self.ctx.constant(bits);
+                let left = operand_rsh(dest.op.clone(), rhs.clone());
+                let right = operand_lsh(dest.op, operand_sub(bits, rhs));
                 // TODO set overflow if 1bit??
                 self.output(make_arith_operation(dest.dest, ArithOpType::Or, left, right));
             }
@@ -2765,17 +2753,18 @@ pub mod operation_helpers {
         make_arith_operation(dest.dest, And, dest.op, rhs)
     }
 
-    pub fn flags(ty: ArithOpType, left: Rc<Operand>, right: Rc<Operand>, is_64: bool) -> Operation {
+    pub fn flags(
+        ty: ArithOpType,
+        left: Rc<Operand>,
+        right: Rc<Operand>,
+        size: MemAccessSize,
+    ) -> Operation {
         let arith = ArithOperand {
             ty,
             left,
             right,
         };
-        if is_64 {
-            Operation::SetFlags(arith, MemAccessSize::Mem64)
-        } else {
-            Operation::SetFlags(arith, MemAccessSize::Mem32)
-        }
+        Operation::SetFlags(arith, size)
     }
 }
 
