@@ -3819,14 +3819,6 @@ pub mod operand_helpers {
         operand_arith(Rsh, lhs, rhs)
     }
 
-    pub fn operand_rol(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        // rol(x, y) == (x << y) | (x >> (32 - y))
-        operand_or(
-            operand_lsh(lhs.clone(), rhs.clone()),
-            operand_rsh(lhs, operand_sub(constval(32), rhs)),
-        )
-    }
-
     pub fn operand_not(lhs: Rc<Operand>) -> Rc<Operand> {
         operand_xor(lhs, constval(0xffff_ffff))
     }
@@ -4231,6 +4223,14 @@ mod test {
 
     #[test]
     fn simplify_and_or_bug() {
+        fn operand_rol(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
+            // rol(x, y) == (x << y) | (x >> (32 - y))
+            operand_or(
+                operand_lsh(lhs.clone(), rhs.clone()),
+                operand_rsh(lhs, operand_sub(constval(32), rhs)),
+            )
+        }
+
         use super::operand_helpers::*;
         let op = operand_and(
             operand_or(
