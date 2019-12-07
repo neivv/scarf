@@ -2905,6 +2905,17 @@ fn simplify_rsh(
                             let new = simplify_rsh(&other, &right, ctx, swzb_ctx);
                             return new;
                         }
+                        // `(x & c) >> constant` can be simplified to
+                        // `(x >> constant) & (c >> constant)
+                        // Do it if x is lsh/rsh, as they'll may simlify further.
+                        let simplify_inner = other.if_arithmetic(ArithOpType::Lsh).is_some() ||
+                            other.if_arithmetic(ArithOpType::Rsh).is_some();
+                        if simplify_inner {
+                            let new = simplify_rsh(&other, &right, ctx, swzb_ctx);
+                            let new =
+                                simplify_and(&new, &ctx.constant(c >> constant), ctx, swzb_ctx);
+                            return new;
+                        }
                     }
                     let arith = ArithOperand {
                         ty: ArithOpType::Rsh,
@@ -6670,5 +6681,26 @@ mod test {
         );
         // Doesn't simplify, but used to cause a panic
         let _ = Operand::simplified(op1);
+    }
+
+    #[test]
+    fn simplify_lsh_and_rsh() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_rsh(
+            operand_and(
+                operand_lsh(
+                    ctx.register(1),
+                    ctx.constant(0x10),
+                ),
+                ctx.constant(0xffff_0000),
+            ),
+            ctx.constant(0x10),
+        );
+        let eq1 = operand_and(
+            ctx.register(1),
+            ctx.constant(0xffff),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
