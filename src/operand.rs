@@ -1703,9 +1703,6 @@ impl Operand {
     }
 
     /// Returns `Some((left, right))` if self.ty is `OperandType::Arithmetic { ty == ty }`
-    ///
-    /// NOTE: If `is_64` is set, returns both 32-bit and 64-bit variations, even if they
-    /// aren't necessarily same wrt. overflows (Should this be changed?)
     pub fn if_arithmetic(
         &self,
         ty: ArithOpType,
@@ -1715,6 +1712,17 @@ impl Operand {
                 Some((&arith.left, &arith.right))
             }
             _ => None,
+        }
+    }
+
+    /// Returns `true` if self.ty is `OperandType::Arithmetic { ty == ty }`
+    pub fn is_arithmetic(
+        &self,
+        ty: ArithOpType,
+    ) -> bool {
+        match self.ty {
+            OperandType::Arithmetic(ref arith) => arith.ty == ty,
+            _ => false,
         }
     }
 
@@ -3630,10 +3638,12 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
         return ctx.constant(const_val);
     }
     if const_val != 0 {
+        let const_val_op = ctx.constant(const_val);
         if ops.len() == 1 {
             // Try some conversations
             let op = &ops[0];
-            // Convert c1 ^ (y & c2) == (y ^ (c1 & c2)) & c2
+            // Convert c1 ^ (y & c2) == (y ^ c1)) & c2
+            // if y is xor and c1 & c2 == c1
             if let Some((l, r)) = op.if_arithmetic_and() {
                 let vals = match (l.if_constant(), r.if_constant()) {
                     (Some(c), _) => Some((l, c, r)),
@@ -3641,15 +3651,15 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
                     _ => None,
                 };
                 if let Some((and_const, c, other)) = vals {
-                    if const_val & c == 0 {
-                        return op.clone();
-                    } else {
-                        return simplify_and(
-                            and_const,
-                            &simplify_xor(&ctx.constant(const_val & c), other, ctx),
-                            ctx,
-                            &mut SimplifyWithZeroBits::default(),
-                        );
+                    if other.is_arithmetic(ArithOpType::Xor) {
+                        if const_val & c == const_val {
+                            return simplify_and(
+                                and_const,
+                                &simplify_xor(&const_val_op, other, ctx),
+                                ctx,
+                                &mut SimplifyWithZeroBits::default(),
+                            );
+                        }
                     }
                 }
             }
@@ -3668,13 +3678,13 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
                 if let Some((lhs, rhs)) = vals {
                     return simplify_or(
                         lhs,
-                        &simplify_xor(rhs, &ctx.constant(const_val), ctx),
+                        &simplify_xor(rhs, &const_val_op, ctx),
                         ctx,
                     );
                 }
             }
         }
-        ops.push(ctx.constant(const_val));
+        ops.push(const_val_op);
     }
     match ops.len() {
         0 => return ctx.const_0(),
@@ -6781,6 +6791,36 @@ mod test {
                 ctx.constant(0x8),
             ),
             ctx.constant(0),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn xor_shift_bug() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_rsh(
+            operand_and(
+                operand_xor(
+                    ctx.constant(0xffff_a987_5678),
+                    operand_lsh(
+                        operand_rsh(
+                            mem8(ctx.constant(0x223345)),
+                            ctx.constant(3),
+                        ),
+                        ctx.constant(0x10),
+                    ),
+                ),
+                ctx.constant(0xffff_0000),
+            ),
+            ctx.constant(0x10),
+        );
+        let eq1 = operand_xor(
+            ctx.constant(0xa987),
+            operand_rsh(
+                mem8(ctx.constant(0x223345)),
+                ctx.constant(3),
+            ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
