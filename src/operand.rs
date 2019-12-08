@@ -2208,6 +2208,7 @@ fn simplify_eq(
                 }
                 let mut op = None;
                 // Simplify (x << c2) == 0 to x if c2 cannot shift any bits out
+                // Or ((x << c2) & c3) == 0 to (x & (c3 >> c2)) == 0
                 match ops[0].0.ty {
                     OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Lsh => {
                         let size = match add_sub_mask {
@@ -2217,6 +2218,22 @@ fn simplify_eq(
                         if let Some(c2) = arith.right.if_constant() {
                             if size.saturating_sub(c2) >= arith.left.relevant_bits().end as u64 {
                                 op = Some(arith.left.clone());
+                            } else {
+                                if let Some(mask) = add_sub_mask {
+                                    let new = simplify_and(
+                                        &arith.left,
+                                        &ctx.constant(mask.wrapping_shr(c2 as u32)),
+                                        ctx,
+                                        &mut SimplifyWithZeroBits::default(),
+                                    );
+                                    let arith = ArithOperand {
+                                        ty: ArithOpType::Equal,
+                                        left: new,
+                                        right: ctx.const_0(),
+                                    };
+                                    let result = OperandType::Arithmetic(arith);
+                                    return Operand::new_simplified_rc(result);
+                                }
                             }
                         }
                     }
@@ -2225,6 +2242,24 @@ fn simplify_eq(
                             if c2 <= arith.left.relevant_bits().start as u64 {
                                 op = Some(arith.left.clone());
                             }
+                        }
+                    }
+                    OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
+                        let parts = Operand::either(
+                                &arith.left,
+                                &arith.right,
+                                |x| x.if_constant(),
+                            ).and_then(|(c3, o)| {
+                                let (l, r) = o.if_arithmetic(ArithOpType::Lsh)?;
+                                Some((l, r.if_constant()?, c3))
+                            });
+                        if let Some((x, c2, c3)) = parts {
+                            op = Some(simplify_and(
+                                x,
+                                &ctx.constant(c3.wrapping_shr(c2 as u32)),
+                                ctx,
+                                &mut SimplifyWithZeroBits::default(),
+                            ));
                         }
                     }
                     _ => ()
@@ -3177,16 +3212,12 @@ fn simplify_with_and_mask_inner(
             }
             let mask_size = mask_high - mask_low;
             let mem_size = mem.size.bits();
-            let nop_mask;
             let new_size;
             if mask_size <= 1 && mem_size > 8 {
-                nop_mask = 0xff;
                 new_size = MemAccessSize::Mem8;
             } else if mask_size <= 2 && mem_size > 16 {
-                nop_mask = 0xffff;
                 new_size = MemAccessSize::Mem16;
             } else if mask_size <= 4 && mem_size > 32 {
-                nop_mask = 0xffff_ffff;
                 new_size = MemAccessSize::Mem32;
             } else {
                 return op.clone();
@@ -3197,17 +3228,10 @@ fn simplify_with_and_mask_inner(
                 operand_add(mem.address.clone(), ctx.constant(mask_low as u64))
             };
             let mem = mem_variable_rc(new_size, new_addr);
-            let offset_mask = mask >> (mask_low * 8);
-            debug_assert!(offset_mask <= u32::max_value() as u64);
-            let result = if offset_mask == nop_mask {
+            let shifted = if mask_low == 0 {
                 mem
             } else {
-                operand_and(ctx.constant(offset_mask), mem)
-            };
-            let shifted = if mask_low == 0 {
-                result
-            } else {
-                operand_lsh(result, ctx.constant(mask_low as u64 * 8))
+                operand_lsh(mem, ctx.constant(mask_low as u64 * 8))
             };
             Operand::simplified(shifted)
         }
@@ -6700,6 +6724,63 @@ mod test {
         let eq1 = operand_and(
             ctx.register(1),
             ctx.constant(0xffff),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_lsh_and_rsh2() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_sub(
+                mem16(ctx.register(2)),
+                operand_lsh(
+                    mem16(ctx.register(1)),
+                    ctx.constant(0x9),
+                ),
+            ),
+            ctx.constant(0xffff),
+        );
+        let eq1 = operand_rsh(
+            operand_and(
+                operand_lsh(
+                    operand_sub(
+                        mem16(ctx.register(2)),
+                        operand_lsh(
+                            mem16(ctx.register(1)),
+                            ctx.constant(0x9),
+                        ),
+                    ),
+                    ctx.constant(0x10),
+                ),
+                ctx.constant(0xffff0000),
+            ),
+            ctx.constant(0x10),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_ne_shifted_and() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_eq(
+            operand_and(
+                operand_lsh(
+                    mem8(ctx.register(2)),
+                    ctx.constant(0x8),
+                ),
+                ctx.constant(0x800),
+            ),
+            ctx.constant(0),
+        );
+        let eq1 = operand_eq(
+            operand_and(
+                mem8(ctx.register(2)),
+                ctx.constant(0x8),
+            ),
+            ctx.constant(0),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
