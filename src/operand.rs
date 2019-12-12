@@ -2214,87 +2214,59 @@ fn simplify_eq(
                         }
                     }
                 }
-                let mut op = None;
                 // Simplify (x << c2) == 0 to x if c2 cannot shift any bits out
                 // Or ((x << c2) & c3) == 0 to (x & (c3 >> c2)) == 0
+                // Or ((x >> c2) & c3) == 0 to (x & (c3 << c2)) == 0
                 match ops[0].0.ty {
                     OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Lsh => {
-                        let size = match add_sub_mask {
-                            Some(mask) => 64u64 - mask.leading_zeros() as u64,
-                            None => 64,
-                        };
                         if let Some(c2) = arith.right.if_constant() {
-                            if size.saturating_sub(c2) >= arith.left.relevant_bits().end as u64 {
-                                op = Some(arith.left.clone());
-                            } else {
-                                if let Some(mask) = add_sub_mask {
-                                    let new = simplify_and(
-                                        &arith.left,
-                                        &ctx.constant(mask.wrapping_shr(c2 as u32)),
-                                        ctx,
-                                        &mut SimplifyWithZeroBits::default(),
-                                    );
-                                    let arith = ArithOperand {
-                                        ty: ArithOpType::Equal,
-                                        left: new,
-                                        right: ctx.const_0(),
-                                    };
-                                    let result = OperandType::Arithmetic(arith);
-                                    return Operand::new_simplified_rc(result);
-                                }
+                            if let Some(mask) = add_sub_mask {
+                                let new = simplify_and(
+                                    &arith.left,
+                                    &ctx.constant(mask.wrapping_shr(c2 as u32)),
+                                    ctx,
+                                    &mut SimplifyWithZeroBits::default(),
+                                );
+                                let arith = ArithOperand {
+                                    ty: ArithOpType::Equal,
+                                    left: new,
+                                    right: ctx.const_0(),
+                                };
+                                let result = OperandType::Arithmetic(arith);
+                                return Operand::new_simplified_rc(result);
                             }
                         }
                     }
                     OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Rsh => {
                         if let Some(c2) = arith.right.if_constant() {
-                            if c2 <= arith.left.relevant_bits().start as u64 {
-                                op = Some(arith.left.clone());
+                            if let Some(mask) = add_sub_mask {
+                                let new = simplify_and(
+                                    &arith.left,
+                                    &ctx.constant(mask.wrapping_shl(c2 as u32)),
+                                    ctx,
+                                    &mut SimplifyWithZeroBits::default(),
+                                );
+                                let arith = ArithOperand {
+                                    ty: ArithOpType::Equal,
+                                    left: new,
+                                    right: ctx.const_0(),
+                                };
+                                let result = OperandType::Arithmetic(arith);
+                                return Operand::new_simplified_rc(result);
                             }
-                        }
-                    }
-                    OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
-                        let parts = Operand::either(
-                                &arith.left,
-                                &arith.right,
-                                |x| x.if_constant(),
-                            ).and_then(|(c3, o)| {
-                                let (l, r) = o.if_arithmetic(ArithOpType::Lsh)?;
-                                Some((l, r.if_constant()?, c3))
-                            });
-                        if let Some((x, c2, c3)) = parts {
-                            op = Some(simplify_and(
-                                x,
-                                &ctx.constant(c3.wrapping_shr(c2 as u32)),
-                                ctx,
-                                &mut SimplifyWithZeroBits::default(),
-                            ));
                         }
                     }
                     _ => ()
                 }
-                let op_changed = op.is_some();
-                let mut op = match op {
-                    Some(s) => s,
-                    None => mark_self_simplified(&ops[0].0),
-                };
+                let mut op = mark_self_simplified(&ops[0].0);
                 if let Some(mask) = add_sub_mask {
                     let constant = ctx.constant(mask);
-                    // Should be possible to skip simplify if op wasn't changed
-                    if op_changed {
-                        op = simplify_and(
-                            &op,
-                            &constant,
-                            ctx,
-                            &mut SimplifyWithZeroBits::default(),
-                        );
-                    } else {
-                        let arith = ArithOperand {
-                            ty: ArithOpType::And,
-                            left: op,
-                            right: constant,
-                        };
-                        op = Operand::new_simplified_rc(OperandType::Arithmetic(arith))
-                    }
+                    let arith = ArithOperand {
+                        ty: ArithOpType::And,
+                        left: op,
+                        right: constant,
+                    };
+                    op = Operand::new_simplified_rc(OperandType::Arithmetic(arith))
                 }
 
                 let arith = ArithOperand {
@@ -2775,30 +2747,19 @@ fn simplify_lsh(
             match arith.ty {
                 ArithOpType::And => {
                     // Simplify (x & mask) << c to (x << c) & (mask << c)
-                    // if x is multiplication.
-                    // (Could do for others, though at least ((x & mask) << c) == 0
-                    // is better than ((x << c) & (mask << c)) == 0
-                    // So only use muls where the shift may disappear.
                     let const_other =
                         Operand::either(&arith.left, &arith.right, |x| x.if_constant());
                     if let Some((c, other)) = const_other {
                         let high = 64 - zero_bits.start;
                         let low = left.relevant_bits().start;
                         let no_op_mask = !0u64 >> low << low << high >> high;
-                        if c == no_op_mask || other.if_arithmetic_mul().is_some() {
-                            let new = simplify_lsh(&other, &right, ctx, swzb_ctx);
-                            if c == no_op_mask {
-                                return new;
-                            } else {
-                                let arith = ArithOperand {
-                                    ty: ArithOpType::And,
-                                    left: new,
-                                    right: ctx.constant(c << constant),
-                                };
-                                let op =
-                                    Operand::new_simplified_rc(OperandType::Arithmetic(arith));
-                                return op;
-                            }
+
+                        let new = simplify_lsh(&other, &right, ctx, swzb_ctx);
+                        if c == no_op_mask {
+                            return new;
+                        } else {
+                            let constant = &ctx.constant(c << constant);
+                            return simplify_and(&new, constant, ctx, swzb_ctx);
                         }
                     }
                     let arith = ArithOperand {
@@ -2950,15 +2911,12 @@ fn simplify_rsh(
                         }
                         // `(x & c) >> constant` can be simplified to
                         // `(x >> constant) & (c >> constant)
-                        // Do it if x is lsh/rsh, as they'll may simlify further.
-                        let simplify_inner = other.if_arithmetic(ArithOpType::Lsh).is_some() ||
-                            other.if_arithmetic(ArithOpType::Rsh).is_some();
-                        if simplify_inner {
-                            let new = simplify_rsh(&other, &right, ctx, swzb_ctx);
-                            let new =
-                                simplify_and(&new, &ctx.constant(c >> constant), ctx, swzb_ctx);
-                            return new;
-                        }
+                        // With lsh/rsh it can simplify further,
+                        // but do it always for canonicalization
+                        let new = simplify_rsh(&other, &right, ctx, swzb_ctx);
+                        let new =
+                            simplify_and(&new, &ctx.constant(c >> constant), ctx, swzb_ctx);
+                        return new;
                     }
                     let arith = ArithOperand {
                         ty: ArithOpType::Rsh,
@@ -6821,6 +6779,27 @@ mod test {
                 mem8(ctx.constant(0x223345)),
                 ctx.constant(3),
             ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_shift_and() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_rsh(
+            operand_and(
+                ctx.register(0),
+                ctx.constant(0xffff_0000),
+            ),
+            ctx.constant(0x10),
+        );
+        let eq1 = operand_and(
+            operand_rsh(
+                ctx.register(0),
+                ctx.constant(0x10),
+            ),
+            ctx.constant(0xffff),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
