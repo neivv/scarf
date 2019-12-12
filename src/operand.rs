@@ -2444,7 +2444,12 @@ fn simplify_eq_2_ops(
                         simplify_eq_masked_add(r).map(|(c, other)| (other, l, c))
                     });
                 if let Some((a, b, added_const)) = add_const {
-                    let a = simplify_with_and_mask(a, mask1, ctx);
+                    let a = simplify_with_and_mask(
+                        a,
+                        mask1,
+                        ctx,
+                        &mut SimplifyWithZeroBits::default(),
+                    );
                     if a == *b {
                         match added_const & mask1 {
                             0 => {
@@ -2597,7 +2602,7 @@ fn simplify_and(
 
         if const_remain != !0 {
             vec_filter_map(&mut ops, |op| {
-                let new = simplify_with_and_mask(&op, const_remain, ctx);
+                let new = simplify_with_and_mask(&op, const_remain, ctx, swzb_ctx);
                 if let Some(c) = new.if_constant() {
                     const_remain &= c;
                     None
@@ -3077,20 +3082,27 @@ fn vec_filter_map<T, F: FnMut(T) -> Option<T>>(vec: &mut Vec<T>, mut fun: F) {
 }
 
 /// Convert and(x, mask) to x
-fn simplify_with_and_mask(op: &Rc<Operand>, mask: u64, ctx: &OperandContext) -> Rc<Operand> {
-    simplify_with_and_mask_inner(op, mask, ctx, 12)
+fn simplify_with_and_mask(
+    op: &Rc<Operand>,
+    mask: u64,
+    ctx: &OperandContext,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Rc<Operand> {
+    if swzb_ctx.with_and_mask_count > 40 {
+        return op.clone();
+    }
+    swzb_ctx.with_and_mask_count += 1;
+    let op = simplify_with_and_mask_inner(op, mask, ctx, swzb_ctx);
+    op
 }
 
 fn simplify_with_and_mask_inner(
     op: &Rc<Operand>,
     mask: u64,
     ctx: &OperandContext,
-    recurse_limit: u32,
+    swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
     use self::operand_helpers::*;
-    if recurse_limit == 0 {
-        return op.clone();
-    }
     match op.ty {
         OperandType::Arithmetic(ref arith) => {
             match arith.ty {
@@ -3110,26 +3122,25 @@ fn simplify_with_and_mask_inner(
                         }
                     }
                     let simplified_left =
-                        simplify_with_and_mask_inner(&arith.left, mask, ctx, recurse_limit - 1);
+                        simplify_with_and_mask(&arith.left, mask, ctx, swzb_ctx);
                     let simplified_right =
-                        simplify_with_and_mask_inner(&arith.right, mask, ctx, recurse_limit - 1);
+                        simplify_with_and_mask(&arith.right, mask, ctx, swzb_ctx);
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
                     } else {
-                        let op = operand_and(simplified_left, simplified_right);
-                        Operand::simplified(op)
+                        simplify_and(&simplified_left, &simplified_left, ctx, swzb_ctx)
                     }
                 }
                 ArithOpType::Or => {
                     let simplified_left =
-                        simplify_with_and_mask_inner(&arith.left, mask, ctx, recurse_limit - 1);
+                        simplify_with_and_mask(&arith.left, mask, ctx, swzb_ctx);
                     if let Some(c) = simplified_left.if_constant() {
                         if mask & c == mask {
                             return simplified_left;
                         }
                     }
                     let simplified_right =
-                        simplify_with_and_mask_inner(&arith.right, mask, ctx, recurse_limit - 1);
+                        simplify_with_and_mask(&arith.right, mask, ctx, swzb_ctx);
                     if let Some(c) = simplified_right.if_constant() {
                         if mask & c == mask {
                             return simplified_right;
@@ -3144,12 +3155,7 @@ fn simplify_with_and_mask_inner(
                 }
                 ArithOpType::Lsh => {
                     if let Some(c) = arith.right.if_constant() {
-                        let left = simplify_with_and_mask_inner(
-                            &arith.left,
-                            mask >> c,
-                            ctx,
-                            recurse_limit - 1,
-                        );
+                        let left = simplify_with_and_mask(&arith.left, mask >> c, ctx, swzb_ctx);
                         if left == arith.left {
                             op.clone()
                         } else {
@@ -3172,9 +3178,9 @@ fn simplify_with_and_mask_inner(
                         }
                     }
                     let simplified_left =
-                        simplify_with_and_mask_inner(&arith.left, mask, ctx, recurse_limit - 1);
+                        simplify_with_and_mask(&arith.left, mask, ctx, swzb_ctx);
                     let simplified_right =
-                        simplify_with_and_mask_inner(&arith.right, mask, ctx, recurse_limit - 1);
+                        simplify_with_and_mask(&arith.right, mask, ctx, swzb_ctx);
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
                     } else {
@@ -3232,7 +3238,8 @@ fn simplify_with_and_mask_inner(
 
 #[derive(Default)]
 struct SimplifyWithZeroBits {
-    simplify_count: u32,
+    simplify_count: u8,
+    with_and_mask_count: u8,
 }
 
 /// Simplifies `op` when the bits in the range `bits` are guaranteed to be zero.
@@ -3366,7 +3373,7 @@ fn simplify_with_zero_bits(
                             }
                             let mask_high = 64 - low;
                             let mask = !0u64 >> c << c << mask_high >> mask_high;
-                            let result1 = simplify_with_and_mask(&left, mask, ctx);
+                            let result1 = simplify_with_and_mask(&left, mask, ctx, swzb);
                             let result2 =
                                 simplify_with_zero_bits(&result1, &(low..high), ctx, swzb);
                             if let Some(result2) =  result2 {
