@@ -2639,6 +2639,26 @@ fn simplify_and(
         ops.extend(new_ops);
     }
     Operand::simplify_and_merge_child_ors(&mut ops, ctx);
+
+    // Simplify (x | y) & mask to (x | (y & mask)) if mask is useless to x
+    if ops.len() == 1 {
+        if let Some((l, r)) = ops[0].if_arithmetic_or() {
+            let left_mask = l.relevant_bits_mask();
+            let right_mask = r.relevant_bits_mask();
+            let left_needs_mask = left_mask & const_remain != left_mask;
+            let right_needs_mask = right_mask & const_remain != right_mask;
+            if !left_needs_mask && right_needs_mask {
+                let masked =
+                    simplify_and(&r, &ctx.constant(const_remain & right_mask), ctx, swzb_ctx);
+                return simplify_or(&l, &masked, ctx);
+            } else if left_needs_mask && !right_needs_mask {
+                let masked =
+                    simplify_and(&l, &ctx.constant(const_remain & left_mask), ctx, swzb_ctx);
+                return simplify_or(&r, &masked, ctx);
+            }
+        }
+    }
+
     let relevant_bits = ops.iter().fold(!0, |bits, op| {
         bits & op.relevant_bits_mask()
     });
@@ -6800,6 +6820,41 @@ mod test {
                 ctx.constant(0x10),
             ),
             ctx.constant(0xffff),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_rotate_mask() {
+        // This is mainly useful to make sure rol32(reg32, const) substituted
+        // with mem32 is same as just rol32(mem32, const)
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_or(
+                operand_rsh(
+                    mem32(ctx.constant(0x1234)),
+                    ctx.constant(0xb),
+                ),
+                operand_lsh(
+                    mem32(ctx.constant(0x1234)),
+                    ctx.constant(0x15),
+                ),
+            ),
+            ctx.constant(0xffff_ffff),
+        );
+        let eq1 = operand_or(
+            operand_rsh(
+                mem32(ctx.constant(0x1234)),
+                ctx.constant(0xb),
+            ),
+            operand_and(
+                operand_lsh(
+                    mem32(ctx.constant(0x1234)),
+                    ctx.constant(0x15),
+                ),
+                ctx.constant(0xffe0_0000),
+            ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }

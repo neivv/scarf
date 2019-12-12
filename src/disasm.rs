@@ -1601,11 +1601,17 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     MemAccessSize::Mem16 => 0x10,
                     MemAccessSize::Mem8 => 0x8,
                 };
-                let bits = self.ctx.constant(bits);
+                let bits_op = self.ctx.constant(bits);
                 let left = operand_lsh(dest.op.clone(), rhs.clone());
-                let right = operand_rsh(dest.op, operand_sub(bits, rhs));
+                let right = operand_rsh(dest.op, operand_sub(bits_op, rhs));
+                let full = operand_or(left, right);
                 // TODO set overflow if 1bit??
-                self.output(make_arith_operation(dest.dest, ArithOpType::Or, left, right));
+                if size == MemAccessSize::Mem64 {
+                    self.output(Operation::Move(dest.dest, Operand::simplified(full), None));
+                } else {
+                    let mask = self.ctx.constant(!(!0u64 >> bits << bits));
+                    self.output(make_arith_operation(dest.dest, ArithOpType::And, full, mask));
+                }
             }
             ArithOperation::RotateRight => {
                 // ror(x, y) == (x >> y) | (x << (0x20 - y))
@@ -1615,11 +1621,17 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     MemAccessSize::Mem16 => 0x10,
                     MemAccessSize::Mem8 => 0x8,
                 };
-                let bits = self.ctx.constant(bits);
+                let bits_op = self.ctx.constant(bits);
                 let left = operand_rsh(dest.op.clone(), rhs.clone());
-                let right = operand_lsh(dest.op, operand_sub(bits, rhs));
+                let right = operand_lsh(dest.op, operand_sub(bits_op, rhs));
+                let full = operand_or(left, right);
                 // TODO set overflow if 1bit??
-                self.output(make_arith_operation(dest.dest, ArithOpType::Or, left, right));
+                if size == MemAccessSize::Mem64 {
+                    self.output(Operation::Move(dest.dest, Operand::simplified(full), None));
+                } else {
+                    let mask = self.ctx.constant(!(!0u64 >> bits << bits));
+                    self.output(make_arith_operation(dest.dest, ArithOpType::And, full, mask));
+                }
             }
         }
     }
@@ -2787,7 +2799,7 @@ pub enum Operation {
 }
 
 /// Operations which operate on 2 operands, (almost always) writing to lhs.
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum ArithOperation {
     // First 8 are same order as x86 internally, maybe compiler can optimize
     // some matches.
