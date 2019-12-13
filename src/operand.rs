@@ -1951,10 +1951,7 @@ fn simplify_add_sub(
         tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
     if let Some(mask) = mask {
-        let rel_bits = tree.relevant_bits();
-        let high = 64 - rel_bits.end;
-        let low = rel_bits.start;
-        let no_op_mask = !0u64 << high >> high >> low << low;
+        let no_op_mask = tree.relevant_bits_mask();
         if mask & no_op_mask != no_op_mask {
             tree = simplify_and(
                 &tree,
@@ -6863,6 +6860,27 @@ mod test {
                 ctx.constant(0xffe0_0000),
             ),
         );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_add_sub_to_zero() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_add(
+            operand_and(
+                ctx.register(0),
+                ctx.constant(0xffff_ffff),
+            ),
+            operand_and(
+                operand_sub(
+                    ctx.constant(0),
+                    ctx.register(0),
+                ),
+                ctx.constant(0xffff_ffff),
+            ),
+        );
+        let eq1 = ctx.constant(0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
