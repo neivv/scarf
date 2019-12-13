@@ -488,8 +488,8 @@ fn instruction_operations32_main(
             Ok(())
         },
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
-        // rep mov
-        0xa4 | 0xa5 => {
+        // rep mov, rep stos
+        0xa4 | 0xa5 | 0xaa | 0xab => {
             s.output(Operation::Special(s.data.into()));
             Ok(())
         }
@@ -764,8 +764,8 @@ fn instruction_operations64_main(
             Ok(())
         },
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
-        // rep mov
-        0xa4 | 0xa5 => {
+        // rep mov, rep stos
+        0xa4 | 0xa5 | 0xaa | 0xab => {
             s.output(Operation::Special(s.data.into()));
             Ok(())
         }
