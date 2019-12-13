@@ -313,6 +313,93 @@ fn overflow_not_set_bug() {
     ]);
 }
 
+#[test]
+fn switch_case_count2() {
+    let ctx = scarf::operand::OperandContext::new();
+    // 3 cases to ok, 4th fake
+    // rdx, rsi, rdi, rbp are undef if the cases are run
+    test_inline(&[
+        // base:
+        0x49, 0x83, 0xf8, 0x02, // cmp r8, 2
+        0x76, 0x04, // jbe switch
+        0x31, 0xd2, // xor edx, edx
+        0xeb, 0x2d, // jmp end
+        // switch:
+        0x48, 0x89, 0xc8, // mov rax, rcx
+        0x4c, 0x8d, 0x0d, 0xec, 0xff, 0xff, 0xff, // lea r9 [base]
+        0x43, 0x8b, 0x8c, 0x81, 0x21, 0x00, 0x00, 0x00, // mov ecx, [r9 + r8 * 4 + switch_table - base]
+        0x4c, 0x01, 0xc9, // add rcx, r9
+        0xff, 0xe1, // jmp rcx
+        // switch_table:
+        0x31, 0x00, 0x00, 0x00,
+        0x33, 0x00, 0x00, 0x00,
+        0x35, 0x00, 0x00, 0x00,
+        0x3a, 0x00, 0x00, 0x00,
+        // case0:
+        0x31, 0xf6, // xor esi, esi
+        // case1:
+        0x31, 0xff, // xor edi, edi
+        // case2:
+        0x31, 0xed, // xor rbp, rbp
+        // end
+        0xeb, 0x00,
+        0xc3, // ret
+        // case3_fake
+        0xcc, // int3
+    ], &[
+         (operand_register(0), ctx.undefined_rc()),
+         (operand_register(1), ctx.undefined_rc()),
+         (operand_register(2), ctx.undefined_rc()),
+         (operand_register(5), ctx.undefined_rc()),
+         (operand_register(6), ctx.undefined_rc()),
+         (operand_register(7), ctx.undefined_rc()),
+         (operand_register(9), ctx.undefined_rc()),
+    ]);
+}
+
+#[test]
+fn switch_case_count3() {
+    let ctx = scarf::operand::OperandContext::new();
+    // 2 cases to ok, 3rd fake
+    // rdx, rsi, rdi, rbp are undef if the cases are run
+    test_inline(&[
+        // base:
+        0x49, 0x83, 0xf8, 0x01, // cmp r8, 1
+        0x76, 0x04, // jbe switch
+        0x31, 0xd2, // xor edx, edx
+        0xeb, 0x2d, // jmp end
+        // switch:
+        0x48, 0x89, 0xc8, // mov rax, rcx
+        0x4c, 0x8d, 0x0d, 0xec, 0xff, 0xff, 0xff, // lea r9 [base]
+        0x43, 0x8b, 0x8c, 0x81, 0x21, 0x00, 0x00, 0x00, // mov ecx, [r9 + r8 * 4 + switch_table - base]
+        0x4c, 0x01, 0xc9, // add rcx, r9
+        0xff, 0xe1, // jmp rcx
+        // switch_table:
+        0x31, 0x00, 0x00, 0x00,
+        0x33, 0x00, 0x00, 0x00,
+        0x3a, 0x00, 0x00, 0x00,
+        0x3a, 0x00, 0x00, 0x00,
+        // case0:
+        0x31, 0xf6, // xor esi, esi
+        // case1:
+        0x31, 0xff, // xor edi, edi
+        0x31, 0xed, // xor rbp, rbp
+        // end
+        0xeb, 0x00,
+        0xc3, // ret
+        // case2_fake, case3_fake
+        0xcc, // int3
+    ], &[
+         (operand_register(0), ctx.undefined_rc()),
+         (operand_register(1), ctx.undefined_rc()),
+         (operand_register(2), ctx.undefined_rc()),
+         (operand_register(5), ctx.undefined_rc()),
+         (operand_register(6), ctx.undefined_rc()),
+         (operand_register(7), ctx.undefined_rc()),
+         (operand_register(9), ctx.undefined_rc()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

@@ -2642,6 +2642,26 @@ fn simplify_and(
     }
     Operand::simplify_and_merge_child_ors(&mut ops, ctx);
 
+    // Replace not(x) & not(y) with not(x | y)
+    fn is_neq_compare(op: &Rc<Operand>) -> bool {
+        match op.if_arithmetic_eq() {
+            Some((l, r)) => match l.ty {
+                OperandType::Arithmetic(ref a) => a.is_compare_op() && r.if_constant() == Some(0),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    if ops.len() >= 2 && ops.iter().all(|x| is_neq_compare(x)) {
+        for op in &mut ops {
+            if let Some((l, _)) = op.if_arithmetic_eq() {
+                *op = l.clone();
+            }
+        }
+        let or = simplify_or_ops(&mut ops, ctx);
+        return simplify_eq(&or, &ctx.const_0(), ctx);
+    }
+
     // Simplify (x | y) & mask to (x | (y & mask)) if mask is useless to x
     if ops.len() == 1 {
         if let Some((l, r)) = ops[0].if_arithmetic_or() {
@@ -2688,26 +2708,29 @@ fn simplify_and(
 }
 
 fn simplify_or(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
-    let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
-
     let mut ops = vec![];
     Operand::collect_or_ops(left, &mut ops, ctx);
     Operand::collect_or_ops(right, &mut ops, ctx);
+    simplify_or_ops(&mut ops, ctx)
+}
+
+fn simplify_or_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Operand> {
+    let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     let const_val = ops.iter().flat_map(|x| x.if_constant())
         .fold(0u64, |sum, x| sum | x);
     ops.retain(|x| x.if_constant().is_none());
     if ops.is_empty() {
         return ctx.constant(const_val);
     }
-    heapsort::sort(&mut ops);
+    heapsort::sort(ops);
     ops.dedup();
     for bits in one_bit_ranges(const_val) {
-        vec_filter_map(&mut ops, |op| simplify_with_one_bits(&op, &bits, ctx));
+        vec_filter_map(ops, |op| simplify_with_one_bits(&op, &bits, ctx));
     }
-    Operand::simplify_or_merge_child_ands(&mut ops, ctx);
-    Operand::simplify_or_merge_xors(&mut ops, ctx);
-    simplify_or_merge_mem(&mut ops, ctx);
-    Operand::simplify_or_merge_comparisions(&mut ops, ctx);
+    Operand::simplify_or_merge_child_ands(ops, ctx);
+    Operand::simplify_or_merge_xors(ops, ctx);
+    simplify_or_merge_mem(ops, ctx);
+    Operand::simplify_or_merge_comparisions(ops, ctx);
     if const_val != 0 {
         ops.push(ctx.constant(const_val));
     }
@@ -6881,6 +6904,38 @@ mod test {
             ),
         );
         let eq1 = ctx.constant(0);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_less_or_eq() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        // not(c > x) & not(x == c) => not(c + 1 > x)
+        // (Same as not((c > x) | (x == c)))
+        let op1 = operand_and(
+            operand_eq(
+                ctx.constant(0),
+                operand_gt(
+                    ctx.constant(5),
+                    ctx.register(1),
+                ),
+            ),
+            operand_eq(
+                ctx.constant(0),
+                operand_eq(
+                    ctx.constant(5),
+                    ctx.register(1),
+                ),
+            ),
+        );
+        let eq1 = operand_eq(
+            ctx.constant(0),
+            operand_gt(
+                ctx.constant(6),
+                ctx.register(1),
+            ),
+        );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
