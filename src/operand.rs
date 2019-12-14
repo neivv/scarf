@@ -2012,18 +2012,30 @@ fn simplify_mul(
         return ctx.constant(const_product);
     }
     heapsort::sort(&mut ops);
+    let mut changed = false;
     if const_product != 1 {
-        if ops.len() == 1 {
-            if simplify_mul_should_apply_constant(&ops[0]) {
-                let op = ops.swap_remove(0);
-                return simplify_mul_apply_constant(&op, const_product, ctx);
+        for i in 0..ops.len() {
+            if simplify_mul_should_apply_constant(&ops[i]) {
+                let new = simplify_mul_apply_constant(&ops[i], const_product, ctx);
+                ops.swap_remove(i);
+                Operand::collect_mul_ops(&new, &mut ops, ctx);
+                changed = true;
+                break;
             }
-            let new = simplify_mul_try_mul_constants(&ops[0], const_product, ctx);
+            let new = simplify_mul_try_mul_constants(&ops[i], const_product, ctx);
             if let Some(new) = new {
-                return new;
+                ops.swap_remove(i);
+                Operand::collect_mul_ops(&new, &mut ops, ctx);
+                changed = true;
+                break;
             }
         }
-        ops.push(ctx.constant(const_product));
+        if !changed {
+            ops.push(ctx.constant(const_product));
+        }
+    }
+    if changed {
+        heapsort::sort(&mut ops);
     }
     match ops.len() {
         0 => return ctx.const_1(),
@@ -7095,6 +7107,37 @@ mod test {
             mem8(ctx.register(0)),
         );
         let eq1 = mem8(ctx.register(0));
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_mul_consistency3() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        // 100 * r8 * (r6 + 8) => r8 * (100 * (r6 + 8)) => r8 * ((100 * r6) + 800)
+        let op1 = operand_mul(
+            operand_mul(
+                operand_mul(
+                    ctx.register(8),
+                    operand_add(
+                        ctx.register(6),
+                        ctx.constant(0x8),
+                    ),
+                ),
+                ctx.constant(0x10),
+            ),
+            ctx.constant(0x10),
+        );
+        let eq1 = operand_mul(
+            ctx.register(8),
+            operand_add(
+                operand_mul(
+                    ctx.register(6),
+                    ctx.constant(0x100),
+                ),
+                ctx.constant(0x800),
+            ),
+        );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
