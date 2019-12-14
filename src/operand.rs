@@ -1992,7 +1992,15 @@ fn simplify_mul(
         }
     }
     if changed {
+        let const_product = ops.iter().flat_map(|x| x.if_constant())
+            .fold(1u64, |product, x| product.wrapping_mul(x));
+        ops.retain(|x| x.if_constant().is_none());
         heapsort::sort(&mut ops);
+        if const_product == 0 {
+            return ctx.const_0();
+        } else if const_product != 1 {
+            ops.push(ctx.constant(const_product));
+        }
     }
     match ops.len() {
         0 => return ctx.const_1(),
@@ -7132,6 +7140,51 @@ mod test {
                     ctx.register(1),
                     ctx.register(5),
                 ),
+            ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_mul_consistency4() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_mul(
+            operand_mul(
+                operand_mul(
+                    operand_add(
+                        operand_mul(
+                            operand_add(
+                                ctx.register(1),
+                                ctx.register(2),
+                            ),
+                            ctx.register(8),
+                        ),
+                        ctx.constant(0xb02020202020200),
+                    ),
+                    ctx.constant(0x202020202020202),
+                ),
+                ctx.constant(0x200000000000000),
+            ),
+            operand_mul(
+                ctx.register(0),
+                ctx.register(8),
+            ),
+        );
+        let eq1 = operand_mul(
+            operand_mul(
+                ctx.register(0),
+                operand_mul(
+                    ctx.register(8),
+                    ctx.register(8),
+                ),
+            ),
+            operand_mul(
+                operand_add(
+                    ctx.register(1),
+                    ctx.register(2),
+                ),
+                ctx.constant(0x400000000000000),
             ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
