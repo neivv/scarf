@@ -1452,13 +1452,15 @@ impl Operand {
                                 // max > x if x != max
                                 let relbit_mask = r.relevant_bits_mask();
                                 if c == relbit_mask {
-                                    return operand_ne(ctx, l, r)
+                                    let op = operand_ne(ctx, l, r);
+                                    return Operand::simplified_with_ctx(op, ctx, swzb_ctx)
                                 }
                             }
                             (None, Some(c)) => {
                                 // x > 0 if x != 0
                                 if c == 0 {
-                                    return operand_ne(ctx, l, r)
+                                    let op = operand_ne(ctx, l, r);
+                                    return Operand::simplified_with_ctx(op, ctx, swzb_ctx)
                                 }
                                 let relbit_mask = l.relevant_bits_mask();
                                 if c == relbit_mask {
@@ -7055,6 +7057,30 @@ mod test {
                 ctx.constant(0x50505230402c2f4),
                 ctx.register(0),
             ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_eq_consistency2() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_gt(
+            operand_eq(
+                ctx.register(0),
+                ctx.register(0),
+            ),
+            operand_eq(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+        );
+        let eq1 = operand_eq(
+            operand_eq(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.constant(0),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
