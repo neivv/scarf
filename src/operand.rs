@@ -3569,8 +3569,6 @@ fn simplify_add_merge_muls(
     ops: &mut Vec<(Rc<Operand>, bool)>,
     ctx: &OperandContext,
 ) {
-    use self::operand_helpers::*;
-
     fn count_equivalent_opers(ops: &[(Rc<Operand>, bool)], equiv: &Operand) -> u64 {
         ops.iter().map(|&(ref o, neg)| {
             let (mul, val) = o.if_arithmetic_mul()
@@ -3618,14 +3616,10 @@ fn simplify_add_merge_muls(
                         other_pos += 1;
                     }
                 }
-                if sum > 0x8000_0000_0000_0000 {
-                    let sum = !sum.wrapping_add(1);
-                    ops[pos].0 = Operand::simplified(operand_mul(ctx.constant(sum), equiv));
-                    ops[pos].1 = true;
-                } else {
-                    ops[pos].0 = Operand::simplified(operand_mul(ctx.constant(sum), equiv));
-                    ops[pos].1 = false;
-                }
+                let negate = sum > 0x8000_0000_0000_0000;
+                let sum = if negate { (!sum).wrapping_add(1) } else { sum };
+                ops[pos].0 = simplify_mul(&equiv, &ctx.constant(sum), ctx);
+                ops[pos].1 = negate;
                 pos += 1;
             }
             // Remove everything matching
@@ -7013,6 +7007,33 @@ mod test {
                 ctx.register(0),
             ),
             ctx.register(1),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_sub_add_2_bug() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_add(
+            operand_sub(
+                ctx.register(1),
+                operand_add(
+                    ctx.register(2),
+                    ctx.register(2),
+                ),
+            ),
+            ctx.register(3),
+        );
+        let eq1 = operand_add(
+            operand_sub(
+                ctx.register(1),
+                operand_mul(
+                    ctx.register(2),
+                    ctx.constant(2),
+                ),
+            ),
+            ctx.register(3),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
