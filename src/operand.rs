@@ -2115,7 +2115,7 @@ fn simplify_mul_try_mul_constants(
             }
         }
         _ => None,
-    }
+    }.map(|op| Operand::simplified(op))
 }
 
 fn simplify_add_sub_ops(
@@ -7034,6 +7034,27 @@ mod test {
                 ),
             ),
             ctx.register(3),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_mul_consistency2() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_mul(
+            ctx.constant(0x50505230402c2f4),
+            operand_add(
+                ctx.constant(0x100ffee),
+                ctx.register(0),
+            ),
+        );
+        let eq1 = operand_add(
+            ctx.constant(0xcdccaa4f6ec24ad8),
+            operand_mul(
+                ctx.constant(0x50505230402c2f4),
+                ctx.register(0),
+            ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
