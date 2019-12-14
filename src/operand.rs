@@ -2572,12 +2572,8 @@ fn simplify_and(
     let mut ops = vec![];
     Operand::collect_and_ops(left, &mut ops);
     Operand::collect_and_ops(right, &mut ops);
-    let mut const_remain;
+    let mut const_remain = !0u64;
     loop {
-        const_remain = !0u64;
-        if ops.is_empty() {
-            return ctx.const_0();
-        }
         const_remain = ops.iter()
             .map(|op| match op.ty {
                 OperandType::Constant(c) => c,
@@ -2635,12 +2631,15 @@ fn simplify_and(
             }
         }
         let mut new_ops = vec![];
-        for op in &ops {
-            if let Some((l, r)) = op.if_arithmetic_and() {
+        for i in 0..ops.len() {
+            if let Some((l, r)) = ops[i].if_arithmetic_and() {
                 Operand::collect_and_ops(l, &mut new_ops);
                 Operand::collect_and_ops(r, &mut new_ops);
+            } else if let Some(c) = ops[i].if_constant() {
+                const_remain &= c;
             }
         }
+        ops.retain(|x| x.if_constant().is_none());
         if new_ops.is_empty() {
             break;
         }
@@ -7186,6 +7185,27 @@ mod test {
                 ),
                 ctx.constant(0x400000000000000),
             ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_consistency1() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_eq(
+            mem64(ctx.register(0)),
+            operand_and(
+                operand_or(
+                    ctx.constant(0xfd0700002ff4004b),
+                    mem8(ctx.register(5)),
+                ),
+                ctx.constant(0x293b00be00),
+            ),
+        );
+        let eq1 = operand_eq(
+            mem64(ctx.register(0)),
+            ctx.constant(0x2b000000),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
