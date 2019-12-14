@@ -1518,7 +1518,7 @@ impl Operand {
                         } else {
                             let ty = OperandType::Arithmetic(ArithOperand {
                                 ty: arith.ty,
-                                left: left.clone(),
+                                left: val,
                                 right: ctx.const_0(),
                             });
                             Operand::new_simplified_rc(ty)
@@ -1535,7 +1535,7 @@ impl Operand {
                         } else {
                             let ty = OperandType::Arithmetic(ArithOperand {
                                 ty: arith.ty,
-                                left: left.clone(),
+                                left: val,
                                 right: ctx.const_0(),
                             });
                             Operand::new_simplified_rc(ty)
