@@ -2724,6 +2724,7 @@ fn simplify_and(
         _ => (),
     };
     heapsort::sort(&mut ops);
+    ops.dedup();
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_0());
     while let Some(op) = ops.pop() {
@@ -7082,6 +7083,18 @@ mod test {
             ),
             ctx.constant(0),
         );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_fully() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            mem64(ctx.register(0)),
+            mem8(ctx.register(0)),
+        );
+        let eq1 = mem8(ctx.register(0));
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
