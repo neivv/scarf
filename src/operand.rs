@@ -998,7 +998,7 @@ impl Operand {
                             }
                         }
                     }
-                    ops.push((s.clone(), negate));
+                    ops.push((s, negate));
                 }
             }
         }
@@ -1017,7 +1017,18 @@ impl Operand {
                     recurse(&arith.right, ops, ctx);
                 }
                 _ => {
-                    ops.push(Operand::simplified(s.clone()));
+                    let mut s = s.clone();
+                    if !s.is_simplified() {
+                        // Simplification can cause it to be a mul
+                        s = Operand::simplified(s);
+                        if let OperandType::Arithmetic(ref arith) = s.ty {
+                            if arith.ty == ArithOpType::Mul {
+                                recurse(&s, ops, ctx);
+                                return;
+                            }
+                        }
+                    }
+                    ops.push(s);
                 }
             }
         }
@@ -6983,5 +6994,26 @@ mod test {
         ));
         assert_eq!(op1, eq1a);
         assert_eq!(op1, eq1b);
+    }
+
+    #[test]
+    fn simplify_mul_consistency() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_mul(
+            ctx.register(1),
+            operand_add(
+                ctx.register(0),
+                ctx.register(0),
+            ),
+        );
+        let eq1 = operand_mul(
+            operand_mul(
+                ctx.constant(2),
+                ctx.register(0),
+            ),
+            ctx.register(1),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
