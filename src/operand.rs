@@ -1530,7 +1530,16 @@ impl Operand {
                             Operand::new_simplified_rc(ty)
                         }
                     }
-                    _ => mark_self_simplified(s),
+                    _ => {
+                        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                        let ty = OperandType::Arithmetic(ArithOperand {
+                            ty: arith.ty,
+                            left,
+                            right,
+                        });
+                        Operand::new_simplified_rc(ty)
+                    }
                 }
             }
             OperandType::Memory(ref mem) => {
@@ -1540,6 +1549,7 @@ impl Operand {
                 }))
             }
             OperandType::SignExtend(ref val, from, to) => {
+                let val = Operand::simplified_with_ctx(val.clone(), ctx, swzb_ctx);
                 // Shouldn't be 64bit constant since then `from` would already be Mem64
                 // Obviously such thing could be built, but assuming disasm/users don't..
                 if let Some(val) = val.if_constant() {
@@ -1561,7 +1571,8 @@ impl Operand {
                         ctx.constant(val)
                     }
                 } else {
-                    mark_self_simplified(s)
+                    let ty = OperandType::SignExtend(val, from, to);
+                    Operand::new_simplified_rc(ty)
                 }
             }
             _ => mark_self_simplified(s),
