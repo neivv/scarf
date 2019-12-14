@@ -1937,6 +1937,11 @@ fn simplify_add_sub(
     use self::ArithOpType::*;
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     let (mut ops, mask) = simplify_add_sub_ops(left, right, is_sub, ctx);
+    // Place non-negated terms last so the simplified result doesn't become
+    // (0 - x) + y
+    heapsort::sort_by(&mut ops, |&(ref a_val, a_neg), &(ref b_val, b_neg)| {
+        (b_neg, b_val) < (a_neg, a_val)
+    });
     let mut tree = match ops.pop() {
         Some((s, neg)) => {
             match neg {
@@ -2164,11 +2169,9 @@ fn simplify_add_sub_ops(
     simplify_add_merge_muls(&mut ops, ctx);
     let const_sum = const_sum & and_mask.unwrap_or(u64::max_value());
     if ops.is_empty() {
-        let ops = if const_sum != 0 {
-            vec![(ctx.constant(const_sum), false)]
-        } else {
-            vec![]
-        };
+        if const_sum != 0 {
+            ops.push((ctx.constant(const_sum), false));
+        }
         return (ops, None);
     }
 
@@ -2179,11 +2182,6 @@ fn simplify_add_sub_ops(
             ops.push((ctx.constant(const_sum), false));
         }
     }
-    // Place non-negated terms last so the simplified result doesn't become
-    // (0 - x) + y
-    heapsort::sort_by(&mut ops, |&(ref a_val, a_neg), &(ref b_val, b_neg)| {
-        (b_neg, b_val) < (a_neg, a_val)
-    });
     (ops, and_mask)
 }
 
@@ -2194,14 +2192,22 @@ fn simplify_eq(
 ) -> Rc<Operand> {
     use self::operand_helpers::*;
 
-    let (left, right) = match left < right {
-        true => (left, right),
-        false => (right, left),
-    };
-
     // Equality is just bit comparision without overflow semantics, even though
     // this also uses x == y => x - y == 0 property to simplify it.
     let (mut ops, add_sub_mask) = simplify_add_sub_ops(left, right, true, ctx);
+    if ops.is_empty() {
+        return ctx.const_1();
+    }
+    // Since with eq the negations can be reverted, canonicalize eq
+    // as sorting parts, and making the last one positive, swapping all
+    // negations if it isn't yet.
+    // Last one since the op tree is constructed in reverse in the end.
+    heapsort::sort(&mut ops);
+    if ops[ops.len() - 1].1 == true {
+        for op in &mut ops {
+            op.1 = !op.1;
+        }
+    }
     let mark_self_simplified = |s: &Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     match ops.len() {
         0 => ctx.const_1(),
@@ -6948,5 +6954,34 @@ mod test {
             ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_eq_consistency() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = Operand::simplified(operand_eq(
+            operand_add(
+                ctx.register(1),
+                ctx.register(2),
+            ),
+            ctx.register(3),
+        ));
+        let eq1a = Operand::simplified(operand_eq(
+            operand_sub(
+                ctx.register(3),
+                ctx.register(2),
+            ),
+            ctx.register(1),
+        ));
+        let eq1b = Operand::simplified(operand_eq(
+            operand_add(
+                ctx.register(2),
+                ctx.register(1),
+            ),
+            ctx.register(3),
+        ));
+        assert_eq!(op1, eq1a);
+        assert_eq!(op1, eq1b);
     }
 }
