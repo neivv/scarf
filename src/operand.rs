@@ -1936,7 +1936,7 @@ fn simplify_add_sub(
         };
         tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
-    if let Some(mask) = mask {
+    if mask != u64::max_value() {
         let no_op_mask = tree.relevant_bits_mask();
         if mask & no_op_mask != no_op_mask {
             tree = simplify_and(
@@ -2109,12 +2109,115 @@ fn simplify_add_sub_ops(
     right: &Rc<Operand>,
     is_sub: bool,
     ctx: &OperandContext,
-) -> (Vec<(Rc<Operand>, bool)>, Option<u64>) {
+) -> (Vec<(Rc<Operand>, bool)>, u64) {
+    use self::operand_helpers::*;
+
     let mut ops = Vec::new();
     Operand::collect_add_ops(left, &mut ops, false);
     Operand::collect_add_ops(right, &mut ops, is_sub);
-    let mut and_mask = None;
+    let const_sum = ops.iter()
+        .flat_map(|&(ref x, neg)| x.if_constant().map(|x| (x, neg)))
+        .fold(0u64, |sum, (x, neg)| match neg {
+            false => sum.wrapping_add(x),
+            true => sum.wrapping_sub(x),
+        });
+    ops.retain(|&(ref x, _)| x.if_constant().is_none());
+    if ops.is_empty() {
+        ops.push((ctx.constant(const_sum), false));
+        return (ops, u64::max_value());
+    }
+    // If there are multiple terms with same mask, e.g. `(x & mask) + (y & mask) + z`
+    // simplify them together to (x + y) & mask + z
+    // (mask, other) or (!0, op)
+    let mut and_masks: Vec<(u64, &Rc<Operand>, bool)> = ops.iter().map(|x| {
+        x.0.if_arithmetic_and()
+            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+            .map(|(c, o)| (c, o, x.1))
+            .unwrap_or_else(|| (u64::max_value(), &x.0, x.1))
+    }).collect();
+    heapsort::sort(&mut and_masks);
+    let mut pos = 0;
+    let mut result = Vec::new();
+    while pos < and_masks.len() {
+        let old_pos = pos;
+        let mask = and_masks[pos].0;
+        let mut subset: Vec<(Rc<Operand>, bool)> = Vec::new();
+        let mut take_all = false;
+        for &(mask2, op, neg) in &and_masks[pos..] {
+            if mask != mask2 {
+                if old_pos == 0 && pos == 1 && mask2 == u64::max_value() {
+                    // Hacky addition to not use and masks if only first op
+                    // is masked.
+                    // Maybe could be replaced with a full pass of all ops with
+                    // mask u64::max_value() at the end instead?
+                    for op in &mut subset {
+                        op.0 = Operand::simplified(operand_and(op.0.clone(), ctx.constant(mask)));
+                    }
+                    take_all = true;
+                }
+                let still_ok = if mask2 == u64::max_value() && old_pos == 0 {
+                    // Accept some other cases which weren't explicitly and masked.
+                    // Namely, an operand whose relbits are the mask
+                    let relbit_mask = op.relevant_bits_mask();
+                    mask == relbit_mask
+                } else {
+                    false
+                };
+                if !still_ok && !take_all {
+                    break;
+                }
+            }
+            Operand::collect_add_ops(op, &mut subset, neg);
+            pos += 1;
+        }
+        let is_all = pos == and_masks.len() && old_pos == 0;
+        let mask = if take_all {
+            u64::max_value()
+        } else {
+            mask
+        };
+        simplify_collected_add_sub_ops(&mut subset, mask, ctx);
+        if is_all {
+            // All had same and mask, can return it
+            if const_sum != 0 {
+                if mask != u64::max_value() {
+                    for op in &mut subset {
+                        op.0 = Operand::simplified(operand_and(op.0.clone(), ctx.constant(mask)));
+                    }
+                }
+                if const_sum > 0x8000_0000_0000_0000 && !subset.is_empty() {
+                    subset.push((ctx.constant(0u64.wrapping_sub(const_sum)), true));
+                } else {
+                    subset.push((ctx.constant(const_sum), false));
+                }
+                return (subset, u64::max_value());
+            } else {
+                return (subset, mask);
+            }
+        }
+        result.extend(subset.into_iter().map(|x| {
+            if mask != u64::max_value() {
+                (Operand::simplified(operand_and(ctx.constant(mask), x.0)), x.1)
+            } else {
+                x
+            }
+        }));
+    }
+    if const_sum != 0 {
+        if const_sum > 0x8000_0000_0000_0000 && !result.is_empty() {
+            result.push((ctx.constant(0u64.wrapping_sub(const_sum)), true));
+        } else {
+            result.push((ctx.constant(const_sum), false));
+        }
+    }
+    (result, u64::max_value())
+}
 
+fn simplify_collected_add_sub_ops(
+    ops: &mut Vec<(Rc<Operand>, bool)>,
+    and_mask: u64,
+    ctx: &OperandContext,
+) {
     let const_sum = ops.iter()
         .flat_map(|&(ref x, neg)| x.if_constant().map(|x| (x, neg)))
         .fold(0u64, |sum, (x, neg)| match neg {
@@ -2123,53 +2226,14 @@ fn simplify_add_sub_ops(
         });
     ops.retain(|&(ref x, _)| x.if_constant().is_none());
 
-    if const_sum == 0 {
-        loop {
-            // If all ops are masked with a same mask, they can be simplified without
-            // the mask and mask can be applied at end.
-            // Doesn't handle (x & ff + y & ff) + c at the moment.
-            // (It is not valid to move c inside an and mask)
-            let mask = ops.get(0)
-                .and_then(|op| op.0.if_arithmetic_and())
-                .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
-                .map(|(c, _)| c);
-
-            let mask = match mask {
-                Some(s) => s,
-                None => break,
-            };
-            let rest_have_same_mask = ops.iter().skip(1)
-                .all(|op| {
-                    op.0.if_arithmetic_and()
-                        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
-                        .filter(|&(c, _)| c == mask)
-                        .is_some()
-                });
-            if !rest_have_same_mask {
-                break;
-            }
-            let mut new_ops = Vec::with_capacity(ops.len());
-            for op in ops {
-                let other = op.0.if_arithmetic_and()
-                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
-                    .map(|(_, other)| other);
-                if let Some(other) = other {
-                    Operand::collect_add_ops(other, &mut new_ops, op.1);
-                }
-            }
-            ops = new_ops;
-            and_mask = Some(mask);
-            break;
-        }
-    }
-    heapsort::sort(&mut ops);
-    simplify_add_merge_muls(&mut ops, ctx);
-    let const_sum = const_sum & and_mask.unwrap_or(u64::max_value());
+    heapsort::sort(ops);
+    simplify_add_merge_muls(ops, ctx);
+    let const_sum = const_sum & and_mask;
     if ops.is_empty() {
         if const_sum != 0 {
             ops.push((ctx.constant(const_sum), false));
         }
-        return (ops, None);
+        return;
     }
 
     if const_sum != 0 {
@@ -2179,7 +2243,6 @@ fn simplify_add_sub_ops(
             ops.push((ctx.constant(const_sum), false));
         }
     }
-    (ops, and_mask)
 }
 
 fn simplify_eq(
@@ -2231,10 +2294,10 @@ fn simplify_eq(
                 match ops[0].0.ty {
                     OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Lsh => {
                         if let Some(c2) = arith.right.if_constant() {
-                            if let Some(mask) = add_sub_mask {
+                            if add_sub_mask != u64::max_value() {
                                 let new = simplify_and(
                                     &arith.left,
-                                    &ctx.constant(mask.wrapping_shr(c2 as u32)),
+                                    &ctx.constant(add_sub_mask.wrapping_shr(c2 as u32)),
                                     ctx,
                                     &mut SimplifyWithZeroBits::default(),
                                 );
@@ -2250,10 +2313,10 @@ fn simplify_eq(
                     }
                     OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Rsh => {
                         if let Some(c2) = arith.right.if_constant() {
-                            if let Some(mask) = add_sub_mask {
+                            if add_sub_mask != u64::max_value() {
                                 let new = simplify_and(
                                     &arith.left,
-                                    &ctx.constant(mask.wrapping_shl(c2 as u32)),
+                                    &ctx.constant(add_sub_mask.wrapping_shl(c2 as u32)),
                                     ctx,
                                     &mut SimplifyWithZeroBits::default(),
                                 );
@@ -2270,8 +2333,8 @@ fn simplify_eq(
                     _ => ()
                 }
                 let mut op = mark_self_simplified(&ops[0].0);
-                if let Some(mask) = add_sub_mask {
-                    let constant = ctx.constant(mask);
+                if add_sub_mask != u64::max_value() {
+                    let constant = ctx.constant(add_sub_mask);
                     let arith = ArithOperand {
                         ty: ArithOpType::And,
                         left: op,
@@ -2303,7 +2366,7 @@ fn simplify_eq(
                     true => (&ops[0], &ops[1]),
                 },
             };
-            let mask = add_sub_mask.unwrap_or(u64::max_value());
+            let mask = add_sub_mask;
             let make_op = |op: &Rc<Operand>, negate: bool| -> Rc<Operand> {
                 match negate {
                     false => {
@@ -2355,15 +2418,15 @@ fn simplify_eq(
                 };
                 tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
             }
-            if let Some(mask) = add_sub_mask {
+            if add_sub_mask != u64::max_value() {
                 let rel_bits = tree.relevant_bits();
                 let high = 64 - rel_bits.end;
                 let low = rel_bits.start;
                 let no_op_mask = !0u64 << high >> high >> low << low;
-                if mask & no_op_mask != no_op_mask {
+                if add_sub_mask & no_op_mask != no_op_mask {
                     tree = simplify_and(
                         &tree,
-                        &ctx.constant(mask),
+                        &ctx.constant(add_sub_mask),
                         ctx,
                         &mut SimplifyWithZeroBits::default(),
                     );
@@ -7391,5 +7454,71 @@ mod test {
             ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_add_consistency1() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_add(
+            operand_add(
+                operand_and(
+                    ctx.constant(0xfeffffffffffff24),
+                    operand_or(
+                        operand_xmm(0, 1),
+                        ctx.constant(0xf3fbfb01ffff0000),
+                    ),
+                ),
+                operand_and(
+                    ctx.constant(0xfeffffffffffff24),
+                    operand_or(
+                        operand_xmm(0, 1),
+                        ctx.constant(0xf301fc01ffff3eff)
+                    ),
+                ),
+            ),
+            ctx.custom(3),
+        );
+        let eq1 = operand_add(
+            Operand::simplified(operand_add(
+                operand_and(
+                    ctx.constant(0xfeffffffffffff24),
+                    operand_or(
+                        operand_xmm(0, 1),
+                        ctx.constant(0xf3fbfb01ffff0000),
+                    ),
+                ),
+                operand_and(
+                    ctx.constant(0xfeffffffffffff24),
+                    operand_or(
+                        operand_xmm(0, 1),
+                        ctx.constant(0xf301fc01ffff3eff)
+                    ),
+                ),
+            )),
+            ctx.custom(3),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_add_simple() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_sub(
+            ctx.constant(1),
+            ctx.constant(4),
+        );
+        let eq1 = ctx.constant(0xffff_ffff_ffff_fffd);
+        let op2 = operand_add(
+            operand_sub(
+                ctx.constant(0xf40205051a02c2f4),
+                ctx.register(0),
+            ),
+            ctx.register(0),
+        );
+        let eq2 = ctx.constant(0xf40205051a02c2f4);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
     }
 }
