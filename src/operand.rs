@@ -2676,8 +2676,8 @@ fn simplify_and(
     }
 
     // Simplify (x | y) & mask to (x | (y & mask)) if mask is useless to x
-    if ops.len() == 1 {
-        if let Some((l, r)) = ops[0].if_arithmetic_or() {
+    for i in 0..ops.len() {
+        if let Some((l, r)) = ops[i].if_arithmetic_or() {
             let left_mask = l.relevant_bits_mask();
             let right_mask = r.relevant_bits_mask();
             let left_needs_mask = left_mask & const_remain != left_mask;
@@ -2685,11 +2685,17 @@ fn simplify_and(
             if !left_needs_mask && right_needs_mask {
                 let masked =
                     simplify_and(&r, &ctx.constant(const_remain & right_mask), ctx, swzb_ctx);
-                return simplify_or(&l, &masked, ctx);
+                let new = simplify_or(&l, &masked, ctx);
+                ops[i] = new;
+                const_remain = !0u64;
+                break;
             } else if left_needs_mask && !right_needs_mask {
                 let masked =
                     simplify_and(&l, &ctx.constant(const_remain & left_mask), ctx, swzb_ctx);
-                return simplify_or(&r, &masked, ctx);
+                let new = simplify_or(&r, &masked, ctx);
+                ops[i] = new;
+                const_remain = !0u64;
+                break;
             }
         }
     }
@@ -7310,6 +7316,35 @@ mod test {
             ctx.constant(0x280000d200004010),
         );
         let eq1 = ctx.constant(0x4010);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_consistency4() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_and(
+                operand_or(
+                    operand_xmm(4, 1),
+                    ctx.constant(0x1e04ffffff0000),
+                ),
+                operand_xmm(0, 1),
+            ),
+            ctx.constant(0x40ffffffffffff60),
+        );
+        let eq1 = operand_and(
+            Operand::simplified(
+                operand_and(
+                    operand_or(
+                        ctx.constant(0xffff0000),
+                        operand_xmm(4, 1),
+                    ),
+                    ctx.constant(0xffffff60),
+                ),
+            ),
+            operand_xmm(0, 1),
+        );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
