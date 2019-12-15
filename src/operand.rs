@@ -1897,19 +1897,17 @@ fn simplify_or_merge_mem(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
     }
 }
 
-
-fn simplify_add_sub(
-    left: &Rc<Operand>,
-    right: &Rc<Operand>,
-    is_sub: bool,
+fn add_sub_ops_to_tree(
+    ops: &mut Vec<(Rc<Operand>, bool)>,
+    mask: u64,
     ctx: &OperandContext,
 ) -> Rc<Operand> {
     use self::ArithOpType::*;
+
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
-    let (mut ops, mask) = simplify_add_sub_ops(left, right, is_sub, ctx);
     // Place non-negated terms last so the simplified result doesn't become
     // (0 - x) + y
-    heapsort::sort_by(&mut ops, |&(ref a_val, a_neg), &(ref b_val, b_neg)| {
+    heapsort::sort_by(ops, |&(ref a_val, a_neg), &(ref b_val, b_neg)| {
         (b_neg, b_val) < (a_neg, a_val)
     });
     let mut tree = match ops.pop() {
@@ -1930,7 +1928,7 @@ fn simplify_add_sub(
     };
     while let Some((op, neg)) = ops.pop() {
         let arith = ArithOperand {
-            ty: if neg { Sub } else { Add},
+            ty: if neg { Sub } else { Add },
             left: tree,
             right: op,
         };
@@ -1948,6 +1946,16 @@ fn simplify_add_sub(
         }
     }
     tree
+}
+
+fn simplify_add_sub(
+    left: &Rc<Operand>,
+    right: &Rc<Operand>,
+    is_sub: bool,
+    ctx: &OperandContext,
+) -> Rc<Operand> {
+    let (mut ops, mask) = simplify_add_sub_ops(left, right, is_sub, ctx);
+    add_sub_ops_to_tree(&mut ops, mask, ctx)
 }
 
 fn simplify_mul(
@@ -2145,7 +2153,7 @@ fn simplify_add_sub_ops(
         let mut take_all = false;
         for &(mask2, op, neg) in &and_masks[pos..] {
             if mask != mask2 {
-                if old_pos == 0 && pos == 1 && mask2 == u64::max_value() {
+                if old_pos == 0 && pos == 1 && mask2 == u64::max_value() && subset.len() == 1 {
                     // Hacky addition to not use and masks if only first op
                     // is masked.
                     // Maybe could be replaced with a full pass of all ops with
@@ -2181,9 +2189,14 @@ fn simplify_add_sub_ops(
             // All had same and mask, can return it
             if const_sum != 0 {
                 if mask != u64::max_value() {
-                    for op in &mut subset {
-                        op.0 = Operand::simplified(operand_and(op.0.clone(), ctx.constant(mask)));
+                    let negate = subset.iter().all(|x| x.1 == true);
+                    if negate {
+                        for s in &mut subset {
+                            s.1 = false;
+                        }
                     }
+                    let new = add_sub_ops_to_tree(&mut subset, mask, ctx);
+                    subset.push((new, negate));
                 }
                 if const_sum > 0x8000_0000_0000_0000 && !subset.is_empty() {
                     subset.push((ctx.constant(0u64.wrapping_sub(const_sum)), true));
@@ -2195,13 +2208,14 @@ fn simplify_add_sub_ops(
                 return (subset, mask);
             }
         }
-        result.extend(subset.into_iter().map(|x| {
-            if mask != u64::max_value() {
-                (Operand::simplified(operand_and(ctx.constant(mask), x.0)), x.1)
-            } else {
-                x
+        let negate = subset.iter().all(|x| x.1 == true);
+        if negate {
+            for s in &mut subset {
+                s.1 = false;
             }
-        }));
+        }
+        let new = add_sub_ops_to_tree(&mut subset, mask, ctx);
+        result.push((new, negate));
     }
     if const_sum != 0 {
         if const_sum > 0x8000_0000_0000_0000 && !result.is_empty() {
@@ -7565,5 +7579,90 @@ mod test {
             ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_masked_add() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        // Cannot move the constant out of and since
+        // (fffff + 1400) & ffff6ff24 == 101324, but
+        // (fffff & ffff6ff24) + 1400 == 71324
+        let op1 = operand_and(
+            operand_add(
+                mem32(ctx.register(0)),
+                ctx.constant(0x1400),
+            ),
+            ctx.constant(0xffff6ff24),
+        );
+        let ne1 = operand_add(
+            operand_and(
+                mem32(ctx.register(0)),
+                ctx.constant(0xffff6ff24),
+            ),
+            ctx.constant(0x1400),
+        );
+        let op2 = operand_add(
+            ctx.register(1),
+            operand_and(
+                operand_add(
+                    mem32(ctx.register(0)),
+                    ctx.constant(0x1400),
+                ),
+                ctx.constant(0xffff6ff24),
+            ),
+        );
+        let ne2 = operand_add(
+            ctx.register(1),
+            operand_add(
+                operand_and(
+                    mem32(ctx.register(0)),
+                    ctx.constant(0xffff6ff24),
+                ),
+                ctx.constant(0x1400),
+            ),
+        );
+        assert_ne!(Operand::simplified(op1), Operand::simplified(ne1));
+        assert_ne!(Operand::simplified(op2), Operand::simplified(ne2));
+    }
+
+    #[test]
+    fn simplify_masked_add2() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        // Cannot move the constant out of and since
+        // (fffff + 1400) & ffff6ff24 == 101324, but
+        // (fffff & ffff6ff24) + 1400 == 71324
+        let op1 = operand_add(
+            ctx.constant(0x4700000014fef910),
+            operand_and(
+                operand_add(
+                    mem32(ctx.register(0)),
+                    ctx.constant(0x1400),
+                ),
+                ctx.constant(0xffff6ff24),
+            ),
+        );
+        let ne1 = operand_add(
+            ctx.constant(0x4700000014fef910),
+            operand_add(
+                operand_and(
+                    mem32(ctx.register(0)),
+                    ctx.constant(0xffff6ff24),
+                ),
+                ctx.constant(0x1400),
+            ),
+        );
+        let op1 = Operand::simplified(op1);
+        assert_ne!(op1, Operand::simplified(ne1));
+        assert!(
+            op1.iter().any(|x| {
+                x.if_arithmetic_add()
+                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                    .filter(|&(c, other)| c == 0x1400 && other.if_memory().is_some())
+                    .is_some()
+            }),
+            "Op1 was simplified wrong: {}", op1,
+        );
     }
 }
