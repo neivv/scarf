@@ -3155,7 +3155,7 @@ fn simplify_with_and_mask_inner(
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
                     } else {
-                        simplify_and(&simplified_left, &simplified_left, ctx, swzb_ctx)
+                        simplify_and(&simplified_left, &simplified_right, ctx, swzb_ctx)
                     }
                 }
                 ArithOpType::Or => {
@@ -3195,10 +3195,28 @@ fn simplify_with_and_mask_inner(
                 }
                 ArithOpType::Xor | ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
                     if arith.ty != ArithOpType::Xor {
-                        // Verify that mask has has all low bits 1 and all high bits 0
-                        // 00001111
+                        // The mask can be applied separately to left and right if
+                        // any of the unmasked bits input don't affect masked bits in result.
+                        // For add/sub/mul, a bit can only affect itself and more
+                        // significant bits.
+                        //
+                        // First, check if relevant bits start of either operand >= mask end,
+                        // in which case the operand cannot affect result at all and we can
+                        // just return the other operand simplified with the mask.
+                        //
+                        // Otherwise check if mask has has all low bits 1 and all high bits 0,
+                        // and apply left/right separately.
+                        //
+                        // Assuming it is 00001111...
                         // Adding 1 makes a valid mask to overflow to 10000000...
                         // Though the 1 bit can be carried out so count_ones is 1 or 0.
+                        let mask_end_bit = 64 - mask.leading_zeros() as u8;
+                        let other = Operand::either(&arith.left, &arith.right, |x| {
+                            if x.relevant_bits().start >= mask_end_bit { Some(()) } else { None }
+                        }).map(|((), other)| other);
+                        if let Some(other) = other {
+                            return simplify_with_and_mask(other, mask, ctx, swzb_ctx);
+                        }
                         let ok = mask.wrapping_add(1).count_ones() <= 1;
                         if !ok {
                             return op.clone();
@@ -7206,6 +7224,33 @@ mod test {
         let eq1 = operand_eq(
             mem64(ctx.register(0)),
             ctx.constant(0x2b000000),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_consistency2() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            mem8(ctx.register(0)),
+            operand_or(
+                operand_and(
+                    ctx.constant(0xfeffffffffffff24),
+                    operand_add(
+                        ctx.register(0),
+                        ctx.constant(0x2fbfb01ffff0000),
+                    ),
+                ),
+                ctx.constant(0xf3fb000091010e00),
+            ),
+        );
+        let eq1 = operand_and(
+            mem8(ctx.register(0)),
+            operand_and(
+                ctx.register(0),
+                ctx.constant(0x24),
+            ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
