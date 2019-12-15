@@ -3169,14 +3169,14 @@ fn simplify_with_and_mask_inner(
                     let simplified_left =
                         simplify_with_and_mask(&arith.left, mask, ctx, swzb_ctx);
                     if let Some(c) = simplified_left.if_constant() {
-                        if mask & c == mask {
+                        if mask & c == mask & arith.right.relevant_bits_mask() {
                             return simplified_left;
                         }
                     }
                     let simplified_right =
                         simplify_with_and_mask(&arith.right, mask, ctx, swzb_ctx);
                     if let Some(c) = simplified_right.if_constant() {
-                        if mask & c == mask {
+                        if mask & c == mask & arith.left.relevant_bits_mask() {
                             return simplified_right;
                         }
                     }
@@ -7292,6 +7292,24 @@ mod test {
             ),
             ctx.constant(0xc388000000000000)
         );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_consistency3() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_or(
+                operand_or(
+                    mem16(ctx.register(0)),
+                    ctx.constant(0x4eff0001004107),
+                ),
+                ctx.constant(0x231070100fa00de),
+            ),
+            ctx.constant(0x280000d200004010),
+        );
+        let eq1 = ctx.constant(0x4010);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
