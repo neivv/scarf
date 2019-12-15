@@ -3327,7 +3327,9 @@ fn simplify_with_and_mask_inner(
                         op.clone()
                     } else {
                         let op = operand_arith(arith.ty, simplified_left, simplified_right);
-                        Operand::simplified(op)
+                        // The result may simplify again, for example with mask 0x1
+                        // Mem16[x] + Mem32[x] + Mem8[x] => 3 * Mem8[x] => 1 * Mem8[x]
+                        simplify_with_and_mask(&Operand::simplified(op), mask, ctx, swzb_ctx)
                     }
                 }
                 _ => op.clone(),
@@ -7520,5 +7522,48 @@ mod test {
         let eq2 = ctx.constant(0xf40205051a02c2f4);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
         assert_eq!(Operand::simplified(op2), Operand::simplified(eq2));
+    }
+
+    #[test]
+    fn simplify_1bit_sum() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        // Since the gt makes only at most LSB of the sum to be considered,
+        // the multiplication isn't used at all and the sum
+        // Mem8[rax] + Mem16[rax] + Mem32[rax] can become 3 * Mem8[rax] which
+        // can just be replaced with Mem8[rax]
+        let op1 = operand_and(
+            operand_gt(
+                ctx.register(5),
+                ctx.register(4),
+            ),
+            operand_add(
+                operand_add(
+                    operand_mul(
+                        ctx.constant(6),
+                        ctx.register(0),
+                    ),
+                    operand_add(
+                        mem8(ctx.register(0)),
+                        mem32(ctx.register(1)),
+                    ),
+                ),
+                operand_add(
+                    mem16(ctx.register(0)),
+                    mem64(ctx.register(0)),
+                ),
+            ),
+        );
+        let eq1 = operand_and(
+            operand_gt(
+                ctx.register(5),
+                ctx.register(4),
+            ),
+            operand_add(
+                mem8(ctx.register(0)),
+                mem8(ctx.register(1)),
+            ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
