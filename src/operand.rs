@@ -1959,7 +1959,7 @@ fn simplify_mul(
     let mut ops = vec![];
     Operand::collect_mul_ops(left, &mut ops);
     Operand::collect_mul_ops(right, &mut ops);
-    let const_product = ops.iter().flat_map(|x| x.if_constant())
+    let mut const_product = ops.iter().flat_map(|x| x.if_constant())
         .fold(1u64, |product, x| product.wrapping_mul(x));
     if const_product == 0 {
         return ctx.const_0();
@@ -1969,36 +1969,43 @@ fn simplify_mul(
         return ctx.constant(const_product);
     }
     heapsort::sort(&mut ops);
-    let mut changed = false;
     if const_product != 1 {
-        for i in 0..ops.len() {
-            if simplify_mul_should_apply_constant(&ops[i]) {
-                let new = simplify_mul_apply_constant(&ops[i], const_product, ctx);
-                ops.swap_remove(i);
-                Operand::collect_mul_ops(&new, &mut ops);
-                changed = true;
-                break;
+        let mut changed;
+        // Apply constant c * (x + y) => (c * x + c * y) as much as possible.
+        // (This repeats at least if (c * x + c * y) => c * y due to c * x == 0)
+        loop {
+            changed = false;
+            for i in 0..ops.len() {
+                if simplify_mul_should_apply_constant(&ops[i]) {
+                    let new = simplify_mul_apply_constant(&ops[i], const_product, ctx);
+                    ops.swap_remove(i);
+                    Operand::collect_mul_ops(&new, &mut ops);
+                    changed = true;
+                    break;
+                }
+                let new = simplify_mul_try_mul_constants(&ops[i], const_product, ctx);
+                if let Some(new) = new {
+                    ops.swap_remove(i);
+                    Operand::collect_mul_ops(&new, &mut ops);
+                    changed = true;
+                    break;
+                }
             }
-            let new = simplify_mul_try_mul_constants(&ops[i], const_product, ctx);
-            if let Some(new) = new {
-                ops.swap_remove(i);
-                Operand::collect_mul_ops(&new, &mut ops);
-                changed = true;
+            if changed {
+                const_product = ops.iter().flat_map(|x| x.if_constant())
+                    .fold(1u64, |product, x| product.wrapping_mul(x));
+                ops.retain(|x| x.if_constant().is_none());
+                heapsort::sort(&mut ops);
+                if const_product == 0 {
+                    return ctx.const_0();
+                } else if const_product == 1 {
+                    break;
+                }
+            } else {
                 break;
             }
         }
         if !changed {
-            ops.push(ctx.constant(const_product));
-        }
-    }
-    if changed {
-        let const_product = ops.iter().flat_map(|x| x.if_constant())
-            .fold(1u64, |product, x| product.wrapping_mul(x));
-        ops.retain(|x| x.if_constant().is_none());
-        heapsort::sort(&mut ops);
-        if const_product == 0 {
-            return ctx.const_0();
-        } else if const_product != 1 {
             ops.push(ctx.constant(const_product));
         }
     }
@@ -7251,6 +7258,39 @@ mod test {
                 ctx.register(0),
                 ctx.constant(0x24),
             ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_mul_consistency5() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_mul(
+            operand_mul(
+                operand_add(
+                    operand_add(
+                        ctx.register(0),
+                        ctx.register(0),
+                    ),
+                    ctx.constant(0x25000531004000),
+                ),
+                operand_add(
+                    operand_mul(
+                        ctx.constant(0x4040405f6020405),
+                        ctx.register(0),
+                    ),
+                    ctx.constant(0x25000531004000),
+                ),
+            ),
+            ctx.constant(0xe9f4000000000000),
+        );
+        let eq1 = operand_mul(
+            operand_mul(
+                ctx.register(0),
+                ctx.register(0),
+            ),
+            ctx.constant(0xc388000000000000)
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
