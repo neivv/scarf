@@ -2371,56 +2371,74 @@ fn simplify_eq(
             simplify_eq_2_ops(left, right, ctx)
         },
         _ => {
-            let mut tree = match ops.pop() {
-                Some((s, neg)) => match neg {
-                    false => mark_self_simplified(&s),
-                    true => {
-                        let arith = ArithOperand {
-                            ty: ArithOpType::Sub,
-                            left: ctx.const_0(),
-                            right: s,
-                        };
-                        Operand::new_simplified_rc(OperandType::Arithmetic(arith))
+            // Construct a + b + c == d + e + f
+            // where left side has all non-negated terms,
+            // and right side has all negated terms (Negation forgotten as they're on the right)
+            //
+            // Swap constants to prefer small one on the other side if possible
+            for op in &mut ops {
+                if let Some(c) = op.0.if_constant() {
+                    if c < add_sub_mask && (add_sub_mask - c) + 1 < c {
+                        op.0 = ctx.constant((add_sub_mask - c) + 1);
+                        op.1 = !op.1;
                     }
-                },
+                }
+            }
+            let mut left_tree = match ops.iter().position(|x| x.1 == false) {
+                Some(i) => {
+                    let op = ops.swap_remove(i).0;
+                    mark_self_simplified(&op)
+                }
+                None => ctx.const_0(),
+            };
+            let mut right_tree = match ops.iter().position(|x| x.1 == true) {
+                Some(i) => {
+                    let op = ops.swap_remove(i).0;
+                    mark_self_simplified(&op)
+                }
                 None => ctx.const_0(),
             };
             while let Some((op, neg)) = ops.pop() {
-                let arith = ArithOperand {
-                    ty: if neg { ArithOpType::Sub } else { ArithOpType::Add },
-                    left: tree,
-                    right: op,
-                };
-                tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+                if !neg {
+                    let arith = ArithOperand {
+                        ty: ArithOpType::Add,
+                        left: left_tree,
+                        right: op,
+                    };
+                    left_tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+                } else {
+                    let arith = ArithOperand {
+                        ty: ArithOpType::Add,
+                        left: right_tree,
+                        right: op,
+                    };
+                    right_tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+                }
             }
-            let rel_bits = tree.relevant_bits_mask();
+            let rel_bits = left_tree.relevant_bits_mask();
             if add_sub_mask & rel_bits != rel_bits {
-                tree = simplify_and(
-                    &tree,
+                left_tree = simplify_and(
+                    &left_tree,
                     &ctx.constant(add_sub_mask),
                     ctx,
                     &mut SimplifyWithZeroBits::default(),
                 );
             }
-            // If the top node of tree is sub, convert it to eq, otherwise do top == 0
-            let ty = match tree.ty {
-                OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
-                    let arith = ArithOperand {
-                        ty: ArithOpType::Equal,
-                        left: arith.left.clone(),
-                        right: arith.right.clone(),
-                    };
-                    OperandType::Arithmetic(arith)
-                }
-                _ => {
-                    let arith = ArithOperand {
-                        ty: ArithOpType::Equal,
-                        left: tree.clone(),
-                        right: ctx.const_0(),
-                    };
-                    OperandType::Arithmetic(arith)
-                }
+            let rel_bits = right_tree.relevant_bits_mask();
+            if add_sub_mask & rel_bits != rel_bits {
+                right_tree = simplify_and(
+                    &right_tree,
+                    &ctx.constant(add_sub_mask),
+                    ctx,
+                    &mut SimplifyWithZeroBits::default(),
+                );
+            }
+            let arith = ArithOperand {
+                ty: ArithOpType::Equal,
+                left: left_tree,
+                right: right_tree,
             };
+            let ty = OperandType::Arithmetic(arith);
             Operand::new_simplified_rc(ty)
         }
     }
@@ -7761,5 +7779,41 @@ mod test {
             ctx.constant(0xff_ffff_fe00),
         );
         let _ = Operand::simplified(op1);
+    }
+
+    #[test]
+    fn simplify_eq_consistency4() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_eq(
+            operand_add(
+                ctx.constant(0x7014b0001050500),
+                mem32(ctx.register(0)),
+            ),
+            mem32(ctx.register(1)),
+        );
+        let op1 = Operand::simplified(op1);
+        assert!(
+            op1.iter().any(|x| x.if_arithmetic_and().is_some()) == false,
+            "Operand didn't simplify correctly: {}", op1,
+        );
+    }
+
+    #[test]
+    fn simplify_eq_consistency5() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_eq(
+            mem32(ctx.register(1)),
+            operand_add(
+                ctx.constant(0x5a00000001),
+                mem8(ctx.register(0)),
+            ),
+        );
+        let op1 = Operand::simplified(op1);
+        assert!(
+            op1.iter().any(|x| x.if_arithmetic_and().is_some()) == false,
+            "Operand didn't simplify correctly: {}", op1,
+        );
     }
 }
