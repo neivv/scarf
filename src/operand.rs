@@ -3763,7 +3763,7 @@ fn simplify_xor(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
 fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Operand> {
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
 
-    let const_val = ops.iter().flat_map(|x| x.if_constant())
+    let mut const_val = ops.iter().flat_map(|x| x.if_constant())
         .fold(0u64, |sum, x| sum ^ x);
     ops.retain(|x| x.if_constant().is_none());
     heapsort::sort(&mut *ops);
@@ -3772,10 +3772,33 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
     if ops.is_empty() {
         return ctx.constant(const_val);
     }
+
+    for i in 0..ops.len() {
+        let op = &ops[i];
+        // Convert c1 ^ (y | c2) to c1 ^ c2 ^ y if y & c2 == 0
+        if let Some((l, r)) = op.if_arithmetic_or() {
+            let l_bits = match l.if_constant() {
+                Some(c) => c,
+                None => Operand::and_masked(l).1 & l.relevant_bits_mask(),
+            };
+            let r_bits = match r.if_constant() {
+                Some(c) => c,
+                None => Operand::and_masked(r).1 & r.relevant_bits_mask(),
+            };
+            if l_bits & r_bits == 0 {
+                let const_other = Operand::either(l, r, |x| x.if_constant());
+                if let Some((c, other)) = const_other {
+                    const_val ^= c;
+                    ops[i] = other.clone();
+                }
+            }
+        }
+    }
+
     if const_val != 0 {
         let const_val_op = ctx.constant(const_val);
         if ops.len() == 1 {
-            // Try some conversations
+            // Try some conversions
             let op = &ops[0];
             // Convert c1 ^ (y & c2) == (y ^ c1)) & c2
             // if y is xor and c1 & c2 == c1
@@ -7878,6 +7901,66 @@ mod test {
             ctx.constant(0),
         );
         let eq1 = ctx.constant(1);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_xor_consistency1() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_xor(
+            operand_xor(
+                ctx.register(1),
+                ctx.constant(0x5910e010000),
+            ),
+            operand_and(
+                operand_or(
+                    ctx.register(2),
+                    ctx.constant(0xf3fbfb01ffff0000),
+                ),
+                ctx.constant(0x1ffffff24),
+            ),
+        );
+        let eq1 = operand_xor(
+            ctx.register(1),
+            operand_xor(
+                ctx.constant(0x590f1fe0000),
+                operand_and(
+                    ctx.constant(0xff24),
+                    ctx.register(2),
+                ),
+            ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_xor_consistency2() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_xor(
+            operand_xor(
+                ctx.register(1),
+                ctx.constant(0x59100010e00),
+            ),
+            operand_and(
+                operand_or(
+                    ctx.register(2),
+                    ctx.constant(0xf3fbfb01ffff7e00),
+                ),
+                ctx.constant(0x1ffffff24),
+            ),
+        );
+        let eq1 = operand_xor(
+            ctx.register(1),
+            operand_xor(
+                ctx.constant(0x590fffe7000),
+                operand_and(
+                    ctx.constant(0x8124),
+                    ctx.register(2),
+                ),
+            ),
+        );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
