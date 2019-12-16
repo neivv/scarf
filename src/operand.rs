@@ -966,23 +966,25 @@ impl Operand {
     fn collect_add_ops(
         s: &Rc<Operand>,
         ops: &mut Vec<(Rc<Operand>, bool)>,
+        out_mask: u64,
         negate: bool,
     ) {
         fn recurse(
             s: &Rc<Operand>,
             ops: &mut Vec<(Rc<Operand>, bool)>,
+            out_mask: u64,
             negate: bool,
         )  {
             match s.ty {
                 OperandType::Arithmetic(ref arith) if {
                     arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
                 } => {
-                    recurse(&arith.left, ops, negate);
+                    recurse(&arith.left, ops, out_mask, negate);
                     let negate_right = match arith.ty {
                         ArithOpType::Add => negate,
                         _ => !negate,
                     };
-                    recurse(&arith.right, ops, negate_right);
+                    recurse(&arith.right, ops, out_mask, negate_right);
                 }
                 _ => {
                     let mut s = s.clone();
@@ -991,7 +993,16 @@ impl Operand {
                         s = Operand::simplified(s);
                         if let OperandType::Arithmetic(ref arith) = s.ty {
                             if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
-                                recurse(&s, ops, negate);
+                                recurse(&s, ops, out_mask, negate);
+                                return;
+                            }
+                        }
+                    }
+                    if let Some((l, r)) = s.if_arithmetic_and() {
+                        let const_other = Operand::either(l, r, |x| x.if_constant());
+                        if let Some((c, other)) = const_other {
+                            if c == out_mask {
+                                recurse(other, ops, out_mask, negate);
                                 return;
                             }
                         }
@@ -1000,7 +1011,7 @@ impl Operand {
                 }
             }
         }
-        recurse(s, ops, negate)
+        recurse(s, ops, out_mask, negate)
     }
 
     /// Unwraps a tree chaining arith operation to vector of the operands.
@@ -1899,7 +1910,6 @@ fn simplify_or_merge_mem(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
 
 fn add_sub_ops_to_tree(
     ops: &mut Vec<(Rc<Operand>, bool)>,
-    mask: u64,
     ctx: &OperandContext,
 ) -> Rc<Operand> {
     use self::ArithOpType::*;
@@ -1934,17 +1944,6 @@ fn add_sub_ops_to_tree(
         };
         tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
-    if mask != u64::max_value() {
-        let no_op_mask = tree.relevant_bits_mask();
-        if mask & no_op_mask != no_op_mask {
-            tree = simplify_and(
-                &tree,
-                &ctx.constant(mask),
-                ctx,
-                &mut SimplifyWithZeroBits::default(),
-            );
-        }
-    }
     tree
 }
 
@@ -1954,8 +1953,8 @@ fn simplify_add_sub(
     is_sub: bool,
     ctx: &OperandContext,
 ) -> Rc<Operand> {
-    let (mut ops, mask) = simplify_add_sub_ops(left, right, is_sub, ctx);
-    add_sub_ops_to_tree(&mut ops, mask, ctx)
+    let mut ops = simplify_add_sub_ops(left, right, is_sub, u64::max_value(), ctx);
+    add_sub_ops_to_tree(&mut ops, ctx)
 }
 
 fn simplify_mul(
@@ -2116,115 +2115,14 @@ fn simplify_add_sub_ops(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     is_sub: bool,
+    mask: u64,
     ctx: &OperandContext,
-) -> (Vec<(Rc<Operand>, bool)>, u64) {
-    use self::operand_helpers::*;
-
+) -> Vec<(Rc<Operand>, bool)> {
     let mut ops = Vec::new();
-    Operand::collect_add_ops(left, &mut ops, false);
-    Operand::collect_add_ops(right, &mut ops, is_sub);
-    let const_sum = ops.iter()
-        .flat_map(|&(ref x, neg)| x.if_constant().map(|x| (x, neg)))
-        .fold(0u64, |sum, (x, neg)| match neg {
-            false => sum.wrapping_add(x),
-            true => sum.wrapping_sub(x),
-        });
-    ops.retain(|&(ref x, _)| x.if_constant().is_none());
-    if ops.is_empty() {
-        ops.push((ctx.constant(const_sum), false));
-        return (ops, u64::max_value());
-    }
-    // If there are multiple terms with same mask, e.g. `(x & mask) + (y & mask) + z`
-    // simplify them together to (x + y) & mask + z
-    // (mask, other) or (!0, op)
-    let mut and_masks: Vec<(u64, &Rc<Operand>, bool)> = ops.iter().map(|x| {
-        x.0.if_arithmetic_and()
-            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
-            .map(|(c, o)| (c, o, x.1))
-            .unwrap_or_else(|| (u64::max_value(), &x.0, x.1))
-    }).collect();
-    heapsort::sort(&mut and_masks);
-    let mut pos = 0;
-    let mut result = Vec::new();
-    while pos < and_masks.len() {
-        let old_pos = pos;
-        let mask = and_masks[pos].0;
-        let mut subset: Vec<(Rc<Operand>, bool)> = Vec::new();
-        let mut take_all = false;
-        for &(mask2, op, neg) in &and_masks[pos..] {
-            if mask != mask2 {
-                if old_pos == 0 && pos == 1 && mask2 == u64::max_value() && subset.len() == 1 {
-                    // Hacky addition to not use and masks if only first op
-                    // is masked.
-                    // Maybe could be replaced with a full pass of all ops with
-                    // mask u64::max_value() at the end instead?
-                    for op in &mut subset {
-                        op.0 = Operand::simplified(operand_and(op.0.clone(), ctx.constant(mask)));
-                    }
-                    take_all = true;
-                }
-                let still_ok = if mask2 == u64::max_value() && old_pos == 0 {
-                    // Accept some other cases which weren't explicitly and masked.
-                    // Namely, an operand whose relbits are the mask
-                    let relbit_mask = op.relevant_bits_mask();
-                    mask == relbit_mask
-                } else {
-                    false
-                };
-                if !still_ok && !take_all {
-                    break;
-                }
-            }
-            Operand::collect_add_ops(op, &mut subset, neg);
-            pos += 1;
-        }
-        let is_all = pos == and_masks.len() && old_pos == 0;
-        let mask = if take_all {
-            u64::max_value()
-        } else {
-            mask
-        };
-        simplify_collected_add_sub_ops(&mut subset, mask, ctx);
-        if is_all {
-            // All had same and mask, can return it
-            if const_sum != 0 {
-                if mask != u64::max_value() {
-                    let negate = subset.iter().all(|x| x.1 == true);
-                    if negate {
-                        for s in &mut subset {
-                            s.1 = false;
-                        }
-                    }
-                    let new = add_sub_ops_to_tree(&mut subset, mask, ctx);
-                    subset.push((new, negate));
-                }
-                if const_sum > 0x8000_0000_0000_0000 && !subset.is_empty() {
-                    subset.push((ctx.constant(0u64.wrapping_sub(const_sum)), true));
-                } else {
-                    subset.push((ctx.constant(const_sum), false));
-                }
-                return (subset, u64::max_value());
-            } else {
-                return (subset, mask);
-            }
-        }
-        let negate = subset.iter().all(|x| x.1 == true);
-        if negate {
-            for s in &mut subset {
-                s.1 = false;
-            }
-        }
-        let new = add_sub_ops_to_tree(&mut subset, mask, ctx);
-        result.push((new, negate));
-    }
-    if const_sum != 0 {
-        if const_sum > 0x8000_0000_0000_0000 && !result.is_empty() {
-            result.push((ctx.constant(0u64.wrapping_sub(const_sum)), true));
-        } else {
-            result.push((ctx.constant(const_sum), false));
-        }
-    }
-    (result, u64::max_value())
+    Operand::collect_add_ops(left, &mut ops, mask, false);
+    Operand::collect_add_ops(right, &mut ops, mask, is_sub);
+    simplify_collected_add_sub_ops(&mut ops, mask, ctx);
+    ops
 }
 
 fn simplify_collected_add_sub_ops(
@@ -2242,7 +2140,8 @@ fn simplify_collected_add_sub_ops(
 
     heapsort::sort(ops);
     simplify_add_merge_muls(ops, ctx);
-    let const_sum = const_sum & and_mask;
+    let new_consts = simplify_add_merge_masked_reverting(ops);
+    let const_sum = const_sum.wrapping_add(new_consts) & and_mask;
     if ops.is_empty() {
         if const_sum != 0 {
             ops.push((ctx.constant(const_sum), false));
@@ -2259,6 +2158,65 @@ fn simplify_collected_add_sub_ops(
     }
 }
 
+fn simplify_add_merge_masked_reverting(ops: &mut Vec<(Rc<Operand>, bool)>) -> u64 {
+    // Shouldn't need as complex and_const as other places use
+    fn and_const(op: &Rc<Operand>) -> Option<(u64, &Rc<Operand>)> {
+        match op.ty {
+            OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
+                Operand::either(&arith.left, &arith.right, |x| x.if_constant())
+            }
+            _ => None,
+        }
+    }
+
+    fn check_vals(a: &Rc<Operand>, b: &Rc<Operand>) -> bool {
+        if let Some((l, r)) = a.if_arithmetic_sub() {
+            if l.if_constant() == Some(0) && r == b {
+                return true;
+            }
+        }
+        if let Some((l, r)) = b.if_arithmetic_sub() {
+            if l.if_constant() == Some(0) && r == a {
+                return true;
+            }
+        }
+        false
+    }
+
+    if ops.is_empty() {
+        return 0;
+    }
+    let mut sum = 0u64;
+    let mut i = 0;
+    'outer: while i + 1 < ops.len() {
+        let op = &ops[i].0;
+        if let Some((constant, val)) = and_const(&op) {
+            // Only try merging when mask's low bits are all ones and nothing else is
+            if constant.wrapping_add(1).count_ones() <= 1 && ops[i].1 == false {
+                let mut j = i + 1;
+                while j < ops.len() {
+                    let other_op = &ops[j].0;
+                    if let Some((other_constant, other_val)) = and_const(&other_op) {
+                        let ok = other_constant == constant &&
+                            check_vals(val, other_val) &&
+                            ops[j].1 == false;
+                        if ok {
+                            sum = sum.wrapping_add(constant.wrapping_add(1));
+                            // Skips i += 1, removes j first to not move i
+                            ops.swap_remove(j);
+                            ops.swap_remove(i);
+                            continue 'outer;
+                        }
+                    }
+                    j += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+    sum
+}
+
 fn simplify_eq(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
@@ -2268,7 +2226,8 @@ fn simplify_eq(
 
     // Equality is just bit comparision without overflow semantics, even though
     // this also uses x == y => x - y == 0 property to simplify it.
-    let (mut ops, add_sub_mask) = simplify_add_sub_ops(left, right, true, ctx);
+    let add_sub_mask = left.relevant_bits_mask() | right.relevant_bits_mask();
+    let mut ops = simplify_add_sub_ops(left, right, true, add_sub_mask, ctx);
     if ops.is_empty() {
         return ctx.const_1();
     }
@@ -2347,7 +2306,8 @@ fn simplify_eq(
                     _ => ()
                 }
                 let mut op = mark_self_simplified(&ops[0].0);
-                if add_sub_mask != u64::max_value() {
+                let relbits = op.relevant_bits_mask();
+                if add_sub_mask & relbits != relbits {
                     let constant = ctx.constant(add_sub_mask);
                     let arith = ArithOperand {
                         ty: ArithOpType::And,
@@ -2432,19 +2392,14 @@ fn simplify_eq(
                 };
                 tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
             }
-            if add_sub_mask != u64::max_value() {
-                let rel_bits = tree.relevant_bits();
-                let high = 64 - rel_bits.end;
-                let low = rel_bits.start;
-                let no_op_mask = !0u64 << high >> high >> low << low;
-                if add_sub_mask & no_op_mask != no_op_mask {
-                    tree = simplify_and(
-                        &tree,
-                        &ctx.constant(add_sub_mask),
-                        ctx,
-                        &mut SimplifyWithZeroBits::default(),
-                    );
-                }
+            let rel_bits = tree.relevant_bits_mask();
+            if add_sub_mask & rel_bits != rel_bits {
+                tree = simplify_and(
+                    &tree,
+                    &ctx.constant(add_sub_mask),
+                    ctx,
+                    &mut SimplifyWithZeroBits::default(),
+                );
             }
             // If the top node of tree is sub, convert it to eq, otherwise do top == 0
             let ty = match tree.ty {
@@ -7035,7 +6990,7 @@ mod test {
                 ctx.constant(0xffff_ffff),
             ),
         );
-        let eq1 = ctx.constant(0);
+        let eq1 = ctx.constant(0x1_0000_0000);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 
@@ -7664,5 +7619,29 @@ mod test {
             }),
             "Op1 was simplified wrong: {}", op1,
         );
+    }
+
+    #[test]
+    fn simplify_masked_add3() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_add(
+            operand_and(
+                ctx.constant(0xffff),
+                operand_or(
+                    ctx.register(0),
+                    ctx.register(1),
+                ),
+            ),
+            operand_and(
+                ctx.constant(0xffff),
+                operand_or(
+                    ctx.register(0),
+                    ctx.register(1),
+                ),
+            ),
+        );
+        let op1 = Operand::simplified(op1);
+        assert!(op1.relevant_bits().end > 16, "Operand wasn't simplified correctly {}", op1);
     }
 }
