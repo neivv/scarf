@@ -3589,7 +3589,18 @@ fn simplify_with_one_bits(
                             let mask = !0u64 >> low << low << high >> high;
                             Some(Operand::simplified(operand_and(ctx.constant(mask), s)))
                         }
-                        (Some(l), Some(r)) => Some(Operand::simplified(operand_and(l, r))),
+                        (Some(l), Some(r)) => {
+                            if l != arith.left || r != arith.right {
+                                let new = Operand::simplified(operand_and(l, r));
+                                if new == *op {
+                                    Some(new)
+                                } else {
+                                    simplify_with_one_bits(&new, bits, ctx)
+                                }
+                            } else {
+                                Some(op.clone())
+                            }
+                        }
                     }
                 }
                 ArithOpType::Or => {
@@ -3598,7 +3609,18 @@ fn simplify_with_one_bits(
                     match (left, right) {
                         (None, None) => None,
                         (None, Some(s)) | (Some(s), None) => Some(s),
-                        (Some(l), Some(r)) => Some(Operand::simplified(operand_or(l, r))),
+                        (Some(l), Some(r)) => {
+                            if l != arith.left || r != arith.right {
+                                let new = Operand::simplified(operand_or(l, r));
+                                if new == *op {
+                                    Some(new)
+                                } else {
+                                    simplify_with_one_bits(&new, bits, ctx)
+                                }
+                            } else {
+                                Some(op.clone())
+                            }
+                        }
                     }
                 }
                 _ => default(),
@@ -3618,7 +3640,7 @@ fn simplify_with_one_bits(
             let max_bits = op.relevant_bits();
             if bits.start == 0 && bits.end >= max_bits.end {
                 None
-            } else if bits.end == 64 {
+            } else if bits.end >= max_bits.end {
                 if bits.start <= 8 && max_bits.end > 8 {
                     Some(mem_variable_rc(MemAccessSize::Mem8, mem.address.clone()))
                 } else if bits.start <= 16 && max_bits.end > 16 {
@@ -7692,5 +7714,52 @@ mod test {
             ctx.constant(0),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_or_consistency4() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_or(
+            operand_and(
+                operand_or(
+                    ctx.constant(0x80000000000002),
+                    operand_xmm(2, 1),
+                ),
+                mem16(ctx.register(0)),
+            ),
+            ctx.constant(0x40ffffffff3fff7f),
+        );
+        let eq1 = operand_or(
+            operand_and(
+                operand_xmm(2, 1),
+                mem8(ctx.register(0)),
+            ),
+            ctx.constant(0x40ffffffff3fff7f),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_or_infinite_recurse_bug() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_or(
+            operand_and(
+                operand_or(
+                    ctx.constant(0x100),
+                    operand_and(
+                        operand_mul(
+                            ctx.constant(4),
+                            ctx.register(0),
+                        ),
+                        ctx.constant(0xffff_fe00),
+                    ),
+                ),
+                mem32(ctx.register(0)),
+            ),
+            ctx.constant(0xff_ffff_fe00),
+        );
+        let _ = Operand::simplified(op1);
     }
 }
