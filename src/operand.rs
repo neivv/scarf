@@ -1539,6 +1539,7 @@ impl Operand {
                         MemAccessSize::Mem16 => (val & 0x8000 != 0, 0xffff),
                         MemAccessSize::Mem32 | _ => (val & 0x8000_0000 != 0, 0xffff_ffff),
                     };
+                    let val = val & mask;
                     if ext {
                         let new = match to {
                             MemAccessSize::Mem16 => (0xffff & !mask) | val as u64,
@@ -7665,6 +7666,30 @@ mod test {
         let eq1 = operand_and(
             mem8(ctx.register(0)),
             ctx.constant(0x10),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_eq_consistency3() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_eq(
+            operand_and(
+                Operand::new_not_simplified_rc(
+                    OperandType::SignExtend(
+                        ctx.constant(0x2991919191910000),
+                        MemAccessSize::Mem8,
+                        MemAccessSize::Mem16,
+                    ),
+                ),
+                ctx.register(1),
+            ),
+            mem8(ctx.register(2)),
+        );
+        let eq1 = operand_eq(
+            mem8(ctx.register(2)),
+            ctx.constant(0),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
