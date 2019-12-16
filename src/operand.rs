@@ -3305,6 +3305,12 @@ fn simplify_with_and_mask_inner(
             }
         }
         OperandType::Memory(ref mem) => {
+            let mask = match mem.size {
+                MemAccessSize::Mem8 => mask & 0xff,
+                MemAccessSize::Mem16 => mask & 0xffff,
+                MemAccessSize::Mem32 => mask & 0xffff_ffff,
+                MemAccessSize::Mem64 => mask,
+            };
             // Try to do conversions such as Mem32[x] & 00ff_ff00 => Mem16[x + 1] << 8,
             // but also Mem32[x] & 003f_5900 => (Mem16[x + 1] & 3f59) << 8.
 
@@ -7643,5 +7649,23 @@ mod test {
         );
         let op1 = Operand::simplified(op1);
         assert!(op1.relevant_bits().end > 16, "Operand wasn't simplified correctly {}", op1);
+    }
+
+    #[test]
+    fn simplify_or_consistency3() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_or(
+                ctx.constant(0x854e00e501001007),
+                mem16(ctx.register(0)),
+            ),
+            ctx.constant(0x28004000d2000010),
+        );
+        let eq1 = operand_and(
+            mem8(ctx.register(0)),
+            ctx.constant(0x10),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
