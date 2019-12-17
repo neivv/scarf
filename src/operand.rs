@@ -802,6 +802,17 @@ impl OperandType {
                         low..high
                     }
                 }
+                ArithOpType::Modulo => {
+                    let left_bits = arith.left.relevant_bits();
+                    let right_bits = arith.right.relevant_bits();
+                    // Modulo can only give a result as large as right,
+                    // though if left is less than right, it only gives
+                    // left
+                    0..(min(left_bits.end, right_bits.end))
+                }
+                ArithOpType::Div => {
+                    arith.left.relevant_bits()
+                }
                 _ => 0..64,
             },
             OperandType::Constant(c) => {
