@@ -1447,6 +1447,34 @@ impl Operand {
                     ArithOpType::Div | ArithOpType::Modulo => {
                         let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
                         let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                        if let Some(r) = right.if_constant() {
+                            if r == 0 {
+                                // Use 0 / 0 for any div by zero
+                                let arith = ArithOperand {
+                                    ty: arith.ty,
+                                    left: right.clone(),
+                                    right,
+                                };
+                                return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+                            }
+                            if arith.ty == ArithOpType::Modulo {
+                                // If x % y == x if y > x
+                                if r > left.relevant_bits_mask() {
+                                    return left;
+                                }
+                                if let Some(l) = left.if_constant() {
+                                    return ctx.constant(l % r);
+                                }
+                            } else {
+                                // Div, x / y == 0 if y > x
+                                if r > left.relevant_bits_mask() {
+                                    return ctx.const_0();
+                                }
+                                if let Some(l) = left.if_constant() {
+                                    return ctx.constant(l / r);
+                                }
+                            }
+                        }
                         let arith = ArithOperand {
                             ty: arith.ty,
                             left,
@@ -8031,6 +8059,18 @@ mod test {
             ),
         );
         let eq1 = ctx.constant(0xfffeffffffffffff);
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_useless_mod() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_mod(
+            operand_xmm(0, 0),
+            ctx.constant(0x504ff04ff0000),
+        );
+        let eq1 = operand_xmm(0, 0);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
