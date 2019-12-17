@@ -2669,7 +2669,17 @@ fn simplify_and(
     Operand::collect_and_ops(left, &mut ops);
     Operand::collect_and_ops(right, &mut ops);
     let mut const_remain = !0u64;
+    // Keep second mask in form 00000011111 (All High bits 0, all low bits 1),
+    // as that allows simplifying add/sub/mul a bit more
+    let mut low_const_remain = !0u64;
     loop {
+        for op in &ops {
+            let relevant_bits = op.relevant_bits();
+            if relevant_bits.start == 0 {
+                let shift = (64 - relevant_bits.end) & 63;
+                low_const_remain = low_const_remain << shift >> shift;
+            }
+        }
         const_remain = ops.iter()
             .map(|op| match op.ty {
                 OperandType::Constant(c) => c,
@@ -2680,6 +2690,8 @@ fn simplify_and(
         if ops.is_empty() || const_remain == 0 {
             return ctx.constant(const_remain);
         }
+        let crem_high_zeros = const_remain.leading_zeros();
+        low_const_remain = low_const_remain << crem_high_zeros >> crem_high_zeros;
 
         heapsort::sort(&mut ops);
         ops.dedup();
@@ -2696,6 +2708,17 @@ fn simplify_and(
             break;
         }
 
+        if low_const_remain != !0 && low_const_remain != const_remain {
+            vec_filter_map(&mut ops, |op| {
+                let new = simplify_with_and_mask(&op, low_const_remain, ctx, swzb_ctx);
+                if let Some(c) = new.if_constant() {
+                    const_remain &= c;
+                    None
+                } else {
+                    Some(new)
+                }
+            });
+        }
         if const_remain != !0 {
             vec_filter_map(&mut ops, |op| {
                 let new = simplify_with_and_mask(&op, const_remain, ctx, swzb_ctx);
@@ -8319,5 +8342,57 @@ mod test {
         let op1 = Operand::simplified(op1);
         let eq1 = Operand::simplified(eq1);
         assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_and_consistency8() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_and(
+                operand_add(
+                    ctx.constant(0x5050505000001),
+                    ctx.register(0),
+                ),
+                operand_mod(
+                    ctx.register(4),
+                    ctx.constant(0x3ff0100000102),
+                ),
+            ),
+            ctx.constant(0x3ff01000001),
+        );
+        let eq1 = operand_and(
+            Operand::simplified(
+                operand_and(
+                    operand_add(
+                        ctx.constant(0x5050505000001),
+                        ctx.register(0),
+                    ),
+                    operand_mod(
+                        ctx.register(4),
+                        ctx.constant(0x3ff0100000102),
+                    ),
+                ),
+            ),
+            ctx.constant(0x3ff01000001),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        let eq1b = operand_and(
+            operand_and(
+                operand_add(
+                    ctx.constant(0x5050505000001),
+                    ctx.register(0),
+                ),
+                operand_mod(
+                    ctx.register(4),
+                    ctx.constant(0x3ff0100000102),
+                ),
+            ),
+            ctx.constant(0x50003ff01000001),
+        );
+        let eq1b = Operand::simplified(eq1b);
+        assert_eq!(op1, eq1);
+        assert_eq!(op1, eq1b);
     }
 }
