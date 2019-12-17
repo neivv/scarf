@@ -2753,8 +2753,14 @@ fn simplify_and(
     // Simplify (x | y) & mask to (x | (y & mask)) if mask is useless to x
     for i in 0..ops.len() {
         if let Some((l, r)) = ops[i].if_arithmetic_or() {
-            let left_mask = l.relevant_bits_mask();
-            let right_mask = r.relevant_bits_mask();
+            let left_mask = match l.if_constant() {
+                Some(c) => c,
+                None => l.relevant_bits_mask(),
+            };
+            let right_mask = match r.if_constant() {
+                Some(c) => c,
+                None => r.relevant_bits_mask(),
+            };
             let left_needs_mask = left_mask & const_remain != left_mask;
             let right_needs_mask = right_mask & const_remain != right_mask;
             if !left_needs_mask && right_needs_mask {
@@ -8128,5 +8134,36 @@ mod test {
             ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_and_consistency5() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_and(
+                mem8(ctx.register(1)),
+                operand_or(
+                    ctx.constant(0x22),
+                    operand_xmm(0, 0),
+                ),
+            ),
+            ctx.constant(0x23),
+        );
+        let eq1 = Operand::simplified(
+            operand_and(
+                mem8(ctx.register(1)),
+                operand_or(
+                    ctx.constant(0x22),
+                    operand_and(
+                        operand_xmm(0, 0),
+                        ctx.constant(1),
+                    ),
+                ),
+            ),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
     }
 }
