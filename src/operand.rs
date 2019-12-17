@@ -2888,6 +2888,7 @@ fn simplify_or_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Opera
         ops.retain(|x| x.if_arithmetic_and().is_none());
         ops.extend(new_ops);
     }
+    heapsort::sort(ops);
     if const_val != 0 {
         ops.push(ctx.constant(const_val));
     }
@@ -8227,6 +8228,41 @@ mod test {
             operand_or(
                 ctx.constant(0xf2fb000091010e00),
                 mem8(ctx.register(1)),
+            ),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_or_consistency9() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_or(
+            ctx.constant(0x47000000140010ff),
+            operand_or(
+                mem16(ctx.constant(0x100)),
+                operand_or(
+                    ctx.constant(0x2a00000100100730),
+                    operand_mul(
+                        ctx.constant(0x2000000000),
+                        operand_xmm(4, 1),
+                    ),
+                ),
+            ),
+        );
+        let eq1 = operand_or(
+            ctx.constant(0x6f000001141017ff),
+            operand_or(
+                operand_lsh(
+                    mem8(ctx.constant(0x101)),
+                    ctx.constant(8),
+                ),
+                operand_mul(
+                    ctx.constant(0x2000000000),
+                    operand_xmm(4, 1),
+                ),
             ),
         );
         let op1 = Operand::simplified(op1);
