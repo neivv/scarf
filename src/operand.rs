@@ -1569,6 +1569,9 @@ impl Operand {
                 }))
             }
             OperandType::SignExtend(ref val, from, to) => {
+                if from.bits() >= to.bits() {
+                    return ctx.const_0();
+                }
                 let val = Operand::simplified_with_ctx(val.clone(), ctx, swzb_ctx);
                 // Shouldn't be 64bit constant since then `from` would already be Mem64
                 // Obviously such thing could be built, but assuming disasm/users don't..
