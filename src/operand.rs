@@ -2775,19 +2775,31 @@ fn simplify_and(
             let left_needs_mask = left_mask & const_remain != left_mask;
             let right_needs_mask = right_mask & const_remain != right_mask;
             if !left_needs_mask && right_needs_mask {
-                let masked =
-                    simplify_and(&r, &ctx.constant(const_remain & right_mask), ctx, swzb_ctx);
-                let new = simplify_or(&l, &masked, ctx);
-                ops[i] = new;
-                const_remain = !0u64;
-                break;
+                let constant = ctx.constant(const_remain & right_mask);
+                let masked = simplify_and(&r, &constant, ctx, swzb_ctx);
+                let changed = match masked.if_arithmetic_and() {
+                    Some((a, b)) => l.if_constant().is_none() || a != r || *b != constant,
+                    _ => true,
+                };
+                if changed {
+                    let new = simplify_or(&l, &masked, ctx);
+                    ops[i] = new;
+                    const_remain = !0u64;
+                    break;
+                }
             } else if left_needs_mask && !right_needs_mask {
-                let masked =
-                    simplify_and(&l, &ctx.constant(const_remain & left_mask), ctx, swzb_ctx);
-                let new = simplify_or(&r, &masked, ctx);
-                ops[i] = new;
-                const_remain = !0u64;
-                break;
+                let constant = ctx.constant(const_remain & left_mask);
+                let masked = simplify_and(&l, &constant, ctx, swzb_ctx);
+                let changed = match masked.if_arithmetic_and() {
+                    Some((a, b)) => r.if_constant().is_none() || a != l || *b != constant,
+                    _ => true,
+                };
+                if changed {
+                    let new = simplify_or(&r, &masked, ctx);
+                    ops[i] = new;
+                    const_remain = !0u64;
+                    break;
+                }
             }
         }
     }
@@ -7100,6 +7112,27 @@ mod test {
         let op1 = operand_and(
             operand_or(
                 operand_rsh(
+                    operand_and(
+                        ctx.register(0),
+                        ctx.constant(0xffff_ffff),
+                    ),
+                    ctx.constant(0xb),
+                ),
+                operand_lsh(
+                    operand_and(
+                        ctx.register(0),
+                        ctx.constant(0xffff_ffff),
+                    ),
+                    ctx.constant(0x15),
+                ),
+            ),
+            ctx.constant(0xffff_ffff),
+        );
+        let op1 = Operand::simplified(op1);
+        let subst = Operand::substitute(&op1, &ctx.register(0), &mem32(ctx.constant(0x1234)));
+        let with_mem = operand_and(
+            operand_or(
+                operand_rsh(
                     mem32(ctx.constant(0x1234)),
                     ctx.constant(0xb),
                 ),
@@ -7110,20 +7143,8 @@ mod test {
             ),
             ctx.constant(0xffff_ffff),
         );
-        let eq1 = operand_or(
-            operand_rsh(
-                mem32(ctx.constant(0x1234)),
-                ctx.constant(0xb),
-            ),
-            operand_and(
-                operand_lsh(
-                    mem32(ctx.constant(0x1234)),
-                    ctx.constant(0x15),
-                ),
-                ctx.constant(0xffe0_0000),
-            ),
-        );
-        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+        let with_mem = Operand::simplified(with_mem);
+        assert_eq!(subst, with_mem);
     }
 
     #[test]
@@ -8171,6 +8192,41 @@ mod test {
                         ctx.constant(1),
                     ),
                 ),
+            ),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_and_consistency6() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_and(
+                ctx.constant(0xfeffffffffffff24),
+                operand_or(
+                    ctx.constant(0xf3fbfb01ffff0000),
+                    operand_xmm(0, 0),
+                ),
+            ),
+            operand_or(
+                ctx.constant(0xf3fb000091010e03),
+                mem8(ctx.register(1)),
+            ),
+        );
+        let eq1 = operand_and(
+            operand_or(
+                ctx.constant(0xf2fbfb01ffff0000),
+                operand_and(
+                    operand_xmm(0, 0),
+                    ctx.constant(0xff24),
+                ),
+            ),
+            operand_or(
+                ctx.constant(0xf2fb000091010e00),
+                mem8(ctx.register(1)),
             ),
         );
         let op1 = Operand::simplified(op1);
