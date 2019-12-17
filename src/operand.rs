@@ -2724,16 +2724,28 @@ fn simplify_and(
             }
         }
         let mut new_ops = vec![];
+        let mut const_remain_changed = false;
         for i in 0..ops.len() {
             if let Some((l, r)) = ops[i].if_arithmetic_and() {
                 Operand::collect_and_ops(l, &mut new_ops);
                 Operand::collect_and_ops(r, &mut new_ops);
             } else if let Some(c) = ops[i].if_constant() {
-                const_remain &= c;
+                if c & const_remain != const_remain {
+                    const_remain_changed = true;
+                    const_remain &= c;
+                }
+            }
+        }
+
+        for op in &mut ops {
+            let mask = op.relevant_bits_mask();
+            if mask & const_remain != const_remain {
+                const_remain_changed = true;
+                const_remain &= mask;
             }
         }
         ops.retain(|x| x.if_constant().is_none());
-        if new_ops.is_empty() {
+        if new_ops.is_empty() && !const_remain_changed {
             break;
         }
         ops.retain(|x| x.if_arithmetic_and().is_none());
@@ -2760,8 +2772,8 @@ fn simplify_and(
         let or = simplify_or_ops(&mut ops, ctx);
         return simplify_eq(&or, &ctx.const_0(), ctx);
     }
-
     // Simplify (x | y) & mask to (x | (y & mask)) if mask is useless to x
+    let mut any_changed = false;
     for i in 0..ops.len() {
         if let Some((l, r)) = ops[i].if_arithmetic_or() {
             let left_mask = match l.if_constant() {
@@ -2784,8 +2796,7 @@ fn simplify_and(
                 if changed {
                     let new = simplify_or(&l, &masked, ctx);
                     ops[i] = new;
-                    const_remain = !0u64;
-                    break;
+                    any_changed = true;
                 }
             } else if left_needs_mask && !right_needs_mask {
                 let constant = ctx.constant(const_remain & left_mask);
@@ -2797,11 +2808,13 @@ fn simplify_and(
                 if changed {
                     let new = simplify_or(&r, &masked, ctx);
                     ops[i] = new;
-                    const_remain = !0u64;
-                    break;
+                    any_changed = true;
                 }
             }
         }
+    }
+    if any_changed {
+        const_remain = !0u64;
     }
 
     let relevant_bits = ops.iter().fold(!0, |bits, op| {
@@ -8263,6 +8276,41 @@ mod test {
                     ctx.constant(0x2000000000),
                     operand_xmm(4, 1),
                 ),
+            ),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_and_consistency7() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_and(
+                ctx.constant(0xfeffffffffffff24),
+                operand_or(
+                    ctx.constant(0xf3fbfb01ffff0000),
+                    operand_xmm(0, 0),
+                ),
+            ),
+            operand_or(
+                ctx.constant(0xc04ffff6efef1f6),
+                mem8(ctx.register(1)),
+            ),
+        );
+        let eq1 = operand_and(
+            operand_or(
+                ctx.constant(0x2fbfb01ffff0000),
+                operand_and(
+                    operand_xmm(0, 0),
+                    ctx.constant(0xff24),
+                ),
+            ),
+            operand_or(
+                ctx.constant(0xc04ffff6efef124),
+                mem8(ctx.register(1)),
             ),
         );
         let op1 = Operand::simplified(op1);
