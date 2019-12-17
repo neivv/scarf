@@ -3208,6 +3208,9 @@ fn simplify_with_and_mask(
     ctx: &OperandContext,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
+    if op.relevant_bits_mask() & mask == 0 {
+        return ctx.const_0();
+    }
     if swzb_ctx.with_and_mask_count > 40 {
         return op.clone();
     }
@@ -3517,9 +3520,13 @@ fn simplify_with_zero_bits(
                             if low >= high {
                                 return Some(op.clone());
                             }
-                            let mask_high = 64 - low;
-                            let mask = !0u64 >> c << c << mask_high >> mask_high;
-                            let result1 = simplify_with_and_mask(&left, mask, ctx, swzb);
+                            let result1 = if bits.end == 64 {
+                                let mask_high = 64 - low;
+                                let mask = !0u64 >> c << c << mask_high >> mask_high;
+                                simplify_with_and_mask(left, mask, ctx, swzb)
+                            } else {
+                                left.clone()
+                            };
                             let result2 =
                                 simplify_with_zero_bits(&result1, &(low..high), ctx, swzb);
                             if let Some(result2) =  result2 {
@@ -8009,6 +8016,21 @@ mod test {
                 ctx.constant(0x28),
             ),
         );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_or_consistency6() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_or(
+            ctx.constant(0xfffeffffffffffff),
+            operand_and(
+                operand_xmm(0, 0),
+                ctx.register(0),
+            ),
+        );
+        let eq1 = ctx.constant(0xfffeffffffffffff);
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
     }
 }
