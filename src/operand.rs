@@ -2784,15 +2784,27 @@ fn simplify_or(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) ->
 fn simplify_or_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Operand> {
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     let mut const_val = 0;
+    let swzb_ctx = &mut SimplifyWithZeroBits::default();
     loop {
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum | x);
         ops.retain(|x| x.if_constant().is_none());
-        if ops.is_empty() {
+        if ops.is_empty() || const_val == u64::max_value() {
             return ctx.constant(const_val);
         }
         heapsort::sort(ops);
         ops.dedup();
+        if const_val != 0 {
+            vec_filter_map(ops, |op| {
+                let new = simplify_with_and_mask(&op, !const_val, ctx, swzb_ctx);
+                if let Some(c) = new.if_constant() {
+                    const_val |= c;
+                    None
+                } else {
+                    Some(new)
+                }
+            });
+        }
         for bits in one_bit_ranges(const_val) {
             vec_filter_map(ops, |op| simplify_with_one_bits(&op, &bits, ctx));
         }
@@ -3560,6 +3572,27 @@ fn simplify_with_one_bits(
     bits: &Range<u8>,
     ctx: &OperandContext,
 ) -> Option<Rc<Operand>> {
+    fn check_useless_and_mask<'a>(
+        left: &'a Rc<Operand>,
+        right: &'a Rc<Operand>,
+        bits: &Range<u8>,
+    ) -> Option<&'a Rc<Operand>> {
+        // one_bits | (other & c) can be transformed to other & (c | one_bits)
+        // if c | one_bits is all ones for other's relevant bits, const mask
+        // can be removed.
+        let const_other = Operand::either(left, right, |x| x.if_constant());
+        if let Some((c, other)) = const_other {
+            let low = bits.start;
+            let high = 64 - bits.end;
+            let mask = !0u64 >> low << low << high >> high;
+            let nop_mask = other.relevant_bits_mask();
+            if c | mask == nop_mask {
+                return Some(other);
+            }
+        }
+        None
+    }
+
     use self::operand_helpers::*;
     if bits.start >= bits.end {
         return Some(op.clone());
@@ -3577,21 +3610,8 @@ fn simplify_with_one_bits(
             let right = &arith.right;
             match arith.ty {
                 ArithOpType::And => {
-                    let const_other = Operand::either(left, right, |x| x.if_constant());
-                    if let Some((c, other)) = const_other {
-                        // one_bits | (other & c) can be transformed to other & (c | one_bits)
-                        // if c | one_bits is all ones for other's relevant bits, const mask
-                        // can be removed.
-                        let low = bits.start;
-                        let high = 64 - bits.end;
-                        let mask = !0u64 >> low << low << high >> high;
-                        let other_rel_bits = other.relevant_bits();
-                        let low = other_rel_bits.start;
-                        let high = 64 - other_rel_bits.end;
-                        let nop_mask = !0u64 >> low << low << high >> high;
-                        if c | mask == nop_mask {
-                            return simplify_with_one_bits(other, bits, ctx);
-                        }
+                    if let Some(other) = check_useless_and_mask(left, right, bits) {
+                        return simplify_with_one_bits(other, bits, ctx);
                     }
                     let left = simplify_with_one_bits(left, bits, ctx);
                     let right = simplify_with_one_bits(right, bits, ctx);
@@ -3601,10 +3621,17 @@ fn simplify_with_one_bits(
                             let low = bits.start;
                             let high = 64 - bits.end;
                             let mask = !0u64 >> low << low << high >> high;
-                            Some(Operand::simplified(operand_and(ctx.constant(mask), s)))
+                            if mask == s.relevant_bits_mask() {
+                                Some(s)
+                            } else {
+                                Some(Operand::simplified(operand_and(ctx.constant(mask), s)))
+                            }
                         }
                         (Some(l), Some(r)) => {
                             if l != arith.left || r != arith.right {
+                                if let Some(other) = check_useless_and_mask(&l, &r, bits) {
+                                    return simplify_with_one_bits(other, bits, ctx);
+                                }
                                 let new = Operand::simplified(operand_and(l, r));
                                 if new == *op {
                                     Some(new)
@@ -7959,6 +7986,27 @@ mod test {
                     ctx.constant(0x8124),
                     ctx.register(2),
                 ),
+            ),
+        );
+        assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    }
+
+    #[test]
+    fn simplify_or_consistency5() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_or(
+            ctx.constant(0xffff7024_ffffffff),
+            operand_and(
+                mem64(ctx.constant(0x100)),
+                ctx.constant(0x0500ff04_ffff0000),
+            ),
+        );
+        let eq1 = operand_or(
+            ctx.constant(0xffff7024ffffffff),
+            operand_lsh(
+                mem8(ctx.constant(0x105)),
+                ctx.constant(0x28),
             ),
         );
         assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
