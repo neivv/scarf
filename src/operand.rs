@@ -2894,8 +2894,10 @@ fn simplify_and(
             vec_filter_map(&mut ops, |op| {
                 let new = simplify_with_and_mask(&op, const_remain, ctx, swzb_ctx);
                 if let Some(c) = new.if_constant() {
-                    const_remain &= c;
-                    const_remain_changed = true;
+                    if c & const_remain != const_remain {
+                        const_remain &= c;
+                        const_remain_changed = true;
+                    }
                     None
                 } else {
                     Some(new)
@@ -3087,15 +3089,17 @@ fn simplify_or_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Opera
                 Operand::collect_or_ops(l, &mut new_ops);
                 Operand::collect_or_ops(r, &mut new_ops);
             } else if let Some(c) = ops[i].if_constant() {
-                const_val |= c;
-                const_val_changed = true;
+                if c | const_val != const_val {
+                    const_val |= c;
+                    const_val_changed = true;
+                }
             }
         }
         ops.retain(|x| x.if_constant().is_none());
         if new_ops.is_empty() && !const_val_changed {
             break;
         }
-        ops.retain(|x| x.if_arithmetic_and().is_none());
+        ops.retain(|x| x.if_arithmetic_or().is_none());
         ops.extend(new_ops);
     }
     heapsort::sort(ops);
@@ -8726,6 +8730,32 @@ mod test {
                 ctx.constant(0x50007f3fbff0000),
             ),
             ctx.constant(0x2080a0100000000),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_bug_infloop1() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_or(
+            ctx.constant(0xe20040ffe000e500),
+            operand_xor(
+                ctx.constant(0xe20040ffe000e500),
+                operand_or(
+                    ctx.register(0),
+                    ctx.register(1),
+                ),
+            ),
+        );
+        let eq1 = operand_or(
+            ctx.constant(0xe20040ffe000e500),
+            operand_or(
+                ctx.register(0),
+                ctx.register(1),
+            ),
         );
         let op1 = Operand::simplified(op1);
         let eq1 = Operand::simplified(eq1);
