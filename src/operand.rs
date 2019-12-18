@@ -1589,6 +1589,9 @@ impl Operand {
                                 }
                             }
                         }
+                        if left.if_constant() == Some(0) {
+                            return ctx.const_0();
+                        }
                         if left == right {
                             // x % x == 0, x / x = 1
                             if arith.ty == ArithOpType::Modulo {
