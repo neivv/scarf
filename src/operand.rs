@@ -2449,6 +2449,12 @@ fn simplify_eq(
     if left == right {
         return ctx.const_1();
     }
+    let left = &Operand::simplified(left.clone());
+    let right = &Operand::simplified(right.clone());
+    // Well, maybe they are equal now???
+    if left == right {
+        return ctx.const_1();
+    }
     // Equality is just bit comparision without overflow semantics, even though
     // this also uses x == y => x - y == 0 property to simplify it.
     let shared_mask = left.relevant_bits_mask() | right.relevant_bits_mask();
@@ -2505,13 +2511,7 @@ fn simplify_eq(
                                 ctx,
                                 &mut SimplifyWithZeroBits::default(),
                             );
-                            let arith = ArithOperand {
-                                ty: ArithOpType::Equal,
-                                left: new,
-                                right: ctx.const_0(),
-                            };
-                            let result = OperandType::Arithmetic(arith);
-                            return Operand::new_simplified_rc(result);
+                            return simplify_eq(&new, &ctx.const_0(), ctx);
                         }
                     }
                     OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Rsh => {
@@ -2522,13 +2522,7 @@ fn simplify_eq(
                                 ctx,
                                 &mut SimplifyWithZeroBits::default(),
                             );
-                            let arith = ArithOperand {
-                                ty: ArithOpType::Equal,
-                                left: new,
-                                right: ctx.const_0(),
-                            };
-                            let result = OperandType::Arithmetic(arith);
-                            return Operand::new_simplified_rc(result);
+                            return simplify_eq(&new, &ctx.const_0(), ctx);
                         }
                     }
                     _ => ()
@@ -8831,5 +8825,69 @@ mod test {
             Some((a, b)) => a.if_constant() == Some(0) && b.if_constant() == Some(0),
             None => false,
         }), "0 / 0 disappeared: {}", op1);
+    }
+
+    #[test]
+    fn simplify_eq_consistency11() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_gt(
+            operand_lsh(
+                operand_sub(
+                    operand_xmm(0, 0),
+                    ctx.register(0),
+                ),
+                ctx.constant(1),
+            ),
+            ctx.constant(0),
+        );
+        let eq1 = operand_eq(
+            operand_eq(
+                operand_and(
+                    operand_sub(
+                        operand_xmm(0, 0),
+                        ctx.register(0),
+                    ),
+                    ctx.constant(0x7fff_ffff_ffff_ffff),
+                ),
+                ctx.constant(0),
+            ),
+            ctx.constant(0),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_eq_consistency12() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_eq(
+            operand_and(
+                operand_add(
+                    operand_xmm(0, 0),
+                    ctx.register(0),
+                ),
+                operand_add(
+                    ctx.constant(1),
+                    ctx.constant(0),
+                ),
+            ),
+            ctx.constant(0),
+        );
+        let eq1 = operand_eq(
+            operand_and(
+                operand_add(
+                    operand_xmm(0, 0),
+                    ctx.register(0),
+                ),
+                ctx.constant(1),
+            ),
+            ctx.constant(0),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
     }
 }
