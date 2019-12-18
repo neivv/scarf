@@ -2271,6 +2271,63 @@ fn simplify_add_merge_masked_reverting(ops: &mut Vec<(Rc<Operand>, bool)>) -> u6
     sum
 }
 
+/// Returns a better approximation of relevant bits in addition.
+///
+/// Eq uses this to avoid unnecessary masking, as relbits
+/// for addition aren't completely stable depending on order.
+///
+/// E.g. since
+/// add_relbits(x, y) = min(x.low, y.low) .. max(x.hi, y.hi) + 1
+/// (bool + bool) = 0..2
+/// (bool + u8) = 0..9
+/// (bool + bool) + u8 = 0..9
+/// (bool + u8) + bool = 0..10
+///
+/// First return value is relbit mask for positive terms, second is for negative terms.
+fn relevant_bits_for_eq(ops: &Vec<(Rc<Operand>, bool)>) -> (u64, u64) {
+    let mut sizes = ops.iter().map(|x| (x.1, x.0.relevant_bits())).collect::<Vec<_>>();
+    heapsort::sort_by(&mut sizes, |(a_neg, a_bits), (b_neg, b_bits)| {
+        (a_neg, a_bits.end) < (b_neg, b_bits.end)
+    });
+    let mut iter = sizes.iter();
+    let mut pos_bits = 64..0;
+    let mut neg_bits = 64..0;
+    while let Some(next) = iter.next() {
+        let bits = next.1.clone();
+        if next.0 == true {
+            neg_bits = bits;
+            while let Some(next) = iter.next() {
+                let bits = next.1.clone();
+                neg_bits.start = min(bits.start, neg_bits.start);
+                neg_bits.end =
+                    max(neg_bits.end.wrapping_add(1), bits.end.wrapping_add(1)).min(64);
+            }
+            break;
+        }
+        if pos_bits.end == 0 {
+            pos_bits = bits;
+        } else {
+            pos_bits.start = min(bits.start, pos_bits.start);
+            pos_bits.end = max(pos_bits.end.wrapping_add(1), bits.end.wrapping_add(1)).min(64);
+        }
+    }
+    let pos_mask = if pos_bits.end == 0 {
+        0
+    } else {
+        let low = pos_bits.start;
+        let high = 64 - pos_bits.end;
+        !0u64 << high >> high >> low << low
+    };
+    let neg_mask = if neg_bits.end == 0 {
+        0
+    } else {
+        let low = neg_bits.start;
+        let high = 64 - neg_bits.end;
+        !0u64 << high >> high >> low << low
+    };
+    (pos_mask, neg_mask)
+}
+
 fn simplify_eq(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
@@ -2431,6 +2488,7 @@ fn simplify_eq(
             simplify_eq_2_ops(left, right, ctx)
         },
         _ => {
+            let (left_rel_bits, right_rel_bits) = relevant_bits_for_eq(&ops);
             // Construct a + b + c == d + e + f
             // where left side has all non-negated terms,
             // and right side has all negated terms (Negation forgotten as they're on the right)
@@ -2465,8 +2523,7 @@ fn simplify_eq(
                     right_tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
                 }
             }
-            let rel_bits = left_tree.relevant_bits_mask();
-            if add_sub_mask & rel_bits != rel_bits {
+            if add_sub_mask & left_rel_bits != left_rel_bits {
                 left_tree = simplify_and(
                     &left_tree,
                     &ctx.constant(add_sub_mask),
@@ -2474,8 +2531,7 @@ fn simplify_eq(
                     &mut SimplifyWithZeroBits::default(),
                 );
             }
-            let rel_bits = right_tree.relevant_bits_mask();
-            if add_sub_mask & rel_bits != rel_bits {
+            if add_sub_mask & right_rel_bits != right_rel_bits {
                 right_tree = simplify_and(
                     &right_tree,
                     &ctx.constant(add_sub_mask),
@@ -8406,5 +8462,72 @@ mod test {
         let eq1b = Operand::simplified(eq1b);
         assert_eq!(op1, eq1);
         assert_eq!(op1, eq1b);
+    }
+
+    #[test]
+    fn simplify_eq_consistency8() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_eq(
+            operand_add(
+                operand_add(
+                    operand_add(
+                        ctx.constant(1),
+                        operand_mod(
+                            ctx.register(0),
+                            mem8(ctx.register(0)),
+                        ),
+                    ),
+                    operand_div(
+                        operand_eq(
+                            ctx.register(0),
+                            ctx.register(1),
+                        ),
+                        operand_eq(
+                            ctx.register(4),
+                            ctx.register(6),
+                        ),
+                    ),
+                ),
+                operand_eq(
+                    ctx.register(4),
+                    ctx.register(5),
+                ),
+            ),
+            ctx.constant(0),
+        );
+        let eq1 = operand_eq(
+            operand_add(
+                Operand::simplified(
+                    operand_add(
+                        operand_add(
+                            ctx.constant(1),
+                            operand_mod(
+                                ctx.register(0),
+                                mem8(ctx.register(0)),
+                            ),
+                        ),
+                        operand_div(
+                            operand_eq(
+                                ctx.register(0),
+                                ctx.register(1),
+                            ),
+                            operand_eq(
+                                ctx.register(4),
+                                ctx.register(6),
+                            ),
+                        ),
+                    ),
+                ),
+                operand_eq(
+                    ctx.register(4),
+                    ctx.register(5),
+                ),
+            ),
+            ctx.constant(0),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
     }
 }
