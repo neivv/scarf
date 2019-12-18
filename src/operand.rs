@@ -2529,12 +2529,7 @@ fn simplify_eq(
                 let relbits = op.relevant_bits_mask();
                 if add_sub_mask & relbits != relbits {
                     let constant = ctx.constant(add_sub_mask);
-                    let arith = ArithOperand {
-                        ty: ArithOpType::And,
-                        left: op,
-                        right: constant,
-                    };
-                    op = Operand::new_simplified_rc(OperandType::Arithmetic(arith))
+                    op = simplify_and(&op, &constant, ctx, &mut SimplifyWithZeroBits::default());
                 }
 
                 let arith = ArithOperand {
@@ -8756,6 +8751,29 @@ mod test {
                 ctx.register(0),
                 ctx.register(1),
             ),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_eq_consistency9() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_eq(
+            operand_and(
+                operand_xmm(0, 0),
+                ctx.constant(0x40005ff000000ff),
+            ),
+            ctx.constant(0),
+        );
+        let eq1 = operand_eq(
+            operand_and(
+                operand_xmm(0, 0),
+                ctx.constant(0xff),
+            ),
+            ctx.constant(0),
         );
         let op1 = Operand::simplified(op1);
         let eq1 = Operand::simplified(eq1);
