@@ -391,6 +391,9 @@ fn iter_variant_next<'a, T: IterVariant<'a>>(s: &mut T) -> Option<&'a Operand> {
         Memory(ref m) if T::descend_to_mem_addr() => {
             inner.pos = &m.address;
         }
+        SignExtend(ref val, _, _) => {
+            inner.pos = val;
+        }
         _ => {
             match inner.stack.pop() {
                 Some(s) => inner.pos = s,
