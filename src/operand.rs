@@ -1390,11 +1390,9 @@ impl Operand {
                     ArithOpType::Rsh => simplify_rsh(left, right, ctx, swzb_ctx),
                     ArithOpType::Equal => simplify_eq(left, right, ctx),
                     ArithOpType::GreaterThan => {
-                        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                        let mut left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
                         let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
-                        let l = left.clone();
-                        let r = right.clone();
-                        if l == r {
+                        if left == right {
                             return ctx.const_0();
                         }
                         let (left_inner, mask) = Operand::and_masked(&left);
@@ -1406,23 +1404,17 @@ impl Operand {
                             if let OperandType::Arithmetic(ref arith) = left_inner.ty {
                                 if arith.ty == ArithOpType::Sub {
                                     if arith.left == *right_inner {
-                                        let left = if mask == u64::max_value() {
+                                        left = if mask == u64::max_value() {
                                             arith.right.clone()
                                         } else {
                                             let c = ctx.constant(mask);
                                             simplify_and(&arith.right, &c, ctx, swzb_ctx)
                                         };
-                                        let ty = OperandType::Arithmetic(ArithOperand {
-                                            ty: ArithOpType::GreaterThan,
-                                            left: left,
-                                            right: right.clone(),
-                                        });
-                                        return Operand::new_simplified_rc(ty);
                                     }
                                 }
                             }
                         }
-                        match (l.if_constant(), r.if_constant()) {
+                        match (left.if_constant(), right.if_constant()) {
                             (Some(a), Some(b)) => match a > b {
                                 true => return ctx.const_1(),
                                 false => return ctx.const_0(),
@@ -1432,19 +1424,19 @@ impl Operand {
                                     return ctx.const_0();
                                 }
                                 // max > x if x != max
-                                let relbit_mask = r.relevant_bits_mask();
+                                let relbit_mask = right.relevant_bits_mask();
                                 if c == relbit_mask {
-                                    let op = operand_ne(ctx, l, r);
+                                    let op = operand_ne(ctx, left, right);
                                     return Operand::simplified_with_ctx(op, ctx, swzb_ctx)
                                 }
                             }
                             (None, Some(c)) => {
                                 // x > 0 if x != 0
                                 if c == 0 {
-                                    let op = operand_ne(ctx, l, r);
+                                    let op = operand_ne(ctx, left, right);
                                     return Operand::simplified_with_ctx(op, ctx, swzb_ctx)
                                 }
-                                let relbit_mask = l.relevant_bits_mask();
+                                let relbit_mask = left.relevant_bits_mask();
                                 if c == relbit_mask {
                                     return ctx.const_0();
                                 }
@@ -8526,6 +8518,35 @@ mod test {
                     ctx.register(4),
                     ctx.register(5),
                 ),
+            ),
+            ctx.constant(0),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_gt_consistency1() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_gt(
+            operand_sub(
+                operand_gt(
+                    operand_sub(
+                        ctx.register(0),
+                        ctx.register(0),
+                    ),
+                    ctx.register(5),
+                ),
+                ctx.register(0),
+            ),
+            ctx.constant(0),
+        );
+        let eq1 = operand_eq(
+            operand_eq(
+                ctx.register(0),
+                ctx.constant(0),
             ),
             ctx.constant(0),
         );
