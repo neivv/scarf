@@ -182,6 +182,15 @@ impl PartialOrd for Operand {
 
 impl fmt::Debug for Operand {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        /*
+        f.debug_struct("Operand")
+            .field("ty", &self.ty)
+            .field("min_zero_bit_simplify_size", &self.min_zero_bit_simplify_size)
+            .field("simplified", &self.simplified)
+            .field("relevant_bits", &self.relevant_bits)
+            .field("hash", &self.hash)
+            .finish()
+        */
         write!(f, "{}", self)
     }
 }
@@ -491,6 +500,21 @@ operand_ctx_constants! {
 }
 thread_local! {
     static OPERAND_CTX_GLOBALS: Rc<OperandCtxGlobals> = Rc::new(OperandCtxGlobals::new());
+}
+
+#[cfg(feature = "fuzz")]
+thread_local! {
+    static SIMPLIFICATION_INCOMPLETE: Cell<bool> = Cell::new(false);
+}
+
+#[cfg(feature = "fuzz")]
+fn tls_simplification_incomplete() {
+    SIMPLIFICATION_INCOMPLETE.with(|x| x.set(true));
+}
+
+#[cfg(feature = "fuzz")]
+pub fn check_tls_simplification_incomplete() -> bool {
+    SIMPLIFICATION_INCOMPLETE.with(|x| x.replace(false))
 }
 
 impl OperandCtxGlobals {
@@ -861,6 +885,86 @@ impl Operand {
             relevant_bits: ty.calculate_relevant_bits(),
             ty,
         }
+    }
+
+    /// Generates operand from bytes, meant to help with fuzzing.
+    ///
+    /// Does not generate every variation of operands (skips fpu and such).
+    ///
+    /// TODO May be good to have this generate and-const masks a lot?
+    #[cfg(feature = "fuzz")]
+    pub fn from_fuzz_bytes(bytes: &mut &[u8]) -> Option<Rc<Operand>> {
+        use self::operand_helpers::*;
+        let read_u8 = |bytes: &mut &[u8]| -> Option<u8> {
+            let &val = bytes.get(0)?;
+            *bytes = &bytes[1..];
+            Some(val)
+        };
+        let read_u64 = |bytes: &mut &[u8]| -> Option<u64> {
+            use std::convert::TryInto;
+            let data: [u8; 8] = bytes.get(..8)?.try_into().unwrap();
+            *bytes = &bytes[8..];
+            Some(u64::from_le_bytes(data))
+        };
+        Some(match read_u8(bytes)? {
+            0x0 => operand_register(read_u8(bytes)? & 0xf),
+            0x1 => operand_xmm(read_u8(bytes)? & 0xf, read_u8(bytes)? & 0x3),
+            0x2 => constval(read_u64(bytes)?),
+            0x3 => {
+                let size = match read_u8(bytes)? & 3 {
+                    0 => MemAccessSize::Mem8,
+                    1 => MemAccessSize::Mem16,
+                    2 => MemAccessSize::Mem32,
+                    _ => MemAccessSize::Mem64,
+                };
+                let inner = Operand::from_fuzz_bytes(bytes)?;
+                mem_variable_rc(size, inner)
+            }
+            0x4 => {
+                let from = match read_u8(bytes)? & 3 {
+                    0 => MemAccessSize::Mem8,
+                    1 => MemAccessSize::Mem16,
+                    2 => MemAccessSize::Mem32,
+                    _ => MemAccessSize::Mem64,
+                };
+                let to = match read_u8(bytes)? & 3 {
+                    0 => MemAccessSize::Mem8,
+                    1 => MemAccessSize::Mem16,
+                    2 => MemAccessSize::Mem32,
+                    _ => MemAccessSize::Mem64,
+                };
+                let inner = Operand::from_fuzz_bytes(bytes)?;
+                Operand::new_not_simplified_rc(
+                    OperandType::SignExtend(inner, from, to),
+                )
+            }
+            0x5 => {
+                use self::ArithOpType::*;
+                let left = Operand::from_fuzz_bytes(bytes)?;
+                let right = Operand::from_fuzz_bytes(bytes)?;
+                let ty = match read_u8(bytes)? {
+                    0x0 => Add,
+                    0x1 => Sub,
+                    0x2 => Mul,
+                    0x3 => SignedMul,
+                    0x4 => Div,
+                    0x5 => Modulo,
+                    0x6 => And,
+                    0x7 => Or,
+                    0x8 => Xor,
+                    0x9 => Lsh,
+                    0xa => Rsh,
+                    0xb => Equal,
+                    0xc => Parity,
+                    0xd => GreaterThan,
+                    0xe => IntToFloat,
+                    0xf => FloatToInt,
+                    _ => return None,
+                };
+                operand_arith(ty, left, right)
+            }
+            _ => return None,
+        })
     }
 
     fn new_simplified(ty: OperandType) -> Operand {
@@ -3372,6 +3476,8 @@ fn simplify_with_and_mask(
         return ctx.const_0();
     }
     if swzb_ctx.with_and_mask_count > 40 {
+        #[cfg(feature = "fuzz")]
+        tls_simplification_incomplete();
         return op.clone();
     }
     swzb_ctx.with_and_mask_count += 1;
@@ -3598,6 +3704,8 @@ fn simplify_with_zero_bits(
     if recurse_check {
         if swzb.simplify_count > 40 {
             // Give up
+            #[cfg(feature = "fuzz")]
+            tls_simplification_incomplete();
             return Some(op.clone());
         } else {
             swzb.simplify_count += 1;

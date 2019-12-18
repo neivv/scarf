@@ -26,3 +26,4 @@ clap = { version = "2.27.1", optional = true }
 
 [features]
 binaries = ["clap"]
+fuzz = []
