@@ -4125,6 +4125,7 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
             }
         }
     }
+    heapsort::sort(&mut *ops);
 
     if const_val != 0 {
         let const_val_op = ctx.constant(const_val);
@@ -8966,6 +8967,41 @@ mod test {
             operand_and(
                 ctx.register(0),
                 ctx.constant(0xb700),
+            ),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_xor_consistency3() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_or(
+            ctx.constant(0x200ffffff7f),
+            operand_xor(
+                operand_or(
+                    operand_xmm(1, 0),
+                    ctx.constant(0x20000ff20ffff00),
+                ),
+                operand_or(
+                    ctx.register(0),
+                    ctx.constant(0x5ffffffff0000),
+                ),
+            ),
+        );
+        let eq1 = operand_or(
+            ctx.constant(0x200ffffff7f),
+            operand_xor(
+                operand_xor(
+                    operand_xmm(1, 0),
+                    ctx.constant(0x20000ff00000000),
+                ),
+                operand_or(
+                    ctx.register(0),
+                    ctx.constant(0x5fdff00000000),
+                ),
             ),
         );
         let op1 = Operand::simplified(op1);
