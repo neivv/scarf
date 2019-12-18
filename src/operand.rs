@@ -3990,7 +3990,7 @@ fn simplify_add_merge_muls(
     ops: &mut Vec<(Rc<Operand>, bool)>,
     ctx: &OperandContext,
 ) {
-    fn count_equivalent_opers(ops: &[(Rc<Operand>, bool)], equiv: &Operand) -> u64 {
+    fn count_equivalent_opers(ops: &[(Rc<Operand>, bool)], equiv: &Operand) -> Option<u64> {
         ops.iter().map(|&(ref o, neg)| {
             let (mul, val) = o.if_arithmetic_mul()
                 .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
@@ -3999,7 +3999,11 @@ fn simplify_add_merge_muls(
                 true => if neg { 0u64.wrapping_sub(mul) } else { mul },
                 false => 0,
             }
-        }).fold(0, |sum, next| sum.wrapping_add(next))
+        }).fold(None, |sum, next| if next != 0 {
+            Some(sum.unwrap_or(0).wrapping_add(next))
+        } else {
+            sum
+        })
     }
 
     let mut pos = 0;
@@ -4010,7 +4014,7 @@ fn simplify_add_merge_muls(
                 .unwrap_or_else(|| (1, &ops[pos].0));
 
             let others = count_equivalent_opers(&ops[pos + 1..], op);
-            if others != 0 {
+            if let Some(others) = others {
                 let self_mul = if ops[pos].1 { 0u64.wrapping_sub(self_mul) } else { self_mul };
                 let sum = self_mul.wrapping_add(others);
                 if sum == 0 {
@@ -8660,6 +8664,38 @@ mod test {
                 ctx.constant(0),
             ),
             ctx.constant(0),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_add_consistency2() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_add(
+            operand_add(
+                operand_or(
+                    operand_sub(
+                        ctx.register(1),
+                        operand_add(
+                            ctx.register(0),
+                            ctx.register(0),
+                        ),
+                    ),
+                    ctx.constant(0),
+                ),
+                operand_add(
+                    ctx.register(0),
+                    ctx.register(0),
+                ),
+            ),
+            ctx.register(0),
+        );
+        let eq1 = operand_add(
+            ctx.register(0),
+            ctx.register(1),
         );
         let op1 = Operand::simplified(op1);
         let eq1 = Operand::simplified(eq1);
