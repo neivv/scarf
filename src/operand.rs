@@ -1127,7 +1127,7 @@ impl Operand {
                     if let Some((l, r)) = s.if_arithmetic_and() {
                         let const_other = Operand::either(l, r, |x| x.if_constant());
                         if let Some((c, other)) = const_other {
-                            if c == out_mask {
+                            if c & out_mask == out_mask {
                                 recurse(other, ops, out_mask, negate);
                                 return;
                             }
@@ -2471,7 +2471,10 @@ fn simplify_eq(
     // as sorting parts, and making the last one positive, swapping all
     // negations if it isn't yet.
     // Last one since the op tree is constructed in reverse in the end.
-    heapsort::sort(&mut ops);
+    //
+    // Sorting without the mask, hopefully is valid way to keep
+    // ordering stable.
+    heapsort::sort_by(&mut ops, |a, b| Operand::and_masked(&a.0) < Operand::and_masked(&b.0));
     if ops[ops.len() - 1].1 == true {
         for op in &mut ops {
             op.1 = !op.1;
@@ -8885,6 +8888,47 @@ mod test {
                 ctx.constant(1),
             ),
             ctx.constant(0),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_eq_consistency13() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_eq(
+            operand_add(
+                operand_sub(
+                    operand_and(
+                        ctx.constant(0xffff),
+                        ctx.register(1),
+                    ),
+                    mem8(ctx.register(0)),
+                ),
+                operand_xmm(0, 0),
+            ),
+            operand_add(
+                operand_and(
+                    ctx.register(3),
+                    ctx.constant(0x7f),
+                ),
+                operand_xmm(0, 0),
+            ),
+        );
+        let eq1 = operand_eq(
+            operand_and(
+                ctx.constant(0xffff),
+                ctx.register(1),
+            ),
+            operand_add(
+                operand_and(
+                    ctx.register(3),
+                    ctx.constant(0x7f),
+                ),
+                mem8(ctx.register(0)),
+            ),
         );
         let op1 = Operand::simplified(op1);
         let eq1 = Operand::simplified(eq1);
