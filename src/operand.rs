@@ -835,10 +835,18 @@ impl OperandType {
                     // Modulo can only give a result as large as right,
                     // though if left is less than right, it only gives
                     // left
-                    0..(min(left_bits.end, right_bits.end))
+                    if arith.right.if_constant() == Some(0) {
+                        0..64
+                    } else {
+                        0..(min(left_bits.end, right_bits.end))
+                    }
                 }
                 ArithOpType::Div => {
-                    arith.left.relevant_bits()
+                    if arith.right.if_constant() == Some(0) {
+                        0..64
+                    } else {
+                        arith.left.relevant_bits()
+                    }
                 }
                 _ => 0..64,
             },
@@ -8778,5 +8786,50 @@ mod test {
         let op1 = Operand::simplified(op1);
         let eq1 = Operand::simplified(eq1);
         assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_eq_consistency10() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_gt(
+            operand_sub(
+                operand_mod(
+                    operand_xmm(0, 0),
+                    ctx.register(0),
+                ),
+                operand_sub(
+                    ctx.constant(0),
+                    operand_mod(
+                        ctx.register(1),
+                        ctx.constant(0),
+                    ),
+                ),
+            ),
+            ctx.constant(0),
+        );
+        let eq1 = operand_eq(
+            operand_eq(
+                operand_add(
+                    operand_mod(
+                        operand_xmm(0, 0),
+                        ctx.register(0),
+                    ),
+                    operand_mod(
+                        ctx.register(1),
+                        ctx.constant(0),
+                    ),
+                ),
+                ctx.constant(0),
+            ),
+            ctx.constant(0),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+        assert!(op1.iter().any(|x| match x.if_arithmetic(ArithOpType::Modulo) {
+            Some((a, b)) => a.if_constant() == Some(0) && b.if_constant() == Some(0),
+            None => false,
+        }), "0 / 0 disappeared: {}", op1);
     }
 }
