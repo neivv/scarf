@@ -2994,8 +2994,12 @@ fn simplify_and(
                 };
                 if changed {
                     let new = simplify_or(&l, &masked, ctx);
+                    if let Some(c) = new.if_constant() {
+                        const_remain = c;
+                    } else {
+                        any_changed = true;
+                    }
                     ops[i] = new;
-                    any_changed = true;
                 }
             } else if left_needs_mask && !right_needs_mask {
                 let constant = ctx.constant(const_remain & left_mask);
@@ -3006,8 +3010,12 @@ fn simplify_and(
                 };
                 if changed {
                     let new = simplify_or(&r, &masked, ctx);
+                    if let Some(c) = new.if_constant() {
+                        const_remain = c;
+                    } else {
+                        any_changed = true;
+                    }
                     ops[i] = new;
-                    any_changed = true;
                 }
             }
         }
@@ -3015,6 +3023,7 @@ fn simplify_and(
     if any_changed {
         const_remain = !0u64;
     }
+    ops.retain(|x| x.if_constant().is_none());
 
     let relevant_bits = ops.iter().fold(!0, |bits, op| {
         bits & op.relevant_bits_mask()
@@ -8928,6 +8937,35 @@ mod test {
                     ctx.constant(0x7f),
                 ),
                 mem8(ctx.register(0)),
+            ),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_and_consistency10() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            ctx.constant(0x5ffff05b700),
+            operand_and(
+                operand_or(
+                    operand_xmm(1, 0),
+                    ctx.constant(0x5ffffffff00),
+                ),
+                operand_or(
+                    ctx.register(0),
+                    ctx.constant(0x5ffffffff0000),
+                ),
+            ),
+        );
+        let eq1 = operand_or(
+            ctx.constant(0x5ffff050000),
+            operand_and(
+                ctx.register(0),
+                ctx.constant(0xb700),
             ),
         );
         let op1 = Operand::simplified(op1);
