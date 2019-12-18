@@ -1484,6 +1484,18 @@ impl Operand {
                                 if let Some(l) = left.if_constant() {
                                     return ctx.constant(l / r);
                                 }
+                                // x / 1 == x
+                                if r == 1 {
+                                    return left;
+                                }
+                            }
+                        }
+                        if left == right {
+                            // x % x == 0, x / x = 1
+                            if arith.ty == ArithOpType::Modulo {
+                                return ctx.const_0();
+                            } else {
+                                return ctx.const_1();
                             }
                         }
                         let arith = ArithOperand {
