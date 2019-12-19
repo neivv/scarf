@@ -3075,11 +3075,15 @@ fn simplify_or_ops(
         }
         heapsort::sort(ops);
         ops.dedup();
+        let mut const_val_changed = false;
         if const_val != 0 {
             vec_filter_map(ops, |op| {
                 let new = simplify_with_and_mask(&op, !const_val, ctx, swzb_ctx);
                 if let Some(c) = new.if_constant() {
-                    const_val |= c;
+                    if c | const_val != const_val {
+                        const_val |= c;
+                        const_val_changed = true;
+                    }
                     None
                 } else {
                     Some(new)
@@ -3095,7 +3099,6 @@ fn simplify_or_ops(
         Operand::simplify_or_merge_comparisions(ops, ctx);
 
         let mut new_ops = vec![];
-        let mut const_val_changed = false;
         for i in 0..ops.len() {
             if let Some((l, r)) = ops[i].if_arithmetic_or() {
                 Operand::collect_or_ops(l, &mut new_ops);
@@ -9071,6 +9074,38 @@ mod test {
                 ),
             ),
             ctx.register(0),
+        );
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_or_consistency11() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_or(
+            ctx.constant(0xb7ff),
+            operand_or(
+                operand_xor(
+                    ctx.register(1),
+                    operand_xmm(1, 0),
+                ),
+                operand_and(
+                    operand_or(
+                        operand_xmm(1, 3),
+                        ctx.constant(0x5ffffffff00),
+                    ),
+                    operand_or(
+                        ctx.constant(0x5ffffffff7800),
+                        ctx.register(1),
+                    ),
+                ),
+            ),
+        );
+        let eq1 = operand_or(
+            ctx.constant(0x5ffffffffff),
+            ctx.register(1),
         );
         let op1 = Operand::simplified(op1);
         let eq1 = Operand::simplified(eq1);
