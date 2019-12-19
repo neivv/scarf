@@ -1263,7 +1263,11 @@ impl Operand {
 
     // "Simplify bitwise or: merge child ands"
     // Converts things like [x & const1, x & const2] to [x & (const1 | const2)]
-    fn simplify_or_merge_child_ands(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
+    fn simplify_or_merge_child_ands(
+        ops: &mut Vec<Rc<Operand>>,
+        ctx: &OperandContext,
+        swzb_ctx: &mut SimplifyWithZeroBits,
+    ) {
         fn and_const(op: &Rc<Operand>) -> Option<(u64, &Rc<Operand>)> {
             match op.ty {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
@@ -1309,14 +1313,7 @@ impl Operand {
                         other_op.remove();
                     }
                 }
-                new = Some(
-                    simplify_and(
-                        &new_val,
-                        &ctx.constant(constant),
-                        ctx,
-                        &mut SimplifyWithZeroBits::default(),
-                    )
-                );
+                new = Some(simplify_and(&new_val, &ctx.constant(constant), ctx, swzb_ctx));
             }
             if let Some(new) = new {
                 *op = new;
@@ -1496,7 +1493,7 @@ impl Operand {
                     }
                     ArithOpType::Mul => simplify_mul(left, right, ctx),
                     ArithOpType::And => simplify_and(left, right, ctx, swzb_ctx),
-                    ArithOpType::Or => simplify_or(left, right, ctx),
+                    ArithOpType::Or => simplify_or(left, right, ctx, swzb_ctx),
                     ArithOpType::Xor => simplify_xor(left, right, ctx),
                     ArithOpType::Lsh => simplify_lsh(left, right, ctx, swzb_ctx),
                     ArithOpType::Rsh => simplify_rsh(left, right, ctx, swzb_ctx),
@@ -2968,7 +2965,7 @@ fn simplify_and(
                 *op = l.clone();
             }
         }
-        let or = simplify_or_ops(&mut ops, ctx);
+        let or = simplify_or_ops(&mut ops, ctx, swzb_ctx);
         return simplify_eq(&or, &ctx.const_0(), ctx);
     }
     // Simplify (x | y) & mask to (x | (y & mask)) if mask is useless to x
@@ -2993,7 +2990,7 @@ fn simplify_and(
                     _ => true,
                 };
                 if changed {
-                    let new = simplify_or(&l, &masked, ctx);
+                    let new = simplify_or(&l, &masked, ctx, swzb_ctx);
                     if let Some(c) = new.if_constant() {
                         const_remain = c;
                     } else {
@@ -3009,7 +3006,7 @@ fn simplify_and(
                     _ => true,
                 };
                 if changed {
-                    let new = simplify_or(&r, &masked, ctx);
+                    let new = simplify_or(&r, &masked, ctx, swzb_ctx);
                     if let Some(c) = new.if_constant() {
                         const_remain = c;
                     } else {
@@ -3052,17 +3049,25 @@ fn simplify_and(
     tree
 }
 
-fn simplify_or(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+fn simplify_or(
+    left: &Rc<Operand>,
+    right: &Rc<Operand>,
+    ctx: &OperandContext,
+    swzb: &mut SimplifyWithZeroBits,
+) -> Rc<Operand> {
     let mut ops = vec![];
     Operand::collect_or_ops(left, &mut ops);
     Operand::collect_or_ops(right, &mut ops);
-    simplify_or_ops(&mut ops, ctx)
+    simplify_or_ops(&mut ops, ctx, swzb)
 }
 
-fn simplify_or_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Operand> {
+fn simplify_or_ops(
+    ops: &mut Vec<Rc<Operand>>,
+    ctx: &OperandContext,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Rc<Operand> {
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     let mut const_val = 0;
-    let swzb_ctx = &mut SimplifyWithZeroBits::default();
     loop {
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum | x);
@@ -3086,7 +3091,7 @@ fn simplify_or_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Opera
         for bits in one_bit_ranges(const_val) {
             vec_filter_map(ops, |op| simplify_with_one_bits(&op, &bits, ctx));
         }
-        Operand::simplify_or_merge_child_ands(ops, ctx);
+        Operand::simplify_or_merge_child_ands(ops, ctx, swzb_ctx);
         Operand::simplify_or_merge_xors(ops, ctx);
         simplify_or_merge_mem(ops, ctx);
         Operand::simplify_or_merge_comparisions(ops, ctx);
@@ -3563,8 +3568,7 @@ fn simplify_with_and_mask_inner(
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
                     } else {
-                        let op = operand_or(simplified_left, simplified_right);
-                        Operand::simplified(op)
+                        simplify_or(&simplified_left, &simplified_right, ctx, swzb_ctx)
                     }
                 }
                 ArithOpType::Lsh => {
@@ -3764,7 +3768,7 @@ fn simplify_with_zero_bits(
                             if l == *left && r == *right {
                                 Some(op.clone())
                             } else {
-                                Some(simplify_or(&l, &r, ctx))
+                                Some(simplify_or(&l, &r, ctx, swzb))
                             }
                         }
                     };
@@ -4170,6 +4174,7 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
                         lhs,
                         &simplify_xor(rhs, &const_val_op, ctx),
                         ctx,
+                        &mut SimplifyWithZeroBits::default(),
                     );
                 }
             }
