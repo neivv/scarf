@@ -2830,12 +2830,62 @@ fn try_merge_ands(
     }
 }
 
+/// Fast path for cases where `register_like OP constant` doesn't simplify more than that.
+/// Requires that main simplification always places constant on the right for consistency.
+/// (Not all do it as of writing this).
+///
+/// Note also that with and, it has to be first checked that `register_like & constant` != 0
+/// before calling this function.
+fn check_quick_arith_simplify<'a>(
+    left: &'a Rc<Operand>,
+    right: &'a Rc<Operand>,
+) -> Option<(&'a Rc<Operand>, &'a Rc<Operand>)> {
+    let (c, other) = if left.if_constant().is_some() {
+        (left, right)
+    } else if right.if_constant().is_some() {
+        (right, left)
+    } else {
+        return None;
+    };
+    match other.ty {
+        OperandType::Register(_) | OperandType::Xmm(_, _) | OperandType::Fpu(_) |
+            OperandType::Flag(_) | OperandType::Undefined(_) | OperandType::Custom(_) =>
+        {
+            Some((other, c))
+        }
+        _ => None,
+    }
+}
+
 fn simplify_and(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     ctx: &OperandContext,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
+    if !bits_overlap(&left.relevant_bits(), &right.relevant_bits()) {
+        return ctx.const_0();
+    }
+    if let Some((l, r)) = check_quick_arith_simplify(left, right) {
+        let left_bits = l.relevant_bits();
+        let right = if left_bits.end != 64 {
+            let mask = (1 << left_bits.end) - 1;
+            let c = r.if_constant().unwrap_or(0);
+            if c == mask {
+                return l.clone();
+            }
+            ctx.constant(c & mask)
+        } else {
+            r.clone()
+        };
+        let arith = ArithOperand {
+            ty: ArithOpType::And,
+            left: l.clone(),
+            right,
+        };
+        return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+    }
+
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
 
     let mut ops = vec![];
@@ -4091,6 +4141,23 @@ fn simplify_add_merge_muls(
 }
 
 fn simplify_xor(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+    let left_bits = left.relevant_bits();
+    let right_bits = right.relevant_bits();
+    // x ^ 0 early exit
+    if left_bits.start >= left_bits.end {
+        return Operand::simplified(right.clone());
+    }
+    if right_bits.start >= right_bits.end {
+        return Operand::simplified(left.clone());
+    }
+    if let Some((l, r)) = check_quick_arith_simplify(left, right) {
+        let arith = ArithOperand {
+            ty: ArithOpType::Xor,
+            left: l.clone(),
+            right: r.clone(),
+        };
+        return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+    }
     let mut ops = vec![];
     Operand::collect_xor_ops(left, &mut ops);
     Operand::collect_xor_ops(right, &mut ops);
