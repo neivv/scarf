@@ -3129,8 +3129,10 @@ fn simplify_and_remove_unnecessary_ors(
 
     let mut pos = 0;
     while pos < ops.len() {
-        for j in 0..ops.len() {
+        let mut j = 0;
+        while j < ops.len() {
             if j == pos {
+                j += 1;
                 continue;
             }
             if contains_or(&ops[j], &ops[pos]) {
@@ -3140,6 +3142,8 @@ fn simplify_and_remove_unnecessary_ors(
                 if j < pos {
                     pos -= 1;
                 }
+            } else {
+                j += 1;
             }
         }
         pos += 1;
@@ -9361,5 +9365,22 @@ mod test {
             )
         );
         check_simplification_consistency(op1);
+    }
+
+    #[test]
+    fn simplify_and_panic() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_xmm(1, 0),
+            operand_and(
+                operand_or(
+                    operand_xmm(1, 0),
+                    ctx.constant(0x5ffffffff00),
+                ),
+                operand_arith(ArithOpType::Parity, ctx.register(0), ctx.constant(0)),
+            )
+        );
+        let _ = Operand::simplified(op1);
     }
 }
