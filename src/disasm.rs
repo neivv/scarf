@@ -911,11 +911,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
     }
 
-    fn word_add(&self, left: Rc<Operand>, right: Rc<Operand>) -> Rc<Operand> {
-        use crate::operand::operand_helpers::*;
-        operand_add(left, right)
-    }
-
     fn dest_and_op_register(&self, register: u8) -> DestAndOperand {
         DestAndOperand {
             op: self.ctx.register(register),
@@ -1010,15 +1005,15 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             if rm.constant == 0 {
                 base
             } else {
-                self.word_add(base, self.ctx.constant(rm.constant as i32 as i64 as u64))
+                operand_add(base, self.ctx.constant(rm.constant as i32 as i64 as u64))
             }
         };
         let with_index = match rm.index_mul {
             0 => base_offset,
-            1 => self.word_add(base_offset, self.ctx.register(rm.index)),
+            1 => operand_add(base_offset, self.ctx.register(rm.index)),
             x => {
                 let multiplier = self.ctx.constant(x as u64);
-                self.word_add(
+                operand_add(
                     base_offset,
                     operand_mul(self.ctx.register(rm.index), multiplier),
                 )
@@ -1057,13 +1052,14 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn rm_to_dest_operand_xmm(&self, rm: &ModRm_Rm, i: u8) -> DestOperand {
+        use crate::operand_helpers::*;
         if rm.is_memory() {
             // Would be nice to just add the i * 4 offset on rm_address_operand,
             // but `rm.constant += i * 4` has issues if the constant overflows
             let mut address = self.rm_address_operand(&rm);
             if i != 0 {
                 address = Operand::simplified(
-                    self.word_add(address, self.ctx.constant(i as u64 * 4))
+                    operand_add(address, self.ctx.constant(i as u64 * 4))
                 );
             }
             DestOperand::Memory(MemAccess {
@@ -1083,7 +1079,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             let mut address = self.rm_address_operand(&rm);
             if i != 0 {
                 address = Operand::simplified(
-                    self.word_add(address, self.ctx.constant(i as u64 * 4))
+                    operand_add(address, self.ctx.constant(i as u64 * 4))
                 );
             }
             mem_variable_rc(MemAccessSize::Mem32, address)
