@@ -975,25 +975,13 @@ impl Operand {
         })
     }
 
-    fn new_simplified(ty: OperandType) -> Operand {
-        Self::new(ty, true)
-    }
-
-    pub fn new_xmm(register: u8, word_id: u8) -> Operand {
-        Operand::new_simplified(OperandType::Xmm(register, word_id))
-    }
-
-    pub fn new_not_simplified(ty: OperandType) -> Operand {
-        Self::new(ty, false)
-    }
-
     // TODO: Should not be pub?
     pub(crate) fn new_simplified_rc(ty: OperandType) -> Rc<Operand> {
-        Self::new_simplified(ty).into()
+        Rc::new(Self::new(ty, true))
     }
 
     pub fn new_not_simplified_rc(ty: OperandType) -> Rc<Operand> {
-        Self::new_not_simplified(ty).into()
+        Rc::new(Self::new(ty, false))
     }
 
     pub(crate) fn is_simplified(&self) -> bool {
@@ -1015,7 +1003,7 @@ impl Operand {
                 x => mem32(operand_add(mem.address.clone(), constval(4 * x))),
             },
             OperandType::Register(reg) => {
-                Operand::new_simplified(OperandType::Xmm(reg.0, word)).into()
+                Operand::new_simplified_rc(OperandType::Xmm(reg.0, word))
             }
             _ => s.clone(),
         }
@@ -4481,16 +4469,12 @@ pub mod operand_helpers {
         operand_arith(Equal, constval(0), lhs)
     }
 
-    pub fn mem32_norc(val: Rc<Operand>) -> Operand {
-        mem_variable(Mem32, val)
-    }
-
     pub fn mem64(val: Rc<Operand>) -> Rc<Operand> {
         mem_variable_rc(Mem64, val)
     }
 
     pub fn mem32(val: Rc<Operand>) -> Rc<Operand> {
-        mem32_norc(val).into()
+        mem_variable_rc(Mem32, val)
     }
 
     pub fn mem16(val: Rc<Operand>) -> Rc<Operand> {
@@ -4501,15 +4485,11 @@ pub mod operand_helpers {
         mem_variable_rc(Mem8, val)
     }
 
-    pub fn mem_variable(size: MemAccessSize, val: Rc<Operand>) -> Operand {
-        Operand::new_not_simplified(OperandType::Memory(MemAccess {
+    pub fn mem_variable_rc(size: MemAccessSize, val: Rc<Operand>) -> Rc<Operand> {
+        Operand::new_not_simplified_rc(OperandType::Memory(MemAccess {
             address: val,
             size,
         }))
-    }
-
-    pub fn mem_variable_rc(size: MemAccessSize, val: Rc<Operand>) -> Rc<Operand> {
-        mem_variable(size, val).into()
     }
 
     pub fn constval(num: u64) -> Rc<Operand> {

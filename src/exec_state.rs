@@ -843,11 +843,12 @@ pub struct XmmOperand(
 
 impl XmmOperand {
     pub fn initial(register: u8, interner: &mut InternMap) -> XmmOperand {
+        use crate::operand_helpers::*;
         XmmOperand(
-            interner.intern(Rc::new(Operand::new_xmm(register, 0))),
-            interner.intern(Rc::new(Operand::new_xmm(register, 1))),
-            interner.intern(Rc::new(Operand::new_xmm(register, 2))),
-            interner.intern(Rc::new(Operand::new_xmm(register, 3))),
+            interner.intern(operand_xmm(register, 0)),
+            interner.intern(operand_xmm(register, 1)),
+            interner.intern(operand_xmm(register, 2)),
+            interner.intern(operand_xmm(register, 3)),
         )
     }
 

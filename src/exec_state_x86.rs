@@ -121,22 +121,24 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
 
         // Set the bytes above return address to 'call eax' to make it look like a legitmate call.
         state.move_to(
-            &DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
-                operand_sub(
+            &DestOperand::Memory(MemAccess {
+                size: MemAccessSize::Mem8,
+                address: operand_sub(
                     return_address.clone(),
                     operand_ctx.const_1(),
                 ),
-            )),
+            }),
             operand_ctx.constant(0xd0),
             interner
         );
         state.move_to(
-            &DestOperand::from_oper(&mem_variable(MemAccessSize::Mem8,
-                operand_sub(
+            &DestOperand::Memory(MemAccess {
+                size: MemAccessSize::Mem8,
+                address: operand_sub(
                     return_address,
                     operand_ctx.const_2(),
                 ),
-            )),
+            }),
             operand_ctx.const_ff(),
             interner
         );

@@ -3006,7 +3006,7 @@ impl DestOperand {
                 operand_and(ctx.register(x.0), ctx.const_ff())
             ),
             DestOperand::Register64(x) => ctx.register(x.0),
-            DestOperand::Xmm(x, y) => Rc::new(Operand::new_xmm(x, y)),
+            DestOperand::Xmm(x, y) => operand_xmm(x, y),
             DestOperand::Fpu(x) => ctx.register_fpu(x),
             DestOperand::Flag(x) => ctx.flag(x),
             DestOperand::Memory(ref x) => mem_variable_rc(x.size, x.address.clone()),
@@ -3086,10 +3086,7 @@ mod test {
         let ins = disasm.next().unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
-        let dest = mem_variable(
-            operand::MemAccessSize::Mem16,
-            operand_add(operand_register(0x7), constval(0x62))
-        );
+        let dest = mem16(operand_add(operand_register(0x7), constval(0x62)));
 
         assert_eq!(*op, Operation::Move(dest_operand(&dest), constval(0x2000), None));
     }
