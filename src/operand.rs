@@ -3040,23 +3040,22 @@ fn simplify_and(
     Operand::simplify_and_merge_child_ors(&mut ops, ctx);
 
     // Replace not(x) & not(y) with not(x | y)
-    fn is_neq_compare(op: &Rc<Operand>) -> bool {
-        match op.if_arithmetic_eq() {
-            Some((l, r)) => match l.ty {
-                OperandType::Arithmetic(ref a) => a.is_compare_op() && r.if_constant() == Some(0),
-                _ => false,
-            },
-            _ => false,
-        }
-    }
-    if ops.len() >= 2 && ops.iter().all(|x| is_neq_compare(x)) {
-        for op in &mut ops {
-            if let Some((l, _)) = op.if_arithmetic_eq() {
-                *op = l.clone();
+    if ops.len() >= 2 {
+        let neq_compare_count = ops.iter().filter(|x| is_neq_compare(x)).count();
+        if neq_compare_count >= 2 {
+            let mut neq_ops = Vec::with_capacity(neq_compare_count);
+            for op in &mut ops {
+                if is_neq_compare(op) {
+                    if let Some((l, _)) = op.if_arithmetic_eq() {
+                        neq_ops.push(l.clone());
+                    }
+                }
             }
+            let or = simplify_or_ops(neq_ops, ctx, swzb_ctx);
+            let not = simplify_eq(&or, &ctx.const_0(), ctx);
+            ops.retain(|x| !is_neq_compare(x));
+            insert_sorted(&mut ops, not);
         }
-        let or = simplify_or_ops(ops, ctx, swzb_ctx);
-        return simplify_eq(&or, &ctx.const_0(), ctx);
     }
 
     let relevant_bits = ops.iter().fold(!0, |bits, op| {
@@ -3096,6 +3095,23 @@ fn simplify_and(
         tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
     tree
+}
+
+fn is_neq_compare(op: &Rc<Operand>) -> bool {
+    match op.if_arithmetic_eq() {
+        Some((l, r)) => match l.ty {
+            OperandType::Arithmetic(ref a) => a.is_compare_op() && r.if_constant() == Some(0),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn insert_sorted(ops: &mut Vec<Rc<Operand>>, new: Rc<Operand>) {
+    let insert_pos = match ops.binary_search(&new) {
+        Ok(i) | Err(i) => i,
+    };
+    ops.insert(insert_pos, new);
 }
 
 /// Transform (x | y | ...) & x => x
@@ -9382,5 +9398,25 @@ mod test {
             )
         );
         let _ = Operand::simplified(op1);
+    }
+
+    #[test]
+    fn simplify_and_consistency14() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            ctx.register(0),
+            operand_and(
+                operand_gt(
+                    operand_xmm(1, 0),
+                    ctx.constant(0),
+                ),
+                operand_gt(
+                    operand_xmm(1, 4),
+                    ctx.constant(0),
+                ),
+            )
+        );
+        check_simplification_consistency(op1);
     }
 }
