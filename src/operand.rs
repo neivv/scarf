@@ -3055,7 +3055,7 @@ fn simplify_and(
                 *op = l.clone();
             }
         }
-        let or = simplify_or_ops(&mut ops, ctx, swzb_ctx);
+        let or = simplify_or_ops(ops, ctx, swzb_ctx);
         return simplify_eq(&or, &ctx.const_0(), ctx);
     }
 
@@ -3129,15 +3129,16 @@ fn simplify_or(
     let mut ops = vec![];
     Operand::collect_or_ops(left, &mut ops);
     Operand::collect_or_ops(right, &mut ops);
-    simplify_or_ops(&mut ops, ctx, swzb)
+    simplify_or_ops(ops, ctx, swzb)
 }
 
 fn simplify_or_ops(
-    ops: &mut Vec<Rc<Operand>>,
+    mut ops: Vec<Rc<Operand>>,
     ctx: &OperandContext,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
+    let ops = &mut ops;
     let mut const_val = 0;
     loop {
         const_val = ops.iter().flat_map(|x| x.if_constant())
