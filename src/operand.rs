@@ -2859,7 +2859,7 @@ fn simplify_and(
         let right = if left_bits.end != 64 {
             let mask = (1 << left_bits.end) - 1;
             let c = r.if_constant().unwrap_or(0);
-            if c == mask {
+            if c & mask == mask {
                 return l.clone();
             }
             ctx.constant(c & mask)
@@ -9206,5 +9206,19 @@ mod test {
             ),
         );
         check_simplification_consistency(op1);
+    }
+
+    #[test]
+    fn simplify_and_consistency12() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            ctx.constant(0x40005ffffffffff),
+            operand_xmm(1, 0),
+        );
+        let eq1 = operand_xmm(1, 0);
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
     }
 }
