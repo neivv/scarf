@@ -4334,9 +4334,18 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
                 ops_changed = true;
             }
         }
-        if !ops_changed {
+        let mut new_ops = vec![];
+        for i in 0..ops.len() {
+            if let Some((l, r)) = ops[i].if_arithmetic(ArithOpType::Xor) {
+                Operand::collect_xor_ops(l, &mut new_ops);
+                Operand::collect_xor_ops(r, &mut new_ops);
+            }
+        }
+        if new_ops.is_empty() && !ops_changed {
             break;
         }
+        ops.retain(|x| x.if_arithmetic(ArithOpType::Xor).is_none());
+        ops.extend(new_ops);
     }
     heapsort::sort(&mut *ops);
 
@@ -9312,6 +9321,29 @@ mod test {
             ),
         );
         let eq1 = operand_xmm(1, 0);
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_xor_consistency5() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_xor(
+            operand_xmm(1, 0),
+            operand_or(
+                operand_xor(
+                    operand_xmm(1, 0),
+                    operand_xmm(1, 1),
+                ),
+                ctx.constant(0x600000000000000),
+            ),
+        );
+        let eq1 = operand_xor(
+            operand_xmm(1, 1),
+            ctx.constant(0x600000000000000),
+        );
         let op1 = Operand::simplified(op1);
         let eq1 = Operand::simplified(eq1);
         assert_eq!(op1, eq1);
