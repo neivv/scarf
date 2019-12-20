@@ -3103,6 +3103,29 @@ fn simplify_or(
     ctx: &OperandContext,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
+    let left_bits = left.relevant_bits();
+    let right_bits = right.relevant_bits();
+    // x | 0 early exit
+    if left_bits.start >= left_bits.end {
+        return Operand::simplified_with_ctx(right.clone(), ctx, swzb);
+    }
+    if right_bits.start >= right_bits.end {
+        return Operand::simplified_with_ctx(left.clone(), ctx, swzb);
+    }
+    if let Some((l, r)) = check_quick_arith_simplify(left, right) {
+        let r_const = r.if_constant().unwrap_or(0);
+        let left_bits = l.relevant_bits_mask();
+        if left_bits & r_const == left_bits {
+            return r.clone();
+        }
+        let arith = ArithOperand {
+            ty: ArithOpType::Or,
+            left: l.clone(),
+            right: r.clone(),
+        };
+        return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+    }
+
     let mut ops = vec![];
     Operand::collect_or_ops(left, &mut ops);
     Operand::collect_or_ops(right, &mut ops);
