@@ -991,6 +991,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     /// Returns simplified values.
     fn rm_address_operand(&self, rm: &ModRm_Rm) -> Rc<Operand> {
         use crate::operand_helpers::*;
+        // Optimization: avoid having to go through simplify for x + x * 4 -type accesses
+        let base_index_same = rm.base == rm.index && rm.index_mul != 0;
         let base_offset = if rm.constant_base() {
             if Va::SIZE == 4 {
                 self.ctx.constant(rm.constant as u64)
@@ -1001,22 +1003,29 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 self.ctx.constant(addr)
             }
         } else {
-            let base = self.ctx.register(rm.base);
+            let mut base = self.ctx.register(rm.base);
+            if base_index_same {
+                base = operand_mul(base, self.ctx.constant(rm.index_mul as u64 + 1));
+            }
             if rm.constant == 0 {
                 base
             } else {
                 operand_add(base, self.ctx.constant(rm.constant as i32 as i64 as u64))
             }
         };
-        let with_index = match rm.index_mul {
-            0 => base_offset,
-            1 => operand_add(base_offset, self.ctx.register(rm.index)),
-            x => {
-                let multiplier = self.ctx.constant(x as u64);
-                operand_add(
-                    base_offset,
-                    operand_mul(self.ctx.register(rm.index), multiplier),
-                )
+        let with_index = if base_index_same {
+            base_offset
+        } else {
+            match rm.index_mul {
+                0 => base_offset,
+                1 => operand_add(base_offset, self.ctx.register(rm.index)),
+                x => {
+                    let multiplier = self.ctx.constant(x as u64);
+                    operand_add(
+                        base_offset,
+                        operand_mul(self.ctx.register(rm.index), multiplier),
+                    )
+                }
             }
         };
         Operand::simplified(with_index)
