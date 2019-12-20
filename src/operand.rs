@@ -2906,6 +2906,7 @@ fn simplify_and(
 
         heapsort::sort(&mut ops);
         ops.dedup();
+        simplify_and_remove_unnecessary_ors(&mut ops, const_remain);
 
         // Prefer (rax & 0xff) << 1 over (rax << 1) & 0x1fe.
         // Should this be limited to only when all ops are lsh?
@@ -2978,13 +2979,13 @@ fn simplify_and(
                 };
                 let left_needs_mask = left_mask & const_remain != left_mask;
                 let right_needs_mask = right_mask & const_remain != right_mask;
-                if !left_needs_mask && right_needs_mask {
+                if !left_needs_mask && right_needs_mask && left_mask != const_remain {
                     let constant = ctx.constant(const_remain & right_mask);
                     let masked = simplify_and(&r, &constant, ctx, swzb_ctx);
                     let new = simplify_or(&l, &masked, ctx, swzb_ctx);
                     ops[i] = new;
                     const_remain_necessary = false;
-                } else if left_needs_mask && !right_needs_mask {
+                } else if left_needs_mask && !right_needs_mask && right_mask != const_remain {
                     let constant = ctx.constant(const_remain & left_mask);
                     let masked = simplify_and(&l, &constant, ctx, swzb_ctx);
                     let new = simplify_or(&r, &masked, ctx, swzb_ctx);
@@ -3063,6 +3064,7 @@ fn simplify_and(
     };
     heapsort::sort(&mut ops);
     ops.dedup();
+    simplify_and_remove_unnecessary_ors(&mut ops, const_remain);
     let mut tree = ops.pop().map(mark_self_simplified)
         .unwrap_or_else(|| ctx.const_0());
     while let Some(op) = ops.pop() {
@@ -3083,6 +3085,59 @@ fn simplify_and(
         tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
     tree
+}
+
+/// Transform (x | y | ...) & x => x
+fn simplify_and_remove_unnecessary_ors(
+    ops: &mut Vec<Rc<Operand>>,
+    const_remain: u64,
+) {
+    fn contains_or(op: &Rc<Operand>, check: &Rc<Operand>) -> bool {
+        if let Some((l, r)) = op.if_arithmetic_or() {
+            if l == check || r == check {
+                true
+            } else {
+                contains_or(l, check) || contains_or(r, check)
+            }
+        } else {
+            false
+        }
+    }
+
+    fn contains_or_const(op: &Rc<Operand>, check: u64) -> bool {
+        if let Some((_, r)) = op.if_arithmetic_or() {
+            if let Some(c) = r.if_constant() {
+                c & check == check
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    let mut pos = 0;
+    while pos < ops.len() {
+        for j in 0..ops.len() {
+            if j == pos {
+                continue;
+            }
+            if contains_or(&ops[j], &ops[pos]) {
+                ops.remove(j);
+                // `j` can be before or after `pos`,
+                // depending on that `pos` may need to be decremented
+                if j < pos {
+                    pos -= 1;
+                }
+            }
+        }
+        pos += 1;
+    }
+    for j in (0..ops.len()).rev() {
+        if contains_or_const(&ops[j], const_remain) {
+            ops.swap_remove(j);
+        }
+    }
 }
 
 fn simplify_or(
@@ -9215,6 +9270,46 @@ mod test {
         let op1 = operand_and(
             ctx.constant(0x40005ffffffffff),
             operand_xmm(1, 0),
+        );
+        let eq1 = operand_xmm(1, 0);
+        let op1 = Operand::simplified(op1);
+        let eq1 = Operand::simplified(eq1);
+        assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_or_consistency12() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_or(
+            ctx.constant(0x500000000007fff),
+            operand_and(
+                operand_xmm(1, 0),
+                operand_or(
+                    operand_and(
+                        operand_xmm(1, 3),
+                        ctx.constant(0x5ffffffff00),
+                    ),
+                    ctx.register(0),
+                ),
+            )
+        );
+        check_simplification_consistency(op1);
+    }
+
+    #[test]
+    fn simplify_or_consistency13() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            operand_xmm(1, 0),
+            operand_or(
+                operand_add(
+                    operand_xmm(1, 0),
+                    ctx.constant(0x8ff00000000),
+                ),
+                ctx.register(0),
+            ),
         );
         let eq1 = operand_xmm(1, 0);
         let op1 = Operand::simplified(op1);
