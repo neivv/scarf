@@ -3169,12 +3169,9 @@ fn simplify_or_ops(
     }
     heapsort::sort(ops);
     ops.dedup();
-    if const_val != 0 {
-        ops.push(ctx.constant(const_val));
-    }
     match ops.len() {
-        0 => return ctx.const_0(),
-        1 => return ops.remove(0),
+        0 => return ctx.constant(const_val),
+        1 if const_val == 0 => return ops.remove(0),
         _ => (),
     };
     let mut tree = ops.pop().map(mark_self_simplified)
@@ -3184,6 +3181,14 @@ fn simplify_or_ops(
             ty: ArithOpType::Or,
             left: tree,
             right: op,
+        };
+        tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+    }
+    if const_val != 0 {
+        let arith = ArithOperand {
+            ty: ArithOpType::Or,
+            left: tree,
+            right: ctx.constant(const_val),
         };
         tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
@@ -9177,5 +9182,25 @@ mod test {
         let op1 = Operand::simplified(op1);
         let eq1 = Operand::simplified(eq1);
         assert_eq!(op1, eq1);
+    }
+
+    #[test]
+    fn simplify_and_consistency11() {
+        use super::operand_helpers::*;
+        let ctx = &OperandContext::new();
+        let op1 = operand_and(
+            ctx.constant(0xb7ff),
+            operand_and(
+                operand_xmm(1, 0),
+                operand_or(
+                    operand_or(
+                        operand_xmm(2, 0),
+                        ctx.constant(0x5ffffffff00),
+                    ),
+                    ctx.register(1),
+                ),
+            ),
+        );
+        check_simplification_consistency(op1);
     }
 }
