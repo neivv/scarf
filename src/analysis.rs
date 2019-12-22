@@ -171,6 +171,21 @@ pub(crate) fn find_functions_from_calls_x86_64(
     });
 }
 
+pub(crate) fn function_ranges_from_exception_info_x86_64(
+    file: &BinaryFile<VirtualAddress64>,
+) -> Result<Vec<(u32, u32)>, crate::Error> {
+    use crate::light_byteorder::ReadLittleEndian;
+    let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
+    let exception_offset = file.read_u32(pe_header + 0xa0)?;
+    let exception_len = file.read_u32(pe_header + 0xa4)?;
+    let exceptions = file.slice_from(exception_offset..exception_offset + exception_len)?;
+    Ok(exceptions.chunks_exact(0xc).map(|chunk| {
+        let start = ReadLittleEndian::read_u32(&mut &chunk[..]).unwrap();
+        let end = ReadLittleEndian::read_u32(&mut &chunk[4..]).unwrap();
+        (start, end)
+    }).collect())
+}
+
 /// Attempts to find functions of a binary, accepting ones that are called/long jumped to
 /// from somewhere.
 /// Returns addresses relative to start of code section.
@@ -178,7 +193,9 @@ pub fn find_functions<'a, E: ExecutionState<'a>>(
     file: &BinaryFile<E::VirtualAddress>,
     relocs: &[E::VirtualAddress],
 ) -> Vec<E::VirtualAddress> {
-    let mut called_functions = Vec::new();
+    let confirmed_ranges = E::function_ranges_from_exception_info(file)
+        .unwrap_or_else(|_| Vec::new());
+    let mut called_functions = Vec::with_capacity(confirmed_ranges.len());
     for section in file.code_sections() {
         find_functions_from_calls::<E>(
             &section.data,
@@ -186,6 +203,35 @@ pub fn find_functions<'a, E: ExecutionState<'a>>(
             &mut called_functions,
         );
     }
+    // Filter out functions that are inside other function's ranges
+    if !confirmed_ranges.is_empty() {
+        let mut confirmed_pos = confirmed_ranges.iter().cloned();
+        let first = confirmed_pos.next().unwrap();
+        let mut current_start = file.base + first.0;
+        let mut current_end = file.base + first.1;
+        called_functions.sort();
+        called_functions.dedup();
+        called_functions.retain(|&addr| {
+            loop {
+                if addr <= current_start {
+                    // Either equal to current (Valid function with exception info)
+                    // or less than (Likely a (leaf) function which won't ever unwind)
+                    return true;
+                }
+                if addr < current_end {
+                    // In middle of another function, so it's not a real address
+                    return false;
+                }
+                let next = match confirmed_pos.next() {
+                    Some(s) => s,
+                    None => (u32::max_value(), u32::max_value()),
+                };
+                current_start = file.base + next.0;
+                current_end = file.base + next.1;
+            }
+        })
+    }
+    called_functions.extend(confirmed_ranges.iter().map(|x| file.base + x.0));
     called_functions.extend(find_funcptrs(file, relocs).iter().map(|x| x.callee));
     called_functions.sort();
     called_functions.dedup();

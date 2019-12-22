@@ -187,6 +187,16 @@ pub trait ExecutionState<'a> : Clone {
     ) {
     }
 
+    /// Returns function start and end addresses as a relative to base.
+    ///
+    /// The returned addresses are expected to be sorted and not have overlaps.
+    /// (Though it currently trusts that the binary follows PE spec)
+    fn function_ranges_from_exception_info(
+        _file: &crate::BinaryFile<Self::VirtualAddress>,
+    ) -> Result<Vec<(u32, u32)>, crate::Error> {
+        Ok(Vec::new())
+    }
+
     fn find_relocs(
         _file: &crate::BinaryFile<Self::VirtualAddress>,
     ) -> Result<Vec<Self::VirtualAddress>, crate::Error> {

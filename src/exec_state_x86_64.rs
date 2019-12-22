@@ -377,6 +377,12 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         crate::analysis::find_relocs_x86_64(file)
     }
 
+    fn function_ranges_from_exception_info(
+        file: &crate::BinaryFile<Self::VirtualAddress>,
+    ) -> Result<Vec<(u32, u32)>, crate::Error> {
+        crate::analysis::function_ranges_from_exception_info_x86_64(file)
+    }
+
     fn value_limits(&self, value: &Rc<Operand>) -> (u64, u64) {
         if let Some(ref constraint) = self.resolved_constraint {
             crate::exec_state::value_limits_recurse(&constraint.0, value)
