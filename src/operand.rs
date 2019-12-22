@@ -1131,15 +1131,21 @@ impl Operand {
     /// Unwraps a tree chaining arith operation to vector of the operands.
     ///
     /// Simplifies operands in process.
+    ///
+    /// The limit is a soft limit, it is guaranteed that at least that many
+    /// ops are collected
     fn collect_arith_ops(
         s: &Rc<Operand>,
         ops: &mut Vec<Rc<Operand>>,
         arith_type: ArithOpType,
+        limit: usize,
     ) {
         match s.ty {
-            OperandType::Arithmetic(ref arith) if arith.ty == arith_type => {
-                Operand::collect_arith_ops(&arith.left, ops, arith_type);
-                Operand::collect_arith_ops(&arith.right, ops, arith_type);
+            OperandType::Arithmetic(ref arith) if {
+                arith.ty == arith_type && ops.len() <= limit
+            } => {
+                Operand::collect_arith_ops(&arith.left, ops, arith_type, limit);
+                Operand::collect_arith_ops(&arith.right, ops, arith_type, limit);
             }
             _ => {
                 let mut s = s.clone();
@@ -1147,8 +1153,8 @@ impl Operand {
                     // Simplification can cause it to be what is being collected
                     s = Operand::simplified(s);
                     if let OperandType::Arithmetic(ref arith) = s.ty {
-                        if arith.ty == arith_type {
-                            Operand::collect_arith_ops(&s, ops, arith_type);
+                        if arith.ty == arith_type && ops.len() <= limit {
+                            Operand::collect_arith_ops(&s, ops, arith_type, limit);
                             return;
                         }
                     }
@@ -1156,22 +1162,26 @@ impl Operand {
                 ops.push(s);
             }
         }
+        if ops.len() > limit {
+            #[cfg(feature = "fuzz")]
+            tls_simplification_incomplete();
+        }
     }
 
     fn collect_mul_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        Operand::collect_arith_ops(s, ops, ArithOpType::Mul);
+        Operand::collect_arith_ops(s, ops, ArithOpType::Mul, 10);
     }
 
     fn collect_and_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        Operand::collect_arith_ops(s, ops, ArithOpType::And);
+        Operand::collect_arith_ops(s, ops, ArithOpType::And, 30);
     }
 
     fn collect_or_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        Operand::collect_arith_ops(s, ops, ArithOpType::Or);
+        Operand::collect_arith_ops(s, ops, ArithOpType::Or, 30);
     }
 
     fn collect_xor_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        Operand::collect_arith_ops(s, ops, ArithOpType::Xor);
+        Operand::collect_arith_ops(s, ops, ArithOpType::Xor, 30);
     }
 
     // "Simplify bitwise and: merge child ors"
@@ -1219,7 +1229,11 @@ impl Operand {
     // relevant bit ranges. Then ideally the xor can simplify further.
     // Technically valid for any non-overlapping x and y, but limit transformation
     // to cases where x and y are xors.
-    fn simplify_or_merge_xors(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
+    fn simplify_or_merge_xors(
+        ops: &mut Vec<Rc<Operand>>,
+        ctx: &OperandContext,
+        swzb: &mut SimplifyWithZeroBits,
+    ) {
         fn is_xor(op: &Rc<Operand>) -> bool {
             match op.ty {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Xor => true,
@@ -1237,7 +1251,7 @@ impl Operand {
                     if is_xor(&other_op) {
                         let other_bits = other_op.relevant_bits();
                         if !bits_overlap(&bits, &other_bits) {
-                            new = Some(simplify_xor(&op, &other_op, ctx));
+                            new = Some(simplify_xor(&op, &other_op, ctx, swzb));
                             other_op.remove();
                         }
                     }
@@ -1283,6 +1297,15 @@ impl Operand {
             }
         }
 
+        if ops.len() > 16 {
+            // The loop below is quadratic complexity, being especially bad
+            // if there are lot of masked xors, so give up if there are more
+            // ops than usual code would have.
+            #[cfg(feature = "fuzz")]
+            tls_simplification_incomplete();
+            return;
+        }
+
         let mut iter = VecDropIter::new(ops);
         while let Some(mut op) = iter.next() {
             let mut new = None;
@@ -1295,7 +1318,7 @@ impl Operand {
                         let result = if only_nonoverlapping && other_constant & constant != 0 {
                             None
                         } else {
-                            try_merge_ands(other_val, val, other_constant, constant, ctx)
+                            try_merge_ands(other_val, val, other_constant, constant, ctx, swzb_ctx)
                         };
                         if let Some(merged) = result {
                             constant |= other_constant;
@@ -1488,7 +1511,7 @@ impl Operand {
                     ArithOpType::Mul => simplify_mul(left, right, ctx),
                     ArithOpType::And => simplify_and(left, right, ctx, swzb_ctx),
                     ArithOpType::Or => simplify_or(left, right, ctx, swzb_ctx),
-                    ArithOpType::Xor => simplify_xor(left, right, ctx),
+                    ArithOpType::Xor => simplify_xor(left, right, ctx, swzb_ctx),
                     ArithOpType::Lsh => simplify_lsh(left, right, ctx, swzb_ctx),
                     ArithOpType::Rsh => simplify_rsh(left, right, ctx, swzb_ctx),
                     ArithOpType::Equal => simplify_eq(left, right, ctx),
@@ -2757,8 +2780,8 @@ fn try_merge_ands(
     a_mask: u64,
     b_mask: u64,
     ctx: &OperandContext,
+    swzb: &mut SimplifyWithZeroBits,
 ) -> Option<Rc<Operand>>{
-    use self::operand_helpers::*;
     if a == b {
         return Some(a.clone());
     }
@@ -2780,12 +2803,12 @@ fn try_merge_ands(
     match (&a.ty, &b.ty) {
         (&OperandType::Arithmetic(ref c), &OperandType::Arithmetic(ref d)) => {
             if c.ty == ArithOpType::Xor && d.ty == ArithOpType::Xor {
-                try_merge_ands(&c.left, &d.left, a_mask, b_mask, ctx).and_then(|left| {
-                    try_merge_ands(&c.right, &d.right, a_mask, b_mask, ctx).map(|right| (left, right))
-                }).or_else(|| try_merge_ands(&c.left, &d.right, a_mask, b_mask, ctx).and_then(|first| {
-                    try_merge_ands(&c.right, &d.left, a_mask, b_mask, ctx).map(|second| (first, second))
+                try_merge_ands(&c.left, &d.left, a_mask, b_mask, ctx, swzb).and_then(|left| {
+                    try_merge_ands(&c.right, &d.right, a_mask, b_mask, ctx, swzb).map(|right| (left, right))
+                }).or_else(|| try_merge_ands(&c.left, &d.right, a_mask, b_mask, ctx, swzb).and_then(|first| {
+                    try_merge_ands(&c.right, &d.left, a_mask, b_mask, ctx, swzb).map(|second| (first, second))
                 })).map(|(first, second)| {
-                    Operand::simplified(operand_xor(first, second))
+                    Operand::simplified(simplify_xor(&first, &second, ctx, swzb))
                 })
             } else {
                 None
@@ -2879,6 +2902,17 @@ fn simplify_and(
     let mut ops = vec![];
     Operand::collect_and_ops(left, &mut ops);
     Operand::collect_and_ops(right, &mut ops);
+    if ops.len() > 30 {
+        // This is likely some hash function being unrolled, give up
+        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+        let arith = ArithOperand {
+            ty: ArithOpType::And,
+            left: left,
+            right: right,
+        };
+        return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+    }
     let mut const_remain = !0u64;
     // Keep second mask in form 00000011111 (All High bits 0, all low bits 1),
     // as that allows simplifying add/sub/mul a bit more
@@ -3242,7 +3276,7 @@ fn simplify_or_ops(
             vec_filter_map(ops, |op| simplify_with_one_bits(&op, &bits, ctx));
         }
         Operand::simplify_or_merge_child_ands(ops, ctx, swzb_ctx, false);
-        Operand::simplify_or_merge_xors(ops, ctx);
+        Operand::simplify_or_merge_xors(ops, ctx, swzb_ctx);
         simplify_or_merge_mem(ops, ctx);
         Operand::simplify_or_merge_comparisions(ops, ctx);
 
@@ -3366,7 +3400,7 @@ fn simplify_lsh(
                         for op in &mut ops {
                             *op = simplify_lsh(op, &right, ctx, swzb_ctx);
                         }
-                        simplify_xor_ops(&mut ops, ctx)
+                        simplify_xor_ops(&mut ops, ctx, swzb_ctx)
                     }
                 }
                 ArithOpType::Mul => {
@@ -3522,7 +3556,7 @@ fn simplify_rsh(
                         for op in &mut ops {
                             *op = simplify_rsh(op, &right, ctx, swzb_ctx);
                         }
-                        simplify_xor_ops(&mut ops, ctx)
+                        simplify_xor_ops(&mut ops, ctx, swzb_ctx)
                     }
                 }
                 ArithOpType::Lsh => {
@@ -3770,9 +3804,10 @@ fn simplify_with_and_mask_inner(
                         op.clone()
                     } else {
                         let op = operand_arith(arith.ty, simplified_left, simplified_right);
+                        let op = Operand::simplified_with_ctx(op, ctx, swzb_ctx);
                         // The result may simplify again, for example with mask 0x1
                         // Mem16[x] + Mem32[x] + Mem8[x] => 3 * Mem8[x] => 1 * Mem8[x]
-                        simplify_with_and_mask(&Operand::simplified(op), mask, ctx, swzb_ctx)
+                        simplify_with_and_mask(&op, mask, ctx, swzb_ctx)
                     }
                 }
                 _ => op.clone(),
@@ -3932,7 +3967,7 @@ fn simplify_with_zero_bits(
                             if l == *left && r == *right {
                                 Some(op.clone())
                             } else {
-                                Some(simplify_xor(&l, &r, ctx))
+                                Some(simplify_xor(&l, &r, ctx, swzb))
                             }
                         }
                     };
@@ -4237,7 +4272,12 @@ fn simplify_add_merge_muls(
     }
 }
 
-fn simplify_xor(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+fn simplify_xor(
+    left: &Rc<Operand>,
+    right: &Rc<Operand>,
+    ctx: &OperandContext,
+    swzb: &mut SimplifyWithZeroBits,
+) -> Rc<Operand> {
     let left_bits = left.relevant_bits();
     let right_bits = right.relevant_bits();
     // x ^ 0 early exit
@@ -4258,12 +4298,24 @@ fn simplify_xor(left: &Rc<Operand>, right: &Rc<Operand>, ctx: &OperandContext) -
     let mut ops = vec![];
     Operand::collect_xor_ops(left, &mut ops);
     Operand::collect_xor_ops(right, &mut ops);
-    simplify_xor_ops(&mut ops, ctx)
+    if ops.len() > 30 {
+        // This is likely some hash function being unrolled, give up
+        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb);
+        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb);
+        let arith = ArithOperand {
+            ty: ArithOpType::Xor,
+            left: left,
+            right: right,
+        };
+        return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+    }
+    simplify_xor_ops(&mut ops, ctx, swzb)
 }
 
 fn simplify_xor_try_extract_constant(
     op: &Rc<Operand>,
     ctx: &OperandContext,
+    swzb: &mut SimplifyWithZeroBits,
 ) -> Option<(Rc<Operand>, u64)> {
     use self::operand_helpers::*;
 
@@ -4303,14 +4355,17 @@ fn simplify_xor_try_extract_constant(
     let (l, r) = op.if_arithmetic_and()?;
     let and_mask = r.if_constant()?;
     let (new, c) = recurse(l)?;
-    let new = simplify_and(&new, r, ctx, &mut SimplifyWithZeroBits::default());
+    let new = simplify_and(&new, r, ctx, swzb);
     Some((new, c & and_mask))
 }
 
-fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Operand> {
+fn simplify_xor_ops(
+    ops: &mut Vec<Rc<Operand>>,
+    ctx: &OperandContext,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Rc<Operand> {
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
 
-    let swzb_ctx = &mut SimplifyWithZeroBits::default();
     let mut const_val = 0;
     loop {
         const_val = ops.iter().flat_map(|x| x.if_constant())
@@ -4353,7 +4408,8 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
             }
         }
         for i in 0..ops.len() {
-            if let Some((new, constant)) = simplify_xor_try_extract_constant(&ops[i], ctx) {
+            let result = simplify_xor_try_extract_constant(&ops[i], ctx, swzb_ctx);
+            if let Some((new, constant)) = result {
                 ops[i] = new;
                 const_val ^= constant;
                 ops_changed = true;
@@ -4367,12 +4423,12 @@ fn simplify_xor_ops(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) -> Rc<Oper
             }
         }
         if new_ops.is_empty() && !ops_changed {
+            heapsort::sort(&mut *ops);
             break;
         }
         ops.retain(|x| x.if_arithmetic(ArithOpType::Xor).is_none());
         ops.extend(new_ops);
     }
-    heapsort::sort(&mut *ops);
 
     match ops.len() {
         0 => return ctx.constant(const_val),
