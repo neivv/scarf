@@ -4741,8 +4741,13 @@ pub mod operand_helpers {
     }
 
     pub fn mem_variable_rc(size: MemAccessSize, val: Rc<Operand>) -> Rc<Operand> {
-        Operand::new_not_simplified_rc(OperandType::Memory(MemAccess {
-            address: val,
+        // Eagerly simplify these as the address cannot affect anything
+        // this operand would get wrapped to.
+        // Only drawback is that if this resulting operand is discarded before
+        // it needed to be simplified, the work was wasted.
+        // Though that should be a rare case.
+        Operand::new_simplified_rc(OperandType::Memory(MemAccess {
+            address: Operand::simplified(val),
             size,
         }))
     }
