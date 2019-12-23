@@ -68,6 +68,25 @@ pub fn simplified_with_ctx(
                                         simplify_and(&arith.right, &c, ctx, swzb_ctx)
                                     };
                                 }
+                            } else if arith.ty == ArithOpType::Add {
+                                // (x - y) + c > x + c
+                                // (Should just use collect_add_ops)
+                                if let Some(c) = arith.right.if_constant() {
+                                    if let Some((x, y)) = arith.left.if_arithmetic_sub() {
+                                        if let Some((x2, c2)) = right_inner.if_arithmetic_add() {
+                                            if let Some(c2) = c2.if_constant() {
+                                                if x == x2 && c == c2 {
+                                                    left = if mask == u64::max_value() {
+                                                        y.clone()
+                                                    } else {
+                                                        let c = ctx.constant(mask);
+                                                        simplify_and(&y, &c, ctx, swzb_ctx)
+                                                    };
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2088,6 +2107,38 @@ fn simplify_or_merge_mem(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
     }
 }
 
+fn simplify_add_sub(
+    left: &Rc<Operand>,
+    right: &Rc<Operand>,
+    is_sub: bool,
+    ctx: &OperandContext,
+) -> Rc<Operand> {
+    if let Some((l, r)) = check_quick_arith_simplify(left, right) {
+        if !is_sub || std::ptr::eq(l, left) {
+            let c = r.if_constant().unwrap_or(0);
+            if c == 0 {
+                return l.clone();
+            }
+            let arith = if !is_sub && c > 0x8000_0000_0000_0000 {
+                ArithOperand {
+                    ty: ArithOpType::Sub,
+                    left: l.clone(),
+                    right: ctx.constant(0u64.wrapping_sub(c)),
+                }
+            } else {
+                ArithOperand {
+                    ty: if is_sub { ArithOpType::Sub } else { ArithOpType::Add },
+                    left: l.clone(),
+                    right: r.clone(),
+                }
+            };
+            return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+        }
+    }
+    let mut ops = simplify_add_sub_ops(left, right, is_sub, u64::max_value(), ctx);
+    add_sub_ops_to_tree(&mut ops, ctx)
+}
+
 fn add_sub_ops_to_tree(
     ops: &mut Vec<(Rc<Operand>, bool)>,
     ctx: &OperandContext,
@@ -2095,6 +2146,16 @@ fn add_sub_ops_to_tree(
     use self::ArithOpType::*;
 
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
+    let const_sum = if let Some(c) = ops.last().filter(|x| x.0.if_constant().is_some()) {
+        // If the constant is only positive term, don't place it at the end
+        if c.1 == false && (&ops[..ops.len() - 1]).iter().all(|x| x.1 == true) {
+            None
+        } else {
+            ops.pop()
+        }
+    } else {
+        None
+    };
     // Place non-negated terms last so the simplified result doesn't become
     // (0 - x) + y
     heapsort::sort_by(ops, |&(ref a_val, a_neg), &(ref b_val, b_neg)| {
@@ -2114,7 +2175,13 @@ fn add_sub_ops_to_tree(
                 }
             }
         }
-        None => return ctx.const_0(),
+        None => match const_sum {
+            Some((op, neg)) => {
+                debug_assert!(neg == false);
+                return op;
+            }
+            None => return ctx.const_0(),
+        }
     };
     while let Some((op, neg)) = ops.pop() {
         let arith = ArithOperand {
@@ -2124,17 +2191,15 @@ fn add_sub_ops_to_tree(
         };
         tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
+    if let Some((op, neg)) = const_sum {
+        let arith = ArithOperand {
+            ty: if neg { Sub } else { Add },
+            left: tree,
+            right: op,
+        };
+        tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+    }
     tree
-}
-
-fn simplify_add_sub(
-    left: &Rc<Operand>,
-    right: &Rc<Operand>,
-    is_sub: bool,
-    ctx: &OperandContext,
-) -> Rc<Operand> {
-    let mut ops = simplify_add_sub_ops(left, right, is_sub, u64::max_value(), ctx);
-    add_sub_ops_to_tree(&mut ops, ctx)
 }
 
 fn simplify_mul(
@@ -2354,6 +2419,8 @@ fn simplify_collected_add_sub_ops(
         return;
     }
 
+    // NOTE add_sub_ops_to_tree assumes that if there's a constant it is last,
+    // so don't move this without changing it.
     if const_sum != 0 {
         if const_sum > 0x8000_0000_0000_0000 {
             ops.push((ctx.constant(0u64.wrapping_sub(const_sum)), true));

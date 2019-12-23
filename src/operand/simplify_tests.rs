@@ -4794,3 +4794,33 @@ fn simplify_and_consistency14() {
     );
     check_simplification_consistency(op1);
 }
+
+#[test]
+fn simplify_gt3() {
+    use super::operand_helpers::*;
+    let ctx = &OperandContext::new();
+    // x - y + z > x + z => (x + z) - y > x + z => y > x + z
+    let op1 = operand_gt(
+        operand_add(
+            operand_sub(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.constant(5),
+        ),
+        operand_add(
+            ctx.register(0),
+            ctx.constant(5),
+        ),
+    );
+    let eq1 = operand_gt(
+        ctx.register(1),
+        operand_add(
+            ctx.register(0),
+            ctx.constant(5),
+        ),
+    );
+    let op1 = Operand::simplified(op1);
+    let eq1 = Operand::simplified(eq1);
+    assert_eq!(op1, eq1);
+}
