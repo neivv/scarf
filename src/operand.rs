@@ -2903,24 +2903,31 @@ fn simplify_and(
     if !bits_overlap(&left.relevant_bits(), &right.relevant_bits()) {
         return ctx.const_0();
     }
-    if let Some((l, r)) = check_quick_arith_simplify(left, right) {
-        let left_bits = l.relevant_bits();
-        let right = if left_bits.end != 64 {
-            let mask = (1 << left_bits.end) - 1;
-            let c = r.if_constant().unwrap_or(0);
-            if c & mask == mask {
-                return l.clone();
-            }
-            ctx.constant(c & mask)
-        } else {
-            r.clone()
-        };
-        let arith = ArithOperand {
-            ty: ArithOpType::And,
-            left: l.clone(),
-            right,
-        };
-        return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+    let const_other = Operand::either(left, right, |x| x.if_constant());
+    if let Some((c, other)) = const_other {
+        if let Some((l, r)) = check_quick_arith_simplify(left, right) {
+            let left_bits = l.relevant_bits();
+            let right = if left_bits.end != 64 {
+                let mask = (1 << left_bits.end) - 1;
+                let c = r.if_constant().unwrap_or(0);
+                if c & mask == mask {
+                    return l.clone();
+                }
+                ctx.constant(c & mask)
+            } else {
+                r.clone()
+            };
+            let arith = ArithOperand {
+                ty: ArithOpType::And,
+                left: l.clone(),
+                right,
+            };
+            return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+        }
+        let other_relbit_mask = other.relevant_bits_mask();
+        if c & other_relbit_mask == other_relbit_mask {
+            return Operand::simplified_with_ctx(other.clone(), ctx, swzb_ctx);
+        }
     }
 
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
