@@ -2167,6 +2167,23 @@ fn simplify_mul(
     right: &Rc<Operand>,
     ctx: &OperandContext,
 ) -> Rc<Operand> {
+    let const_other = Operand::either(left, right, |x| x.if_constant());
+    if let Some((c, other)) = const_other {
+        match c {
+            0 => return ctx.const_0(),
+            1 => return Operand::simplified(other.clone()),
+            _ => (),
+        }
+        if let Some((l, r)) = check_quick_arith_simplify(left, right) {
+            let arith = ArithOperand {
+                ty: ArithOpType::Mul,
+                left: l.clone(),
+                right: r.clone(),
+            };
+            return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+        }
+    }
+
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     let mut ops = vec![];
     Operand::collect_mul_ops(left, &mut ops);
@@ -2217,13 +2234,13 @@ fn simplify_mul(
                 break;
             }
         }
-        if !changed {
-            ops.push(ctx.constant(const_product));
+        if changed {
+            const_product = 1;
         }
     }
     match ops.len() {
-        0 => return ctx.const_1(),
-        1 => return ops.remove(0),
+        0 => return ctx.constant(const_product),
+        1 if const_product == 1 => return ops.remove(0),
         _ => (),
     };
     let mut tree = ops.pop().map(mark_self_simplified)
@@ -2233,6 +2250,15 @@ fn simplify_mul(
             ty: ArithOpType::Mul,
             left: tree,
             right: op,
+        };
+        tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
+    }
+    // Make constant always be on right of simplified mul
+    if const_product != 1 {
+        let arith = ArithOperand {
+            ty: ArithOpType::Mul,
+            left: tree,
+            right: ctx.constant(const_product),
         };
         tree = Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
