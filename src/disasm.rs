@@ -1554,7 +1554,13 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             }
             ArithOperation::Xor => {
                 self.output(flags(ArithOpType::Xor, dest.op.clone(), rhs.clone(), size));
-                self.output(xor(dest, rhs));
+                if dest.op == rhs {
+                    // Zeroing xor is not that common, usually only done few times
+                    // per function at most, but skip its simplification anyway.
+                    self.output(mov(dest.dest, self.ctx.const_0()));
+                } else {
+                    self.output(xor(dest, rhs));
+                }
             }
             ArithOperation::Move => {
                 if dest.op != rhs {
