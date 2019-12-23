@@ -1132,29 +1132,42 @@ impl Operand {
     ///
     /// Simplifies operands in process.
     ///
-    /// The limit is a soft limit, it is guaranteed that at least that many
-    /// ops are collected
+    /// If the limit is set, caller should verify that it was not hit (ops.len() > limit),
+    /// as not all ops will end up being collected (TODO Probs should return result)
     fn collect_arith_ops(
         s: &Rc<Operand>,
         ops: &mut Vec<Rc<Operand>>,
         arith_type: ArithOpType,
         limit: usize,
+        mut ctx_swzb: Option<(&OperandContext, &mut SimplifyWithZeroBits)>,
     ) {
+        if ops.len() >= limit {
+            if ops.len() == limit {
+                ops.push(s.clone());
+                #[cfg(feature = "fuzz")]
+                tls_simplification_incomplete();
+            }
+            return;
+        }
         match s.ty {
-            OperandType::Arithmetic(ref arith) if {
-                arith.ty == arith_type && ops.len() <= limit
-            } => {
-                Operand::collect_arith_ops(&arith.left, ops, arith_type, limit);
-                Operand::collect_arith_ops(&arith.right, ops, arith_type, limit);
+            OperandType::Arithmetic(ref arith) if arith.ty == arith_type => {
+                let ctx_swzb_ = ctx_swzb.as_mut().map(|x| (x.0, &mut *x.1));
+                Operand::collect_arith_ops(&arith.left, ops, arith_type, limit, ctx_swzb_);
+                Operand::collect_arith_ops(&arith.right, ops, arith_type, limit, ctx_swzb);
             }
             _ => {
                 let mut s = s.clone();
                 if !s.is_simplified() {
                     // Simplification can cause it to be what is being collected
-                    s = Operand::simplified(s);
+                    s = match ctx_swzb {
+                        Some((ctx, ref mut swzb)) => {
+                            Operand::simplified_with_ctx(s, ctx, &mut *swzb)
+                        }
+                        None => Operand::simplified(s),
+                    };
                     if let OperandType::Arithmetic(ref arith) = s.ty {
-                        if arith.ty == arith_type && ops.len() <= limit {
-                            Operand::collect_arith_ops(&s, ops, arith_type, limit);
+                        if arith.ty == arith_type {
+                            Operand::collect_arith_ops(&s, ops, arith_type, limit, ctx_swzb);
                             return;
                         }
                     }
@@ -1162,26 +1175,39 @@ impl Operand {
                 ops.push(s);
             }
         }
-        if ops.len() > limit {
-            #[cfg(feature = "fuzz")]
-            tls_simplification_incomplete();
-        }
     }
 
     fn collect_mul_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        Operand::collect_arith_ops(s, ops, ArithOpType::Mul, 10);
+        Operand::collect_arith_ops(s, ops, ArithOpType::Mul, usize::max_value(), None);
     }
 
-    fn collect_and_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        Operand::collect_arith_ops(s, ops, ArithOpType::And, 30);
+    fn collect_and_ops(
+        s: &Rc<Operand>,
+        ops: &mut Vec<Rc<Operand>>,
+        limit: usize,
+        ctx: &OperandContext,
+        swzb: &mut SimplifyWithZeroBits,
+    ) {
+        Operand::collect_arith_ops(s, ops, ArithOpType::And, limit, Some((ctx, swzb)));
     }
 
-    fn collect_or_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        Operand::collect_arith_ops(s, ops, ArithOpType::Or, 30);
+    fn collect_or_ops(
+        s: &Rc<Operand>,
+        ops: &mut Vec<Rc<Operand>>,
+        ctx: &OperandContext,
+        swzb: &mut SimplifyWithZeroBits,
+    ) {
+        Operand::collect_arith_ops(s, ops, ArithOpType::Or, usize::max_value(), Some((ctx, swzb)));
     }
 
-    fn collect_xor_ops(s: &Rc<Operand>, ops: &mut Vec<Rc<Operand>>) {
-        Operand::collect_arith_ops(s, ops, ArithOpType::Xor, 30);
+    fn collect_xor_ops(
+        s: &Rc<Operand>,
+        ops: &mut Vec<Rc<Operand>>,
+        limit: usize,
+        ctx: &OperandContext,
+        swzb: &mut SimplifyWithZeroBits,
+    ) {
+        Operand::collect_arith_ops(s, ops, ArithOpType::Xor, limit, Some((ctx, swzb)));
     }
 
     // "Simplify bitwise and: merge child ors"
@@ -2900,16 +2926,14 @@ fn simplify_and(
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
 
     let mut ops = vec![];
-    Operand::collect_and_ops(left, &mut ops);
-    Operand::collect_and_ops(right, &mut ops);
+    Operand::collect_and_ops(left, &mut ops, 30, ctx, swzb_ctx);
+    Operand::collect_and_ops(right, &mut ops, 30, ctx, swzb_ctx);
     if ops.len() > 30 {
         // This is likely some hash function being unrolled, give up
-        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb_ctx);
         let arith = ArithOperand {
             ty: ArithOpType::And,
-            left: left,
-            right: right,
+            left: left.clone(),
+            right: right.clone(),
         };
         return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
@@ -3047,8 +3071,8 @@ fn simplify_and(
         let mut new_ops = vec![];
         for i in 0..ops.len() {
             if let Some((l, r)) = ops[i].if_arithmetic_and() {
-                Operand::collect_and_ops(l, &mut new_ops);
-                Operand::collect_and_ops(r, &mut new_ops);
+                Operand::collect_and_ops(l, &mut new_ops, usize::max_value(), ctx, swzb_ctx);
+                Operand::collect_and_ops(r, &mut new_ops, usize::max_value(), ctx, swzb_ctx);
             } else if let Some(c) = ops[i].if_constant() {
                 if c & const_remain != const_remain {
                     ops_changed = true;
@@ -3235,8 +3259,8 @@ fn simplify_or(
     }
 
     let mut ops = vec![];
-    Operand::collect_or_ops(left, &mut ops);
-    Operand::collect_or_ops(right, &mut ops);
+    Operand::collect_or_ops(left, &mut ops, ctx, swzb);
+    Operand::collect_or_ops(right, &mut ops, ctx, swzb);
     simplify_or_ops(ops, ctx, swzb)
 }
 
@@ -3283,8 +3307,8 @@ fn simplify_or_ops(
         let mut new_ops = vec![];
         for i in 0..ops.len() {
             if let Some((l, r)) = ops[i].if_arithmetic_or() {
-                Operand::collect_or_ops(l, &mut new_ops);
-                Operand::collect_or_ops(r, &mut new_ops);
+                Operand::collect_or_ops(l, &mut new_ops, ctx, swzb_ctx);
+                Operand::collect_or_ops(r, &mut new_ops, ctx, swzb_ctx);
             } else if let Some(c) = ops[i].if_constant() {
                 if c | const_val != const_val {
                     const_val |= c;
@@ -3327,6 +3351,40 @@ fn simplify_or_ops(
     tree
 }
 
+/// Counts xor ops, descending into x & c masks, as
+/// simplify_rsh/lsh do that as well.
+/// Too long xors should not be tried to be simplified in shifts.
+fn simplify_shift_is_too_long_xor(ops: &[Rc<Operand>]) -> bool {
+    fn count(op: &Rc<Operand>) -> usize {
+        match op.ty {
+            OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
+                if arith.right.if_constant().is_some() {
+                    count(&arith.left)
+                } else {
+                    1
+                }
+            }
+            OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Xor => {
+                count(&arith.left) + count(&arith.right)
+            }
+            _ => 1,
+        }
+    }
+
+    const LIMIT: usize = 16;
+    if ops.len() > LIMIT {
+        return true;
+    }
+    let mut sum = 0;
+    for op in ops {
+        sum += count(op);
+        if sum > LIMIT {
+            break;
+        }
+    }
+    sum > LIMIT
+}
+
 fn simplify_lsh(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
@@ -3367,14 +3425,12 @@ fn simplify_lsh(
             match arith.ty {
                 ArithOpType::And => {
                     // Simplify (x & mask) << c to (x << c) & (mask << c)
-                    let const_other =
-                        Operand::either(&arith.left, &arith.right, |x| x.if_constant());
-                    if let Some((c, other)) = const_other {
+                    if let Some(c) = arith.right.if_constant() {
                         let high = 64 - zero_bits.start;
                         let low = left.relevant_bits().start;
                         let no_op_mask = !0u64 >> low << low << high >> high;
 
-                        let new = simplify_lsh(&other, &right, ctx, swzb_ctx);
+                        let new = simplify_lsh(&arith.left, &right, ctx, swzb_ctx);
                         if c == no_op_mask {
                             return new;
                         } else {
@@ -3392,8 +3448,8 @@ fn simplify_lsh(
                 ArithOpType::Xor => {
                     // Try to simplify any parts of the xor separately
                     let mut ops = vec![];
-                    Operand::collect_xor_ops(&left, &mut ops);
-                    if ops.len() > 16 {
+                    Operand::collect_xor_ops(&left, &mut ops, 16, ctx, swzb_ctx);
+                    if simplify_shift_is_too_long_xor(&ops) {
                         // Give up on dumb long xors
                         default()
                     } else {
@@ -3548,8 +3604,8 @@ fn simplify_rsh(
                 ArithOpType::Xor => {
                     // Try to simplify any parts of the xor separately
                     let mut ops = vec![];
-                    Operand::collect_xor_ops(&left, &mut ops);
-                    if ops.len() > 16 {
+                    Operand::collect_xor_ops(&left, &mut ops, 16, ctx, swzb_ctx);
+                    if simplify_shift_is_too_long_xor(&ops) {
                         // Give up on dumb long xors
                         default()
                     } else {
@@ -3676,6 +3732,16 @@ fn vec_filter_map<T, F: FnMut(T) -> Option<T>>(vec: &mut Vec<T>, mut fun: F) {
     }
 }
 
+fn should_stop_with_and_mask(swzb_ctx: &mut SimplifyWithZeroBits) -> bool {
+    if swzb_ctx.with_and_mask_count > 80 {
+        #[cfg(feature = "fuzz")]
+        tls_simplification_incomplete();
+        true
+    } else {
+        false
+    }
+}
+
 /// Convert and(x, mask) to x
 fn simplify_with_and_mask(
     op: &Rc<Operand>,
@@ -3686,9 +3752,7 @@ fn simplify_with_and_mask(
     if op.relevant_bits_mask() & mask == 0 {
         return ctx.const_0();
     }
-    if swzb_ctx.with_and_mask_count > 80 {
-        #[cfg(feature = "fuzz")]
-        tls_simplification_incomplete();
+    if should_stop_with_and_mask(swzb_ctx) {
         return op.clone();
     }
     swzb_ctx.with_and_mask_count += 1;
@@ -3719,6 +3783,9 @@ fn simplify_with_and_mask_inner(
                         simplify_with_and_mask(&arith.left, mask, ctx, swzb_ctx);
                     let simplified_right =
                         simplify_with_and_mask(&arith.right, mask, ctx, swzb_ctx);
+                    if should_stop_with_and_mask(swzb_ctx) {
+                        return op.clone();
+                    }
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
                     } else {
@@ -3747,6 +3814,9 @@ fn simplify_with_and_mask_inner(
                     }
                     if simplified_right.if_constant() == Some(0) {
                         return simplified_left;
+                    }
+                    if should_stop_with_and_mask(swzb_ctx) {
+                        return op.clone();
                     }
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
@@ -3800,6 +3870,9 @@ fn simplify_with_and_mask_inner(
                         simplify_with_and_mask(&arith.left, mask, ctx, swzb_ctx);
                     let simplified_right =
                         simplify_with_and_mask(&arith.right, mask, ctx, swzb_ctx);
+                    if should_stop_with_and_mask(swzb_ctx) {
+                        return op.clone();
+                    }
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
                     } else {
@@ -3868,6 +3941,10 @@ fn simplify_with_and_mask_inner(
 struct SimplifyWithZeroBits {
     simplify_count: u8,
     with_and_mask_count: u8,
+    /// simplify_with_zero_bits can cause a lot of recursing in xor
+    /// simplification with has functions, stop simplifying if a limit
+    /// is hit.
+    xor_recurse: u8,
 }
 
 /// Simplifies `op` when the bits in the range `bits` are guaranteed to be zero.
@@ -3906,11 +3983,21 @@ fn simplify_with_zero_bits(
         _ => false,
     };
 
-    if recurse_check {
+    fn should_stop(swzb: &mut SimplifyWithZeroBits) -> bool {
         if swzb.simplify_count > 40 {
-            // Give up
             #[cfg(feature = "fuzz")]
             tls_simplification_incomplete();
+            true
+        } else {
+            false
+        }
+    }
+
+    if recurse_check {
+        if swzb.xor_recurse > 4 {
+            swzb.simplify_count = u8::max_value();
+        }
+        if should_stop(swzb) {
             return Some(op.clone());
         } else {
             swzb.simplify_count += 1;
@@ -3924,10 +4011,16 @@ fn simplify_with_zero_bits(
             match arith.ty {
                 ArithOpType::And => {
                     let simplified_left = simplify_with_zero_bits(left, bits, ctx, swzb);
+                    if should_stop(swzb) {
+                        return Some(op.clone());
+                    }
                     return match simplified_left {
                         Some(l) => {
                             let simplified_right =
                                 simplify_with_zero_bits(right, bits, ctx, swzb);
+                            if should_stop(swzb) {
+                                return Some(op.clone());
+                            }
                             match simplified_right {
                                 Some(r) => {
                                     if l == *left && r == *right {
@@ -3945,6 +4038,9 @@ fn simplify_with_zero_bits(
                 ArithOpType::Or => {
                     let simplified_left = simplify_with_zero_bits(left, bits, ctx, swzb);
                     let simplified_right = simplify_with_zero_bits(right, bits, ctx, swzb);
+                    if should_stop(swzb) {
+                        return Some(op.clone());
+                    }
                     return match (simplified_left, simplified_right) {
                         (None, None) => None,
                         (None, Some(s)) | (Some(s), None) => Some(s),
@@ -3960,6 +4056,9 @@ fn simplify_with_zero_bits(
                 ArithOpType::Xor => {
                     let simplified_left = simplify_with_zero_bits(left, bits, ctx, swzb);
                     let simplified_right = simplify_with_zero_bits(right, bits, ctx, swzb);
+                    if should_stop(swzb) {
+                        return Some(op.clone());
+                    }
                     return match (simplified_left, simplified_right) {
                         (None, None) => None,
                         (None, Some(s)) | (Some(s), None) => Some(s),
@@ -3967,7 +4066,10 @@ fn simplify_with_zero_bits(
                             if l == *left && r == *right {
                                 Some(op.clone())
                             } else {
-                                Some(simplify_xor(&l, &r, ctx, swzb))
+                                swzb.xor_recurse += 1;
+                                let result = simplify_xor(&l, &r, ctx, swzb);
+                                swzb.xor_recurse -= 1;
+                                Some(result)
                             }
                         }
                     };
@@ -4296,16 +4398,17 @@ fn simplify_xor(
         return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
     let mut ops = vec![];
-    Operand::collect_xor_ops(left, &mut ops);
-    Operand::collect_xor_ops(right, &mut ops);
+    Operand::collect_xor_ops(left, &mut ops, 30, ctx, swzb);
+    Operand::collect_xor_ops(right, &mut ops, 30, ctx, swzb);
     if ops.len() > 30 {
         // This is likely some hash function being unrolled, give up
-        let left = Operand::simplified_with_ctx(left.clone(), ctx, swzb);
-        let right = Operand::simplified_with_ctx(right.clone(), ctx, swzb);
+        // Also set swzb to stop everything
+        swzb.simplify_count = u8::max_value();
+        swzb.with_and_mask_count = u8::max_value();
         let arith = ArithOperand {
             ty: ArithOpType::Xor,
-            left: left,
-            right: right,
+            left: left.clone(),
+            right: right.clone(),
         };
         return Operand::new_simplified_rc(OperandType::Arithmetic(arith));
     }
@@ -4418,8 +4521,8 @@ fn simplify_xor_ops(
         let mut new_ops = vec![];
         for i in 0..ops.len() {
             if let Some((l, r)) = ops[i].if_arithmetic(ArithOpType::Xor) {
-                Operand::collect_xor_ops(l, &mut new_ops);
-                Operand::collect_xor_ops(r, &mut new_ops);
+                Operand::collect_xor_ops(l, &mut new_ops, usize::max_value(), ctx, swzb_ctx);
+                Operand::collect_xor_ops(r, &mut new_ops, usize::max_value(), ctx, swzb_ctx);
             }
         }
         if new_ops.is_empty() && !ops_changed {
