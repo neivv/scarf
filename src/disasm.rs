@@ -1353,11 +1353,16 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             op: reg.clone(),
             dest: DestOperand::reg_variable_size(reg_id, op_size),
         };
-        let is_64 = Va::SIZE == 8;
         self.output(match is_inc {
             true => add(dest, self.ctx.const_1()),
             false => sub(dest, self.ctx.const_1()),
         });
+        self.inc_dec_flags(is_inc, reg);
+        Ok(())
+    }
+
+    fn inc_dec_flags(&mut self, is_inc: bool, reg: Rc<Operand>) {
+        let is_64 = Va::SIZE == 8;
         self.output(
             make_arith_operation(
                 DestOperand::Flag(Flag::Zero),
@@ -1393,7 +1398,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             reg,
             eq_value,
         ));
-        Ok(())
     }
 
     fn flag_set(&mut self, flag: Flag, value: bool) -> Result<(), Failed> {
@@ -2338,10 +2342,12 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         match variant {
             0 | 1 => {
                 let is_inc = variant == 0;
+                let op = rm.op.clone();
                 self.output(match is_inc {
                     true => add(rm, self.ctx.const_1()),
                     false => sub(rm, self.ctx.const_1()),
                 });
+                self.inc_dec_flags(is_inc, op);
             }
             2 | 3 => self.output(Operation::Call(rm.op)),
             4 | 5 => self.output(Operation::Jump { condition: self.ctx.const_1(), to: rm.op }),

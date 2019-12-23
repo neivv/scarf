@@ -400,6 +400,34 @@ fn switch_case_count3() {
     ]);
 }
 
+#[test]
+fn dec_flags() {
+    let ctx = scarf::operand::OperandContext::new();
+    // 2 cases to ok, 3rd fake
+    // rdx, rsi, rdi, rbp are undef if the cases are run
+    test_inline(&[
+        0x33, 0xc0, // xor eax, eax
+        0x33, 0xd2, // xor eax, eax
+        0x4d, 0x85, 0xc0, // test r8, r8
+        0x74, 0x0c, // je set_edx_1
+        0x49, 0xff, 0xc8, // dec r8
+        0x74, 0x02, // je set_eax_1
+        0xeb, 0x08, // jmp end
+        // set_eax_1
+        0x83, 0xc8, 0x01, // or eax, 1
+        0xeb, 0x03, // jmp end
+        // set_edx_1
+        0x83, 0xca, 0x01, // or eax, 1
+        // end:
+        0xeb, 0x00,
+        0xc3, // ret
+    ], &[
+         (operand_register(0), ctx.undefined_rc()),
+         (operand_register(2), ctx.undefined_rc()),
+         (operand_register(8), ctx.undefined_rc()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
@@ -411,6 +439,9 @@ impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
         println!("@ {:x} {:#?}", control.address(), op);
         if let Operation::Move(_, val, _) = op {
             println!("Resolved is {}", control.resolve(val));
+        }
+        if let Operation::Jump { condition, .. } = op {
+            println!("Resolved condition is {}", control.resolve(condition));
         }
         if let Operation::Return(_) = op {
             let (state, i) = control.exec_state();
