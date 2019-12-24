@@ -34,6 +34,7 @@ use serde_derive::{Serialize, Deserialize};
 use quick_error::quick_error;
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Serialize, Deserialize)]
 pub struct Rva(pub u32);
 
 impl std::fmt::Debug for Rva {
