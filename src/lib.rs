@@ -36,9 +36,6 @@ use quick_error::quick_error;
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Rva(pub u32);
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Rva64(pub u64);
-
 impl std::fmt::Debug for Rva {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "Rva({:08x})", self.0)
@@ -73,7 +70,7 @@ impl std::fmt::LowerHex for VirtualAddress {
 
 impl std::fmt::LowerHex for VirtualAddress64 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:08x}_{:08x}", self.0 >> 32, self.0 & 0xffff_ffff)
+        write!(f, "{:016x}", self.0)
     }
 }
 
@@ -85,21 +82,21 @@ impl std::fmt::UpperHex for VirtualAddress {
 
 impl std::fmt::UpperHex for VirtualAddress64 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:08X}_{:08X}", self.0 >> 32, self.0 & 0xffff_ffff)
+        write!(f, "{:016X}", self.0)
     }
 }
 
 impl std::ops::Add<Rva> for VirtualAddress {
     type Output = VirtualAddress;
     fn add(self, rhs: Rva) -> VirtualAddress {
-        VirtualAddress(self.0 + rhs.0)
+        self + rhs.0
     }
 }
 
-impl std::ops::Add<Rva64> for VirtualAddress64 {
+impl std::ops::Add<Rva> for VirtualAddress64 {
     type Output = VirtualAddress64;
-    fn add(self, rhs: Rva64) -> VirtualAddress64 {
-        VirtualAddress64(self.0 + rhs.0)
+    fn add(self, rhs: Rva) -> VirtualAddress64 {
+        self + rhs.0
     }
 }
 
@@ -139,9 +136,9 @@ impl std::ops::Sub<VirtualAddress> for VirtualAddress {
 }
 
 impl std::ops::Sub<VirtualAddress64> for VirtualAddress64 {
-    type Output = Rva64;
-    fn sub(self, rhs: VirtualAddress64) -> Rva64 {
-        Rva64(self.0 - rhs.0)
+    type Output = u64;
+    fn sub(self, rhs: VirtualAddress64) -> u64 {
+        self.0 - rhs.0
     }
 }
 
