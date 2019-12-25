@@ -570,17 +570,15 @@ impl<'a> ExecutionState<'a> {
         let result = Operand::simplified(result);
         match arith.ty {
             Add => {
-                let carry;
                 let overflow = gt_signed(resolved_left.clone(), result.clone());
-                carry = operand_gt(resolved_left.clone(), result.clone());
+                let carry = operand_gt(resolved_left.clone(), result.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);
             }
             Sub => {
-                let carry;
                 let overflow = gt_signed(resolved_left.clone(), result.clone());
-                carry = operand_gt(result.clone(), resolved_left.clone());
+                let carry = operand_gt(result.clone(), resolved_left.clone());
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);

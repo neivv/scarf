@@ -407,7 +407,8 @@ fn apply_constraint_split(
         OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Equal => {
             let (l, r) = (&arith.left, &arith.right);
             let other = Operand::either(l, r, |x| x.if_constant().filter(|&c| c == 0))
-                .map(|x| x.1);
+                .map(|x| x.1)
+                .filter(|x| x.relevant_bits() == (0..1));
             if let Some(other) = other {
                 apply_constraint_split(other, val, !with)
             } else {

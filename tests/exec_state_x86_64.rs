@@ -403,8 +403,6 @@ fn switch_case_count3() {
 #[test]
 fn dec_flags() {
     let ctx = scarf::operand::OperandContext::new();
-    // 2 cases to ok, 3rd fake
-    // rdx, rsi, rdi, rbp are undef if the cases are run
     test_inline(&[
         0x33, 0xc0, // xor eax, eax
         0x33, 0xd2, // xor eax, eax
@@ -425,6 +423,32 @@ fn dec_flags() {
          (operand_register(0), ctx.undefined_rc()),
          (operand_register(2), ctx.undefined_rc()),
          (operand_register(8), ctx.undefined_rc()),
+    ]);
+}
+
+#[test]
+fn sub_flags() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0x85, 0xd2, // test edx, edx
+        0x74, 0x0f, // je set_ecx_1
+        0x83, 0xea, 0x01, // sub edx, 1
+        0x74, 0x05, // je set_eax_1
+        0x83, 0xcb, 0x01, // or ebx, 1
+        0xeb, 0x08, // jmp end
+        // set_eax_1
+        0x83, 0xc8, 0x01, // or eax, 1
+        0xeb, 0x03, // jmp end
+        // set_ecx_1
+        0x83, 0xc9, 0x01, // or ecx, 1
+        // end:
+        0xeb, 0x00,
+        0xc3, // ret
+    ], &[
+         (operand_register(0), ctx.undefined_rc()),
+         (operand_register(1), ctx.undefined_rc()),
+         (operand_register(2), ctx.undefined_rc()),
+         (operand_register(3), ctx.undefined_rc()),
     ]);
 }
 
