@@ -576,6 +576,13 @@ fn instruction_operations32_main(
         0x1b3 => s.btr(false),
         0x1b6 | 0x1b7 => s.movzx(),
         0x1ba => s.various_0f_ba(),
+        0x1bc | 0x1bd => {
+            // bsf, bsr, just set dest as undef.
+            // Could maybe emit Special?
+            let (_rm, r) = s.parse_modrm(s.mem16_32())?;
+            s.output(mov(r.dest_operand(), ctx.undefined_rc()));
+            Ok(())
+        }
         0x1be => s.movsx(MemAccessSize::Mem8),
         0x1bf => s.movsx(MemAccessSize::Mem16),
         0x1c0 | 0x1c1 => s.xadd(),
@@ -850,6 +857,13 @@ fn instruction_operations64_main(
         0x1b3 => s.btr(false),
         0x1b6 | 0x1b7 => s.movzx(),
         0x1ba => s.various_0f_ba(),
+        0x1bc | 0x1bd => {
+            // bsf, bsr, just set dest as undef.
+            // Could maybe emit Special?
+            let (_rm, r) = s.parse_modrm(s.mem16_32())?;
+            s.output(mov(r.dest_operand(), ctx.undefined_rc()));
+            Ok(())
+        }
         0x1be => s.movsx(MemAccessSize::Mem8),
         0x1bf => s.movsx(MemAccessSize::Mem16),
         0x1c0 | 0x1c1 => s.xadd(),
