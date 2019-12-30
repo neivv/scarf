@@ -554,8 +554,9 @@ fn instruction_operations32_main(
         }
         0x190 | 0x191 | 0x192 | 0x193 | 0x194 | 0x195 | 0x196 | 0x197 |
             0x198 | 0x199 | 0x19a | 0x19b | 0x19c | 0x19d | 0x19e | 0x19f => s.conditional_set(),
-        0x1a3 => s.bit_test(false),
+        0x1a3 => s.bit_test(BitTest::NoChange, false),
         0x1a4 => s.shld_imm(),
+        0x1ab => s.bit_test(BitTest::Set, false),
         0x1ac => s.shrd_imm(),
         0x1ae => {
             match (s.read_u8(1)? >> 3) & 0x7 {
@@ -573,9 +574,10 @@ fn instruction_operations32_main(
             s.output(mov_to_reg(0, ctx.undefined_rc()));
             Ok(())
         }
-        0x1b3 => s.btr(false),
+        0x1b3 => s.bit_test(BitTest::Reset, false),
         0x1b6 | 0x1b7 => s.movzx(),
         0x1ba => s.various_0f_ba(),
+        0x1bb => s.bit_test(BitTest::Complement, false),
         0x1bc | 0x1bd => {
             // bsf, bsr, just set dest as undef.
             // Could maybe emit Special?
@@ -835,8 +837,9 @@ fn instruction_operations64_main(
         }
         0x190 | 0x191 | 0x192 | 0x193 | 0x194 | 0x195 | 0x196 | 0x197 |
             0x198 | 0x199 | 0x19a | 0x19b | 0x19c | 0x19d | 0x19e | 0x19f => s.conditional_set(),
-        0x1a3 => s.bit_test(false),
+        0x1a3 => s.bit_test(BitTest::NoChange, false),
         0x1a4 => s.shld_imm(),
+        0x1ab => s.bit_test(BitTest::Set, false),
         0x1ac => s.shrd_imm(),
         0x1ae => {
             match (s.read_u8(1)? >> 3) & 0x7 {
@@ -854,9 +857,10 @@ fn instruction_operations64_main(
             s.output(mov_to_reg(0, ctx.undefined_rc()));
             Ok(())
         }
-        0x1b3 => s.btr(false),
+        0x1b3 => s.bit_test(BitTest::Reset, false),
         0x1b6 | 0x1b7 => s.movzx(),
         0x1ba => s.various_0f_ba(),
+        0x1bb => s.bit_test(BitTest::Complement, false),
         0x1bc | 0x1bd => {
             // bsf, bsr, just set dest as undef.
             // Could maybe emit Special?
@@ -872,6 +876,13 @@ fn instruction_operations64_main(
         0x1f3 => s.packed_shift_left(),
         _ => Err(s.unknown_opcode()),
     }
+}
+
+enum BitTest {
+    Set,
+    Reset,
+    NoChange,
+    Complement,
 }
 
 fn x87_variant(ctx: &OperandContext, op: Rc<Operand>, offset: i8) -> Rc<Operand> {
@@ -1844,39 +1855,15 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn various_0f_ba(&mut self) -> Result<(), Failed> {
         let variant = (self.read_u8(1)? >> 3) & 0x7;
         match variant {
-            4 => self.bit_test(true),
-            6 => self.btr(true),
+            4 => self.bit_test(BitTest::NoChange, true),
+            5 => self.bit_test(BitTest::Set, true),
+            6 => self.bit_test(BitTest::Reset, true),
+            7 => self.bit_test(BitTest::Complement, true),
             _ => Err(self.unknown_opcode()),
         }
     }
 
-    fn bit_test(&mut self, imm8: bool) -> Result<(), Failed> {
-        use crate::operand::operand_helpers::*;
-        let op_size = self.mem16_32();
-        let (dest, index) = if imm8 {
-            let (rm, _, imm) = self.parse_modrm_imm(op_size, MemAccessSize::Mem8)?;
-            (rm, imm)
-        } else {
-            let (rm, r) = self.parse_modrm(op_size)?;
-            (rm, self.r_to_operand(r))
-        };
-        // Move bit at index to carry
-        // c = (dest >> index) & 1
-        self.output(Operation::Move(
-            DestOperand::Flag(Flag::Carry),
-            operand_and(
-                operand_rsh(
-                    self.rm_to_operand(&dest),
-                    index,
-                ),
-                self.ctx.const_1(),
-            ),
-            None,
-        ));
-        Ok(())
-    }
-
-    fn btr(&mut self, imm8: bool) -> Result<(), Failed> {
+    fn bit_test(&mut self, test: BitTest, imm8: bool) -> Result<(), Failed> {
         use self::operation_helpers::*;
         use crate::operand::operand_helpers::*;
         let op_size = self.mem16_32();
@@ -1901,18 +1888,47 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             ),
             None,
         ));
-        self.output(mov(
-            dest.dest,
-            operand_and(
-                dest.op,
-                operand_not(
-                    operand_lsh(
-                        self.ctx.const_1(),
-                        index,
+        match test {
+            BitTest::Set => {
+                self.output(mov(
+                    dest.dest,
+                    operand_or(
+                        dest.op,
+                        operand_lsh(
+                            self.ctx.const_1(),
+                            index,
+                        ),
                     ),
-                ),
-            ),
-        ));
+                ));
+            }
+            BitTest::Reset => {
+                self.output(mov(
+                    dest.dest,
+                    operand_and(
+                        dest.op,
+                        operand_not(
+                            operand_lsh(
+                                self.ctx.const_1(),
+                                index,
+                            ),
+                        ),
+                    ),
+                ));
+            }
+            BitTest::Complement => {
+                self.output(mov(
+                    dest.dest,
+                    operand_xor(
+                        dest.op,
+                        operand_lsh(
+                            self.ctx.const_1(),
+                            index,
+                        ),
+                    ),
+                ));
+            }
+            BitTest::NoChange => (),
+        }
         Ok(())
     }
 
