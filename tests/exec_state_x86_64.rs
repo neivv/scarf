@@ -452,6 +452,21 @@ fn sub_flags() {
     ]);
 }
 
+#[test]
+fn bswap() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0x48, 0xb9, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, // mov rcx, 99887766_55443322
+        0x49, 0xb9, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, // mov r9, 99887766_55443322
+        0x48, 0x0f, 0xc9, // bswap rcx
+        0x41, 0x0f, 0xc9, // bswap r9d
+        0xc3, // ret
+    ], &[
+         (operand_register(1), ctx.constant(0x22334455_66778899)),
+         (operand_register(9), ctx.constant(0x22334455)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

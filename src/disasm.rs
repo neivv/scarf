@@ -50,6 +50,40 @@ pub struct Disassembler32<'a> {
     ctx: &'a OperandContext,
 }
 
+fn instruction_length_32(buf: &[u8]) -> usize {
+    let length = lde::X86::ld(buf) as usize;
+    if length == 0 {
+        // Hackfix for lde bug with bswap
+        let first = buf.get(0).cloned().unwrap_or(0);
+        let second = buf.get(1).cloned().unwrap_or(0);
+        let actually_ok = first == 0x0f && second >= 0xc8 && second < 0xd0;
+        if actually_ok {
+            2
+        } else {
+            0
+        }
+    } else {
+        length
+    }
+}
+
+fn instruction_length_64(buf: &[u8]) -> usize {
+    let length = lde::X64::ld(buf) as usize;
+    if length == 0 {
+        // Hackfix for lde bug with bswap
+        let first = buf.get(0).cloned().unwrap_or(0);
+        let second = buf.get(1).cloned().unwrap_or(0);
+        let third = buf.get(2).cloned().unwrap_or(0);
+        match first {
+            0x0f if second >= 0xc8 && second < 0xd0 => 2,
+            0x40 ..= 0x4f if second == 0x0f && third >= 0xc8 && third < 0xd0 => 3,
+            _ => 0,
+        }
+    } else {
+        length
+    }
+}
+
 impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
     type VirtualAddress = VirtualAddress32;
 
@@ -75,7 +109,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
         if self.is_branching {
             return Err(Error::Branch);
         }
-        let length = lde::X86::ld(&self.buf[self.pos..]) as usize;
+        let length = instruction_length_32(&self.buf[self.pos..]);
         if length == 0 {
             if self.pos == self.buf.len() {
                 return Err(Error::End);
@@ -148,7 +182,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
         if self.is_branching {
             return Err(Error::Branch);
         }
-        let length = lde::X64::ld(&self.buf[self.pos..]) as usize;
+        let length = instruction_length_64(&self.buf[self.pos..]);
         if length == 0 {
             if self.pos == self.buf.len() {
                 return Err(Error::End);
@@ -589,6 +623,7 @@ fn instruction_operations32_main(
         0x1be => s.movsx(MemAccessSize::Mem8),
         0x1bf => s.movsx(MemAccessSize::Mem16),
         0x1c0 | 0x1c1 => s.xadd(),
+        0x1c8 | 0x1c9 | 0x1ca | 0x1cb | 0x1cc | 0x1cd | 0x1ce | 0x1cf => s.bswap(),
         0x1d3 => s.packed_shift_right(),
         0x1d6 => s.mov_sse_d6(),
         0x1f3 => s.packed_shift_left(),
@@ -873,6 +908,7 @@ fn instruction_operations64_main(
         0x1be => s.movsx(MemAccessSize::Mem8),
         0x1bf => s.movsx(MemAccessSize::Mem16),
         0x1c0 | 0x1c1 => s.xadd(),
+        0x1c8 | 0x1c9 | 0x1ca | 0x1cb | 0x1cc | 0x1cd | 0x1ce | 0x1cf => s.bswap(),
         0x1d3 => s.packed_shift_right(),
         0x1d6 => s.mov_sse_d6(),
         0x1f3 => s.packed_shift_left(),
@@ -1508,6 +1544,71 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn xadd(&mut self) -> Result<(), Failed> {
         self.xchg()?;
         self.generic_arith_op(ArithOperation::Add)?;
+        Ok(())
+    }
+
+    fn bswap(&mut self) -> Result<(), Failed> {
+        use crate::operand_helpers::*;
+        use self::operation_helpers::*;
+
+        let register = if self.prefixes.rex_prefix & 0x1 != 0 {
+            8 + (self.read_u8(0)? & 0x7)
+        } else {
+            self.read_u8(0)? & 0x7
+        };
+        let ctx = self.ctx;
+        let reg_op = ctx.register(register);
+        let mut shift;
+        let halfway;
+        let size = self.mem16_32();
+        let repeats;
+        if size == MemAccessSize::Mem64 {
+            // ((reg >> 38) & ff) | ((reg >> 28) & ff00) |
+            // ((reg >> 18) & ff_0000) | ((reg >> 8) & ff00_0000) |
+            // ((reg << 8) & 0000_00ff_0000_0000) | ((reg << 18) & 0000_ff00_0000_0000) |
+            // ((reg << 28) & 00ff_0000_0000_0000) | ((reg << 38) & ff00_0000_0000_0000)
+            shift = 0x38;
+            halfway = 0x1_0000_0000;
+            repeats = 8;
+        } else {
+            // ((reg >> 18) & ff) | ((reg >> 8) & ff00) | ((reg << 8) & ff0000) |
+            // ((reg << 18) & ff000_0000)
+            shift = 0x18;
+            halfway = 0x1_0000;
+            repeats = 4;
+        }
+        let mut mask = 0xff;
+        let mut value = None;
+        for _ in 0..repeats {
+            let shifted = if mask < halfway {
+                operand_rsh(
+                    reg_op.clone(),
+                    ctx.constant(shift),
+                )
+            } else {
+                operand_lsh(
+                    reg_op.clone(),
+                    ctx.constant(shift),
+                )
+            };
+            let masked = operand_and(shifted, ctx.constant(mask));
+            if mask < halfway {
+                if shift > 0x10 {
+                    shift -= 0x10;
+                }
+            } else {
+                shift += 0x10;
+            }
+            mask = mask << 8;
+
+            if let Some(old) = value.take() {
+                value = Some(operand_or(old, masked));
+            } else {
+                value = Some(masked);
+            }
+        }
+        let value = value.unwrap();
+        self.output(mov_to_reg_variable_size(size, register, value));
         Ok(())
     }
 
