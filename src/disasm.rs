@@ -534,7 +534,8 @@ fn instruction_operations32_main(
         // Prefetch/nop
         0x118 | 0x119 | 0x11a | 0x11b | 0x11c | 0x11d | 0x11e | 0x11f => Ok(()),
         0x110 | 0x111| 0x113 | 0x128 | 0x129 | 0x12b | 0x16f | 0x17e | 0x17f => s.sse_move(),
-        0x12c => s.cvttss2si(),
+        0x12a => s.sse_int_to_float(),
+        0x12c | 0x12d => s.cvttss2si(),
         // rdtsc
         0x131 => {
             s.output(mov_to_reg(0, s.ctx.undefined_rc()));
@@ -817,7 +818,8 @@ fn instruction_operations64_main(
         // Prefetch/nop
         0x118 | 0x119 | 0x11a | 0x11b | 0x11c | 0x11d | 0x11e | 0x11f => Ok(()),
         0x110 | 0x111| 0x113 | 0x128 | 0x129 | 0x12b | 0x16f | 0x17e | 0x17f => s.sse_move(),
-        0x12c => s.cvttss2si(),
+        0x12a => s.sse_int_to_float(),
+        0x12c | 0x12d => s.cvttss2si(),
         // rdtsc
         0x131 => {
             s.output(mov_to_reg(0, s.ctx.undefined_rc()));
@@ -1943,7 +1945,23 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(())
     }
 
+    fn sse_int_to_float(&mut self) -> Result<(), Failed> {
+        if !self.has_prefix(0xf3) {
+            return Err(self.unknown_opcode());
+        }
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let op = make_arith_operation(
+            r.dest_operand_xmm(0),
+            ArithOpType::FloatToInt,
+            self.rm_to_operand(&rm),
+            self.ctx.const_0(),
+        );
+        self.output(op);
+        Ok(())
+    }
+
     fn cvttss2si(&mut self) -> Result<(), Failed> {
+        // TODO Doesn't actually truncate overflows
         if !self.has_prefix(0xf3) {
             return Err(self.unknown_opcode());
         }
