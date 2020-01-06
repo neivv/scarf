@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::rc::Rc;
 
-use byteorder::{LittleEndian, ReadBytesExt};
 use quick_error::quick_error;
 
 use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
 use crate::disasm::{self, Operation};
 use crate::exec_state::{self, Disassembler, ExecutionState, InternMap};
 use crate::exec_state::VirtualAddress as VaTrait;
+use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{MemAccessSize, Operand, OperandContext};
 use crate::{BinaryFile, BinarySection, VirtualAddress, VirtualAddress64};
 
@@ -73,7 +73,7 @@ pub fn find_functions_with_callers_x86(
             data.iter().enumerate()
                 .filter(|&(_, &x)| x == 0xe8 || x == 0xe9)
                 .flat_map(|(idx, _)| {
-                    data.get(idx + 1..).and_then(|mut x| x.read_u32::<LittleEndian>().ok())
+                    data.get(idx + 1..).and_then(|mut x| x.read_u32().ok())
                         .map(|relative| FuncCallPair {
                             caller: code.virtual_address + idx as u32,
                             callee: VirtualAddress(
@@ -104,7 +104,7 @@ pub fn find_functions_with_callers_x86_64(
             data.iter().enumerate()
                 .filter(|&(_, &x)| x == 0xe8)
                 .flat_map(|(idx, _)| {
-                    data.get(idx + 1..).and_then(|mut x| x.read_i32::<LittleEndian>().ok())
+                    data.get(idx + 1..).and_then(|mut x| x.read_i32().ok())
                         .map(|relative| FuncCallPair {
                             caller: code.virtual_address + idx as u32,
                             callee: VirtualAddress64(
@@ -142,7 +142,7 @@ pub(crate) fn find_functions_from_calls_x86(
         code.iter().enumerate()
             .filter(|&(_, &x)| x == 0xe8)
             .flat_map(|(idx, _)| {
-                code.get(idx + 1..).and_then(|mut x| x.read_u32::<LittleEndian>().ok())
+                code.get(idx + 1..).and_then(|mut x| x.read_u32().ok())
                     .map(|relative| (idx as u32 + 5).wrapping_add(relative))
                     .filter(|&target| {
                         (target as usize) < code.len() - 5
@@ -161,7 +161,7 @@ pub(crate) fn find_functions_from_calls_x86_64(
         code.iter().enumerate()
             .filter(|&(_, &x)| x == 0xe8)
             .flat_map(|(idx, _)| {
-                code.get(idx + 1..).and_then(|mut x| x.read_i32::<LittleEndian>().ok())
+                code.get(idx + 1..).and_then(|mut x| x.read_i32().ok())
                     .map(|relative| (idx as i64 + 5).wrapping_add(relative as i64) as u64)
                     .filter(|&target| {
                         (target as usize) < code.len() - 5
@@ -174,7 +174,6 @@ pub(crate) fn find_functions_from_calls_x86_64(
 pub(crate) fn function_ranges_from_exception_info_x86_64(
     file: &BinaryFile<VirtualAddress64>,
 ) -> Result<Vec<(u32, u32)>, crate::Error> {
-    use crate::light_byteorder::ReadLittleEndian;
     let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
     let exception_offset = file.read_u32(pe_header + 0xa0)?;
     let exception_len = file.read_u32(pe_header + 0xa4)?;
@@ -279,7 +278,7 @@ fn collect_relocs_pointing_to_code<Va: VaTrait>(
             // TODO broken on x86 for addresses right at end of section as it can't be
             // read as u64
             let offset = (addr.as_u64() - sect.virtual_address.as_u64()) as usize;
-            (&sect.data[offset..]).read_u64::<LittleEndian>().ok()
+            (&sect.data[offset..]).read_u64().ok()
                 .map(|x| (addr, Va::from_u64(x)))
         })
         .filter(|&(_src_addr, func_addr)| {
@@ -324,15 +323,15 @@ pub fn find_relocs_x86(file: &BinaryFile<VirtualAddress>) -> Result<Vec<VirtualA
     let mut result = Vec::new();
     let mut offset = 0;
     while offset < relocs.len() {
-        let rva = try_get!(relocs, offset..).read_u32::<LittleEndian>()?;
+        let rva = try_get!(relocs, offset..).read_u32()?;
         let base = file.base + rva;
-        let size = try_get!(relocs, offset + 4..).read_u32::<LittleEndian>()? as usize;
+        let size = try_get!(relocs, offset + 4..).read_u32()? as usize;
         if size < 8 {
             break;
         }
         let block_relocs = try_get!(relocs, offset + 8..offset + size);
         for mut reloc in block_relocs.chunks_exact(2) {
-            if let Ok(c) = reloc.read_u16::<LittleEndian>() {
+            if let Ok(c) = reloc.read_u16() {
                 if c & 0xf000 == 0x3000 {
                     result.push(base + u32::from(c & 0xfff));
                 }
@@ -354,15 +353,15 @@ pub fn find_relocs_x86_64(
     let mut result = Vec::new();
     let mut offset = 0;
     while offset < relocs.len() {
-        let rva = try_get!(relocs, offset..).read_u32::<LittleEndian>()?;
+        let rva = try_get!(relocs, offset..).read_u32()?;
         let base = file.base + rva;
-        let size = try_get!(relocs, offset + 4..).read_u32::<LittleEndian>()? as usize;
+        let size = try_get!(relocs, offset + 4..).read_u32()? as usize;
         if size < 8 {
             break;
         }
         let block_relocs = try_get!(relocs, offset + 8..offset + size);
         for mut reloc in block_relocs.chunks_exact(2) {
-            if let Ok(c) = reloc.read_u16::<LittleEndian>() {
+            if let Ok(c) = reloc.read_u16() {
                 if c & 0xf000 == 0xa000 {
                     result.push(base + u32::from(c & 0xfff));
                 }
@@ -374,16 +373,16 @@ pub fn find_relocs_x86_64(
     Ok(result)
 }
 
-pub struct RelocValues {
-    pub address: VirtualAddress,
-    pub value: VirtualAddress,
+pub struct RelocValues<Va: VaTrait> {
+    pub address: Va,
+    pub value: Va,
 }
 
 /// The returned array is sorted by value
-pub fn relocs_with_values(
-    file: &BinaryFile<VirtualAddress>,
-    mut relocs: &[VirtualAddress],
-) -> Result<Vec<RelocValues>, crate::Error> {
+pub fn relocs_with_values<Va: VaTrait>(
+    file: &BinaryFile<Va>,
+    mut relocs: &[Va],
+) -> Result<Vec<RelocValues<Va>>, crate::Error> {
     let mut result = Vec::with_capacity(relocs.len());
     'outer: while !relocs.is_empty() {
         let (section, reloc_count, start_address) = {
@@ -397,11 +396,15 @@ pub fn relocs_with_values(
             }
         };
         for &address in &relocs[..reloc_count] {
-            let relative = (address.0 - start_address.0) as usize;
-            let value = (&section[relative..]).read_u32::<LittleEndian>().unwrap_or(0);
+            let relative = (address.as_u64() - start_address.as_u64()) as usize;
+            let value = if Va::SIZE == 4 {
+                (&section[relative..]).read_u32().unwrap_or(0) as u64
+            } else {
+                (&section[relative..]).read_u64().unwrap_or(0)
+            };
             result.push(RelocValues {
                 address,
-                value: VirtualAddress(value),
+                value: Va::from_u64(value),
             });
         }
         relocs = &relocs[reloc_count..];

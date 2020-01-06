@@ -171,6 +171,10 @@ quick_error! {
         OutOfBounds {
             display("Out of bounds")
         }
+        UnexpectedEof(e: crate::light_byteorder::UnexpectedEof) {
+            from()
+            display("Eof")
+        }
     }
 }
 
