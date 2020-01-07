@@ -525,6 +525,10 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
 
     /// Calls the function and updates own state (Both ExecutionState and custom) to
     /// a merge of states at this child function's return points.
+    ///
+    /// NOTE: User is expected to call `ctrl.skip_operation()` if this is during hook
+    /// for `Operation::Call`; this is not done automatically as inlining during other
+    /// operations is also allowed, even if less useful. (Maybe this is a bit of poor API?)
     pub fn inline<A2: Analyzer<'exec, State = A::State, Exec = A::Exec>>(
         &mut self,
         analyzer: &mut A2,
@@ -761,12 +765,12 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             control.inner.instruction_length = instruction.len() as u8;
             for op in instruction.ops() {
                 analyzer.operation(&mut control, op);
+                if control.inner.end.is_some() {
+                    return control.inner.end;
+                }
                 if control.inner.skip_operation {
                     control.inner.skip_operation = false;
                     continue;
-                }
-                if control.inner.end.is_some() {
-                    return control.inner.end;
                 }
                 match op {
                     disasm::Operation::Jump { condition, to } => {
