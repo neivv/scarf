@@ -238,7 +238,10 @@ pub fn find_functions<'a, E: ExecutionState<'a>>(
 }
 
 // Sorted by address
-pub fn find_switch_tables(file: &BinaryFile<VirtualAddress>, relocs: &[VirtualAddress]) -> Vec<FuncPtrPair<VirtualAddress>> {
+pub fn find_switch_tables<Va: VaTrait>(
+    file: &BinaryFile<Va>,
+    relocs: &[Va],
+) -> Vec<FuncPtrPair<Va>> {
     let mut out = Vec::with_capacity(4096);
     for sect in file.code_sections() {
         collect_relocs_pointing_to_code(sect, relocs, sect, &mut out);
