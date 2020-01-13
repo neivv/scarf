@@ -1489,6 +1489,48 @@ pub mod operand_helpers {
         operand_arith(GreaterThan, lhs, rhs)
     }
 
+    pub fn operand_gt_signed(
+        left: Rc<Operand>,
+        right: Rc<Operand>,
+        size: MemAccessSize,
+        ctx: &OperandContext,
+    ) -> Rc<Operand> {
+        let (mask, offset) = match size {
+            MemAccessSize::Mem8 => (ctx.const_ff(), ctx.constant(0x80)),
+            MemAccessSize::Mem16 =>  (ctx.const_ffff(), ctx.constant(0x8000)),
+            MemAccessSize::Mem32 =>  (ctx.const_ffffffff(), ctx.constant(0x8000_0000)),
+            MemAccessSize::Mem64 => {
+                let offset = ctx.constant(0x8000_0000_0000_0000);
+                return operand_gt(
+                    operand_add(
+                        left,
+                        offset.clone(),
+                    ),
+                    operand_add(
+                        right,
+                        offset,
+                    ),
+                );
+            }
+        };
+        operand_gt(
+            operand_and(
+                operand_add(
+                    left,
+                    offset.clone(),
+                ),
+                mask.clone(),
+            ),
+            operand_and(
+                operand_add(
+                    right,
+                    offset,
+                ),
+                mask,
+            ),
+        )
+    }
+
     pub fn operand_or(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith(Or, lhs, rhs)
     }

@@ -599,40 +599,19 @@ impl<'a> ExecutionState<'a> {
         let result = operand_arith(arith.ty, resolved_left.clone(), resolved_right);
         let result = Operand::simplified(result);
         let ctx = self.ctx;
-        let gt_signed = |left, right| {
-            let (mask, offset) = match size {
-                MemAccessSize::Mem8 => (ctx.const_ff(), ctx.constant(0x80)),
-                MemAccessSize::Mem16 =>  (ctx.const_ffff(), ctx.constant(0x8000)),
-                MemAccessSize::Mem32 | _ =>  (ctx.const_ffffffff(), ctx.constant(0x8000_0000)),
-            };
-            operand_gt(
-                operand_and(
-                    operand_add(
-                        left,
-                        offset.clone(),
-                    ),
-                    mask.clone(),
-                ),
-                operand_and(
-                    operand_add(
-                        right,
-                        offset,
-                    ),
-                    mask,
-                ),
-            )
-        };
         match arith.ty {
             Add => {
                 let carry = operand_gt(resolved_left.clone(), result.clone());
-                let overflow = gt_signed(resolved_left.clone(), result.clone());
+                let overflow =
+                    operand_gt_signed(resolved_left.clone(), result.clone(), size, ctx);
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);
             }
             Sub => {
                 let carry = operand_gt(result.clone(), resolved_left.clone());
-                let overflow = gt_signed(result.clone(), resolved_left.clone());
+                let overflow =
+                    operand_gt_signed(result.clone(), resolved_left.clone(), size, ctx);
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);

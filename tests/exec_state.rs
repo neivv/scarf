@@ -519,6 +519,34 @@ fn overflow_not_set_bug() {
     ]);
 }
 
+#[test]
+fn sbb() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0xb9, 0x01, 0x00, 0x00, 0x00, // mov ecx, 1
+        0x83, 0xf8, 0x01, // cmp eax, 1 (c = 1)
+        0x19, 0xc1, // sbb ecx, eax (ecx = 1 - 0 - 1 = 0)
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.constant(0)),
+    ]);
+}
+
+#[test]
+fn adc() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x83, 0xf8, 0x01, // cmp eax, 1 (c = 1)
+        0x11, 0xc0, // adc eax, eax (eax = 0 + 0 + 1 = 1)
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(1)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

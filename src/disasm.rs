@@ -1656,23 +1656,120 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let dest = self.rm_to_dest_and_operand(lhs);
         let size = lhs.size.to_mem_access_size();
         match arith {
-            ArithOperation::Add | ArithOperation::Adc => {
-                let rhs = match arith {
-                    ArithOperation::Adc => operand_add(rhs, self.ctx.flag_c()),
-                    _ => rhs,
-                };
+            ArithOperation::Add => {
                 self.output(flags(ArithOpType::Add, dest.op.clone(), rhs.clone(), size));
                 self.output(add(dest, rhs));
             }
-            ArithOperation::Sub | ArithOperation::Sbb | ArithOperation::Cmp => {
-                let rhs = match arith {
-                    ArithOperation::Sbb => operand_add(rhs, self.ctx.flag_c()),
-                    _ => rhs,
-                };
+            ArithOperation::Sub | ArithOperation::Cmp => {
                 self.output(flags(ArithOpType::Sub, dest.op.clone(), rhs.clone(), size));
                 if arith != ArithOperation::Cmp {
                     self.output(sub(dest, rhs));
                 }
+            }
+            ArithOperation::Sbb | ArithOperation::Adc => {
+                // Since sbb wants to do
+                //
+                // carry = (l - r - carry > l) | (l - r > l)
+                // l = l - r - carry
+                //
+                // which is bad since carry depends on original l
+                // and l depends on original carry,
+                // order it as
+                //
+                // l = l - carry
+                // carry = (l - r > l + carry) | (l - r + carry > l + carry)
+                // overflow = signed_gt(l - r, l + carry) | signed_gt(..)
+                // l = l - r
+                // (set zero, sign, parity)
+                //
+                // That works when l != r
+                // if l == r just do l = 0 - c
+                //
+                // With adc, do
+                //
+                // l = l + carry
+                // carry = (l - carry > l - carry + r) | (l - carry > l + r)
+                // l = l + r
+                //
+                // if l == r:
+                // l = l + carry
+                // carry = (l - carry > l - carry + r - 1) | (l - carry > l + r - 1)
+                // l = l + r - 1
+                let ctx = self.ctx;
+                let carry = ctx.flag_c();
+                let dest_op = dest.op.clone();
+                let lhs_eq_rhs = dest_op == rhs;
+                if arith == ArithOperation::Sbb {
+                    if lhs_eq_rhs {
+                        self.output(mov(dest.dest, operand_sub(ctx.const_0(), carry.clone())));
+                        self.output(mov(DestOperand::Flag(Flag::Overflow), ctx.const_0()));
+                        self.output(mov(DestOperand::Flag(Flag::Parity), ctx.const_1()));
+                        self.output(mov(
+                            DestOperand::Flag(Flag::Zero),
+                            operand_eq(carry.clone(), ctx.const_0()),
+                        ));
+                        self.output(mov(
+                            DestOperand::Flag(Flag::Sign),
+                            carry,
+                        ));
+                        return;
+                    }
+                    self.output(sub(dest.clone(), carry.clone()));
+                    let gt_lhs1 = operand_sub(dest_op.clone(), rhs.clone());
+                    let gt_rhs = operand_add(dest_op.clone(), carry.clone());
+                    let gt_lhs2 = operand_add(gt_lhs1.clone(), carry.clone());
+                    let gt = operand_or(
+                        operand_gt(gt_lhs1.clone(), gt_rhs.clone()),
+                        operand_gt(gt_lhs2.clone(), gt_rhs.clone()),
+                    );
+                    let signed_gt = operand_or(
+                        operand_gt_signed(gt_lhs1, gt_rhs.clone(), size, ctx),
+                        operand_gt_signed(gt_lhs2, gt_rhs, size, ctx),
+                    );
+                    self.output(mov(DestOperand::Flag(Flag::Carry), gt));
+                    self.output(mov(DestOperand::Flag(Flag::Overflow), signed_gt));
+                    self.output(sub(dest, rhs));
+                } else {
+                    let rhs = if lhs_eq_rhs {
+                        operand_sub(rhs, ctx.const_1())
+                    } else {
+                        rhs
+                    };
+                    self.output(add(dest.clone(), carry.clone()));
+                    let gt_lhs = operand_sub(dest_op.clone(), carry.clone());
+                    let gt_rhs1 = operand_add(dest_op.clone(), rhs.clone());
+                    let gt_rhs2 = operand_sub(gt_rhs1.clone(), carry.clone());
+                    let gt = operand_or(
+                        operand_gt(gt_lhs.clone(), gt_rhs1.clone()),
+                        operand_gt(gt_lhs.clone(), gt_rhs2.clone()),
+                    );
+                    let signed_gt = operand_or(
+                        operand_gt_signed(gt_lhs.clone(), gt_rhs1, size, ctx),
+                        operand_gt_signed(gt_lhs, gt_rhs2, size, ctx),
+                    );
+                    self.output(mov(DestOperand::Flag(Flag::Carry), gt));
+                    self.output(mov(DestOperand::Flag(Flag::Overflow), signed_gt));
+                    self.output(add(dest, rhs));
+                }
+
+                let dest_zero = operand_eq(dest_op.clone(), ctx.const_0());
+                let parity = Operand::simplified(
+                    operand_arith(ArithOpType::Parity, dest_op.clone(), ctx.const_0())
+                );
+                let sign_bit = match size {
+                    MemAccessSize::Mem8 => 0x80,
+                    MemAccessSize::Mem16 => 0x8000,
+                    MemAccessSize::Mem32 => 0x8000_0000,
+                    MemAccessSize::Mem64 => 0x8000_0000_0000_0000,
+                };
+                let sign = operand_ne(
+                    ctx,
+                    operand_and(ctx.constant(sign_bit), dest_op),
+                    ctx.const_0(),
+                );
+                self.output(mov(DestOperand::Flag(Flag::Zero), dest_zero));
+                self.output(mov(DestOperand::Flag(Flag::Parity), parity));
+                self.output(mov(DestOperand::Flag(Flag::Sign), sign));
             }
             ArithOperation::And | ArithOperation::Test => {
                 self.output(flags(ArithOpType::And, dest.op.clone(), rhs.clone(), size));
@@ -3116,6 +3213,7 @@ impl ModRm_Rm {
     }
 }
 
+#[derive(Clone)]
 pub struct DestAndOperand {
     pub dest: DestOperand,
     pub op: Rc<Operand>,
