@@ -3213,7 +3213,12 @@ fn simplify_add_merge_muls(
                     .unwrap_or_else(|| &op);
                 let mut other_pos = pos;
                 while other_pos < ops.len() {
-                    if ops[other_pos].0 == *equiv {
+                    let other = &ops[other_pos].0;
+                    let other = other.if_arithmetic_mul()
+                        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                        .map(|(_, other)| other)
+                        .unwrap_or_else(|| &other);
+                    if other == equiv {
                         ops.remove(other_pos);
                     } else {
                         other_pos += 1;

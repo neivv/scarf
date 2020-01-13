@@ -4824,3 +4824,23 @@ fn simplify_gt3() {
     let eq1 = Operand::simplified(eq1);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_sub_to_zero() {
+    use super::operand_helpers::*;
+    let ctx = &OperandContext::new();
+    let op1 = operand_sub(
+        operand_mul(
+            ctx.constant(0x2),
+            ctx.register(0),
+        ),
+        operand_mul(
+            ctx.constant(0x2),
+            ctx.register(0),
+        ),
+    );
+    let eq1 = ctx.const_0();
+    let op1 = Operand::simplified(op1);
+    let eq1 = Operand::simplified(eq1);
+    assert_eq!(op1, eq1);
+}
