@@ -354,6 +354,7 @@ impl RegisterCache {
 struct InstructionOpsState<'a, 'exec: 'a, Va: VirtualAddress> {
     address: Va,
     data: &'a [u8],
+    full_data: &'a [u8],
     prefixes: InstructionPrefixes,
     len: u8,
     ctx: &'exec OperandContext,
@@ -413,6 +414,7 @@ fn instruction_operations32(
     let mut s = InstructionOpsState {
         address,
         data,
+        full_data,
         is_ext,
         prefixes,
         len: instruction_len as u8,
@@ -524,7 +526,7 @@ fn instruction_operations32_main(
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
         0xa4 | 0xa5 | 0xaa | 0xab => {
-            s.output(Operation::Special(s.data.into()));
+            s.output(Operation::Special(s.full_data.into()));
             Ok(())
         }
         0xa8 | 0xa9 => s.eax_imm_arith(ArithOperation::Test),
@@ -679,6 +681,7 @@ fn instruction_operations64(
     let mut s = InstructionOpsState {
         address,
         data,
+        full_data,
         prefixes,
         len: instruction_len as u8,
         ctx,
@@ -811,7 +814,7 @@ fn instruction_operations64_main(
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
         0xa4 | 0xa5 | 0xaa | 0xab => {
-            s.output(Operation::Special(s.data.into()));
+            s.output(Operation::Special(s.full_data.into()));
             Ok(())
         }
         0xa8 | 0xa9 => s.eax_imm_arith(ArithOperation::Test),
