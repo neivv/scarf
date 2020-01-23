@@ -712,6 +712,121 @@ impl OperandContext {
             ))
         }
     }
+
+    /// Returns `Operand` for `left + right`.
+    ///
+    /// The returned value is simplified.
+    pub fn add(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        simplify::simplify_add_sub(left, right, false, self)
+    }
+
+    /// Returns `Operand` for `left - right`.
+    ///
+    /// The returned value is simplified.
+    pub fn sub(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        simplify::simplify_add_sub(left, right, true, self)
+    }
+
+    /// Returns `Operand` for `left & right`.
+    ///
+    /// The returned value is simplified.
+    pub fn and(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_and(left, right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left | right`.
+    ///
+    /// The returned value is simplified.
+    pub fn or(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_or(left, right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left ^ right`.
+    ///
+    /// The returned value is simplified.
+    pub fn xor(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_xor(left, right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left << right`.
+    ///
+    /// The returned value is simplified.
+    pub fn lsh(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_lsh(left, right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left >> right`.
+    ///
+    /// The returned value is simplified.
+    pub fn rsh(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_rsh(left, right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left + right`.
+    ///
+    /// The returned value is simplified.
+    pub fn add_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        simplify::simplify_add_sub(left, &right, false, self)
+    }
+
+    /// Returns `Operand` for `left + right`.
+    ///
+    /// The returned value is simplified.
+    pub fn sub_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        simplify::simplify_add_sub(left, &right, true, self)
+    }
+
+    /// Returns `Operand` for `left & right`.
+    ///
+    /// The returned value is simplified.
+    pub fn and_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_and(left, &right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left | right`.
+    ///
+    /// The returned value is simplified.
+    pub fn or_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_or(left, &right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left ^ right`.
+    ///
+    /// The returned value is simplified.
+    pub fn xor_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_xor(left, &right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left << right`.
+    ///
+    /// The returned value is simplified.
+    pub fn lsh_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_lsh(left, &right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left >> right`.
+    ///
+    /// The returned value is simplified.
+    pub fn rsh_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_rsh(left, &right, self, &mut simplify)
+    }
 }
 
 impl OperandType {

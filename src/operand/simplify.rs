@@ -32,6 +32,9 @@ pub fn simplified_with_ctx(
     let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
     match s.clone().ty {
         OperandType::Arithmetic(ref arith) => {
+            // NOTE OperandContext assumes it can call these arith child functions
+            // directly. Don't add anything here that is expected to be ran for
+            // arith simplify.
             let left = &arith.left;
             let right = &arith.right;
             match arith.ty {
@@ -408,7 +411,7 @@ fn simplify_xor_remove_reverting(ops: &mut Vec<Rc<Operand>>) {
     }
 }
 
-fn simplify_lsh(
+pub fn simplify_lsh(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     ctx: &OperandContext,
@@ -555,7 +558,7 @@ fn simplify_lsh(
     }
 }
 
-fn simplify_rsh(
+pub fn simplify_rsh(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     ctx: &OperandContext,
@@ -1277,7 +1280,7 @@ fn check_quick_arith_simplify<'a>(
     }
 }
 
-fn simplify_and(
+pub fn simplify_and(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     ctx: &OperandContext,
@@ -2107,7 +2110,7 @@ fn simplify_or_merge_mem(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
     }
 }
 
-fn simplify_add_sub(
+pub fn simplify_add_sub(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     is_sub: bool,
@@ -2430,7 +2433,7 @@ fn simplify_collected_add_sub_ops(
     }
 }
 
-fn simplify_or(
+pub fn simplify_or(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     ctx: &OperandContext,
@@ -3232,7 +3235,7 @@ fn simplify_add_merge_muls(
     }
 }
 
-fn simplify_xor(
+pub fn simplify_xor(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     ctx: &OperandContext,

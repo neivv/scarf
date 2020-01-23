@@ -295,61 +295,62 @@ impl<'a> Destination<'a> {
     fn set(self, value: Rc<Operand>, intern_map: &mut InternMap, ctx: &OperandContext) {
         use crate::operand::operand_helpers::*;
         let value = as_32bit_value(&value, ctx);
+        let value = Operand::simplified(value);
         match self {
             Destination::Oper(o) => {
-                *o = intern_map.intern(Operand::simplified(value));
+                *o = intern_map.intern(value);
             }
             Destination::Register16(o) => {
                 let old = intern_map.operand(*o);
                 let masked = if value.relevant_bits().end > 16 {
-                    operand_and(value, ctx.const_ffff())
+                    ctx.and_const(&value, 0xffff)
                 } else {
                     value
                 };
                 let old_bits = old.relevant_bits();
                 let new = if old_bits.end <= 16 {
-                    Operand::simplified(masked)
+                    masked
                 } else {
-                    Operand::simplified(operand_or(
-                        operand_and(old, ctx.const_ffff0000()),
-                        masked,
-                    ))
+                    ctx.or(
+                        &ctx.and_const(&old, 0xffff_0000),
+                        &masked,
+                    )
                 };
                 *o = intern_map.intern(new);
             }
             Destination::Register8High(o) => {
                 let old = intern_map.operand(*o);
                 let masked = if value.relevant_bits().end > 8 {
-                    operand_and(value, ctx.const_ff())
+                    ctx.and_const(&value, 0xff)
                 } else {
                     value
                 };
                 let old_bits = old.relevant_bits();
                 let new = if old_bits.start >= 8 && old_bits.end <= 16 {
-                    Operand::simplified(operand_lsh(masked, ctx.const_8()))
+                    ctx.lsh_const(&masked, 8)
                 } else {
-                    Operand::simplified(operand_or(
-                        operand_and(old, ctx.const_ffff00ff()),
-                        operand_lsh(masked, ctx.const_8())
-                    ))
+                    ctx.or(
+                        &ctx.and_const(&old, 0xffff_00ff),
+                        &ctx.lsh_const(&masked, 8),
+                    )
                 };
                 *o = intern_map.intern(new);
             }
             Destination::Register8Low(o) => {
                 let old = intern_map.operand(*o);
                 let masked = if value.relevant_bits().end > 8 {
-                    operand_and(value, ctx.const_ff())
+                    ctx.and_const(&value, 0xff)
                 } else {
                     value
                 };
                 let old_bits = old.relevant_bits();
                 let new = if old_bits.end <= 8 {
-                    Operand::simplified(masked)
+                    masked
                 } else {
-                    Operand::simplified(operand_or(
-                        operand_and(old, ctx.const_ffffff00()),
-                        masked,
-                    ))
+                    ctx.or(
+                        &ctx.and_const(&old, 0xffff_ff00),
+                        &masked,
+                    )
                 };
                 *o = intern_map.intern(new);
             }
@@ -357,10 +358,10 @@ impl<'a> Destination<'a> {
                 if size == MemAccessSize::Mem64 {
                     // Split into two u32 sets
                     Destination::Memory(mem, addr.clone(), MemAccessSize::Mem32)
-                        .set(operand_and(value.clone(), ctx.const_ffffffff()), intern_map, ctx);
-                    let addr = operand_add(addr, ctx.const_4());
+                        .set(ctx.and_const(&value, 0xffff_ffff), intern_map, ctx);
+                    let addr = ctx.add_const(&addr, 4);
                     Destination::Memory(mem, addr, MemAccessSize::Mem32)
-                        .set(operand_rsh(value, ctx.constant(32)), intern_map, ctx);
+                        .set(ctx.rsh_const(&value, 32), intern_map, ctx);
                     return;
                 }
                 if let Some((base, offset)) = Operand::const_offset(&addr, ctx) {
@@ -374,9 +375,7 @@ impl<'a> Destination<'a> {
                             MemAccessSize::Mem8 => 8,
                             MemAccessSize::Mem64 => unreachable!(),
                         };
-                        let low_base = Operand::simplified(
-                            operand_add(base.clone(), ctx.constant(offset_rest))
-                        );
+                        let low_base = ctx.add_const(&base, offset_rest);
                         let low_i = intern_map.intern(low_base.clone());
                         let low_old = mem.get(low_i)
                             .map(|x| intern_map.operand(x))
@@ -386,58 +385,56 @@ impl<'a> Destination<'a> {
                         let mask_high = (mask_low + size_bits).min(0x20);
                         let mask = !0 >> mask_low << mask_low <<
                             (0x20 - mask_high) >> (0x20 - mask_high);
-                        let low_value = Operand::simplified(operand_or(
-                            operand_and(
-                                operand_lsh(
-                                    value.clone(),
-                                    ctx.constant(8 * offset_4 as u64),
+                        let low_value = ctx.or(
+                            &ctx.and_const(
+                                &ctx.lsh_const(
+                                    &value,
+                                    8 * offset_4 as u64,
                                 ),
-                                ctx.constant(mask),
+                                mask,
                             ),
-                            operand_and(
-                                low_old,
-                                ctx.constant(!mask),
+                            &ctx.and_const(
+                                &low_old,
+                                !mask,
                             ),
-                        ));
+                        );
                         mem.set(low_i, intern_map.intern(low_value));
                         let needs_high = mask_low + size_bits > 0x20;
                         if needs_high {
-                            let high_base = Operand::simplified(
-                                operand_add(
-                                    base.clone(),
-                                    ctx.constant(offset_rest.wrapping_add(4)),
-                                )
+                            let high_base = ctx.add_const(
+                                &base,
+                                offset_rest.wrapping_add(4) & 0xffff_ffff,
                             );
                             let high_i = intern_map.intern(high_base.clone());
                             let high_old = mem.get(high_i)
                                 .map(|x| intern_map.operand(x))
                                 .unwrap_or_else(|| mem32(high_base));
                             let mask = !0 >> (0x20 - (mask_low + size_bits - 0x20));
-                            let high_value = Operand::simplified(operand_or(
-                                operand_and(
-                                    operand_rsh(
-                                        value,
-                                        ctx.constant((0x20 - 8 * offset_4) as u64),
+                            let high_value = ctx.or(
+                                &ctx.and_const(
+                                    &ctx.rsh_const(
+                                        &value,
+                                        (0x20 - 8 * offset_4) as u64,
                                     ),
-                                    ctx.constant(mask),
+                                    mask,
                                 ),
-                                operand_and(
-                                    high_old,
-                                    ctx.constant(!mask),
+                                &ctx.and_const(
+                                    &high_old,
+                                    !mask,
                                 ),
-                            ));
+                            );
                             mem.set(high_i, intern_map.intern(high_value));
                         }
                         return;
                     }
                 }
                 let addr = intern_map.intern(Operand::simplified(addr));
-                let value = Operand::simplified(match size {
-                    MemAccessSize::Mem8 => operand_and(value, ctx.const_ff()),
-                    MemAccessSize::Mem16 => operand_and(value, ctx.const_ffff()),
+                let value = match size {
+                    MemAccessSize::Mem8 => ctx.and_const(&value, 0xff),
+                    MemAccessSize::Mem16 => ctx.and_const(&value, 0xffff),
                     MemAccessSize::Mem32 => value,
                     MemAccessSize::Mem64 => unreachable!(),
-                });
+                };
                 mem.set(addr, intern_map.intern(value));
             }
         }
