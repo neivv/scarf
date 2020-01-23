@@ -336,7 +336,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         let rsp = ctx.register(4);
         self.move_to(
             &DestOperand::from_oper(&rsp),
-            operand_sub(rsp.clone(), ctx.const_8()),
+            ctx.sub_const(&rsp, 8),
             i,
         );
         self.move_to(
@@ -347,11 +347,11 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     }
 
     fn initial_state(
-        operand_ctx: &'a OperandContext,
+        ctx: &'a OperandContext,
         binary: &'a BinaryFile<VirtualAddress64>,
         interner: &mut InternMap,
     ) -> ExecutionState<'a> {
-        ExecutionState::with_binary(binary, operand_ctx, interner)
+        ExecutionState::with_binary(binary, ctx, interner)
     }
 
     fn find_functions_with_callers(file: &crate::BinaryFile<Self::VirtualAddress>)
@@ -588,9 +588,9 @@ impl<'a> ExecutionState<'a> {
         let sign = Operand::simplified(
             operand_ne(
                 ctx,
-                operand_and(
-                    ctx.constant(sign_bit),
-                    result.clone(),
+                ctx.and_const(
+                    &result,
+                    sign_bit,
                 ),
                 ctx.const_0(),
             )
@@ -685,6 +685,7 @@ impl<'a> ExecutionState<'a> {
     fn resolve_mem(&mut self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
         use crate::operand::operand_helpers::*;
 
+        let ctx = self.ctx;
         let address = self.resolve(&mem.address, i);
         let size_bytes = match mem.size {
             MemAccessSize::Mem8 => 1,
@@ -715,45 +716,35 @@ impl<'a> ExecutionState<'a> {
                             (&section.data[offset..]).read_u64::<LE>().unwrap_or(0)
                         }
                     };
-                    return self.ctx.constant(val);
+                    return ctx.constant(val);
                 }
             }
         }
 
         // Use 8-aligned addresses if there's a const offset
-        if let Some((base, offset)) = Operand::const_offset(&address, self.ctx) {
+        if let Some((base, offset)) = Operand::const_offset(&address, ctx) {
             let offset_8 = offset as u32 & 7;
             let offset_rest = offset & !7;
             if offset_8 != 0 {
-                let low_base = Operand::simplified(
-                    operand_add(base.clone(), self.ctx.constant(offset_rest))
-                );
+                let low_base = ctx.add_const(&base, offset_rest);
                 let low = self.memory.get(i.intern(low_base.clone()))
                     .map(|x| i.operand(x))
                     .unwrap_or_else(|| mem64(low_base));
-                let low = operand_rsh(low, self.ctx.constant(offset_8 as u64 * 8));
+                let low = ctx.rsh_const(&low, offset_8 as u64 * 8);
                 let combined = if offset_8 + size_bytes > 8 {
-                    let high_base = Operand::simplified(
-                        operand_add(
-                            base.clone(),
-                            self.ctx.constant(offset_rest.wrapping_add(8)),
-                        )
-                    );
+                    let high_base = ctx.add_const(&base, offset_rest.wrapping_add(8));
                     let high = self.memory.get(i.intern(high_base.clone()))
                         .map(|x| i.operand(x))
                         .unwrap_or_else(|| mem64(high_base));
-                    let high = operand_lsh(
-                        high,
-                        self.ctx.constant((0x40 - offset_8 * 8) as u64),
-                    );
-                    operand_or(low, high)
+                    let high = ctx.lsh_const(&high, (0x40 - offset_8 * 8) as u64);
+                    ctx.or(&low, &high)
                 } else {
                     low
                 };
                 let masked = match mem.size {
-                    MemAccessSize::Mem8 => operand_and(combined, self.ctx.const_ff()),
-                    MemAccessSize::Mem16 => operand_and(combined, self.ctx.const_ffff()),
-                    MemAccessSize::Mem32 => operand_and(combined, self.ctx.const_ffffffff()),
+                    MemAccessSize::Mem8 => ctx.and_const(&combined, 0xff),
+                    MemAccessSize::Mem16 => ctx.and_const(&combined, 0xffff),
+                    MemAccessSize::Mem32 => ctx.and_const(&combined, 0xffff_ffff),
                     MemAccessSize::Mem64 => combined,
                 };
                 return masked;
@@ -771,7 +762,7 @@ impl<'a> ExecutionState<'a> {
         right: &Rc<Operand>,
         interner: &mut InternMap,
     ) -> Option<Rc<Operand>> {
-        use crate::operand::operand_helpers::*;
+        let ctx = self.ctx;
         let (const_op, c, other) = match left.ty {
             OperandType::Constant(c) => (left, c, right),
             _ => match right.ty {
@@ -783,11 +774,11 @@ impl<'a> ExecutionState<'a> {
         if c <= 0xff {
             let interned = match self.cached_low_registers.get_low8(reg.0) {
                 InternedOperand(0) => {
-                    let op = operand_and(
-                        interner.operand(self.registers[reg.0 as usize]),
-                        self.ctx.const_ff(),
+                    let op = ctx.and_const(
+                        &interner.operand(self.registers[reg.0 as usize]),
+                        0xff,
                     );
-                    let interned = interner.intern(Operand::simplified(op));
+                    let interned = interner.intern(op);
                     self.cached_low_registers.set_low8(reg.0, interned);
                     interned
                 }
@@ -797,16 +788,16 @@ impl<'a> ExecutionState<'a> {
             if c == 0xff {
                 Some(op)
             } else {
-                Some(operand_and(op, const_op.clone()))
+                Some(ctx.and(&op, const_op))
             }
         } else if c <= 0xffff {
             let interned = match self.cached_low_registers.get_16(reg.0) {
                 InternedOperand(0) => {
-                    let op = operand_and(
-                        interner.operand(self.registers[reg.0 as usize]),
-                        self.ctx.const_ffff(),
+                    let op = ctx.and_const(
+                        &interner.operand(self.registers[reg.0 as usize]),
+                        0xffff,
                     );
-                    let interned = interner.intern(Operand::simplified(op));
+                    let interned = interner.intern(op);
                     self.cached_low_registers.set_16(reg.0, interned);
                     interned
                 }
@@ -816,16 +807,16 @@ impl<'a> ExecutionState<'a> {
             if c == 0xffff {
                 Some(op)
             } else {
-                Some(operand_and(op, const_op.clone()))
+                Some(ctx.and(&op, const_op))
             }
         } else if c <= 0xffff_ffff {
             let interned = match self.cached_low_registers.get_32(reg.0) {
                 InternedOperand(0) => {
-                    let op = operand_and(
-                        interner.operand(self.registers[reg.0 as usize]),
-                        self.ctx.const_ffffffff(),
+                    let op = ctx.and_const(
+                        &interner.operand(self.registers[reg.0 as usize]),
+                        0xffff_ffff
                     );
-                    let interned = interner.intern(Operand::simplified(op));
+                    let interned = interner.intern(op);
                     self.cached_low_registers.set_32(reg.0, interned);
                     interned
                 }
@@ -835,7 +826,7 @@ impl<'a> ExecutionState<'a> {
             if c == 0xffff_ffff {
                 Some(op)
             } else {
-                Some(operand_and(op, const_op.clone()))
+                Some(ctx.and(&op, const_op))
             }
         } else {
             None
@@ -949,8 +940,6 @@ pub fn merge_states<'a: 'r, 'r>(
     new: &'r mut ExecutionState<'a>,
     interner: &mut InternMap,
 ) -> Option<ExecutionState<'a>> {
-    use crate::operand::operand_helpers::*;
-
     old.update_flags(interner);
     new.update_flags(interner);
 
@@ -1015,7 +1004,7 @@ pub fn merge_states<'a: 'r, 'r>(
             if let Some(ref con) = new.unresolved_constraint {
                 // As long as we're working with flags, limiting to lowest bit
                 // allows simplifying cases like (undef | 1)
-                let lowest_bit = operand_and(ctx.const_1(), con.0.clone());
+                let lowest_bit = ctx.and_const(&con.0, 1);
                 match old.resolve_apply_constraints(&lowest_bit, interner).if_constant() {
                     Some(1) => result = Some(con.clone()),
                     _ => (),
@@ -1026,7 +1015,7 @@ pub fn merge_states<'a: 'r, 'r>(
             if let Some(ref con) = old.unresolved_constraint {
                 // As long as we're working with flags, limiting to lowest bit
                 // allows simplifying cases like (undef | 1)
-                let lowest_bit = operand_and(ctx.const_1(), con.0.clone());
+                let lowest_bit = ctx.and_const(&con.0, 1);
                 match new.resolve_apply_constraints(&lowest_bit, interner).if_constant() {
                     Some(1) => result = Some(con.clone()),
                     _ => (),

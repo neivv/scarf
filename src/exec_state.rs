@@ -80,6 +80,7 @@ pub trait ExecutionState<'a> : Clone {
         use crate::operand::ArithOpType::*;
         use crate::operand::operand_helpers::*;
 
+        let ctx = self.ctx();
         match condition.ty {
             OperandType::Arithmetic(ref arith) => {
                 let left = &arith.left;
@@ -120,20 +121,17 @@ pub trait ExecutionState<'a> : Clone {
                     Or => {
                         if jump {
                             let mut state = self.clone();
-                            let unresolved_cond = Operand::simplified(operand_or(
-                                left.clone(),
-                                right.clone()
-                            ));
+                            let unresolved_cond = ctx.or(left, right);
                             let cond = state.resolve(&unresolved_cond, i);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                             state.add_resolved_constraint(Constraint::new(cond));
                             state
                         } else {
                             let mut state = self.clone();
-                            let unresolved_cond = Operand::simplified(operand_and(
-                                operand_logical_not(left.clone()),
-                                operand_logical_not(right.clone()),
-                            ));
+                            let unresolved_cond = ctx.and(
+                                &operand_logical_not(left.clone()),
+                                &operand_logical_not(right.clone()),
+                            );
                             let cond = state.resolve(&unresolved_cond, i);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                             state.add_resolved_constraint(Constraint::new(cond));
@@ -143,20 +141,17 @@ pub trait ExecutionState<'a> : Clone {
                     And => {
                         if jump {
                             let mut state = self.clone();
-                            let unresolved_cond = Operand::simplified(operand_and(
-                                left.clone(),
-                                right.clone(),
-                            ));
+                            let unresolved_cond = ctx.and(left, right);
                             let cond = state.resolve(&unresolved_cond, i);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                             state.add_resolved_constraint(Constraint::new(cond));
                             state
                         } else {
                             let mut state = self.clone();
-                            let unresolved_cond = Operand::simplified(operand_or(
-                                operand_logical_not(left.clone()),
-                                operand_logical_not(right.clone())
-                            ));
+                            let unresolved_cond = ctx.or(
+                                &operand_logical_not(left.clone()),
+                                &operand_logical_not(right.clone())
+                            );
                             let cond = state.resolve(&unresolved_cond, i);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                             state.add_resolved_constraint(Constraint::new(cond));
