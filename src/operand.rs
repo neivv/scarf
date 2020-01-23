@@ -9,25 +9,27 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 
-use serde::{Deserialize as DeserializeTrait, Deserializer};
-use serde_derive::{Deserialize, Serialize};
+#[cfg(feature = "serde")]
+use serde::{Deserializer, Deserialize, Serialize};
 
 use crate::bit_misc::{bits_overlap};
 
-#[derive(Clone, Eq, Serialize)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[derive(Clone, Eq)]
 pub struct Operand {
     pub ty: OperandType,
-    #[serde(skip_serializing)]
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
     simplified: bool,
-    #[serde(skip_serializing)]
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
     hash: u64,
-    #[serde(skip_serializing)]
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
     min_zero_bit_simplify_size: u8,
-    #[serde(skip_serializing)]
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
     relevant_bits: Range<u8>,
 }
 
-impl<'de> DeserializeTrait<'de> for Operand {
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Operand {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Operand, D::Error> {
         use serde::de::{self, MapAccess, SeqAccess, Visitor};
 
@@ -35,7 +37,7 @@ impl<'de> DeserializeTrait<'de> for Operand {
         enum Field {
             Ty,
         }
-        impl<'de> DeserializeTrait<'de> for Field {
+        impl<'de> Deserialize<'de> for Field {
             fn deserialize<D>(deserializer: D) -> Result<Field, D::Error>
                 where D: Deserializer<'de>
             {
@@ -291,7 +293,8 @@ impl fmt::Display for Operand {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum OperandType {
     Register(Register),
     Xmm(u8, u8),
@@ -308,14 +311,16 @@ pub enum OperandType {
     Custom(u32),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct ArithOperand {
     pub ty: ArithOpType,
     pub left: Rc<Operand>,
     pub right: Rc<Operand>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum ArithOpType {
     Add,
     Sub,
@@ -345,8 +350,8 @@ impl ArithOperand {
     }
 }
 
-
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct UndefinedId(pub u32);
 
 #[derive(Debug)]
@@ -1377,13 +1382,15 @@ impl Operand {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct MemAccess {
     pub address: Rc<Operand>,
     pub size: MemAccessSize,
 }
 
-#[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd, Deserialize, Serialize)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd)]
 pub enum MemAccessSize {
     Mem32,
     Mem16,
@@ -1402,10 +1409,12 @@ impl MemAccessSize {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd, Deserialize, Serialize)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd)]
 pub struct Register(pub u8);
 
-#[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd, Deserialize, Serialize)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd)]
 pub enum Flag {
     Zero,
     Carry,

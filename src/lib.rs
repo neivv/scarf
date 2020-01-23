@@ -30,11 +30,13 @@ use std::io::{self, BufReader, Read, Seek};
 use std::path::{PathBuf};
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use serde_derive::{Serialize, Deserialize};
 use quick_error::quick_error;
 
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
+
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[derive(Serialize, Deserialize)]
 pub struct Rva(pub u32);
 
 impl std::fmt::Debug for Rva {
@@ -43,12 +45,12 @@ impl std::fmt::Debug for Rva {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[derive(Serialize, Deserialize)]
 pub struct VirtualAddress(pub u32);
 
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[derive(Serialize, Deserialize)]
 pub struct VirtualAddress64(pub u64);
 
 impl std::fmt::Debug for VirtualAddress {
