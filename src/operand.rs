@@ -727,6 +727,13 @@ impl OperandContext {
         simplify::simplify_add_sub(left, right, true, self)
     }
 
+    /// Returns `Operand` for `left - right`.
+    ///
+    /// The returned value is simplified.
+    pub fn mul(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        simplify::simplify_mul(left, right, self)
+    }
+
     /// Returns `Operand` for `left & right`.
     ///
     /// The returned value is simplified.
@@ -775,12 +782,28 @@ impl OperandContext {
         simplify::simplify_add_sub(left, &right, false, self)
     }
 
-    /// Returns `Operand` for `left + right`.
+    /// Returns `Operand` for `left - right`.
     ///
     /// The returned value is simplified.
     pub fn sub_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
         let right = self.constant(right);
         simplify::simplify_add_sub(left, &right, true, self)
+    }
+
+    /// Returns `Operand` for `left - right`.
+    ///
+    /// The returned value is simplified.
+    pub fn sub_const_left(&self, left: u64, right: &Rc<Operand>) -> Rc<Operand> {
+        let left = self.constant(left);
+        simplify::simplify_add_sub(&left, right, true, self)
+    }
+
+    /// Returns `Operand` for `left * right`.
+    ///
+    /// The returned value is simplified.
+    pub fn mul_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        simplify::simplify_mul(left, &right, self)
     }
 
     /// Returns `Operand` for `left & right`.

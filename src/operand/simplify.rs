@@ -703,17 +703,17 @@ pub fn simplify_rsh(
             match mem.size {
                 MemAccessSize::Mem64 => {
                     if constant >= 56 {
-                        let addr = operand_add(mem.address.clone(), ctx.constant(7));
+                        let addr = ctx.add_const(&mem.address, 7);
                         let c = ctx.constant(constant - 56);
                         let new = mem_variable_rc(MemAccessSize::Mem8, addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
                     } else if constant >= 48 {
-                        let addr = operand_add(mem.address.clone(), ctx.constant(6));
+                        let addr = ctx.add_const(&mem.address, 6);
                         let c = ctx.constant(constant - 48);
                         let new = mem_variable_rc(MemAccessSize::Mem16, addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
                     } else if constant >= 32 {
-                        let addr = operand_add(mem.address.clone(), ctx.const_4());
+                        let addr = ctx.add_const(&mem.address, 4);
                         let c = ctx.constant(constant - 32);
                         let new = mem_variable_rc(MemAccessSize::Mem32, addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
@@ -721,12 +721,12 @@ pub fn simplify_rsh(
                 }
                 MemAccessSize::Mem32 => {
                     if constant >= 24 {
-                        let addr = operand_add(mem.address.clone(), ctx.constant(3));
+                        let addr = ctx.add_const(&mem.address, 3);
                         let c = ctx.constant(constant - 24);
                         let new = mem_variable_rc(MemAccessSize::Mem8, addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
                     } else if constant >= 16 {
-                        let addr = operand_add(mem.address.clone(), ctx.const_2());
+                        let addr = ctx.add_const(&mem.address, 2);
                         let c = ctx.constant(constant - 16);
                         let new = mem_variable_rc(MemAccessSize::Mem16, addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
@@ -734,7 +734,7 @@ pub fn simplify_rsh(
                 }
                 MemAccessSize::Mem16 => {
                     if constant >= 8 {
-                        let addr = operand_add(mem.address.clone(), ctx.const_1());
+                        let addr = ctx.add_const(&mem.address, 1);
                         let c = ctx.constant(constant - 8);
                         let new = mem_variable_rc(MemAccessSize::Mem8, addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
@@ -869,8 +869,6 @@ fn simplify_eq(
     right: &Rc<Operand>,
     ctx: &OperandContext,
 ) -> Rc<Operand> {
-    use crate::operand_helpers::*;
-
     // Possibly common enough to be worth the early exit
     if left == right {
         return ctx.const_1();
@@ -1003,11 +1001,12 @@ fn simplify_eq(
                         }
                     }
                     true => {
-                        let mut op = operand_sub(ctx.const_0(), op.clone());
+                        let op = ctx.sub_const_left(0, &op);
                         if mask != u64::max_value() {
-                            op = operand_and(op, ctx.constant(mask));
+                            ctx.and_const(&op, mask)
+                        } else {
+                            op
                         }
-                        Operand::simplified(op)
                     }
                 }
             };
@@ -1220,7 +1219,7 @@ fn try_merge_ands(
                 }).or_else(|| try_merge_ands(&c.left, &d.right, a_mask, b_mask, ctx, swzb).and_then(|first| {
                     try_merge_ands(&c.right, &d.left, a_mask, b_mask, ctx, swzb).map(|second| (first, second))
                 })).map(|(first, second)| {
-                    Operand::simplified(simplify_xor(&first, &second, ctx, swzb))
+                    simplify_xor(&first, &second, ctx, swzb)
                 })
             } else {
                 None
@@ -1623,7 +1622,6 @@ fn simplify_and_remove_unnecessary_ors(
 }
 
 fn simplify_and_merge_child_ors(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
-    use crate::operand_helpers::*;
     fn or_const(op: &Rc<Operand>) -> Option<(u64, &Rc<Operand>)> {
         match op.ty {
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Or => {
@@ -1650,9 +1648,7 @@ fn simplify_and_merge_child_ors(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext
                     other_op.remove();
                 }
             }
-            let constant = ctx.constant(constant);
-            let oper = operand_or(val.clone(), constant);
-            new = Some(Operand::simplified(oper));
+            new = Some(ctx.or_const(val, constant));
         }
         if let Some(new) = new {
             *op = new;
@@ -2046,6 +2042,7 @@ fn is_offset_mem(
     }
 }
 
+/// Returns simplified operands.
 fn try_merge_memory(
     val: &Rc<Operand>,
     shift: (u64, u32, u32),
@@ -2064,13 +2061,13 @@ fn try_merge_memory(
     if off1.wrapping_add(len1 as u64) != off2 || len1 != val_off2 {
         return None;
     }
-    let addr = operand_add(val.clone(), ctx.constant(off1));
+    let addr = ctx.add_const(&val, off1);
     let oper = match (len1 + len2).min(4) {
         1 => mem_variable_rc(MemAccessSize::Mem8, addr),
         2 => mem_variable_rc(MemAccessSize::Mem16, addr),
-        3 => operand_and(
-            mem_variable_rc(MemAccessSize::Mem32, addr),
-            ctx.constant(0x00ff_ffff),
+        3 => ctx.and_const(
+            &mem_variable_rc(MemAccessSize::Mem32, addr),
+            0x00ff_ffff,
         ),
         4 => mem_variable_rc(MemAccessSize::Mem32, addr),
         _ => return None,
@@ -2093,7 +2090,7 @@ fn simplify_or_merge_mem(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
                     if val == other_val {
                         let result = try_merge_memory(&val, other_shift, shift, ctx);
                         if let Some(merged) = result {
-                            new = Some(Operand::simplified(merged));
+                            new = Some(merged);
                             remove = true;
                         }
                     }
@@ -2205,7 +2202,7 @@ fn add_sub_ops_to_tree(
     tree
 }
 
-fn simplify_mul(
+pub fn simplify_mul(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     ctx: &OperandContext,
@@ -2336,21 +2333,20 @@ fn simplify_mul_should_apply_constant(op: &Operand) -> bool {
 }
 
 fn simplify_mul_apply_constant(op: &Rc<Operand>, val: u64, ctx: &OperandContext) -> Rc<Operand> {
-    use crate::operand_helpers::*;
     let constant = ctx.constant(val);
-    fn inner(op: &Rc<Operand>, constant: &Rc<Operand>) -> Rc<Operand> {
+    fn inner(op: &Rc<Operand>, constant: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
         match op.ty {
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Add => {
-                operand_add(inner(&arith.left, constant), inner(&arith.right, constant))
+                ctx.add(&inner(&arith.left, constant, ctx), &inner(&arith.right, constant, ctx))
             }
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
-                operand_sub(inner(&arith.left, constant), inner(&arith.right, constant))
+                ctx.sub(&inner(&arith.left, constant, ctx), &inner(&arith.right, constant, ctx))
             }
-            _ => Operand::simplified(operand_mul(constant.clone(), op.clone())),
+            _ => ctx.mul(constant, op)
         }
     }
-    let new = inner(op, &constant);
-    Operand::simplified(new)
+    let new = inner(op, &constant, ctx);
+    new
 }
 
 // For converting c * (c2 + y) to (c_mul_c2 + c * y)
@@ -2359,30 +2355,29 @@ fn simplify_mul_try_mul_constants(
     c: u64,
     ctx: &OperandContext,
 ) -> Option<Rc<Operand>> {
-    use crate::operand_helpers::*;
     match op.ty {
         OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Add => {
             Operand::either(&arith.left, &arith.right, |x| x.if_constant())
                 .map(|(c2, other)| {
-                    let multiplied = ctx.constant(c2.wrapping_mul(c));
-                    operand_add(multiplied, operand_mul(ctx.constant(c), other.clone()))
+                    let multiplied = c2.wrapping_mul(c);
+                    ctx.add_const(&ctx.mul_const(other, c), multiplied)
                 })
         }
         OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
             match (&arith.left.ty, &arith.right.ty) {
                 (&OperandType::Constant(c2), _) => {
-                    let multiplied = ctx.constant(c2.wrapping_mul(c));
-                    Some(operand_sub(multiplied, operand_mul(ctx.constant(c), arith.right.clone())))
+                    let multiplied = c2.wrapping_mul(c);
+                    Some(ctx.sub_const_left(multiplied, &ctx.mul_const(&arith.right, c)))
                 }
                 (_, &OperandType::Constant(c2)) => {
-                    let multiplied = ctx.constant(c2.wrapping_mul(c));
-                    Some(operand_sub(operand_mul(ctx.constant(c), arith.left.clone()), multiplied))
+                    let multiplied = c2.wrapping_mul(c);
+                    Some(ctx.sub_const(&ctx.mul_const(&arith.left, c), multiplied))
                 }
                 _ => None
             }
         }
         _ => None,
-    }.map(|op| Operand::simplified(op))
+    }
 }
 
 fn simplify_add_sub_ops(
@@ -2696,8 +2691,7 @@ fn simplify_with_and_mask_inner(
                         if left == arith.left {
                             op.clone()
                         } else {
-                            let op = operand_lsh(left, arith.right.clone());
-                            Operand::simplified(op)
+                            ctx.lsh(&left, &arith.right)
                         }
                     } else {
                         op.clone()
@@ -2784,15 +2778,15 @@ fn simplify_with_and_mask_inner(
             let new_addr = if mask_low == 0 {
                 mem.address.clone()
             } else {
-                operand_add(mem.address.clone(), ctx.constant(mask_low as u64))
+                ctx.add_const(&mem.address, mask_low as u64)
             };
             let mem = mem_variable_rc(new_size, new_addr);
             let shifted = if mask_low == 0 {
                 mem
             } else {
-                operand_lsh(mem, ctx.constant(mask_low as u64 * 8))
+                ctx.lsh_const(&mem, mask_low as u64 * 8)
             };
-            Operand::simplified(shifted)
+            shifted
         }
         OperandType::Constant(c) => if c & mask != c {
             ctx.constant(c & mask)
@@ -3070,7 +3064,7 @@ fn simplify_with_one_bits(
                             if mask == s.relevant_bits_mask() {
                                 Some(s)
                             } else {
-                                Some(Operand::simplified(operand_and(ctx.constant(mask), s)))
+                                Some(ctx.and_const(&s, mask))
                             }
                         }
                         (Some(l), Some(r)) => {
@@ -3078,7 +3072,7 @@ fn simplify_with_one_bits(
                                 if let Some(other) = check_useless_and_mask(&l, &r, bits) {
                                     return simplify_with_one_bits(other, bits, ctx);
                                 }
-                                let new = Operand::simplified(operand_and(l, r));
+                                let new = ctx.and(&l, &r);
                                 if new == *op {
                                     Some(new)
                                 } else {
@@ -3098,7 +3092,7 @@ fn simplify_with_one_bits(
                         (None, Some(s)) | (Some(s), None) => Some(s),
                         (Some(l), Some(r)) => {
                             if l != arith.left || r != arith.right {
-                                let new = Operand::simplified(operand_or(l, r));
+                                let new = ctx.or(&l, &r);
                                 if new == *op {
                                     Some(new)
                                 } else {
@@ -3245,10 +3239,10 @@ pub fn simplify_xor(
     let right_bits = right.relevant_bits();
     // x ^ 0 early exit
     if left_bits.start >= left_bits.end {
-        return Operand::simplified(right.clone());
+        return simplified_with_ctx(right.clone(), ctx, swzb);
     }
     if right_bits.start >= right_bits.end {
-        return Operand::simplified(left.clone());
+        return simplified_with_ctx(left.clone(), ctx, swzb);
     }
     if let Some((l, r)) = check_quick_arith_simplify(left, right) {
         let arith = ArithOperand {
@@ -3281,25 +3275,23 @@ fn simplify_xor_try_extract_constant(
     ctx: &OperandContext,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Option<(Rc<Operand>, u64)> {
-    use crate::operand_helpers::*;
-
-    fn recurse(op: &Rc<Operand>) -> Option<(Rc<Operand>, u64)> {
+    fn recurse(op: &Rc<Operand>, ctx: &OperandContext) -> Option<(Rc<Operand>, u64)> {
         match op.ty {
             OperandType::Arithmetic(ref arith) => {
                 match arith.ty {
                     ArithOpType::And => {
-                        let left = recurse(&arith.left);
-                        let right = recurse(&arith.right);
+                        let left = recurse(&arith.left, ctx);
+                        let right = recurse(&arith.right, ctx);
                         return match (left, right) {
                             (None, None) => None,
                             (Some(a), None) => {
-                                Some((operand_and(a.0, arith.right.clone()), a.1))
+                                Some((ctx.and(&a.0, &arith.right), a.1))
                             }
                             (None, Some(a)) => {
-                                Some((operand_and(a.0, arith.left.clone()), a.1))
+                                Some((ctx.and(&a.0, &arith.left), a.1))
                             }
                             (Some(a), Some(b)) => {
-                                Some((operand_and(a.0, b.0), a.1 ^ b.1))
+                                Some((ctx.and(&a.0, &b.0), a.1 ^ b.1))
                             }
                         };
                     }
@@ -3318,7 +3310,7 @@ fn simplify_xor_try_extract_constant(
 
     let (l, r) = op.if_arithmetic_and()?;
     let and_mask = r.if_constant()?;
-    let (new, c) = recurse(l)?;
+    let (new, c) = recurse(l, ctx)?;
     let new = simplify_and(&new, r, ctx, swzb);
     Some((new, c & and_mask))
 }
