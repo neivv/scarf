@@ -77,8 +77,6 @@ pub trait ExecutionState<'a> : Clone {
         jump: bool,
         i: &mut InternMap,
     ) -> Self {
-        use crate::operand::ArithOpType::*;
-        use crate::operand::operand_helpers::*;
 
         let ctx = self.ctx();
         match condition.ty {
@@ -86,13 +84,11 @@ pub trait ExecutionState<'a> : Clone {
                 let left = &arith.left;
                 let right = &arith.right;
                 match arith.ty {
-                    Equal => {
+                    ArithOpType::Equal => {
                         let mut state = self.clone();
                         let unresolved_cond = match jump {
                             true => condition.clone(),
-                            false => Operand::simplified(
-                                operand_logical_not(condition.clone())
-                            ),
+                            false => ctx.eq_const(&condition, 0)
                         };
                         let resolved_cond = state.resolve(&unresolved_cond, i);
                         state.add_resolved_constraint(Constraint::new(resolved_cond));
@@ -118,7 +114,7 @@ pub trait ExecutionState<'a> : Clone {
                         }
                         state
                     }
-                    Or => {
+                    ArithOpType::Or => {
                         if jump {
                             let mut state = self.clone();
                             let unresolved_cond = ctx.or(left, right);
@@ -129,8 +125,8 @@ pub trait ExecutionState<'a> : Clone {
                         } else {
                             let mut state = self.clone();
                             let unresolved_cond = ctx.and(
-                                &operand_logical_not(left.clone()),
-                                &operand_logical_not(right.clone()),
+                                &ctx.eq_const(left, 0),
+                                &ctx.eq_const(right, 0),
                             );
                             let cond = state.resolve(&unresolved_cond, i);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
@@ -138,7 +134,7 @@ pub trait ExecutionState<'a> : Clone {
                             state
                         }
                     }
-                    And => {
+                    ArithOpType::And => {
                         if jump {
                             let mut state = self.clone();
                             let unresolved_cond = ctx.and(left, right);
@@ -149,8 +145,8 @@ pub trait ExecutionState<'a> : Clone {
                         } else {
                             let mut state = self.clone();
                             let unresolved_cond = ctx.or(
-                                &operand_logical_not(left.clone()),
-                                &operand_logical_not(right.clone())
+                                &ctx.eq_const(left, 0),
+                                &ctx.eq_const(right, 0),
                             );
                             let cond = state.resolve(&unresolved_cond, i);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
@@ -883,45 +879,32 @@ impl XmmOperand {
 
 #[test]
 fn apply_constraint() {
-    use crate::operand::operand_helpers::*;
     let ctx = crate::operand::OperandContext::new();
-    let constraint = Constraint(operand_eq(
-        constval(0),
-        operand_eq(
-            operand_eq(
-                ctx.flag_z(),
-                constval(0),
-            ),
-            constval(0),
+    let constraint = Constraint(ctx.eq_const(
+        &ctx.neq_const(
+            ctx.flag_z(),
+            0,
         ),
+        0,
     ));
-    let val = operand_or(
-        operand_eq(
-            operand_eq(
-                ctx.flag_c(),
-                constval(0),
-            ),
-            constval(0),
+    let val = ctx.or(
+        &ctx.neq_const(
+            ctx.flag_c(),
+            0,
         ),
-        operand_eq(
-            operand_eq(
-                ctx.flag_z(),
-                constval(0),
-            ),
-            constval(0),
+        &ctx.neq_const(
+            ctx.flag_z(),
+            0,
         ),
     );
     let old = val.clone();
-    let val = constraint.apply_to(&val);
-    let eq = operand_eq(
-        operand_eq(
-            ctx.flag_c(),
-            constval(0),
-        ),
-        constval(0),
+    let val = Operand::simplified(constraint.apply_to(&val));
+    let eq = ctx.neq_const(
+        ctx.flag_c(),
+        0,
     );
-    assert_ne!(Operand::simplified(val.clone()), Operand::simplified(old));
-    assert_eq!(Operand::simplified(val), Operand::simplified(eq));
+    assert_ne!(val, old);
+    assert_eq!(val, eq);
 }
 
 #[test]
@@ -948,35 +931,31 @@ fn apply_constraint_non1bit() {
 
 #[test]
 fn apply_constraint_or() {
-    use crate::operand::operand_helpers::*;
     let ctx = &crate::operand::OperandContext::new();
-    let constraint = operand_or(
-        operand_ne(
-            ctx,
+    let constraint = ctx.or(
+        &ctx.neq(
             ctx.flag_o(),
             ctx.flag_s(),
         ),
-        operand_ne(
-            ctx,
+        &ctx.neq_const(
             ctx.flag_z(),
-            ctx.const_0(),
+            0,
         ),
     );
-    let val = operand_eq(
-        operand_and(
-            operand_eq(
+    let val = ctx.eq_const(
+        &ctx.and(
+            &ctx.eq(
                 ctx.flag_o(),
                 ctx.flag_s(),
             ),
-            operand_eq(
+            &ctx.eq_const(
                 ctx.flag_z(),
-                ctx.const_0(),
+                0,
             ),
         ),
-        ctx.const_0(),
+        0,
     );
-    let val = Operand::simplified(val);
     let applied = Constraint(constraint).apply_to(&val);
-    let eq = constval(1);
+    let eq = ctx.constant(1);
     assert_eq!(Operand::simplified(applied), Operand::simplified(eq));
 }

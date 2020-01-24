@@ -1126,19 +1126,22 @@ fn simplify_overflowing_shifts() {
 fn simplify_and_not_mem32() {
     use super::operand_helpers::*;
     let mem16 = |x| mem_variable_rc(MemAccessSize::Mem16, x);
-    let op1 = operand_and(
-        operand_not(
-            mem32(constval(0x123)),
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        &ctx.xor_const(
+            &mem32(ctx.constant(0x123)),
+            0xffff_ffff_ffff_ffff,
         ),
-        constval(0xffff),
+        0xffff,
     );
-    let eq1 = operand_and(
-        operand_not(
-            mem16(constval(0x123)),
+    let eq1 = ctx.and_const(
+        &ctx.xor_const(
+            &mem16(ctx.constant(0x123)),
+            0xffff_ffff_ffff_ffff,
         ),
-        constval(0xffff),
+        0xffff,
     );
-    assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    assert_eq!(op1, eq1);
 }
 
 #[test]

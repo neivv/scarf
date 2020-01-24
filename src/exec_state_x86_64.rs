@@ -41,12 +41,12 @@ pub struct Flags {
 impl Flags {
     fn initial(ctx: &OperandContext, interner: &mut InternMap) -> Flags {
         Flags {
-            zero: interner.intern(ctx.flag_z()),
-            carry: interner.intern(ctx.flag_c()),
-            overflow: interner.intern(ctx.flag_o()),
-            sign: interner.intern(ctx.flag_s()),
-            parity: interner.intern(ctx.flag_p()),
-            direction: interner.intern(ctx.const_0()),
+            zero: interner.intern(ctx.flag_z().clone()),
+            carry: interner.intern(ctx.flag_c().clone()),
+            overflow: interner.intern(ctx.flag_o().clone()),
+            sign: interner.intern(ctx.flag_s().clone()),
+            parity: interner.intern(ctx.flag_p().clone()),
+            direction: interner.intern(ctx.const_0().clone()),
         }
     }
 }
@@ -531,17 +531,15 @@ impl<'a> ExecutionState<'a> {
         let result = Operand::simplified(result);
         match arith.ty {
             Add => {
-                let overflow =
-                    operand_gt_signed(resolved_left.clone(), result.clone(), size, ctx);
-                let carry = operand_gt(resolved_left.clone(), result.clone());
+                let overflow = ctx.gt_signed(resolved_left, &result, size);
+                let carry = ctx.gt(resolved_left, &result);
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);
             }
             Sub => {
-                let overflow =
-                    operand_gt_signed(resolved_left.clone(), result.clone(), size, ctx);
-                let carry = operand_gt(result.clone(), resolved_left.clone());
+                let overflow = ctx.gt_signed(resolved_left, &result, size);
+                let carry = ctx.gt(&result, resolved_left);
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);
@@ -721,6 +719,12 @@ impl<'a> ExecutionState<'a> {
             }
         }
 
+        let mask = match mem.size {
+            MemAccessSize::Mem8 => 0xffu32,
+            MemAccessSize::Mem16 => 0xffff,
+            MemAccessSize::Mem32 => 0xffff_ffff,
+            MemAccessSize::Mem64 => 0,
+        };
         // Use 8-aligned addresses if there's a const offset
         if let Some((base, offset)) = Operand::const_offset(&address, ctx) {
             let offset_8 = offset as u32 & 7;
@@ -741,17 +745,23 @@ impl<'a> ExecutionState<'a> {
                 } else {
                     low
                 };
-                let masked = match mem.size {
-                    MemAccessSize::Mem8 => ctx.and_const(&combined, 0xff),
-                    MemAccessSize::Mem16 => ctx.and_const(&combined, 0xffff),
-                    MemAccessSize::Mem32 => ctx.and_const(&combined, 0xffff_ffff),
-                    MemAccessSize::Mem64 => combined,
+                let masked = if mem.size != MemAccessSize::Mem64 {
+                    ctx.and_const(&combined, mask as u64)
+                } else {
+                    combined
                 };
                 return masked;
             }
         }
         self.memory.get(i.intern(address.clone()))
-            .map(|interned| i.operand(interned))
+            .map(|interned| {
+                let operand = i.operand(interned);
+                if mem.size != MemAccessSize::Mem64 {
+                    ctx.and_const(&operand, mask as u64)
+                } else {
+                    operand
+                }
+            })
             .unwrap_or_else(|| mem_variable_rc(mem.size, address))
     }
 

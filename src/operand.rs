@@ -570,31 +570,31 @@ impl OperandContext {
         const_ffffffff, c_ffffffff,
     }
 
-    pub fn flag_z(&self) -> Rc<Operand> {
-        self.globals.flag_z.clone()
+    pub fn flag_z(&self) -> &Rc<Operand> {
+        &self.globals.flag_z
     }
 
-    pub fn flag_c(&self) -> Rc<Operand> {
-        self.globals.flag_c.clone()
+    pub fn flag_c(&self) -> &Rc<Operand> {
+        &self.globals.flag_c
     }
 
-    pub fn flag_o(&self) -> Rc<Operand> {
-        self.globals.flag_o.clone()
+    pub fn flag_o(&self) -> &Rc<Operand> {
+        &self.globals.flag_o
     }
 
-    pub fn flag_s(&self) -> Rc<Operand> {
-        self.globals.flag_s.clone()
+    pub fn flag_s(&self) -> &Rc<Operand> {
+        &self.globals.flag_s
     }
 
-    pub fn flag_p(&self) -> Rc<Operand> {
-        self.globals.flag_p.clone()
+    pub fn flag_p(&self) -> &Rc<Operand> {
+        &self.globals.flag_p
     }
 
-    pub fn flag_d(&self) -> Rc<Operand> {
-        self.globals.flag_d.clone()
+    pub fn flag_d(&self) -> &Rc<Operand> {
+        &self.globals.flag_d
     }
 
-    pub fn flag(&self, flag: Flag) -> Rc<Operand> {
+    pub fn flag(&self, flag: Flag) -> &Rc<Operand> {
         match flag {
             Flag::Zero => self.flag_z(),
             Flag::Carry => self.flag_c(),
@@ -607,6 +607,10 @@ impl OperandContext {
 
     pub fn register(&self, index: u8) -> Rc<Operand> {
         self.globals.registers[index as usize].clone()
+    }
+
+    pub fn register_ref(&self, index: u8) -> &Rc<Operand> {
+        &self.globals.registers[index as usize]
     }
 
     pub fn register_fpu(&self, index: u8) -> Rc<Operand> {
@@ -713,6 +717,21 @@ impl OperandContext {
         }
     }
 
+    pub fn arithmetic(
+        &self,
+        ty: ArithOpType,
+        left: &Rc<Operand>,
+        right: &Rc<Operand>,
+    ) -> Rc<Operand> {
+        let op = Operand::new_not_simplified_rc(OperandType::Arithmetic(ArithOperand {
+            ty,
+            left: left.clone(),
+            right: right.clone(),
+        }));
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplified_with_ctx(op, self, &mut simplify)
+    }
+
     /// Returns `Operand` for `left + right`.
     ///
     /// The returned value is simplified.
@@ -727,11 +746,38 @@ impl OperandContext {
         simplify::simplify_add_sub(left, right, true, self)
     }
 
-    /// Returns `Operand` for `left - right`.
+    /// Returns `Operand` for `left * right`.
     ///
     /// The returned value is simplified.
     pub fn mul(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
         simplify::simplify_mul(left, right, self)
+    }
+
+    /// Returns `Operand` for signed `left * right`.
+    ///
+    /// The returned value is simplified.
+    pub fn signed_mul(
+        &self,
+        left: &Rc<Operand>,
+        right: &Rc<Operand>,
+        _size: MemAccessSize,
+    ) -> Rc<Operand> {
+        // TODO
+        simplify::simplify_mul(left, right, self)
+    }
+
+    /// Returns `Operand` for `left / right`.
+    ///
+    /// The returned value is simplified.
+    pub fn div(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        self.arithmetic(ArithOpType::Div, left, right)
+    }
+
+    /// Returns `Operand` for `left % right`.
+    ///
+    /// The returned value is simplified.
+    pub fn modulo(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        self.arithmetic(ArithOpType::Modulo, left, right)
     }
 
     /// Returns `Operand` for `left & right`.
@@ -772,6 +818,60 @@ impl OperandContext {
     pub fn rsh(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_rsh(left, right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left == right`.
+    ///
+    /// The returned value is simplified.
+    pub fn eq(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        simplify::simplify_eq(left, right, self)
+    }
+
+    /// Returns `Operand` for `left != right`.
+    ///
+    /// The returned value is simplified.
+    pub fn neq(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        self.eq_const(&self.eq(left, right), 0)
+    }
+
+    /// Returns `Operand` for unsigned `left > right`.
+    ///
+    /// The returned value is simplified.
+    pub fn gt(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+        self.arithmetic(ArithOpType::GreaterThan, left, right)
+    }
+
+    /// Returns `Operand` for signed `left > right`.
+    ///
+    /// The returned value is simplified.
+    pub fn gt_signed(
+        &self,
+        left: &Rc<Operand>,
+        right: &Rc<Operand>,
+        size: MemAccessSize,
+    ) -> Rc<Operand> {
+        let (mask, offset) = match size {
+            MemAccessSize::Mem8 => (0xff, 0x80),
+            MemAccessSize::Mem16 => (0xffff, 0x8000),
+            MemAccessSize::Mem32 => (0xffff_ffff, 0x8000_0000),
+            MemAccessSize::Mem64 => {
+                let offset = 0x8000_0000_0000_0000;
+                return self.gt(
+                    &self.add_const(left, offset),
+                    &self.add_const(&right, offset),
+                );
+            }
+        };
+        self.gt(
+            &self.and_const(
+                &self.add_const(&left, offset),
+                mask,
+            ),
+            &self.and_const(
+                &self.add_const(&right, offset),
+                mask,
+            ),
+        )
     }
 
     /// Returns `Operand` for `left + right`.
@@ -842,6 +942,15 @@ impl OperandContext {
         simplify::simplify_lsh(left, &right, self, &mut simplify)
     }
 
+    /// Returns `Operand` for `left << right`.
+    ///
+    /// The returned value is simplified.
+    pub fn lsh_const_left(&self, left: u64, right: &Rc<Operand>) -> Rc<Operand> {
+        let left = self.constant(left);
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_lsh(&left, right, self, &mut simplify)
+    }
+
     /// Returns `Operand` for `left >> right`.
     ///
     /// The returned value is simplified.
@@ -849,6 +958,30 @@ impl OperandContext {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_rsh(left, &right, self, &mut simplify)
+    }
+
+    /// Returns `Operand` for `left == right`.
+    ///
+    /// The returned value is simplified.
+    pub fn eq_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        simplify::simplify_eq(left, &right, self)
+    }
+
+    /// Returns `Operand` for `left != right`.
+    ///
+    /// The returned value is simplified.
+    pub fn neq_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        self.eq_const(&self.eq(left, &right), 0)
+    }
+
+    /// Returns `Operand` for unsigned `left > right`.
+    ///
+    /// The returned value is simplified.
+    pub fn gt_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+        let right = self.constant(right);
+        self.gt(left, &right)
     }
 }
 
@@ -1608,10 +1741,6 @@ pub mod operand_helpers {
         operand_arith(Mul, lhs, rhs)
     }
 
-    pub fn operand_signed_mul(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(SignedMul, lhs, rhs)
-    }
-
     pub fn operand_div(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith(Div, lhs, rhs)
     }
@@ -1636,48 +1765,6 @@ pub mod operand_helpers {
         operand_arith(GreaterThan, lhs, rhs)
     }
 
-    pub fn operand_gt_signed(
-        left: Rc<Operand>,
-        right: Rc<Operand>,
-        size: MemAccessSize,
-        ctx: &OperandContext,
-    ) -> Rc<Operand> {
-        let (mask, offset) = match size {
-            MemAccessSize::Mem8 => (ctx.const_ff(), ctx.constant(0x80)),
-            MemAccessSize::Mem16 =>  (ctx.const_ffff(), ctx.constant(0x8000)),
-            MemAccessSize::Mem32 =>  (ctx.const_ffffffff(), ctx.constant(0x8000_0000)),
-            MemAccessSize::Mem64 => {
-                let offset = ctx.constant(0x8000_0000_0000_0000);
-                return operand_gt(
-                    operand_add(
-                        left,
-                        offset.clone(),
-                    ),
-                    operand_add(
-                        right,
-                        offset,
-                    ),
-                );
-            }
-        };
-        operand_gt(
-            operand_and(
-                operand_add(
-                    left,
-                    offset.clone(),
-                ),
-                mask.clone(),
-            ),
-            operand_and(
-                operand_add(
-                    right,
-                    offset,
-                ),
-                mask,
-            ),
-        )
-    }
-
     pub fn operand_or(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith(Or, lhs, rhs)
     }
@@ -1692,14 +1779,6 @@ pub mod operand_helpers {
 
     pub fn operand_rsh(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
         operand_arith(Rsh, lhs, rhs)
-    }
-
-    pub fn operand_not(lhs: Rc<Operand>) -> Rc<Operand> {
-        operand_xor(lhs, constval(0xffff_ffff))
-    }
-
-    pub fn operand_logical_not(lhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Equal, constval(0), lhs)
     }
 
     pub fn mem64(val: Rc<Operand>) -> Rc<Operand> {

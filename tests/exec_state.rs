@@ -559,6 +559,13 @@ impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
         if let Operation::Move(_, val, _) = op {
             println!("Resolved is {}", control.resolve(val));
         }
+        if let Operation::Jump { condition, .. } = op {
+            println!("Resolved cond is {}", control.resolve(condition));
+            println!(
+                "Resolved cond is {} (Constraints applied)",
+                control.resolve_apply_constraints(condition),
+            );
+        }
         if let Operation::Return(_) = *op {
             let (state, i) = control.exec_state();
             self.end_state = Some((state.clone(), i.clone()));

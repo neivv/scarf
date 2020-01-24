@@ -864,7 +864,7 @@ fn relevant_bits_for_eq(ops: &Vec<(Rc<Operand>, bool)>) -> (u64, u64) {
     (pos_mask, neg_mask)
 }
 
-fn simplify_eq(
+pub fn simplify_eq(
     left: &Rc<Operand>,
     right: &Rc<Operand>,
     ctx: &OperandContext,

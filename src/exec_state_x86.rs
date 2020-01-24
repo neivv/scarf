@@ -432,12 +432,12 @@ impl<'a> Destination<'a> {
 impl Flags {
     fn initial(ctx: &OperandContext, interner: &mut InternMap) -> Flags {
         Flags {
-            zero: interner.intern(ctx.flag_z()),
-            carry: interner.intern(ctx.flag_c()),
-            overflow: interner.intern(ctx.flag_o()),
-            sign: interner.intern(ctx.flag_s()),
-            parity: interner.intern(ctx.flag_p()),
-            direction: interner.intern(ctx.const_0()),
+            zero: interner.intern(ctx.flag_z().clone()),
+            carry: interner.intern(ctx.flag_c().clone()),
+            overflow: interner.intern(ctx.flag_o().clone()),
+            sign: interner.intern(ctx.flag_s().clone()),
+            parity: interner.intern(ctx.flag_p().clone()),
+            direction: interner.intern(ctx.const_0().clone()),
         }
     }
 }
@@ -586,17 +586,15 @@ impl<'a> ExecutionState<'a> {
         let ctx = self.ctx;
         match arith.ty {
             Add => {
-                let carry = operand_gt(resolved_left.clone(), result.clone());
-                let overflow =
-                    operand_gt_signed(resolved_left.clone(), result.clone(), size, ctx);
+                let carry = ctx.gt(&resolved_left, &result);
+                let overflow = ctx.gt_signed(&resolved_left, &result, size);
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);
             }
             Sub => {
-                let carry = operand_gt(result.clone(), resolved_left.clone());
-                let overflow =
-                    operand_gt_signed(result.clone(), resolved_left.clone(), size, ctx);
+                let carry = ctx.gt(&result, &resolved_left);
+                let overflow = ctx.gt_signed(&result, &resolved_left, size);
                 self.flags.carry = intern_map.intern(Operand::simplified(carry));
                 self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
                 self.result_flags(result, size, intern_map);
@@ -784,6 +782,12 @@ impl<'a> ExecutionState<'a> {
             }
         }
 
+        let mask = match mem.size {
+            MemAccessSize::Mem8 => 0xffu32,
+            MemAccessSize::Mem16 => 0xffff,
+            MemAccessSize::Mem32 => 0,
+            MemAccessSize::Mem64 => 0,
+        };
         // Use 4-aligned addresses if there's a const offset
         if let Some((base, offset)) = Operand::const_offset(&address, ctx) {
             let offset = offset as u32;
@@ -811,17 +815,23 @@ impl<'a> ExecutionState<'a> {
                 } else {
                     low
                 };
-                let masked = match mem.size {
-                    MemAccessSize::Mem8 => ctx.and_const(&combined, 0xff),
-                    MemAccessSize::Mem16 => ctx.and_const(&combined, 0xffff),
-                    MemAccessSize::Mem32 => combined,
-                    MemAccessSize::Mem64 => unreachable!(),
+                let masked = if mem.size != MemAccessSize::Mem32 {
+                    ctx.and_const(&combined, mask as u64)
+                } else {
+                    combined
                 };
                 return masked;
             }
         }
         self.memory.get(i.intern(address.clone()))
-            .map(|interned| i.operand(interned))
+            .map(|interned| {
+                let operand = i.operand(interned);
+                if mask != 0 {
+                    ctx.and_const(&operand, mask as u64)
+                } else {
+                    operand
+                }
+            })
             .unwrap_or_else(|| mem_variable_rc(mem.size, address))
     }
 
@@ -1183,10 +1193,10 @@ fn merge_state_constraints_eq() {
     let ctx = crate::operand::OperandContext::new();
     let state_a = ExecutionState::new(&ctx, &mut i);
     let mut state_b = ExecutionState::new(&ctx, &mut i);
-    let sign_eq_overflow_flag = Operand::simplified(operand_eq(
+    let sign_eq_overflow_flag = ctx.eq(
         ctx.flag_o(),
         ctx.flag_s(),
-    ));
+    );
     let mut state_a = state_a.assume_jump_flag(&sign_eq_overflow_flag, true, &mut i);
     state_b.move_to(&DestOperand::from_oper(&ctx.flag_o()), constval(1), &mut i);
     state_b.move_to(&DestOperand::from_oper(&ctx.flag_s()), constval(1), &mut i);
@@ -1202,10 +1212,10 @@ fn merge_state_constraints_or() {
     let ctx = crate::operand::OperandContext::new();
     let state_a = ExecutionState::new(&ctx, &mut i);
     let mut state_b = ExecutionState::new(&ctx, &mut i);
-    let sign_or_overflow_flag = Operand::simplified(operand_or(
+    let sign_or_overflow_flag = ctx.or(
         ctx.flag_o(),
         ctx.flag_s(),
-    ));
+    );
     let mut state_a = state_a.assume_jump_flag(&sign_or_overflow_flag, true, &mut i);
     state_b.move_to(&DestOperand::from_oper(&ctx.flag_s()), constval(1), &mut i);
     let merged = merge_states(&mut state_b, &mut state_a, &mut i).unwrap();
