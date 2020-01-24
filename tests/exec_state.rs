@@ -547,6 +547,26 @@ fn adc() {
     ]);
 }
 
+#[test]
+fn movd() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0xc7, 0x04, 0xe4, 0x78, 0x56, 0x34, 0x12, // mov [esp], 12345678
+        0x66, 0x0f, 0x6e, 0x04, 0xe4, // movd xmm0, [esp]
+        0x0f, 0x11, 0x44, 0xe4, 0x10, // movups [esp + 10], xmm0
+        0x8b, 0x44, 0xe4, 0x10, // mov eax, [esp + 10]
+        0x8b, 0x4c, 0xe4, 0x14, // mov ecx, [esp + 14]
+        0x8b, 0x54, 0xe4, 0x18, // mov edx, [esp + 18]
+        0x8b, 0x5c, 0xe4, 0x1c, // mov ebx, [esp + 1c]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0x12345678)),
+         (ctx.register(1), ctx.constant(0)),
+         (ctx.register(2), ctx.constant(0)),
+         (ctx.register(3), ctx.constant(0)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

@@ -2242,7 +2242,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
         }
-        let op_size = self.mem16_32();
+        let op_size = match self.prefixes.rex_prefix & 0x8 != 0 {
+            true => MemAccessSize::Mem64,
+            false => MemAccessSize::Mem32,
+        };
         let (rm, r) = self.parse_modrm(op_size)?;
         let rm_op = self.rm_to_operand(&rm);
         self.output(mov(r.dest_operand_xmm(0), rm_op.clone()));
