@@ -27,7 +27,6 @@ pub use crate::exec_state_x86_64::ExecutionState as ExecutionStateX86_64;
 use std::ffi::{OsString, OsStr};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek};
-use std::path::{PathBuf};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use quick_error::quick_error;
@@ -158,9 +157,6 @@ quick_error! {
         Io(e: io::Error) {
             display("I/O error {}", e)
             from()
-        }
-        IoWithFilename(e: io::Error, path: PathBuf) {
-            display("I/O error {}, file {:?}", e, path)
         }
         InvalidPeFile(detail: String) {
             description("Invalid PE file")
