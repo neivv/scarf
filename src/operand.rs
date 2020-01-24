@@ -717,19 +717,10 @@ impl OperandContext {
     }
 
     /// Returns operand limited to low `size` bits
-    pub fn truncate(&self, operand: Rc<Operand>, size: u8) -> Rc<Operand> {
-        use self::operand_helpers::*;
-        if operand.relevant_bits().end <= size {
-            operand
-        } else {
-            let low = operand.relevant_bits().start;
-            let high = 64 - size;
-            let mask = !0u64 << high >> high >> low << low;
-            Operand::simplified(operand_and(
-                operand,
-                self.constant(mask),
-            ))
-        }
+    pub fn truncate(&self, operand: &Rc<Operand>, size: u8) -> Rc<Operand> {
+        let high = 64 - size;
+        let mask = !0u64 << high >> high;
+        self.and_const(operand, mask)
     }
 
     pub fn arithmetic(
@@ -997,6 +988,14 @@ impl OperandContext {
     pub fn gt_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
         let right = self.constant(right);
         self.gt(left, &right)
+    }
+
+    /// Returns `Operand` for unsigned `left > right`.
+    ///
+    /// The returned value is simplified.
+    pub fn gt_const_left(&self, left: u64, right: &Rc<Operand>) -> Rc<Operand> {
+        let left = self.constant(left);
+        self.gt(&left, right)
     }
 }
 
@@ -1288,20 +1287,6 @@ impl Operand {
         }
     }
 
-    pub fn to_xmm_32(s: &Rc<Operand>, word: u8) -> Rc<Operand> {
-        use self::operand_helpers::*;
-        match s.ty {
-            OperandType::Memory(ref mem) => match u64::from(word) {
-                0 => s.clone(),
-                x => mem32(operand_add(mem.address.clone(), constval(4 * x))),
-            },
-            OperandType::Register(reg) => {
-                Operand::new_simplified_rc(OperandType::Xmm(reg.0, word))
-            }
-            _ => s.clone(),
-        }
-    }
-
     /// Return (low, high)
     pub fn to_xmm_64(s: &Rc<Operand>, word: u8) -> (Rc<Operand>, Rc<Operand>) {
         use self::operand_helpers::*;
@@ -1373,8 +1358,6 @@ impl Operand {
     // "Simplify bitwise and: merge child ors"
     // Converts things like [x | const1, x | const2] to [x | (const1 & const2)]
     pub fn const_offset(oper: &Rc<Operand>, ctx: &OperandContext) -> Option<(Rc<Operand>, u64)> {
-        use crate::operand::operand_helpers::*;
-
         // TODO: Investigate if this should be in `recurse`
         if let Some(c) = oper.if_constant() {
             return Some((ctx.const_0(), c));
@@ -1419,7 +1402,7 @@ impl Operand {
             }
         }
         if let Some(offset) = recurse(oper) {
-            let base = Operand::simplified(operand_sub(oper.clone(), ctx.constant(offset)));
+            let base = ctx.sub_const(oper, offset);
             Some((base, offset))
         } else {
             None
@@ -1835,25 +1818,25 @@ mod test {
     fn operand_iter() {
         use std::collections::HashSet;
 
-        use super::operand_helpers::*;
-        let oper = operand_and(
-            operand_sub(
-                constval(5),
-                operand_register(6),
+        let ctx = super::OperandContext::new();
+        let oper = ctx.and(
+            &ctx.sub(
+                &ctx.constant(1),
+                &ctx.register(6),
             ),
-            operand_eq(
-                constval(77),
-                operand_register(4),
+            &ctx.eq(
+                &ctx.constant(77),
+                &ctx.register(4),
             ),
         );
         let opers = [
             oper.clone(),
-            operand_sub(constval(5), operand_register(6)),
-            constval(5),
-            operand_register(6),
-            operand_eq(constval(77), operand_register(4)),
-            constval(77),
-            operand_register(4),
+            ctx.sub(&ctx.constant(1), &ctx.register(6)),
+            ctx.constant(1),
+            ctx.register(6),
+            ctx.eq(&ctx.constant(77), &ctx.register(4)),
+            ctx.constant(77),
+            ctx.register(4),
         ];
         let mut seen = HashSet::new();
         for o in oper.iter() {
@@ -1861,7 +1844,7 @@ mod test {
             seen.insert(o);
         }
         for o in &opers {
-            assert!(seen.contains(&**o));
+            assert!(seen.contains(&**o), "Didn't find {}", o);
         }
         assert_eq!(seen.len(), opers.len());
     }

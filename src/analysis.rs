@@ -550,6 +550,10 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
         }
     }
 
+    pub fn ctx(&self) -> &'exec OperandContext {
+        self.inner.analysis.operand_ctx
+    }
+
     pub fn address(&self) -> <A::Exec as ExecutionState<'exec>>::VirtualAddress {
         self.inner.address
     }
@@ -574,10 +578,9 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
 
     /// Convenience for cases where `address + CONST * REG_SIZE` is needed
     pub fn const_word_offset(&self, left: Rc<Operand>, right: u32) -> Rc<Operand> {
-        use crate::operand_helpers::*;
         let size = <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE;
-        let constant = self.inner.analysis.operand_ctx.constant(right as u64 * size as u64);
-        operand_add(left, constant)
+        let ctx = self.ctx();
+        ctx.add_const(&left, right as u64 * size as u64)
     }
 
     /// Convenience for cases where `Mem[address]` is needed
@@ -1258,7 +1261,6 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                     _ => None,
                 };
                 let ctx = analysis.operand_ctx;
-                let switch_table = ctx.constant(switch_table_addr.as_u64());
                 let base = ctx.constant(base_addr);
                 let binary = analysis.binary;
                 if let Some(mem_size) = mem_size {
@@ -1268,13 +1270,12 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                     let end = limits.1.min(u32::max_value() as u64) as u32;
 
                     for index in start..=end {
-                        let case = operand_add(
-                            base.clone(),
-                            mem_variable_rc(
+                        let case = ctx.add(
+                            &base,
+                            &mem_variable_rc(
                                 mem_size,
-                                operand_add(
-                                    switch_table.clone(),
-                                    ctx.constant(index as u64 * case_size as u64),
+                                ctx.constant(
+                                    switch_table_addr.as_u64() + (index as u64 * case_size as u64)
                                 ),
                             ),
                         );

@@ -25,7 +25,6 @@ pub fn simplified_with_ctx(
     ctx: &OperandContext,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
-    use crate::operand_helpers::*;
     if s.simplified {
         return s;
     }
@@ -105,15 +104,13 @@ pub fn simplified_with_ctx(
                             // max > x if x != max
                             let relbit_mask = right.relevant_bits_mask();
                             if c == relbit_mask {
-                                let op = operand_ne(ctx, left, right);
-                                return simplified_with_ctx(op, ctx, swzb_ctx)
+                                return ctx.neq(&left, &right);
                             }
                         }
                         (None, Some(c)) => {
                             // x > 0 if x != 0
                             if c == 0 {
-                                let op = operand_ne(ctx, left, right);
-                                return simplified_with_ctx(op, ctx, swzb_ctx)
+                                return ctx.neq(&left, &right);
                             }
                             let relbit_mask = left.relevant_bits_mask();
                             if c == relbit_mask {
@@ -1777,8 +1774,6 @@ fn simplify_or_merge_child_ands(
 // Cannot do for values that can overflow, so just limit it to constants for now.
 // (Well, could do (c + 1 > x) | (c == max_value), but that isn't really simpler)
 fn simplify_or_merge_comparisions(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext) {
-    use crate::operand_helpers::*;
-
     #[derive(Eq, PartialEq, Copy, Clone)]
     enum MatchType {
         ConstantGreater,
@@ -1828,8 +1823,7 @@ fn simplify_or_merge_comparisions(ops: &mut Vec<Rc<Operand>>, ctx: &OperandConte
                                 // min/max edge cases can be handled by gt simplification,
                                 // don't do them here.
                                 if let Some(new_c) = c.checked_add(1) {
-                                    let merged = operand_gt(ctx.constant(new_c), x.clone());
-                                    new = Some(Operand::simplified(merged));
+                                    new = Some(ctx.gt_const_left(new_c, x));
                                     remove = true;
                                 }
                             }
@@ -1837,8 +1831,7 @@ fn simplify_or_merge_comparisions(ops: &mut Vec<Rc<Operand>>, ctx: &OperandConte
                                 (MatchType::Equal, MatchType::ConstantLess) =>
                             {
                                 if let Some(new_c) = c.checked_sub(1) {
-                                    let merged = operand_gt(x.clone(), ctx.constant(new_c));
-                                    new = Some(Operand::simplified(merged));
+                                    new = Some(ctx.gt_const(x, new_c));
                                     remove = true;
                                 }
                             }
@@ -2736,8 +2729,7 @@ fn simplify_with_and_mask_inner(
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op.clone()
                     } else {
-                        let op = operand_arith(arith.ty, simplified_left, simplified_right);
-                        let op = simplified_with_ctx(op, ctx, swzb_ctx);
+                        let op = ctx.arithmetic(arith.ty, &simplified_left, &simplified_right);
                         // The result may simplify again, for example with mask 0x1
                         // Mem16[x] + Mem32[x] + Mem8[x] => 3 * Mem8[x] => 1 * Mem8[x]
                         simplify_with_and_mask(&op, mask, ctx, swzb_ctx)

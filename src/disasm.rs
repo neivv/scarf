@@ -490,7 +490,7 @@ fn instruction_operations32_main(
                 neg_sign_extend,
                 Some(cond),
             );
-            s.output(and(eax, ctx.const_ffff()));
+            s.output_and_const(eax, 0xffff);
             s.output(neg_sign_extend_op);
             Ok(())
         }
@@ -752,14 +752,14 @@ fn instruction_operations64_main(
                 let neg_sign_extend = ctx.or_const(&eax.op, 0xffff_0000);
                 let neg_sign_extend_op =
                     Operation::Move(dest_operand_reg64(0), neg_sign_extend, Some(cond));
-                s.output(and(eax, ctx.const_ffff()));
+                s.output_and_const(eax, 0xffff);
                 s.output(neg_sign_extend_op);
             } else {
                 let cond = ctx.gt_const(&eax.op, 0x7fff_ffff);
                 let neg_sign_extend = ctx.or_const(&eax.op, 0xffff_ffff_0000_0000);
                 let neg_sign_extend_op =
                     Operation::Move(dest_operand_reg64(0), neg_sign_extend, Some(cond));
-                s.output(and(eax, ctx.const_ffffffff()));
+                s.output_and_const(eax, 0xffff_ffff);
                 s.output(neg_sign_extend_op);
             }
             Ok(())
@@ -923,6 +923,71 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     #[inline(never)]
     fn output(&mut self, op: Operation) {
         self.out.push(op);
+    }
+
+    fn output_add(&mut self, dest: DestAndOperand, rhs: &Rc<Operand>) {
+        let op = self.ctx.add(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_add_const(&mut self, dest: DestAndOperand, rhs: u64) {
+        let op = self.ctx.add_const(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_sub(&mut self, dest: DestAndOperand, rhs: &Rc<Operand>) {
+        let op = self.ctx.sub(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_sub_const(&mut self, dest: DestAndOperand, rhs: u64) {
+        let op = self.ctx.sub_const(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_mul(&mut self, dest: DestAndOperand, rhs: &Rc<Operand>) {
+        let op = self.ctx.mul(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_signed_mul(
+        &mut self,
+        dest: DestAndOperand,
+        rhs: &Rc<Operand>,
+        size: MemAccessSize,
+    ) {
+        let op = self.ctx.signed_mul(&dest.op, rhs, size);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_xor(&mut self, dest: DestAndOperand, rhs: &Rc<Operand>) {
+        let op = self.ctx.xor(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_lsh(&mut self, dest: DestAndOperand, rhs: &Rc<Operand>) {
+        let op = self.ctx.lsh(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_rsh(&mut self, dest: DestAndOperand, rhs: &Rc<Operand>) {
+        let op = self.ctx.rsh(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_or(&mut self, dest: DestAndOperand, rhs: &Rc<Operand>) {
+        let op = self.ctx.or(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_and(&mut self, dest: DestAndOperand, rhs: &Rc<Operand>) {
+        let op = self.ctx.and(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
+    }
+
+    fn output_and_const(&mut self, dest: DestAndOperand, rhs: u64) {
+        let op = self.ctx.and_const(&dest.op, rhs);
+        self.output(Operation::Move(dest.dest, op, None))
     }
 
     fn has_prefix(&self, val: u8) -> bool {
@@ -1383,7 +1448,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn inc_dec_op(&mut self) -> Result<(), Failed> {
-        use self::operation_helpers::*;
         let byte = self.read_u8(0)?;
         let is_inc = byte < 0x48;
         let reg_id = byte & 0x7;
@@ -1393,10 +1457,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             op: reg.clone(),
             dest: DestOperand::reg_variable_size(reg_id, op_size),
         };
-        self.output(match is_inc {
-            true => add(dest, self.ctx.const_1()),
-            false => sub(dest, self.ctx.const_1()),
-        });
+        match is_inc {
+            true => self.output_add_const(dest, 1),
+            false => self.output_sub_const(dest, 1),
+        }
         self.inc_dec_flags(is_inc, reg);
         Ok(())
     }
@@ -1624,15 +1688,26 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let dest = self.rm_to_dest_and_operand(lhs);
         let size = lhs.size.to_mem_access_size();
         let ctx = self.ctx;
+        let normal_flags = match arith {
+            ArithOperation::Add => Some(ArithOpType::Add),
+            ArithOperation::Sub | ArithOperation::Cmp => Some(ArithOpType::Sub),
+            ArithOperation::And | ArithOperation::Test => Some(ArithOpType::And),
+            ArithOperation::Or => Some(ArithOpType::Or),
+            ArithOperation::Xor => Some(ArithOpType::Xor),
+            ArithOperation::LeftShift => Some(ArithOpType::Lsh),
+            ArithOperation::RightShift => Some(ArithOpType::Rsh),
+            _ => None,
+        };
+        if let Some(ty) = normal_flags {
+            self.output(flags(ty, dest.op.clone(), rhs.clone(), size));
+        }
         match arith {
             ArithOperation::Add => {
-                self.output(flags(ArithOpType::Add, dest.op.clone(), rhs.clone(), size));
-                self.output(add(dest, rhs));
+                self.output_add(dest, &rhs);
             }
             ArithOperation::Sub | ArithOperation::Cmp => {
-                self.output(flags(ArithOpType::Sub, dest.op.clone(), rhs.clone(), size));
                 if arith != ArithOperation::Cmp {
-                    self.output(sub(dest, rhs));
+                    self.output_sub(dest, &rhs);
                 }
             }
             ArithOperation::Sbb | ArithOperation::Adc => {
@@ -1682,7 +1757,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                         ));
                         return;
                     }
-                    self.output(sub(dest.clone(), carry.clone()));
+                    self.output_sub(dest.clone(), carry);
                     let gt_lhs1 = ctx.sub(dest_op, &rhs);
                     let gt_rhs = ctx.add(dest_op, carry);
                     let gt_lhs2 = ctx.add(&gt_lhs1, carry);
@@ -1696,14 +1771,14 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     );
                     self.output(mov(DestOperand::Flag(Flag::Carry), gt));
                     self.output(mov(DestOperand::Flag(Flag::Overflow), signed_gt));
-                    self.output(sub(dest, rhs));
+                    self.output_sub(dest, &rhs);
                 } else {
                     let rhs = if lhs_eq_rhs {
                         ctx.sub_const(&rhs, 1)
                     } else {
                         rhs
                     };
-                    self.output(add(dest.clone(), carry.clone()));
+                    self.output_add(dest.clone(), carry);
                     let gt_lhs = ctx.sub(dest_op, carry);
                     let gt_rhs1 = ctx.add(dest_op, &rhs);
                     let gt_rhs2 = ctx.sub(&gt_rhs1, carry);
@@ -1717,7 +1792,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                     );
                     self.output(mov(DestOperand::Flag(Flag::Carry), gt));
                     self.output(mov(DestOperand::Flag(Flag::Overflow), signed_gt));
-                    self.output(add(dest, rhs));
+                    self.output_add(dest, &rhs);
                 }
 
                 let dest_zero = ctx.eq_const(dest_op, 0);
@@ -1739,23 +1814,20 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 self.output(mov(DestOperand::Flag(Flag::Sign), sign));
             }
             ArithOperation::And | ArithOperation::Test => {
-                self.output(flags(ArithOpType::And, dest.op.clone(), rhs.clone(), size));
                 if arith != ArithOperation::Test {
-                    self.output(and(dest, rhs));
+                    self.output_and(dest, &rhs);
                 }
             }
             ArithOperation::Or => {
-                self.output(flags(ArithOpType::Or, dest.op.clone(), rhs.clone(), size));
-                self.output(or(dest, rhs));
+                self.output_or(dest, &rhs);
             }
             ArithOperation::Xor => {
-                self.output(flags(ArithOpType::Xor, dest.op.clone(), rhs.clone(), size));
                 if dest.op == rhs {
                     // Zeroing xor is not that common, usually only done few times
                     // per function at most, but skip its simplification anyway.
                     self.output(mov(dest.dest, self.ctx.const_0()));
                 } else {
-                    self.output(xor(dest, rhs));
+                    self.output_xor(dest, &rhs);
                 }
             }
             ArithOperation::Move => {
@@ -1764,16 +1836,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 }
             }
             ArithOperation::LeftShift => {
-                self.output(flags(ArithOpType::Lsh, dest.op.clone(), rhs.clone(), size));
-                self.output(
-                    make_arith_operation(dest.dest, ArithOpType::Lsh, dest.op, rhs)
-                );
+                self.output_lsh(dest, &rhs);
             }
             ArithOperation::RightShift => {
-                self.output(flags(ArithOpType::Rsh, dest.op.clone(), rhs.clone(), size));
-                self.output(
-                    make_arith_operation(dest.dest, ArithOpType::Rsh, dest.op, rhs)
-                );
+                self.output_rsh(dest, &rhs);
             }
             ArithOperation::RightShiftArithmetic => {
                 // TODO flags, using IntToFloat to cheat
@@ -1921,11 +1987,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
         if is_rm_short_r_register(&rm, r) {
             let r = self.r_to_dest_and_operand(r);
-            self.output(match op_size {
-                MemAccessSize::Mem8 => and(r, self.ctx.const_ff()),
-                MemAccessSize::Mem16 => and(r, self.ctx.const_ffff()),
-                _ => unreachable!(),
-            });
+            let size = match op_size {
+                MemAccessSize::Mem8 => 0xff,
+                MemAccessSize::Mem16 | _ => 0xffff,
+            };
+            self.output_and_const(r, size);
         } else {
             let rm_oper = self.rm_to_operand(&rm);
             if rm.is_memory() {
@@ -1952,7 +2018,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             2 => {
                 // Not
                 let constant = self.ctx.constant(!0u64);
-                self.output(make_arith_operation(rm.dest, ArithOpType::Xor, rm.op, constant));
+                self.output_xor(rm, &constant);
             }
             3 => {
                 // Neg
@@ -2087,12 +2153,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn xorps(&mut self) -> Result<(), Failed> {
-        use self::operation_helpers::*;
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
         for i in 0..4 {
             let dest = self.r_to_dest_and_operand_xmm(dest, i);
             let rhs = self.rm_to_operand_xmm(&rm, i);
-            self.output(xor(dest, rhs));
+            self.output_xor(dest, &rhs);
         }
         Ok(())
     }
@@ -2325,7 +2390,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn packed_shift_left(&mut self) -> Result<(), Failed> {
-        use self::operation_helpers::*;
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
         }
@@ -2347,10 +2411,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 ctx.rsh(&low, &ctx.sub_const_left(0x20, &rm_0)),
             )
         });
-        self.output({
-            let low = self.r_to_dest_and_operand_xmm(dest, 0);
-            lsh(low, rm_0.clone())
-        });
+        self.output_lsh(self.r_to_dest_and_operand_xmm(dest, 0), &rm_0);
         self.output({
             let (low, high) = Operand::to_xmm_64(&dest_op, 1);
             make_arith_operation(
@@ -2360,10 +2421,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 ctx.rsh(&low, &ctx.sub_const_left(0x20, &rm_0)),
             )
         });
-        self.output({
-            let low = self.r_to_dest_and_operand_xmm(dest, 2);
-            lsh(low, rm_0)
-        });
+        self.output_lsh(self.r_to_dest_and_operand_xmm(dest, 2), &rm_0);
         let rm_1 = self.rm_to_operand_xmm(&rm, 1);
         let high_u32_set = ctx.neq_const(&rm_1, 0);
         for i in 0..4 {
@@ -2377,7 +2435,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn packed_shift_right(&mut self) -> Result<(), Failed> {
-        use self::operation_helpers::*;
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
         }
@@ -2399,10 +2456,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 ctx.lsh(&high, &ctx.sub_const_left(0x20, &rm_0)),
             )
         });
-        self.output({
-            let high = self.r_to_dest_and_operand_xmm(dest, 1);
-            rsh(high, rm_0.clone())
-        });
+        self.output_rsh(self.r_to_dest_and_operand_xmm(dest, 1), &rm_0);
         self.output({
             let (low, high) = Operand::to_xmm_64(&dest_op, 1);
             make_arith_operation(
@@ -2412,10 +2466,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 ctx.lsh(&high, &ctx.sub_const_left(0x20, &rm_0)),
             )
         });
-        self.output({
-            let high = self.r_to_dest_and_operand_xmm(dest, 3);
-            rsh(high, rm_0)
-        });
+        self.output_rsh(self.r_to_dest_and_operand_xmm(dest, 3), &rm_0);
         let rm_1 = self.rm_to_operand_xmm(&rm, 1);
         let high_u32_set = ctx.neq_const(&rm_1, 0);
         for i in 0..4 {
@@ -2543,10 +2594,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 | 1 => {
                 let is_inc = variant == 0;
                 let op = rm.op.clone();
-                self.output(match is_inc {
-                    true => add(rm, self.ctx.const_1()),
-                    false => sub(rm, self.ctx.const_1()),
-                });
+                match is_inc {
+                    true => self.output_add_const(rm, 1),
+                    false => self.output_sub_const(rm, 1),
+                }
                 self.inc_dec_flags(is_inc, op);
             }
             2 | 3 => self.output(Operation::Call(rm.op)),
@@ -2555,10 +2606,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 let dest = self.dest_and_op_register(4);
                 let esp = dest.op.clone();
                 if Va::SIZE == 4 {
-                    self.output(sub(dest, self.ctx.const_4()));
+                    self.output_sub_const(dest, 4);
                     self.output(mov_to_mem(MemAccessSize::Mem32, esp, rm.op));
                 } else {
-                    self.output(sub(dest, self.ctx.const_8()));
+                    self.output_sub_const(dest, 8);
                     self.output(mov_to_mem(MemAccessSize::Mem64, esp, rm.op));
                 }
             }
@@ -2575,10 +2626,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let esp = dest.op.clone();
         if Va::SIZE == 4 {
             self.output(mov(self.rm_to_dest_operand(&rm), mem32(esp)));
-            self.output(add(dest, self.ctx.const_4()));
+            self.output_add_const(dest, 4);
         } else {
             self.output(mov(self.rm_to_dest_operand(&rm), mem64(esp)));
-            self.output(add(dest, self.ctx.const_8()));
+            self.output_add_const(dest, 8);
         }
         Ok(())
     }
@@ -2709,17 +2760,15 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn imul_normal(&mut self) -> Result<(), Failed> {
-        use self::operation_helpers::*;
         let size = self.mem16_32();
         let (rm, r) = self.parse_modrm(size)?;
         let rm = self.rm_to_operand(&rm);
         // TODO flags, imul only sets c and o on overflow
         // Signed multiplication should be different only when result is being sign extended.
         if size.bits() != Va::SIZE * 8 {
-            // TODO Signed mul should actually specify bit size
-            self.output(signed_mul(self.r_to_dest_and_operand(r), rm));
+            self.output_signed_mul(self.r_to_dest_and_operand(r), &rm, size);
         } else {
-            self.output(mul(self.r_to_dest_and_operand(r), rm));
+            self.output_mul(self.r_to_dest_and_operand(r), &rm);
         }
         Ok(())
     }
@@ -2792,20 +2841,20 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         match is_push {
             true => {
                 if Va::SIZE == 4 {
-                    self.output(sub(dest, self.ctx.const_4()));
+                    self.output_sub_const(dest, 4);
                     self.output(mov_to_mem(MemAccessSize::Mem32, esp, self.ctx.register(reg)));
                 } else {
-                    self.output(sub(dest, self.ctx.const_8()));
+                    self.output_sub_const(dest, 8);
                     self.output(mov_to_mem(MemAccessSize::Mem64, esp, self.ctx.register(reg)));
                 }
             }
             false => {
                 if Va::SIZE == 4 {
                     self.output(mov_to_reg(reg, mem32(esp)));
-                    self.output(add(dest, self.ctx.const_4()));
+                    self.output_add_const(dest, 4);
                 } else {
                     self.output(mov_to_reg(reg, mem64(esp)));
-                    self.output(add(dest, self.ctx.const_8()));
+                    self.output_add_const(dest, 8);
                 }
             }
         }
@@ -2821,7 +2870,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let constant = self.read_variable_size_32(1, imm_size)? as u32;
         let dest = self.dest_and_op_register(4);
         let esp = dest.op.clone();
-        self.output(sub(dest, self.ctx.const_4()));
+        self.output_sub_const(dest, 4);
         self.output(mov_to_mem(MemAccessSize::Mem32, esp, self.ctx.constant(constant as u64)));
         Ok(())
     }
@@ -2902,9 +2951,8 @@ fn is_rm_short_r_register(rm: &ModRm_Rm, r: ModRm_R) -> bool {
 pub mod operation_helpers {
     use std::rc::Rc;
 
-    use crate::operand::ArithOpType::*;
     use crate::operand::{Operand, MemAccessSize, ArithOpType, ArithOperand, Register};
-    use super::{DestOperand, make_arith_operation, Operation, DestAndOperand};
+    use super::{DestOperand, Operation};
 
     pub fn mov_to_reg(dest: u8, from: Rc<Operand>) -> Operation {
         Operation::Move(DestOperand::Register64(Register(dest)), from, None)
@@ -2938,42 +2986,6 @@ pub mod operation_helpers {
 
     pub fn mov(dest: DestOperand, from: Rc<Operand>) -> Operation {
         Operation::Move(dest, from, None)
-    }
-
-    pub fn add(dest: DestAndOperand, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest.dest, Add, dest.op, rhs)
-    }
-
-    pub fn sub(dest: DestAndOperand, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest.dest, Sub, dest.op, rhs)
-    }
-
-    pub fn mul(dest: DestAndOperand, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest.dest, Mul, dest.op, rhs)
-    }
-
-    pub fn signed_mul(dest: DestAndOperand, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest.dest, SignedMul, dest.op, rhs)
-    }
-
-    pub fn xor(dest: DestAndOperand, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest.dest, Xor, dest.op, rhs)
-    }
-
-    pub fn lsh(dest: DestAndOperand, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest.dest, Lsh, dest.op, rhs)
-    }
-
-    pub fn rsh(dest: DestAndOperand, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest.dest, Rsh, dest.op, rhs)
-    }
-
-    pub fn or(dest: DestAndOperand, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest.dest, Or, dest.op, rhs)
-    }
-
-    pub fn and(dest: DestAndOperand, rhs: Rc<Operand>) -> Operation {
-        make_arith_operation(dest.dest, And, dest.op, rhs)
     }
 
     pub fn flags(
