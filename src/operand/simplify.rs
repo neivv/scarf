@@ -1849,28 +1849,31 @@ fn simplify_or_merge_comparisions(ops: &mut Vec<Rc<Operand>>, ctx: &OperandConte
     }
 }
 
+/// Does not collect constants into ops, but returns them added together instead.
+#[must_use]
 fn collect_add_ops(
     s: &Rc<Operand>,
     ops: &mut Vec<(Rc<Operand>, bool)>,
     out_mask: u64,
     negate: bool,
-) {
+) -> u64 {
     fn recurse(
         s: &Rc<Operand>,
         ops: &mut Vec<(Rc<Operand>, bool)>,
         out_mask: u64,
         negate: bool,
-    )  {
+    ) -> u64 {
         match s.ty {
             OperandType::Arithmetic(ref arith) if {
                 arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
             } => {
-                recurse(&arith.left, ops, out_mask, negate);
+                let const1 = recurse(&arith.left, ops, out_mask, negate);
                 let negate_right = match arith.ty {
                     ArithOpType::Add => negate,
                     _ => !negate,
                 };
-                recurse(&arith.right, ops, out_mask, negate_right);
+                let const2 = recurse(&arith.right, ops, out_mask, negate_right);
+                const1.wrapping_add(const2)
             }
             _ => {
                 let mut s = s.clone();
@@ -1879,8 +1882,7 @@ fn collect_add_ops(
                     s = Operand::simplified(s);
                     if let OperandType::Arithmetic(ref arith) = s.ty {
                         if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
-                            recurse(&s, ops, out_mask, negate);
-                            return;
+                            return recurse(&s, ops, out_mask, negate);
                         }
                     }
                 }
@@ -1888,12 +1890,20 @@ fn collect_add_ops(
                     let const_other = Operand::either(l, r, |x| x.if_constant());
                     if let Some((c, other)) = const_other {
                         if c & out_mask == out_mask {
-                            recurse(other, ops, out_mask, negate);
-                            return;
+                            return recurse(other, ops, out_mask, negate);
                         }
                     }
                 }
-                ops.push((s, negate));
+                if let Some(c) = s.if_constant() {
+                    if negate {
+                        0u64.wrapping_sub(c)
+                    } else {
+                        c
+                    }
+                } else {
+                    ops.push((s, negate));
+                    0
+                }
             }
         }
     }
@@ -2378,24 +2388,18 @@ fn simplify_add_sub_ops(
     ctx: &OperandContext,
 ) -> Vec<(Rc<Operand>, bool)> {
     let mut ops = Vec::new();
-    collect_add_ops(left, &mut ops, mask, false);
-    collect_add_ops(right, &mut ops, mask, is_sub);
-    simplify_collected_add_sub_ops(&mut ops, ctx);
+    let const1 = collect_add_ops(left, &mut ops, mask, false);
+    let const2 = collect_add_ops(right, &mut ops, mask, is_sub);
+    let const_sum = const1.wrapping_add(const2);
+    simplify_collected_add_sub_ops(&mut ops, ctx, const_sum);
     ops
 }
 
 fn simplify_collected_add_sub_ops(
     ops: &mut Vec<(Rc<Operand>, bool)>,
     ctx: &OperandContext,
+    const_sum: u64,
 ) {
-    let const_sum = ops.iter()
-        .flat_map(|&(ref x, neg)| x.if_constant().map(|x| (x, neg)))
-        .fold(0u64, |sum, (x, neg)| match neg {
-            false => sum.wrapping_add(x),
-            true => sum.wrapping_sub(x),
-        });
-    ops.retain(|&(ref x, _)| x.if_constant().is_none());
-
     heapsort::sort(ops);
     simplify_add_merge_muls(ops, ctx);
     let new_consts = simplify_add_merge_masked_reverting(ops);
