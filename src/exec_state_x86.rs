@@ -88,16 +88,15 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     }
 
     fn apply_call(&mut self, ret: VirtualAddress, i: &mut InternMap) {
-        use crate::operand::operand_helpers::*;
         let ctx = self.ctx;
-        let esp = ctx.register(4);
+        let esp = ctx.register_ref(4);
         self.move_to(
-            &DestOperand::from_oper(&esp),
+            &DestOperand::from_oper(esp),
             ctx.sub_const(&esp, 4),
             i,
         );
         self.move_to(
-            &DestOperand::from_oper(&mem32(esp)),
+            &DestOperand::from_oper(&ctx.mem32(esp)),
             ctx.constant(ret.0 as u64),
             i,
         );
@@ -108,11 +107,10 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         binary: &'a BinaryFile<VirtualAddress>,
         interner: &mut InternMap,
     ) -> ExecutionState<'a> {
-        use crate::operand::operand_helpers::*;
         let mut state = ExecutionState::with_binary(binary, ctx, interner);
 
         // Set the return address to somewhere in 0x400000 range
-        let return_address = mem32(ctx.register(4));
+        let return_address = ctx.mem32(ctx.register_ref(4));
         state.move_to(
             &DestOperand::from_oper(&return_address),
             ctx.constant((binary.code_section().virtual_address.0 + 0x4230) as u64),
@@ -281,7 +279,6 @@ fn sext32_64(val: u32) -> u64 {
 
 impl<'a> Destination<'a> {
     fn set(self, value: Rc<Operand>, intern_map: &mut InternMap, ctx: &OperandContext) {
-        use crate::operand::operand_helpers::*;
         let value = as_32bit_value(&value, ctx);
         let value = Operand::simplified(value);
         match self {
@@ -367,7 +364,7 @@ impl<'a> Destination<'a> {
                         let low_i = intern_map.intern(low_base.clone());
                         let low_old = mem.get(low_i)
                             .map(|x| intern_map.operand(x))
-                            .unwrap_or_else(|| mem32(low_base));
+                            .unwrap_or_else(|| ctx.mem32(&low_base));
 
                         let mask_low = offset_4 * 8;
                         let mask_high = (mask_low + size_bits).min(0x20);
@@ -396,7 +393,7 @@ impl<'a> Destination<'a> {
                             let high_i = intern_map.intern(high_base.clone());
                             let high_old = mem.get(high_i)
                                 .map(|x| intern_map.operand(x))
-                                .unwrap_or_else(|| mem32(high_base));
+                                .unwrap_or_else(|| ctx.mem32(&high_base));
                             let mask = !0 >> (0x20 - (mask_low + size_bits - 0x20));
                             let high_value = ctx.or(
                                 &ctx.and_const(
@@ -731,8 +728,6 @@ impl<'a> ExecutionState<'a> {
     }
 
     fn resolve_mem(&mut self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
-        use crate::operand::operand_helpers::*;
-
         let ctx = self.ctx;
         let address = self.resolve(&mem.address, i);
         if MemAccessSize::Mem64 == mem.size {
@@ -797,7 +792,7 @@ impl<'a> ExecutionState<'a> {
                 let low_base = ctx.add_const(&base, offset_rest);
                 let low = self.memory.get(i.intern(low_base.clone()))
                     .map(|x| i.operand(x))
-                    .unwrap_or_else(|| mem32(low_base));
+                    .unwrap_or_else(|| ctx.mem32(&low_base));
                 let low = ctx.rsh_const(&low, (offset_4 * 8) as u64);
                 let combined = if offset_4 + size_bytes > 4 {
                     let high_base = ctx.add_const(
@@ -806,7 +801,7 @@ impl<'a> ExecutionState<'a> {
                     );
                     let high = self.memory.get(i.intern(high_base.clone()))
                         .map(|x| i.operand(x))
-                        .unwrap_or_else(|| mem32(high_base));
+                        .unwrap_or_else(|| ctx.mem32(&high_base));
                     let high = ctx.lsh_const(
                         &high,
                         (0x20 - offset_4 * 8) as u64,
@@ -832,7 +827,7 @@ impl<'a> ExecutionState<'a> {
                     operand
                 }
             })
-            .unwrap_or_else(|| mem_variable_rc(mem.size, address))
+            .unwrap_or_else(|| ctx.mem_variable_rc(mem.size, &address))
     }
 
     /// Checks cached/caches `reg & ff` masks.
@@ -996,9 +991,8 @@ impl<'a> ExecutionState<'a> {
 
     /// Tries to find an memory address corresponding to a resolved value.
     pub fn unresolve_memory(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
-        use crate::operand_helpers::*;
         let interned = i.intern(val.clone());
-        self.memory.reverse_lookup(interned).map(|x| mem32(i.operand(x)))
+        self.memory.reverse_lookup(interned).map(|x| self.ctx.mem32(&i.operand(x)))
     }
 
     pub fn memory(&self) -> &Memory {

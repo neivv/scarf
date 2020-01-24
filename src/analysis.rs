@@ -1264,7 +1264,6 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                 let base = ctx.constant(base_addr);
                 let binary = analysis.binary;
                 if let Some(mem_size) = mem_size {
-                    use crate::operand_helpers::*;
                     let limits = state.0.value_limits(&index);
                     let start = limits.0.min(u32::max_value() as u64) as u32;
                     let end = limits.1.min(u32::max_value() as u64) as u32;
@@ -1272,9 +1271,9 @@ fn update_analysis_for_jump<'exec, Exec: ExecutionState<'exec>, S: AnalysisState
                     for index in start..=end {
                         let case = ctx.add(
                             &base,
-                            &mem_variable_rc(
+                            &ctx.mem_variable_rc(
                                 mem_size,
-                                ctx.constant(
+                                &ctx.constant(
                                     switch_table_addr.as_u64() + (index as u64 * case_size as u64)
                                 ),
                             ),

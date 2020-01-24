@@ -107,7 +107,6 @@ enum Destination<'a> {
 
 impl<'a> Destination<'a> {
     fn set(self, value: Rc<Operand>, intern_map: &mut InternMap, ctx: &OperandContext) {
-        use crate::operand::operand_helpers::*;
         let value = Operand::simplified(value);
         match self {
             Destination::Oper(o) => {
@@ -191,7 +190,7 @@ impl<'a> Destination<'a> {
                         let low_i = intern_map.intern(low_base.clone());
                         let low_old = mem.get(low_i)
                             .map(|x| intern_map.operand(x))
-                            .unwrap_or_else(|| mem64(low_base));
+                            .unwrap_or_else(|| ctx.mem64(&low_base));
 
                         let mask_low = offset_8 * 8;
                         let mask_high = (mask_low + size_bits).min(0x40);
@@ -220,7 +219,7 @@ impl<'a> Destination<'a> {
                             let high_i = intern_map.intern(high_base.clone());
                             let high_old = mem.get(high_i)
                                 .map(|x| intern_map.operand(x))
-                                .unwrap_or_else(|| mem64(high_base));
+                                .unwrap_or_else(|| ctx.mem64(&high_base));
                             let mask = !0 >> (0x40 - (mask_low + size_bits - 0x40));
                             let high_value = ctx.or(
                                 &ctx.and_const(
@@ -330,16 +329,15 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     }
 
     fn apply_call(&mut self, ret: VirtualAddress64, i: &mut InternMap) {
-        use crate::operand::operand_helpers::*;
         let ctx = self.ctx;
-        let rsp = ctx.register(4);
+        let rsp = ctx.register_ref(4);
         self.move_to(
-            &DestOperand::from_oper(&rsp),
+            &DestOperand::from_oper(rsp),
             ctx.sub_const(&rsp, 8),
             i,
         );
         self.move_to(
-            &DestOperand::from_oper(&mem64(rsp)),
+            &DestOperand::from_oper(&ctx.mem64(rsp)),
             ctx.constant(ret.0),
             i,
         );
@@ -680,8 +678,6 @@ impl<'a> ExecutionState<'a> {
     }
 
     fn resolve_mem(&mut self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
-        use crate::operand::operand_helpers::*;
-
         let ctx = self.ctx;
         let address = self.resolve(&mem.address, i);
         let size_bytes = match mem.size {
@@ -732,13 +728,13 @@ impl<'a> ExecutionState<'a> {
                 let low_base = ctx.add_const(&base, offset_rest);
                 let low = self.memory.get(i.intern(low_base.clone()))
                     .map(|x| i.operand(x))
-                    .unwrap_or_else(|| mem64(low_base));
+                    .unwrap_or_else(|| ctx.mem64(&low_base));
                 let low = ctx.rsh_const(&low, offset_8 as u64 * 8);
                 let combined = if offset_8 + size_bytes > 8 {
                     let high_base = ctx.add_const(&base, offset_rest.wrapping_add(8));
                     let high = self.memory.get(i.intern(high_base.clone()))
                         .map(|x| i.operand(x))
-                        .unwrap_or_else(|| mem64(high_base));
+                        .unwrap_or_else(|| ctx.mem64(&high_base));
                     let high = ctx.lsh_const(&high, (0x40 - offset_8 * 8) as u64);
                     ctx.or(&low, &high)
                 } else {
@@ -761,7 +757,7 @@ impl<'a> ExecutionState<'a> {
                     operand
                 }
             })
-            .unwrap_or_else(|| mem_variable_rc(mem.size, address))
+            .unwrap_or_else(|| ctx.mem_variable_rc(mem.size, &address))
     }
 
     /// Checks cached/caches `reg & ff` masks.
@@ -935,9 +931,8 @@ impl<'a> ExecutionState<'a> {
 
     /// Tries to find an memory address corresponding to a resolved value.
     pub fn unresolve_memory(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
-        use crate::operand_helpers::*;
         let interned = i.intern(val.clone());
-        self.memory.reverse_lookup(interned).map(|x| mem64(i.operand(x)))
+        self.memory.reverse_lookup(interned).map(|x| self.ctx.mem64(&i.operand(x)))
     }
 }
 

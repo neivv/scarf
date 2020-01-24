@@ -1142,12 +1142,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn rm_to_dest_and_operand(&self, rm: &ModRm_Rm) -> DestAndOperand {
-        use crate::operand_helpers::*;
         if rm.is_memory() {
             let address = self.rm_address_operand(rm);
             let size = rm.size.to_mem_access_size();
             DestAndOperand {
-                op: mem_variable_rc(size, address.clone()),
+                op: self.ctx.mem_variable_rc(size, &address),
                 dest: DestOperand::Memory(MemAccess {
                     size,
                     address: address,
@@ -1196,17 +1195,16 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             if i != 0 {
                 address = self.ctx.add_const(&address, i as u64 * 4);
             }
-            mem_variable_rc(MemAccessSize::Mem32, address)
+            self.ctx.mem_variable_rc(MemAccessSize::Mem32, &address)
         } else {
             operand_xmm(rm.base, i)
         }
     }
 
     fn rm_to_operand(&self, rm: &ModRm_Rm) -> Rc<Operand> {
-        use crate::operand_helpers::*;
         if rm.is_memory() {
             let address = self.rm_address_operand(rm);
-            mem_variable_rc(rm.size.to_mem_access_size(), address)
+            self.ctx.mem_variable_rc(rm.size.to_mem_access_size(), &address)
         } else {
             self.r_to_operand(ModRm_R(rm.base, rm.size))
         }
@@ -1646,7 +1644,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn move_mem_eax(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
-        use crate::operand::operand_helpers::*;
         let op_size = match self.read_u8(0)? & 0x1 {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
@@ -1655,8 +1652,8 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let constant = self.ctx.constant(constant);
         let eax_left = self.read_u8(0)? & 0x2 == 0;
         self.output(match eax_left {
-            true => mov_to_reg(0, mem_variable_rc(op_size, constant)),
-            false => mov_to_mem(op_size, constant, self.ctx.register(0)),
+            true => mov_to_reg(0, self.ctx.mem_variable_rc(op_size, &constant)),
+            false => mov_to_mem(op_size, &constant, self.ctx.register(0)),
         });
         Ok(())
     }
@@ -2557,7 +2554,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                             &mem.address,
                             i * mem_bytes,
                         );
-                        mov_to_mem(mem_size, address, ctx.undefined_rc())
+                        mov_to_mem(mem_size, &address, ctx.undefined_rc())
                     }));
                 }
                 Ok(())
@@ -2604,7 +2601,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             4 | 5 => self.output(Operation::Jump { condition: self.ctx.const_1(), to: rm.op }),
             6 => {
                 let dest = self.dest_and_op_register(4);
-                let esp = dest.op.clone();
+                let esp = self.ctx.register_ref(4);
                 if Va::SIZE == 4 {
                     self.output_sub_const(dest, 4);
                     self.output(mov_to_mem(MemAccessSize::Mem32, esp, rm.op));
@@ -2620,15 +2617,14 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn pop_rm(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
-        use crate::operand_helpers::*;
         let (rm, _) = self.parse_modrm(self.mem16_32())?;
         let dest = self.dest_and_op_register(4);
-        let esp = dest.op.clone();
+        let esp = self.ctx.register_ref(4);
         if Va::SIZE == 4 {
-            self.output(mov(self.rm_to_dest_operand(&rm), mem32(esp)));
+            self.output(mov(self.rm_to_dest_operand(&rm), self.ctx.mem32(esp)));
             self.output_add_const(dest, 4);
         } else {
-            self.output(mov(self.rm_to_dest_operand(&rm), mem64(esp)));
+            self.output(mov(self.rm_to_dest_operand(&rm), self.ctx.mem64(esp)));
             self.output_add_const(dest, 8);
         }
         Ok(())
@@ -2828,7 +2824,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
     fn pushpop_reg_op(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
-        use crate::operand::operand_helpers::*;
         let byte = self.read_u8(0)?;
         let is_push = byte < 0x58;
         let reg = if self.prefixes.rex_prefix & 0x1 == 0 {
@@ -2837,7 +2832,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             8 + (byte & 0x7)
         };
         let dest = self.dest_and_op_register(4);
-        let esp = dest.op.clone();
+        let esp = self.ctx.register_ref(4);
         match is_push {
             true => {
                 if Va::SIZE == 4 {
@@ -2850,10 +2845,10 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             }
             false => {
                 if Va::SIZE == 4 {
-                    self.output(mov_to_reg(reg, mem32(esp)));
+                    self.output(mov_to_reg(reg, self.ctx.mem32(esp)));
                     self.output_add_const(dest, 4);
                 } else {
-                    self.output(mov_to_reg(reg, mem64(esp)));
+                    self.output(mov_to_reg(reg, self.ctx.mem64(esp)));
                     self.output_add_const(dest, 8);
                 }
             }
@@ -2869,7 +2864,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         };
         let constant = self.read_variable_size_32(1, imm_size)? as u32;
         let dest = self.dest_and_op_register(4);
-        let esp = dest.op.clone();
+        let esp = self.ctx.register_ref(4);
         self.output_sub_const(dest, 4);
         self.output(mov_to_mem(MemAccessSize::Mem32, esp, self.ctx.constant(constant as u64)));
         Ok(())
@@ -2976,10 +2971,10 @@ pub mod operation_helpers {
         Operation::Move(dest, from, None)
     }
 
-    pub fn mov_to_mem(size: MemAccessSize, address: Rc<Operand>, from: Rc<Operand>) -> Operation {
+    pub fn mov_to_mem(size: MemAccessSize, address: &Rc<Operand>, from: Rc<Operand>) -> Operation {
         let access = crate::operand::MemAccess {
             size,
-            address,
+            address: address.clone(),
         };
         Operation::Move(DestOperand::Memory(access), from, None)
     }
@@ -3228,7 +3223,7 @@ impl DestOperand {
             DestOperand::Xmm(x, y) => operand_xmm(x, y),
             DestOperand::Fpu(x) => ctx.register_fpu(x),
             DestOperand::Flag(x) => ctx.flag(x).clone(),
-            DestOperand::Memory(ref x) => mem_variable_rc(x.size, x.address.clone()),
+            DestOperand::Memory(ref x) => ctx.mem_variable_rc(x.size, &x.address),
         }
     }
 }
@@ -3296,7 +3291,6 @@ mod test {
     use crate::exec_state::Disassembler;
     #[test]
     fn test_operations_mov16() {
-        use crate::operand::operand_helpers::*;
         use crate::operand::OperandContext;
 
         let ctx = OperandContext::new();
@@ -3305,14 +3299,13 @@ mod test {
         let ins = disasm.next().unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
-        let dest = mem16(ctx.add_const(ctx.register_ref(0x7), 0x62));
+        let dest = ctx.mem16(&ctx.add_const(ctx.register_ref(0x7), 0x62));
 
-        assert_eq!(*op, Operation::Move(dest_operand(&dest), constval(0x2000), None));
+        assert_eq!(*op, Operation::Move(dest_operand(&dest), ctx.constant(0x2000), None));
     }
 
     #[test]
     fn test_sib() {
-        use crate::operand::operand_helpers::*;
         use crate::operand::OperandContext;
 
         let ctx = OperandContext::new();
@@ -3321,8 +3314,8 @@ mod test {
         let ins = disasm.next().unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
-        let dest = mem32(
-            ctx.add(
+        let dest = ctx.mem32(
+            &ctx.add(
                 &ctx.mul(
                     &ctx.constant(4),
                     ctx.register_ref(6),

@@ -21,15 +21,15 @@ pub struct SimplifyWithZeroBits {
 }
 
 pub fn simplified_with_ctx(
-    s: Rc<Operand>,
+    s: &Rc<Operand>,
     ctx: &OperandContext,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
     if s.simplified {
-        return s;
+        return s.clone();
     }
-    let mark_self_simplified = |s: Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
-    match s.clone().ty {
+    let mark_self_simplified = |s: &Rc<Operand>| Operand::new_simplified_rc(s.ty.clone());
+    match s.ty {
         OperandType::Arithmetic(ref arith) => {
             // NOTE OperandContext assumes it can call these arith child functions
             // directly. Don't add anything here that is expected to be ran for
@@ -49,8 +49,8 @@ pub fn simplified_with_ctx(
                 ArithOpType::Rsh => simplify_rsh(left, right, ctx, swzb_ctx),
                 ArithOpType::Equal => simplify_eq(left, right, ctx),
                 ArithOpType::GreaterThan => {
-                    let mut left = simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-                    let right = simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                    let mut left = simplified_with_ctx(left, ctx, swzb_ctx);
+                    let right = simplified_with_ctx(right, ctx, swzb_ctx);
                     if left == right {
                         return ctx.const_0();
                     }
@@ -127,8 +127,8 @@ pub fn simplified_with_ctx(
                     Operand::new_simplified_rc(OperandType::Arithmetic(arith))
                 }
                 ArithOpType::Div | ArithOpType::Modulo => {
-                    let left = simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-                    let right = simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                    let left = simplified_with_ctx(left, ctx, swzb_ctx);
+                    let right = simplified_with_ctx(right, ctx, swzb_ctx);
                     if let Some(r) = right.if_constant() {
                         if r == 0 {
                             // Use 0 / 0 for any div by zero
@@ -180,7 +180,7 @@ pub fn simplified_with_ctx(
                     Operand::new_simplified_rc(OperandType::Arithmetic(arith))
                 }
                 ArithOpType::Parity => {
-                    let val = simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                    let val = simplified_with_ctx(left, ctx, swzb_ctx);
                     if let Some(c) = val.if_constant() {
                         return match (c as u8).count_ones() & 1 == 0 {
                             true => ctx.const_1(),
@@ -196,7 +196,7 @@ pub fn simplified_with_ctx(
                     }
                 }
                 ArithOpType::FloatToInt => {
-                    let val = simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                    let val = simplified_with_ctx(left, ctx, swzb_ctx);
                     if let Some(c) = val.if_constant() {
                         use byteorder::{ReadBytesExt, WriteBytesExt, LE};
                         let mut buf = [0; 4];
@@ -220,7 +220,7 @@ pub fn simplified_with_ctx(
                     }
                 }
                 ArithOpType::IntToFloat => {
-                    let val = simplified_with_ctx(left.clone(), ctx, swzb_ctx);
+                    let val = simplified_with_ctx(left, ctx, swzb_ctx);
                     if let Some(c) = val.if_constant() {
                         use byteorder::{ReadBytesExt, WriteBytesExt, LE};
                         let mut buf = [0; 4];
@@ -237,8 +237,8 @@ pub fn simplified_with_ctx(
                     }
                 }
                 _ => {
-                    let left = simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-                    let right = simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+                    let left = simplified_with_ctx(left, ctx, swzb_ctx);
+                    let right = simplified_with_ctx(right, ctx, swzb_ctx);
                     let ty = OperandType::Arithmetic(ArithOperand {
                         ty: arith.ty,
                         left,
@@ -250,7 +250,7 @@ pub fn simplified_with_ctx(
         }
         OperandType::Memory(ref mem) => {
             Operand::new_simplified_rc(OperandType::Memory(MemAccess {
-                address: simplified_with_ctx(mem.address.clone(), ctx, swzb_ctx),
+                address: simplified_with_ctx(&mem.address, ctx, swzb_ctx),
                 size: mem.size,
             }))
         }
@@ -258,7 +258,7 @@ pub fn simplified_with_ctx(
             if from.bits() >= to.bits() {
                 return ctx.const_0();
             }
-            let val = simplified_with_ctx(val.clone(), ctx, swzb_ctx);
+            let val = simplified_with_ctx(val, ctx, swzb_ctx);
             // Shouldn't be 64bit constant since then `from` would already be Mem64
             // Obviously such thing could be built, but assuming disasm/users don't..
             if let Some(val) = val.if_constant() {
@@ -414,8 +414,8 @@ pub fn simplify_lsh(
     ctx: &OperandContext,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
-    let left = simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-    let right = simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+    let left = simplified_with_ctx(left, ctx, swzb_ctx);
+    let right = simplified_with_ctx(right, ctx, swzb_ctx);
     let default = || {
         let arith = ArithOperand {
             ty: ArithOpType::Lsh,
@@ -561,10 +561,8 @@ pub fn simplify_rsh(
     ctx: &OperandContext,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
-    use crate::operand_helpers::*;
-
-    let left = simplified_with_ctx(left.clone(), ctx, swzb_ctx);
-    let right = simplified_with_ctx(right.clone(), ctx, swzb_ctx);
+    let left = simplified_with_ctx(left, ctx, swzb_ctx);
+    let right = simplified_with_ctx(right, ctx, swzb_ctx);
     let default = || {
         let arith = ArithOperand {
             ty: ArithOpType::Rsh,
@@ -702,17 +700,17 @@ pub fn simplify_rsh(
                     if constant >= 56 {
                         let addr = ctx.add_const(&mem.address, 7);
                         let c = ctx.constant(constant - 56);
-                        let new = mem_variable_rc(MemAccessSize::Mem8, addr);
+                        let new = ctx.mem_variable_rc(MemAccessSize::Mem8, &addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
                     } else if constant >= 48 {
                         let addr = ctx.add_const(&mem.address, 6);
                         let c = ctx.constant(constant - 48);
-                        let new = mem_variable_rc(MemAccessSize::Mem16, addr);
+                        let new = ctx.mem_variable_rc(MemAccessSize::Mem16, &addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
                     } else if constant >= 32 {
                         let addr = ctx.add_const(&mem.address, 4);
                         let c = ctx.constant(constant - 32);
-                        let new = mem_variable_rc(MemAccessSize::Mem32, addr);
+                        let new = ctx.mem_variable_rc(MemAccessSize::Mem32, &addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
                     }
                 }
@@ -720,12 +718,12 @@ pub fn simplify_rsh(
                     if constant >= 24 {
                         let addr = ctx.add_const(&mem.address, 3);
                         let c = ctx.constant(constant - 24);
-                        let new = mem_variable_rc(MemAccessSize::Mem8, addr);
+                        let new = ctx.mem_variable_rc(MemAccessSize::Mem8, &addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
                     } else if constant >= 16 {
                         let addr = ctx.add_const(&mem.address, 2);
                         let c = ctx.constant(constant - 16);
-                        let new = mem_variable_rc(MemAccessSize::Mem16, addr);
+                        let new = ctx.mem_variable_rc(MemAccessSize::Mem16, &addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
                     }
                 }
@@ -733,7 +731,7 @@ pub fn simplify_rsh(
                     if constant >= 8 {
                         let addr = ctx.add_const(&mem.address, 1);
                         let c = ctx.constant(constant - 8);
-                        let new = mem_variable_rc(MemAccessSize::Mem8, addr);
+                        let new = ctx.mem_variable_rc(MemAccessSize::Mem8, &addr);
                         return simplify_rsh(&new, &c, ctx, swzb_ctx);
                     }
                 }
@@ -1308,7 +1306,7 @@ pub fn simplify_and(
         }
         let other_relbit_mask = other.relevant_bits_mask();
         if c & other_relbit_mask == other_relbit_mask {
-            return simplified_with_ctx(other.clone(), ctx, swzb_ctx);
+            return simplified_with_ctx(other, ctx, swzb_ctx);
         }
     }
 
@@ -1935,7 +1933,7 @@ fn collect_arith_ops(
                 // Simplification can cause it to be what is being collected
                 s = match ctx_swzb {
                     Some((ctx, ref mut swzb)) => {
-                        simplified_with_ctx(s, ctx, &mut *swzb)
+                        simplified_with_ctx(&s, ctx, &mut *swzb)
                     }
                     None => Operand::simplified(s),
                 };
@@ -2042,7 +2040,6 @@ fn try_merge_memory(
     other_shift: (u64, u32, u32),
     ctx: &OperandContext,
 ) -> Option<Rc<Operand>> {
-    use crate::operand_helpers::*;
     let (shift, other_shift) = match (shift.2, other_shift.2) {
         (0, 0) => return None,
         (0, _) => (shift, other_shift),
@@ -2056,13 +2053,13 @@ fn try_merge_memory(
     }
     let addr = ctx.add_const(&val, off1);
     let oper = match (len1 + len2).min(4) {
-        1 => mem_variable_rc(MemAccessSize::Mem8, addr),
-        2 => mem_variable_rc(MemAccessSize::Mem16, addr),
+        1 => ctx.mem_variable_rc(MemAccessSize::Mem8, &addr),
+        2 => ctx.mem_variable_rc(MemAccessSize::Mem16, &addr),
         3 => ctx.and_const(
-            &mem_variable_rc(MemAccessSize::Mem32, addr),
+            &ctx.mem_variable_rc(MemAccessSize::Mem32, &addr),
             0x00ff_ffff,
         ),
-        4 => mem_variable_rc(MemAccessSize::Mem32, addr),
+        4 => ctx.mem_variable_rc(MemAccessSize::Mem32, &addr),
         _ => return None,
     };
     Some(oper)
@@ -2431,10 +2428,10 @@ pub fn simplify_or(
     let right_bits = right.relevant_bits();
     // x | 0 early exit
     if left_bits.start >= left_bits.end {
-        return simplified_with_ctx(right.clone(), ctx, swzb);
+        return simplified_with_ctx(right, ctx, swzb);
     }
     if right_bits.start >= right_bits.end {
-        return simplified_with_ctx(left.clone(), ctx, swzb);
+        return simplified_with_ctx(left, ctx, swzb);
     }
     if let Some((l, r)) = check_quick_arith_simplify(left, right) {
         let r_const = r.if_constant().unwrap_or(0);
@@ -2620,7 +2617,6 @@ fn simplify_with_and_mask_inner(
     ctx: &OperandContext,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Rc<Operand> {
-    use crate::operand_helpers::*;
     match op.ty {
         OperandType::Arithmetic(ref arith) => {
             match arith.ty {
@@ -2772,7 +2768,7 @@ fn simplify_with_and_mask_inner(
             } else {
                 ctx.add_const(&mem.address, mask_low as u64)
             };
-            let mem = mem_variable_rc(new_size, new_addr);
+            let mem = ctx.mem_variable_rc(new_size, &new_addr);
             let shifted = if mask_low == 0 {
                 mem
             } else {
@@ -2800,7 +2796,6 @@ fn simplify_with_zero_bits(
     ctx: &OperandContext,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Option<Rc<Operand>> {
-    use crate::operand_helpers::*;
     if op.min_zero_bit_simplify_size > bits.end - bits.start || bits.start >= bits.end {
         return Some(op.clone());
     }
@@ -2984,11 +2979,11 @@ fn simplify_with_zero_bits(
                 return None;
             } else if bits.end == 64 {
                 if bits.start <= 8 && relevant_bits.end > 8 {
-                    return Some(mem_variable_rc(MemAccessSize::Mem8, mem.address.clone()));
+                    return Some(ctx.mem_variable_rc(MemAccessSize::Mem8, &mem.address));
                 } else if bits.start <= 16 && relevant_bits.end > 16 {
-                    return Some(mem_variable_rc(MemAccessSize::Mem16, mem.address.clone()));
+                    return Some(ctx.mem_variable_rc(MemAccessSize::Mem16, &mem.address));
                 } else if bits.start <= 32 && relevant_bits.end > 32 {
-                    return Some(mem_variable_rc(MemAccessSize::Mem32, mem.address.clone()));
+                    return Some(ctx.mem_variable_rc(MemAccessSize::Mem32, &mem.address));
                 }
             }
         }
@@ -3025,7 +3020,6 @@ fn simplify_with_one_bits(
         None
     }
 
-    use crate::operand_helpers::*;
     if bits.start >= bits.end {
         return Some(op.clone());
     }
@@ -3115,11 +3109,11 @@ fn simplify_with_one_bits(
                 None
             } else if bits.end >= max_bits.end {
                 if bits.start <= 8 && max_bits.end > 8 {
-                    Some(mem_variable_rc(MemAccessSize::Mem8, mem.address.clone()))
+                    Some(ctx.mem_variable_rc(MemAccessSize::Mem8, &mem.address))
                 } else if bits.start <= 16 && max_bits.end > 16 {
-                    Some(mem_variable_rc(MemAccessSize::Mem16, mem.address.clone()))
+                    Some(ctx.mem_variable_rc(MemAccessSize::Mem16, &mem.address))
                 } else if bits.start <= 32 && max_bits.end > 32 {
-                    Some(mem_variable_rc(MemAccessSize::Mem32, mem.address.clone()))
+                    Some(ctx.mem_variable_rc(MemAccessSize::Mem32, &mem.address))
                 } else {
                     Some(op.clone())
                 }
@@ -3231,10 +3225,10 @@ pub fn simplify_xor(
     let right_bits = right.relevant_bits();
     // x ^ 0 early exit
     if left_bits.start >= left_bits.end {
-        return simplified_with_ctx(right.clone(), ctx, swzb);
+        return simplified_with_ctx(right, ctx, swzb);
     }
     if right_bits.start >= right_bits.end {
-        return simplified_with_ctx(left.clone(), ctx, swzb);
+        return simplified_with_ctx(left, ctx, swzb);
     }
     if let Some((l, r)) = check_quick_arith_simplify(left, right) {
         let arith = ArithOperand {

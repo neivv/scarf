@@ -735,7 +735,7 @@ impl OperandContext {
             right: right.clone(),
         }));
         let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplified_with_ctx(op, self, &mut simplify)
+        simplify::simplified_with_ctx(&op, self, &mut simplify)
     }
 
     /// Returns `Operand` for `left + right`.
@@ -996,6 +996,35 @@ impl OperandContext {
     pub fn gt_const_left(&self, left: u64, right: &Rc<Operand>) -> Rc<Operand> {
         let left = self.constant(left);
         self.gt(&left, right)
+    }
+
+    pub fn mem64(&self, val: &Rc<Operand>) -> Rc<Operand> {
+        self.mem_variable_rc(MemAccessSize::Mem64, val)
+    }
+
+    pub fn mem32(&self, val: &Rc<Operand>) -> Rc<Operand> {
+        self.mem_variable_rc(MemAccessSize::Mem32, val)
+    }
+
+    pub fn mem16(&self, val: &Rc<Operand>) -> Rc<Operand> {
+        self.mem_variable_rc(MemAccessSize::Mem16, val)
+    }
+
+    pub fn mem8(&self, val: &Rc<Operand>) -> Rc<Operand> {
+        self.mem_variable_rc(MemAccessSize::Mem8, val)
+    }
+
+    pub fn mem_variable_rc(&self, size: MemAccessSize, val: &Rc<Operand>) -> Rc<Operand> {
+        // Eagerly simplify these as the address cannot affect anything
+        // this operand would get wrapped to.
+        // Only drawback is that if this resulting operand is discarded before
+        // it needed to be simplified, the work was wasted.
+        // Though that should be a rare case.
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        Operand::new_simplified_rc(OperandType::Memory(MemAccess {
+            address: simplify::simplified_with_ctx(val, self, &mut simplify),
+            size,
+        }))
     }
 }
 
@@ -1415,7 +1444,7 @@ impl Operand {
         }
         let ctx = &OperandContext::new();
         let mut swzb_ctx = simplify::SimplifyWithZeroBits::default();
-        simplify::simplified_with_ctx(s, ctx, &mut swzb_ctx)
+        simplify::simplified_with_ctx(&s, ctx, &mut swzb_ctx)
     }
 
     pub fn transform<F>(oper: &Rc<Operand>, mut f: F) -> Rc<Operand>
