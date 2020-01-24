@@ -461,6 +461,11 @@ macro_rules! operand_context_const_methods {
     }
 }
 
+#[inline(never)]
+fn make_constant_op(c: u32) -> Rc<Operand> {
+    Operand::new_simplified_rc(OperandType::Constant(c as u64))
+}
+
 macro_rules! operand_ctx_constants {
     ($($name:ident: $value:expr,)*) => {
         #[derive(Debug)]
@@ -475,10 +480,10 @@ macro_rules! operand_ctx_constants {
             fn new() -> OperandCtxConstants {
                 OperandCtxConstants {
                     $(
-                        $name: Operand::new_simplified_rc(OperandType::Constant($value)),
+                        $name: make_constant_op($value),
                     )*
                     small_consts: (0..0x41).map(|x| {
-                        Operand::new_simplified_rc(OperandType::Constant(x))
+                        make_constant_op(x)
                     }).collect(),
                 }
             }
@@ -524,33 +529,43 @@ pub fn check_tls_simplification_incomplete() -> bool {
     SIMPLIFICATION_INCOMPLETE.with(|x| x.replace(false))
 }
 
+#[inline(never)]
+fn make_flag_op(f: Flag) -> Rc<Operand> {
+    Operand::new_simplified_rc(OperandType::Flag(f))
+}
+
+#[inline(never)]
+fn make_reg_op(r: Register) -> Rc<Operand> {
+    Operand::new_simplified_rc(OperandType::Register(r))
+}
+
 impl OperandCtxGlobals {
     fn new() -> OperandCtxGlobals {
         OperandCtxGlobals {
             constants: OperandCtxConstants::new(),
-            flag_c: Operand::new_simplified_rc(OperandType::Flag(Flag::Carry)),
-            flag_o: Operand::new_simplified_rc(OperandType::Flag(Flag::Overflow)),
-            flag_p: Operand::new_simplified_rc(OperandType::Flag(Flag::Parity)),
-            flag_z: Operand::new_simplified_rc(OperandType::Flag(Flag::Zero)),
-            flag_s: Operand::new_simplified_rc(OperandType::Flag(Flag::Sign)),
-            flag_d: Operand::new_simplified_rc(OperandType::Flag(Flag::Direction)),
+            flag_c: make_flag_op(Flag::Carry),
+            flag_o: make_flag_op(Flag::Overflow),
+            flag_p: make_flag_op(Flag::Parity),
+            flag_z: make_flag_op(Flag::Zero),
+            flag_s: make_flag_op(Flag::Sign),
+            flag_d: make_flag_op(Flag::Direction),
             registers: [
-                Operand::new_simplified_rc(OperandType::Register(Register(0))),
-                Operand::new_simplified_rc(OperandType::Register(Register(1))),
-                Operand::new_simplified_rc(OperandType::Register(Register(2))),
-                Operand::new_simplified_rc(OperandType::Register(Register(3))),
-                Operand::new_simplified_rc(OperandType::Register(Register(4))),
-                Operand::new_simplified_rc(OperandType::Register(Register(5))),
-                Operand::new_simplified_rc(OperandType::Register(Register(6))),
-                Operand::new_simplified_rc(OperandType::Register(Register(7))),
-                Operand::new_simplified_rc(OperandType::Register(Register(8))),
-                Operand::new_simplified_rc(OperandType::Register(Register(9))),
-                Operand::new_simplified_rc(OperandType::Register(Register(10))),
-                Operand::new_simplified_rc(OperandType::Register(Register(11))),
-                Operand::new_simplified_rc(OperandType::Register(Register(12))),
-                Operand::new_simplified_rc(OperandType::Register(Register(13))),
-                Operand::new_simplified_rc(OperandType::Register(Register(14))),
-                Operand::new_simplified_rc(OperandType::Register(Register(15))),
+                make_reg_op(Register(0)),
+                make_reg_op(Register(1)),
+                make_reg_op(Register(2)),
+                make_reg_op(Register(3)),
+                make_reg_op(Register(4)),
+                make_reg_op(Register(5)),
+                make_reg_op(Register(6)),
+                make_reg_op(Register(7)),
+                make_reg_op(Register(8)),
+                make_reg_op(Register(9)),
+                make_reg_op(Register(10)),
+                make_reg_op(Register(11)),
+                make_reg_op(Register(12)),
+                make_reg_op(Register(13)),
+                make_reg_op(Register(14)),
+                make_reg_op(Register(15)),
             ],
         }
     }
