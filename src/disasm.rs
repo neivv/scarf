@@ -277,47 +277,22 @@ impl RegisterCache {
     }
 
     fn new(ctx: &OperandContext) -> RegisterCache {
-        let reg8_low = |i: u8| -> Rc<Operand> {
-            ctx.and_const(ctx.register_ref(i), 0xff)
-        };
-        let reg8_high = |i: u8| -> Rc<Operand> {
-            ctx.rsh_const(
-                &ctx.and_const(ctx.register_ref(i), 0xff00),
-                8,
-            )
-        };
-        let reg16 = |i: u8| -> Rc<Operand> {
-            ctx.and_const(ctx.register_ref(i), 0xffff)
-        };
-        let reg32 = |i: u8| -> Rc<Operand> {
-            ctx.and_const(ctx.register_ref(i), 0xffff_ffff)
-        };
-
         RegisterCache {
-            register8_low: [
-                reg8_low(0), reg8_low(1), reg8_low(2), reg8_low(3),
-                reg8_low(4), reg8_low(5), reg8_low(6), reg8_low(7),
-                reg8_low(8), reg8_low(9), reg8_low(10), reg8_low(11),
-                reg8_low(12), reg8_low(13), reg8_low(14), reg8_low(15),
-            ],
-            register8_high: [
-                reg8_high(0),
-                reg8_high(1),
-                reg8_high(2),
-                reg8_high(3),
-            ],
-            register16: [
-                reg16(0), reg16(1), reg16(2), reg16(3),
-                reg16(4), reg16(5), reg16(6), reg16(7),
-                reg16(8), reg16(9), reg16(10), reg16(11),
-                reg16(12), reg16(13), reg16(14), reg16(15),
-            ],
-            register32: [
-                reg32(0), reg32(1), reg32(2), reg32(3),
-                reg32(4), reg32(5), reg32(6), reg32(7),
-                reg32(8), reg32(9), reg32(10), reg32(11),
-                reg32(12), reg32(13), reg32(14), reg32(15),
-            ],
+            register8_low: array_init::array_init(|i| {
+                ctx.and_const(ctx.register_ref(i as u8), 0xff)
+            }),
+            register8_high: array_init::array_init(|i| {
+                ctx.rsh_const(
+                    &ctx.and_const(ctx.register_ref(i as u8), 0xff00),
+                    8,
+                )
+            }),
+            register16: array_init::array_init(|i| {
+                ctx.and_const(ctx.register_ref(i as u8), 0xffff)
+            }),
+            register32: array_init::array_init(|i| {
+                ctx.and_const(ctx.register_ref(i as u8), 0xffff_ffff)
+            }),
         }
     }
 
@@ -3161,21 +3136,13 @@ impl DestOperand {
     pub fn as_operand(&self, ctx: &OperandContext) -> Rc<Operand> {
         use crate::operand::operand_helpers::*;
         match *self {
-            DestOperand::Register32(x) => Operand::simplified(
-                ctx.and_const(ctx.register_ref(x.0), 0xffff_ffff),
+            DestOperand::Register32(x) => ctx.and_const(ctx.register_ref(x.0), 0xffff_ffff),
+            DestOperand::Register16(x) => ctx.and_const(ctx.register_ref(x.0), 0xffff),
+            DestOperand::Register8High(x) => ctx.rsh_const(
+                &ctx.and_const(ctx.register_ref(x.0), 0xffff),
+                8,
             ),
-            DestOperand::Register16(x) => Operand::simplified(
-                ctx.and_const(ctx.register_ref(x.0), 0xffff),
-            ),
-            DestOperand::Register8High(x) => Operand::simplified(
-                ctx.rsh_const(
-                    &ctx.and_const(ctx.register_ref(x.0), 0xffff),
-                    8,
-                )
-            ),
-            DestOperand::Register8Low(x) => Operand::simplified(
-                ctx.and_const(ctx.register_ref(x.0), 0xff),
-            ),
+            DestOperand::Register8Low(x) => ctx.and_const(ctx.register_ref(x.0), 0xff),
             DestOperand::Register64(x) => ctx.register(x.0),
             DestOperand::Xmm(x, y) => operand_xmm(x, y),
             DestOperand::Fpu(x) => ctx.register_fpu(x),
@@ -3287,7 +3254,7 @@ mod test {
         match op.clone() {
             Operation::Move(d, f, cond) => {
                 let d = d.as_operand(&ctx);
-                assert_eq!(Operand::simplified(d), Operand::simplified(dest));
+                assert_eq!(d, dest);
                 assert_eq!(f, ctx.register(0));
                 assert_eq!(cond, None);
             }

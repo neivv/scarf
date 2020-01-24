@@ -534,11 +534,6 @@ fn make_flag_op(f: Flag) -> Rc<Operand> {
     Operand::new_simplified_rc(OperandType::Flag(f))
 }
 
-#[inline(never)]
-fn make_reg_op(r: Register) -> Rc<Operand> {
-    Operand::new_simplified_rc(OperandType::Register(r))
-}
-
 impl OperandCtxGlobals {
     fn new() -> OperandCtxGlobals {
         OperandCtxGlobals {
@@ -549,24 +544,9 @@ impl OperandCtxGlobals {
             flag_z: make_flag_op(Flag::Zero),
             flag_s: make_flag_op(Flag::Sign),
             flag_d: make_flag_op(Flag::Direction),
-            registers: [
-                make_reg_op(Register(0)),
-                make_reg_op(Register(1)),
-                make_reg_op(Register(2)),
-                make_reg_op(Register(3)),
-                make_reg_op(Register(4)),
-                make_reg_op(Register(5)),
-                make_reg_op(Register(6)),
-                make_reg_op(Register(7)),
-                make_reg_op(Register(8)),
-                make_reg_op(Register(9)),
-                make_reg_op(Register(10)),
-                make_reg_op(Register(11)),
-                make_reg_op(Register(12)),
-                make_reg_op(Register(13)),
-                make_reg_op(Register(14)),
-                make_reg_op(Register(15)),
-            ],
+            registers: array_init::array_init(|i| {
+                Operand::new_simplified_rc(OperandType::Register(Register(i as u8)))
+            })
         }
     }
 }
