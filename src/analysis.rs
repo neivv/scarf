@@ -173,7 +173,7 @@ pub(crate) fn find_functions_from_calls_x86_64(
 
 pub(crate) fn function_ranges_from_exception_info_x86_64(
     file: &BinaryFile<VirtualAddress64>,
-) -> Result<Vec<(u32, u32)>, crate::Error> {
+) -> Result<Vec<(u32, u32)>, crate::OutOfBounds> {
     let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
     let exception_offset = file.read_u32(pe_header + 0xa0)?;
     let exception_len = file.read_u32(pe_header + 0xa4)?;
@@ -307,18 +307,18 @@ macro_rules! try_get {
     ($slice:expr, $range:expr) => {
         match $slice.get($range) {
             Some(s) => s,
-            None => return Err(crate::Error::OutOfBounds),
+            None => return Err(crate::OutOfBounds),
         }
     }
 }
 
 pub fn find_relocs<'a, E: ExecutionState<'a>>(
     file: &BinaryFile<E::VirtualAddress>,
-) -> Result<Vec<E::VirtualAddress>, crate::Error> {
+) -> Result<Vec<E::VirtualAddress>, crate::OutOfBounds> {
     E::find_relocs(file)
 }
 
-pub fn find_relocs_x86(file: &BinaryFile<VirtualAddress>) -> Result<Vec<VirtualAddress>, crate::Error> {
+pub fn find_relocs_x86(file: &BinaryFile<VirtualAddress>) -> Result<Vec<VirtualAddress>, crate::OutOfBounds> {
     let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
     let reloc_offset = file.read_u32(pe_header + 0xa0)?;
     let reloc_len = file.read_u32(pe_header + 0xa4)?;
@@ -348,7 +348,7 @@ pub fn find_relocs_x86(file: &BinaryFile<VirtualAddress>) -> Result<Vec<VirtualA
 
 pub fn find_relocs_x86_64(
     file: &BinaryFile<VirtualAddress64>,
-) -> Result<Vec<VirtualAddress64>, crate::Error> {
+) -> Result<Vec<VirtualAddress64>, crate::OutOfBounds> {
     let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
     let reloc_offset = file.read_u32(pe_header + 0xb0)?;
     let reloc_len = file.read_u32(pe_header + 0xb4)?;
@@ -385,7 +385,7 @@ pub struct RelocValues<Va: VaTrait> {
 pub fn relocs_with_values<Va: VaTrait>(
     file: &BinaryFile<Va>,
     mut relocs: &[Va],
-) -> Result<Vec<RelocValues<Va>>, crate::Error> {
+) -> Result<Vec<RelocValues<Va>>, crate::OutOfBounds> {
     let mut result = Vec::with_capacity(relocs.len());
     'outer: while !relocs.is_empty() {
         let (section, reloc_count, start_address) = {

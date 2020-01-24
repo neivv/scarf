@@ -1,11 +1,10 @@
 use std::rc::Rc;
 
-use byteorder::{ReadBytesExt, LE};
-
 use crate::analysis;
 use crate::disasm::{Disassembler64, DestOperand, Operation};
 use crate::exec_state::{Constraint, InternMap, InternedOperand, Memory, XmmOperand};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
+use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{
     ArithOperand, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType,
     ArithOpType,
@@ -370,13 +369,13 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
 
     fn find_relocs(
         file: &BinaryFile<Self::VirtualAddress>,
-    ) -> Result<Vec<Self::VirtualAddress>, crate::Error> {
+    ) -> Result<Vec<Self::VirtualAddress>, crate::OutOfBounds> {
         crate::analysis::find_relocs_x86_64(file)
     }
 
     fn function_ranges_from_exception_info(
         file: &crate::BinaryFile<Self::VirtualAddress>,
-    ) -> Result<Vec<(u32, u32)>, crate::Error> {
+    ) -> Result<Vec<(u32, u32)>, crate::OutOfBounds> {
         crate::analysis::function_ranges_from_exception_info_x86_64(file)
     }
 
@@ -705,13 +704,13 @@ impl<'a> ExecutionState<'a> {
                     let val = match mem.size {
                         MemAccessSize::Mem8 => section.data[offset] as u64,
                         MemAccessSize::Mem16 => {
-                            (&section.data[offset..]).read_u16::<LE>().unwrap_or(0) as u64
+                            (&section.data[offset..]).read_u16().unwrap_or(0) as u64
                         }
                         MemAccessSize::Mem32 => {
-                            (&section.data[offset..]).read_u32::<LE>().unwrap_or(0) as u64
+                            (&section.data[offset..]).read_u32().unwrap_or(0) as u64
                         }
                         MemAccessSize::Mem64 => {
-                            (&section.data[offset..]).read_u64::<LE>().unwrap_or(0)
+                            (&section.data[offset..]).read_u64().unwrap_or(0)
                         }
                     };
                     return ctx.constant(val);

@@ -1,11 +1,11 @@
 use std::rc::Rc;
 
-use byteorder::{ReadBytesExt, LE};
 
 use crate::analysis;
 use crate::disasm::{Disassembler32, DestOperand, Operation};
 use crate::exec_state::{Constraint, InternMap, InternedOperand, Memory, XmmOperand};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
+use crate::light_byteorder::{ReadLittleEndian};
 use crate::operand::{
     ArithOperand, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType,
     ArithOpType,
@@ -150,7 +150,7 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
 
     fn find_relocs(
         file: &BinaryFile<Self::VirtualAddress>,
-    ) -> Result<Vec<Self::VirtualAddress>, crate::Error> {
+    ) -> Result<Vec<Self::VirtualAddress>, crate::OutOfBounds> {
         crate::analysis::find_relocs_x86(file)
     }
 
@@ -770,10 +770,10 @@ impl<'a> ExecutionState<'a> {
                     let val = match mem.size {
                         MemAccessSize::Mem8 => section.data[offset] as u32,
                         MemAccessSize::Mem16 => {
-                            (&section.data[offset..]).read_u16::<LE>().unwrap_or(0) as u32
+                            (&section.data[offset..]).read_u16().unwrap_or(0) as u32
                         }
                         MemAccessSize::Mem32 => {
-                            (&section.data[offset..]).read_u32::<LE>().unwrap_or(0)
+                            (&section.data[offset..]).read_u32().unwrap_or(0)
                         }
                         MemAccessSize::Mem64 => unreachable!(),
                     };

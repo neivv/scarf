@@ -28,7 +28,6 @@ use std::ffi::{OsString, OsStr};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek};
 
-use byteorder::{LittleEndian, ReadBytesExt};
 use quick_error::quick_error;
 
 #[cfg(feature = "serde")]
@@ -166,13 +165,22 @@ quick_error! {
             description("Invalid filename")
             display("Invalid filename {:?}", filename)
         }
-        OutOfBounds {
-            display("Out of bounds")
-        }
-        UnexpectedEof(e: crate::light_byteorder::UnexpectedEof) {
-            from()
-            display("Eof")
-        }
+    }
+}
+
+/// Error type that is used when reading from BinaryFile by VirtualAddress
+#[derive(Copy, Clone, Debug)]
+pub struct OutOfBounds;
+
+impl std::fmt::Display for OutOfBounds {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Out of bounds")
+    }
+}
+
+impl From<light_byteorder::UnexpectedEof> for OutOfBounds {
+    fn from(_: light_byteorder::UnexpectedEof) -> OutOfBounds {
+        OutOfBounds
     }
 }
 
@@ -222,7 +230,7 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
     }
 
     /// Range is relative from base
-    pub fn slice_from(&self, range: std::ops::Range<u32>) -> Result<&[u8], Error> {
+    pub fn slice_from(&self, range: std::ops::Range<u32>) -> Result<&[u8], OutOfBounds> {
         self.section_by_addr(self.base + range.start)
             .and_then(|s| {
                 let section_relative =
@@ -232,34 +240,36 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
                     (section_relative + (range.end - range.start) as u64) as usize,
                 )
             })
-            .ok_or_else(|| Error::OutOfBounds)
+            .ok_or_else(|| OutOfBounds)
     }
 
-    pub fn read_u32(&self, addr: Va) -> Result<u32, Error> {
+    pub fn read_u32(&self, addr: Va) -> Result<u32, OutOfBounds> {
+        use crate::light_byteorder::ReadLittleEndian;
         self.section_by_addr(addr)
             .and_then(|s| {
                 let section_relative = addr.as_u64() - s.virtual_address.as_u64();
                 s.data.get(section_relative as usize..)
             })
             .and_then(|mut data| {
-                data.read_u32::<LittleEndian>().ok()
+                data.read_u32().ok()
             })
-            .ok_or_else(|| Error::OutOfBounds)
+            .ok_or_else(|| OutOfBounds)
     }
 
-    pub fn read_u64(&self, addr: Va) -> Result<u64, Error> {
+    pub fn read_u64(&self, addr: Va) -> Result<u64, OutOfBounds> {
+        use crate::light_byteorder::ReadLittleEndian;
         self.section_by_addr(addr)
             .and_then(|s| {
                 let section_relative = addr.as_u64() - s.virtual_address.as_u64();
                 s.data.get(section_relative as usize..)
             })
             .and_then(|mut data| {
-                data.read_u64::<LittleEndian>().ok()
+                data.read_u64().ok()
             })
-            .ok_or_else(|| Error::OutOfBounds)
+            .ok_or_else(|| OutOfBounds)
     }
 
-    pub fn read_address(&self, addr: Va) -> Result<Va, Error> {
+    pub fn read_address(&self, addr: Va) -> Result<Va, OutOfBounds> {
         match Va::SIZE {
             4 => self.read_u32(addr).map(|x| Va::from_u64(x as u64)),
             8 => self.read_u64(addr).map(|x| Va::from_u64(x)),
@@ -285,6 +295,7 @@ pub fn raw_bin<Va: exec_state::VirtualAddress>(
 }
 
 pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
+    use byteorder::{LittleEndian, ReadBytesExt};
     use crate::Error::*;
     let mut file = BufReader::new(File::open(filename)?);
     if file.read_u16::<LittleEndian>()? != 0x5a4d {
@@ -340,6 +351,7 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
 }
 
 pub fn parse_x86_64(filename: &OsStr) -> Result<BinaryFile<VirtualAddress64>, Error> {
+    use byteorder::{LittleEndian, ReadBytesExt};
     use crate::Error::*;
     let mut file = BufReader::new(File::open(filename)?);
     if file.read_u16::<LittleEndian>()? != 0x5a4d {
@@ -395,16 +407,19 @@ pub fn parse_x86_64(filename: &OsStr) -> Result<BinaryFile<VirtualAddress64>, Er
 }
 
 fn read_at_16<R: Read + Seek>(f: &mut R, at: u64) -> Result<u16, io::Error> {
+    use byteorder::{LittleEndian, ReadBytesExt};
     f.seek(io::SeekFrom::Start(at))?;
     f.read_u16::<LittleEndian>()
 }
 
 fn read_at_32<R: Read + Seek>(f: &mut R, at: u64) -> Result<u32, io::Error> {
+    use byteorder::{LittleEndian, ReadBytesExt};
     f.seek(io::SeekFrom::Start(at))?;
     f.read_u32::<LittleEndian>()
 }
 
 fn read_at_64<R: Read + Seek>(f: &mut R, at: u64) -> Result<u64, io::Error> {
+    use byteorder::{LittleEndian, ReadBytesExt};
     f.seek(io::SeekFrom::Start(at))?;
     f.read_u64::<LittleEndian>()
 }

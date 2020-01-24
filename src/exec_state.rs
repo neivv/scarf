@@ -184,13 +184,13 @@ pub trait ExecutionState<'a> : Clone {
     /// (Though it currently trusts that the binary follows PE spec)
     fn function_ranges_from_exception_info(
         _file: &crate::BinaryFile<Self::VirtualAddress>,
-    ) -> Result<Vec<(u32, u32)>, crate::Error> {
+    ) -> Result<Vec<(u32, u32)>, crate::OutOfBounds> {
         Ok(Vec::new())
     }
 
     fn find_relocs(
         _file: &crate::BinaryFile<Self::VirtualAddress>,
-    ) -> Result<Vec<Self::VirtualAddress>, crate::Error> {
+    ) -> Result<Vec<Self::VirtualAddress>, crate::OutOfBounds> {
         Ok(Vec::new())
     }
 }
