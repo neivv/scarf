@@ -107,7 +107,6 @@ enum Destination<'a> {
 
 impl<'a> Destination<'a> {
     fn set(self, value: Rc<Operand>, intern_map: &mut InternMap, ctx: &OperandContext) {
-        let value = Operand::simplified(value);
         match self {
             Destination::Oper(o) => {
                 *o = intern_map.intern(value);
@@ -119,7 +118,7 @@ impl<'a> Destination<'a> {
                 } else {
                     value
                 };
-                *o = intern_map.intern(Operand::simplified(masked));
+                *o = intern_map.intern(masked);
             }
             Destination::Register16(o) => {
                 let old = intern_map.operand(*o);
@@ -239,13 +238,18 @@ impl<'a> Destination<'a> {
                         return;
                     }
                 }
-                let addr = intern_map.intern(Operand::simplified(addr));
-                let value = Operand::simplified(match size {
-                    MemAccessSize::Mem8 => ctx.and_const(&value, 0xff),
-                    MemAccessSize::Mem16 => ctx.and_const(&value, 0xffff),
-                    MemAccessSize::Mem32 => ctx.and_const(&value, 0xffff_ffff),
+                let addr = intern_map.intern(addr);
+                let value = match size {
                     MemAccessSize::Mem64 => value,
-                });
+                    _ => {
+                        let mask = match size {
+                            MemAccessSize::Mem8 => 0xff,
+                            MemAccessSize::Mem16 => 0xffff,
+                            MemAccessSize::Mem32 | _ => 0xffff_ffff,
+                        };
+                        ctx.and_const(&value, mask)
+                    }
+                };
                 mem.set(addr, intern_map.intern(value));
             }
             Destination::Nop => (),
@@ -400,7 +404,7 @@ impl<'a> ExecutionState<'a> {
         ); 16];
         for i in 0..16 {
             registers[i] = interner.intern(ctx.register(i as u8));
-            xmm_registers[i] = XmmOperand::initial(i as u8, interner);
+            xmm_registers[i] = XmmOperand::initial(ctx, i as u8, interner);
         }
         ExecutionState {
             registers,
@@ -432,8 +436,7 @@ impl<'a> ExecutionState<'a> {
             Operation::Move(dest, value, cond) => {
                 let value = value.clone();
                 if let Some(cond) = cond {
-                    let cond = Operand::simplified(cond.clone());
-                    match self.resolve(&cond, intern_map).if_constant() {
+                    match self.resolve(cond, intern_map).if_constant() {
                         Some(0) => (),
                         Some(_) => {
                             self.move_to(&dest, value, intern_map);
@@ -519,39 +522,36 @@ impl<'a> ExecutionState<'a> {
         intern_map: &mut InternMap,
     ) {
         use crate::operand::ArithOpType::*;
-        use crate::operand_helpers::*;
         let resolved_left = &arith.left;
-        let resolved_right = arith.right;
 
         let ctx = self.ctx;
-        let result = operand_arith(arith.ty, resolved_left.clone(), resolved_right);
-        let result = Operand::simplified(result);
+        let result = ctx.arithmetic(arith.ty, &arith.left, &arith.right);
         match arith.ty {
             Add => {
                 let overflow = ctx.gt_signed(resolved_left, &result, size);
                 let carry = ctx.gt(resolved_left, &result);
-                self.flags.carry = intern_map.intern(Operand::simplified(carry));
-                self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
-                self.result_flags(result, size, intern_map);
+                self.flags.carry = intern_map.intern(carry);
+                self.flags.overflow = intern_map.intern(overflow);
+                self.result_flags(&result, size, intern_map);
             }
             Sub => {
                 let overflow = ctx.gt_signed(resolved_left, &result, size);
                 let carry = ctx.gt(&result, resolved_left);
-                self.flags.carry = intern_map.intern(Operand::simplified(carry));
-                self.flags.overflow = intern_map.intern(Operand::simplified(overflow));
-                self.result_flags(result, size, intern_map);
+                self.flags.carry = intern_map.intern(carry);
+                self.flags.overflow = intern_map.intern(overflow);
+                self.result_flags(&result, size, intern_map);
             }
             Xor | And | Or => {
                 let zero = intern_map.intern(ctx.const_0());
                 self.flags.carry = zero;
                 self.flags.overflow = zero;
-                self.result_flags(result, size, intern_map);
+                self.result_flags(&result, size, intern_map);
             }
             Lsh | Rsh  => {
                 let mut ids = intern_map.many_undef(ctx, 2);
                 self.flags.carry = ids.next();
                 self.flags.overflow = ids.next();
-                self.result_flags(result, size, intern_map);
+                self.result_flags(&result, size, intern_map);
             }
             _ => {
                 let mut ids = intern_map.many_undef(ctx, 5);
@@ -566,35 +566,29 @@ impl<'a> ExecutionState<'a> {
 
     fn result_flags(
         &mut self,
-        result: Rc<Operand>,
+        result: &Rc<Operand>,
         size: MemAccessSize,
         intern_map: &mut InternMap,
     ) {
-        use crate::operand_helpers::*;
         let parity;
         let ctx = self.ctx;
-        let zero = Operand::simplified(operand_eq(result.clone(), ctx.const_0()));
+        let zero = ctx.eq_const(result, 0);
         let sign_bit = match size {
             MemAccessSize::Mem8 => 0x80,
             MemAccessSize::Mem16 => 0x8000,
             MemAccessSize::Mem32 => 0x8000_0000,
             MemAccessSize::Mem64 => 0x8000_0000_0000_0000,
         };
-        let sign = Operand::simplified(
-            operand_ne(
-                ctx,
-                ctx.and_const(
-                    &result,
-                    sign_bit,
-                ),
-                ctx.const_0(),
-            )
+        let sign = ctx.neq_const(
+            &ctx.and_const(
+                result,
+                sign_bit,
+            ),
+            0,
         );
         // Parity is defined to be just lowest byte so it doesn't need special handling for
         // 64 bits.
-        parity = Operand::simplified(
-            operand_arith(ArithOpType::Parity, result, ctx.const_0())
-        );
+        parity = ctx.arithmetic(ArithOpType::Parity, result, &ctx.const_0());
         self.flags.zero = intern_map.intern(zero);
         self.flags.sign = intern_map.intern(sign);
         self.flags.parity = intern_map.intern(parity);
@@ -677,7 +671,8 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
-    fn resolve_mem(&mut self, mem: &MemAccess, i: &mut InternMap) -> Rc<Operand> {
+    /// Returns None if the value won't change.
+    fn resolve_mem(&mut self, mem: &MemAccess, i: &mut InternMap) -> Option<Rc<Operand>> {
         let ctx = self.ctx;
         let address = self.resolve(&mem.address, i);
         let size_bytes = match mem.size {
@@ -709,7 +704,7 @@ impl<'a> ExecutionState<'a> {
                             (&section.data[offset..]).read_u64().unwrap_or(0)
                         }
                     };
-                    return ctx.constant(val);
+                    return Some(ctx.constant(val));
                 }
             }
         }
@@ -745,19 +740,26 @@ impl<'a> ExecutionState<'a> {
                 } else {
                     combined
                 };
-                return masked;
+                return Some(masked);
             }
         }
         self.memory.get(i.intern(address.clone()))
             .map(|interned| {
                 let operand = i.operand(interned);
                 if mem.size != MemAccessSize::Mem64 {
-                    ctx.and_const(&operand, mask as u64)
+                    Some(ctx.and_const(&operand, mask as u64))
                 } else {
-                    operand
+                    Some(operand)
                 }
             })
-            .unwrap_or_else(|| ctx.mem_variable_rc(mem.size, &address))
+            .unwrap_or_else(|| {
+                // Just copy the input value if address didn't change
+                if Rc::ptr_eq(&address, &mem.address) {
+                    None
+                } else {
+                    Some(ctx.mem_variable_rc(mem.size, &address))
+                }
+            })
     }
 
     /// Checks cached/caches `reg & ff` masks.
@@ -838,7 +840,7 @@ impl<'a> ExecutionState<'a> {
         }
     }
 
-    fn resolve_no_simplify(
+    fn resolve_inner(
         &mut self,
         value: &Rc<Operand>,
         interner: &mut InternMap,
@@ -871,45 +873,52 @@ impl<'a> ExecutionState<'a> {
                 };
                 let left = self.resolve(&op.left, interner);
                 let right = self.resolve(&op.right, interner);
-                let ty = OperandType::Arithmetic(ArithOperand {
-                    ty: op.ty,
-                    left,
-                    right,
-                });
-                Operand::new_not_simplified_rc(ty)
+                self.ctx.arithmetic(op.ty, &left, &right)
             }
             OperandType::ArithmeticF32(ref op) => {
-                let ty = OperandType::ArithmeticF32(ArithOperand {
-                    ty: op.ty,
-                    left: self.resolve(&op.left, interner),
-                    right: self.resolve(&op.right, interner),
-                });
-                Operand::new_not_simplified_rc(ty)
+                let left = self.resolve(&op.left, interner);
+                let right = self.resolve(&op.right, interner);
+                self.ctx.f32_arithmetic(op.ty, &left, &right)
             }
             OperandType::Constant(_) => value.clone(),
             OperandType::Custom(_) => value.clone(),
             OperandType::Memory(ref mem) => {
                 self.resolve_mem(mem, interner)
+                    .unwrap_or_else(|| value.clone())
             }
             OperandType::Undefined(_) => value.clone(),
             OperandType::SignExtend(ref val, from, to) => {
                 let val = self.resolve(val, interner);
-                let ty = OperandType::SignExtend(val, from, to);
-                Operand::new_not_simplified_rc(ty)
+                self.ctx.sign_extend(&val, from, to)
             }
         }
     }
 
     pub fn resolve(&mut self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
-        let x = self.resolve_no_simplify(value, interner);
+        let x = self.resolve_inner(value, interner);
         if x.is_simplified() {
             return x;
         }
-        let operand = Operand::simplified(x);
+
         // Intern in case the simplification created a very deeply different operand tree,
         // as repeating the resolving would give an equal operand with different addresses.
         // Bandaid fix, not necessarily the best.
-        interner.intern_and_get(operand)
+
+        // Assume that only resolving x + y or Mem[x + y] may cause heavy simplifications
+        let needs_interning = match value.ty {
+            OperandType::Arithmetic(..) => true,
+            OperandType::Memory(ref mem) => match mem.address.ty {
+                OperandType::Arithmetic(..) => true,
+                _ => false,
+            },
+            _ => false,
+        };
+
+        if needs_interning {
+            interner.intern_and_get(x)
+        } else {
+            x
+        }
     }
 
     /// Tries to find an register/memory address corresponding to a resolved value.

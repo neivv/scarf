@@ -1041,8 +1041,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn r_to_operand_xmm(&self, r: ModRm_R, i: u8) -> Rc<Operand> {
-        use crate::operand::operand_helpers::*;
-        operand_xmm(r.0, i)
+        self.ctx.xmm(r.0, i)
     }
 
     /// Returns a structure containing both DestOperand and Rc<Operand>
@@ -1177,7 +1176,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn rm_to_operand_xmm(&self, rm: &ModRm_Rm, i: u8) -> Rc<Operand> {
-        use crate::operand_helpers::*;
         if rm.is_memory() {
             // Would be nice to just add the i * 4 offset on rm_address_operand,
             // but `rm.constant += i * 4` has issues if the constant overflows
@@ -1187,7 +1185,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             }
             self.ctx.mem_variable_rc(MemAccessSize::Mem32, &address)
         } else {
-            operand_xmm(rm.base, i)
+            self.ctx.xmm(rm.base, i)
         }
     }
 
@@ -2337,14 +2335,14 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
         let ctx = self.ctx;
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let dest_op = self.r_to_operand(dest);
         // dest.1 = (dest.1 << rm.0) | (dest.0 >> (32 - rm.0))
         // shl dest.0, rm.0
         // dest.3 = (dest.3 << rm.0) | (dest.2 >> (32 - rm.0))
         // shl dest.2, rm.0
         // Zero everything if rm.1 is set
         let rm_0 = self.rm_to_operand_xmm(&rm, 0);
-        let (low, high) = Operand::to_xmm_64(dest_op, 0);
+        let low = self.r_to_operand_xmm(dest, 0);
+        let high = self.r_to_operand_xmm(dest, 1);
         self.output_arith(
             dest.dest_operand_xmm(1),
             ArithOpType::Or,
@@ -2352,7 +2350,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             ctx.rsh(&low, &ctx.sub_const_left(0x20, &rm_0)),
         );
         self.output_lsh(self.r_to_dest_and_operand_xmm(dest, 0), &rm_0);
-        let (low, high) = Operand::to_xmm_64(dest_op, 1);
+
+        let low = self.r_to_operand_xmm(dest, 2);
+        let high = self.r_to_operand_xmm(dest, 3);
         self.output_arith(
             dest.dest_operand_xmm(3),
             ArithOpType::Or,
@@ -2378,14 +2378,14 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         }
         let ctx = self.ctx;
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let dest_op = self.r_to_operand(dest);
         let rm_0 = self.rm_to_operand_xmm(&rm, 0);
         // dest.0 = (dest.0 >> rm.0) | (dest.1 << (32 - rm.0))
         // shr dest.1, rm.0
         // dest.2 = (dest.2 >> rm.0) | (dest.3 << (32 - rm.0))
         // shr dest.3, rm.0
         // Zero everything if rm.1 is set
-        let (low, high) = Operand::to_xmm_64(dest_op, 0);
+        let low = self.r_to_operand_xmm(dest, 0);
+        let high = self.r_to_operand_xmm(dest, 1);
         self.output_arith(
             dest.dest_operand_xmm(0),
             ArithOpType::Or,
@@ -2393,7 +2393,9 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             ctx.lsh(&high, &ctx.sub_const_left(0x20, &rm_0)),
         );
         self.output_rsh(self.r_to_dest_and_operand_xmm(dest, 1), &rm_0);
-        let (low, high) = Operand::to_xmm_64(dest_op, 1);
+
+        let low = self.r_to_operand_xmm(dest, 2);
+        let high = self.r_to_operand_xmm(dest, 3);
         self.output_arith(
             dest.dest_operand_xmm(2),
             ArithOpType::Or,
@@ -2441,11 +2443,12 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         let rm = self.rm_to_operand(&rm);
         let st0 = self.ctx.register_fpu(0);
         let dest = DestOperand::Fpu(0);
-        let op = if variant == 5 || variant == 7 {
-            make_f32_operation(dest, op_ty, rm, st0)
+        let (lhs, rhs) = if variant == 5 || variant == 7 {
+            (&rm, &st0)
         } else {
-            make_f32_operation(dest, op_ty, st0, rm)
+            (&st0, &rm)
         };
+        let op = make_f32_operation(self.ctx, dest, op_ty, lhs, rhs);
         self.output(op);
         Ok(())
     }
@@ -2976,14 +2979,14 @@ enum ArithOperation {
 }
 
 fn make_f32_operation(
+    ctx: &OperandContext,
     dest: DestOperand,
     ty: ArithOpType,
-    left: Rc<Operand>,
-    right: Rc<Operand>,
+    left: &Rc<Operand>,
+    right: &Rc<Operand>,
 ) -> Operation {
-    use crate::operand_helpers::*;
-    let op = operand_arith_f32(ty, left, right);
-    Operation::Move(dest, Operand::simplified(op), None)
+    let op = ctx.f32_arithmetic(ty, left, right);
+    Operation::Move(dest, op, None)
 }
 
 // Maybe it would be better to pass RegisterSize as an argument to functions
@@ -3137,7 +3140,6 @@ impl DestOperand {
     }
 
     pub fn as_operand(&self, ctx: &OperandContext) -> Rc<Operand> {
-        use crate::operand::operand_helpers::*;
         match *self {
             DestOperand::Register32(x) => ctx.and_const(ctx.register_ref(x.0), 0xffff_ffff),
             DestOperand::Register16(x) => ctx.and_const(ctx.register_ref(x.0), 0xffff),
@@ -3147,7 +3149,7 @@ impl DestOperand {
             ),
             DestOperand::Register8Low(x) => ctx.and_const(ctx.register_ref(x.0), 0xff),
             DestOperand::Register64(x) => ctx.register(x.0),
-            DestOperand::Xmm(x, y) => operand_xmm(x, y),
+            DestOperand::Xmm(x, y) => ctx.xmm(x, y),
             DestOperand::Fpu(x) => ctx.register_fpu(x),
             DestOperand::Flag(x) => ctx.flag(x).clone(),
             DestOperand::Memory(ref x) => ctx.mem_variable_rc(x.size, &x.address),

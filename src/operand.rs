@@ -612,6 +612,10 @@ impl OperandContext {
         Operand::new_simplified_rc(OperandType::Fpu(index))
     }
 
+    pub fn xmm(&self, num: u8, word: u8) -> Rc<Operand> {
+        Operand::new_simplified_rc(OperandType::Xmm(num, word))
+    }
+
     pub fn const_0(&self) -> Rc<Operand> {
         self.globals.constants.small_consts[0].clone()
     }
@@ -710,6 +714,21 @@ impl OperandContext {
         right: &Rc<Operand>,
     ) -> Rc<Operand> {
         let op = Operand::new_not_simplified_rc(OperandType::Arithmetic(ArithOperand {
+            ty,
+            left: left.clone(),
+            right: right.clone(),
+        }));
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplified_with_ctx(&op, self, &mut simplify)
+    }
+
+    pub fn f32_arithmetic(
+        &self,
+        ty: ArithOpType,
+        left: &Rc<Operand>,
+        right: &Rc<Operand>,
+    ) -> Rc<Operand> {
+        let op = Operand::new_not_simplified_rc(OperandType::ArithmeticF32(ArithOperand {
             ty,
             left: left.clone(),
             right: right.clone(),
@@ -1006,6 +1025,19 @@ impl OperandContext {
             size,
         }))
     }
+
+    pub fn sign_extend(
+        &self,
+        val: &Rc<Operand>,
+        from: MemAccessSize,
+        to: MemAccessSize,
+    ) -> Rc<Operand> {
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        let val = simplify::simplified_with_ctx(val, self, &mut simplify);
+        let op = Operand::new_not_simplified_rc(OperandType::SignExtend(val, from, to));
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplified_with_ctx(&op, self, &mut simplify)
+    }
 }
 
 impl OperandType {
@@ -1202,8 +1234,7 @@ impl Operand {
     ///
     /// TODO May be good to have this generate and-const masks a lot?
     #[cfg(feature = "fuzz")]
-    pub fn from_fuzz_bytes(bytes: &mut &[u8]) -> Option<Rc<Operand>> {
-        use self::operand_helpers::*;
+    pub fn from_fuzz_bytes(ctx: &OperandContext, bytes: &mut &[u8]) -> Option<Rc<Operand>> {
         let read_u8 = |bytes: &mut &[u8]| -> Option<u8> {
             let &val = bytes.get(0)?;
             *bytes = &bytes[1..];
@@ -1216,9 +1247,9 @@ impl Operand {
             Some(u64::from_le_bytes(data))
         };
         Some(match read_u8(bytes)? {
-            0x0 => operand_register(read_u8(bytes)? & 0xf),
-            0x1 => operand_xmm(read_u8(bytes)? & 0xf, read_u8(bytes)? & 0x3),
-            0x2 => constval(read_u64(bytes)?),
+            0x0 => ctx.register(read_u8(bytes)? & 0xf),
+            0x1 => ctx.xmm(read_u8(bytes)? & 0xf, read_u8(bytes)? & 0x3),
+            0x2 => ctx.constant(read_u64(bytes)?),
             0x3 => {
                 let size = match read_u8(bytes)? & 3 {
                     0 => MemAccessSize::Mem8,
@@ -1226,8 +1257,8 @@ impl Operand {
                     2 => MemAccessSize::Mem32,
                     _ => MemAccessSize::Mem64,
                 };
-                let inner = Operand::from_fuzz_bytes(bytes)?;
-                mem_variable_rc(size, inner)
+                let inner = Operand::from_fuzz_bytes(ctx, bytes)?;
+                ctx.mem_variable_rc(size, &inner)
             }
             0x4 => {
                 let from = match read_u8(bytes)? & 3 {
@@ -1242,15 +1273,13 @@ impl Operand {
                     2 => MemAccessSize::Mem32,
                     _ => MemAccessSize::Mem64,
                 };
-                let inner = Operand::from_fuzz_bytes(bytes)?;
-                Operand::new_not_simplified_rc(
-                    OperandType::SignExtend(inner, from, to),
-                )
+                let inner = Operand::from_fuzz_bytes(ctx, bytes)?;
+                ctx.sign_extend(&inner, from, to);
             }
             0x5 => {
                 use self::ArithOpType::*;
-                let left = Operand::from_fuzz_bytes(bytes)?;
-                let right = Operand::from_fuzz_bytes(bytes)?;
+                let left = Operand::from_fuzz_bytes(ctx, bytes)?;
+                let right = Operand::from_fuzz_bytes(ctx, bytes)?;
                 let ty = match read_u8(bytes)? {
                     0x0 => Add,
                     0x1 => Sub,
@@ -1270,7 +1299,7 @@ impl Operand {
                     0xf => FloatToInt,
                     _ => return None,
                 };
-                operand_arith(ty, left, right)
+                ctx.arithmetic(ty, &left, &right)
             }
             _ => return None,
         })
@@ -1293,41 +1322,6 @@ impl Operand {
         match self.ty {
             OperandType::Undefined(_) => true,
             _ => false,
-        }
-    }
-
-    /// Return (low, high)
-    pub fn to_xmm_64(s: &Rc<Operand>, word: u8) -> (Rc<Operand>, Rc<Operand>) {
-        use self::operand_helpers::*;
-        match s.ty {
-            OperandType::Memory(ref mem) => match u64::from(word) {
-                0 => {
-                    let high = operand_add(mem.address.clone(), constval(4));
-                    (s.clone(), mem32(high))
-                }
-                x => {
-                    let low = operand_add(mem.address.clone(), constval(8 * x));
-                    let high = operand_add(mem.address.clone(), constval(8 * x + 4));
-                    (mem32(low), mem32(high))
-                }
-            },
-            OperandType::Register(reg) => {
-                let low = operand_xmm(reg.0, word * 2);
-                let high = operand_xmm(reg.0, word * 2 + 1);
-                (low, high)
-            }
-            _ => {
-                if let Some((reg, _)) = s.if_and_masked_register() {
-                    let low = operand_xmm(reg.0, word * 2);
-                    let high = operand_xmm(reg.0, word * 2 + 1);
-                    (low, high)
-                } else {
-                    #[cfg(debug_assertions)]
-                    panic!("Cannot convert {} to 64-bit xmm", s);
-                    #[cfg(not(debug_assertions))]
-                    panic!("Cannot convert to 64-bit xmm");
-                }
-            }
         }
     }
 
@@ -1714,10 +1708,6 @@ pub mod operand_helpers {
 
     pub fn operand_register(num: u8) -> Rc<Operand> {
         OperandContext::new().register(num)
-    }
-
-    pub fn operand_xmm(num: u8, word: u8) -> Rc<Operand> {
-        Operand::new_simplified_rc(OperandType::Xmm(num, word))
     }
 
     pub fn operand_arith(ty: ArithOpType, lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {

@@ -844,13 +844,12 @@ pub struct XmmOperand(
 );
 
 impl XmmOperand {
-    pub fn initial(register: u8, interner: &mut InternMap) -> XmmOperand {
-        use crate::operand_helpers::*;
+    pub fn initial(ctx: &OperandContext, register: u8, interner: &mut InternMap) -> XmmOperand {
         XmmOperand(
-            interner.intern(operand_xmm(register, 0)),
-            interner.intern(operand_xmm(register, 1)),
-            interner.intern(operand_xmm(register, 2)),
-            interner.intern(operand_xmm(register, 3)),
+            interner.intern(ctx.xmm(register, 0)),
+            interner.intern(ctx.xmm(register, 1)),
+            interner.intern(ctx.xmm(register, 2)),
+            interner.intern(ctx.xmm(register, 3)),
         )
     }
 
