@@ -323,10 +323,9 @@ fn simplify_xor_ops(
                     None => Operand::and_masked(r).1 & r.relevant_bits_mask(),
                 };
                 if l_bits & r_bits == 0 {
-                    let const_other = Operand::either(l, r, |x| x.if_constant());
-                    if let Some((c, other)) = const_other {
+                    if let Some(c) = r.if_constant() {
                         const_val ^= c;
-                        ops[i] = other.clone();
+                        ops[i] = l.clone();
                     } else {
                         let l = l.clone();
                         let r = r.clone();
@@ -595,9 +594,8 @@ pub fn simplify_rsh(
         OperandType::Arithmetic(ref arith) => {
             match arith.ty {
                 ArithOpType::And => {
-                    let const_other =
-                        Operand::either(&arith.left, &arith.right, |x| x.if_constant());
-                    if let Some((c, other)) = const_other {
+                    if let Some(c) = arith.right.if_constant() {
+                        let other = &arith.left;
                         let low = zero_bits.end;
                         let high = 64 - other.relevant_bits().end;
                         let no_op_mask = !0u64 >> low << low << high >> high;
@@ -748,7 +746,7 @@ fn simplify_add_merge_masked_reverting(ops: &mut Vec<(Rc<Operand>, bool)>) -> u6
     fn and_const(op: &Rc<Operand>) -> Option<(u64, &Rc<Operand>)> {
         match op.ty {
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
-                Operand::either(&arith.left, &arith.right, |x| x.if_constant())
+                arith.right.if_constant().map(|c| (c, &arith.left))
             }
             _ => None,
         }
@@ -1080,7 +1078,7 @@ fn simplify_eq_2_ops(
     fn mask_maskee(x: &Rc<Operand>) -> Option<(u64, &Rc<Operand>)> {
         match x.ty {
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
-                Operand::either(&arith.left, &arith.right, |x| x.if_constant())
+                arith.right.if_constant().map(|c| (c, &arith.left))
             }
             OperandType::Memory(ref mem) => {
                 match mem.size {
@@ -1620,7 +1618,7 @@ fn simplify_and_merge_child_ors(ops: &mut Vec<Rc<Operand>>, ctx: &OperandContext
     fn or_const(op: &Rc<Operand>) -> Option<(u64, &Rc<Operand>)> {
         match op.ty {
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Or => {
-                Operand::either(&arith.left, &arith.right, |x| x.if_constant())
+                arith.right.if_constant().map(|c| (c, &arith.left))
             }
             _ => None,
         }
@@ -1703,7 +1701,7 @@ fn simplify_or_merge_child_ands(
     fn and_const(op: &Rc<Operand>) -> Option<(u64, &Rc<Operand>)> {
         match op.ty {
             OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::And => {
-                Operand::either(&arith.left, &arith.right, |x| x.if_constant())
+                arith.right.if_constant().map(|c| (c, &arith.left))
             }
             OperandType::Memory(ref mem) => match mem.size {
                 MemAccessSize::Mem8 => Some((0xff, op)),
@@ -1887,10 +1885,9 @@ fn collect_add_ops(
                     }
                 }
                 if let Some((l, r)) = s.if_arithmetic_and() {
-                    let const_other = Operand::either(l, r, |x| x.if_constant());
-                    if let Some((c, other)) = const_other {
+                    if let Some(c) = r.if_constant() {
                         if c & out_mask == out_mask {
-                            return recurse(other, ops, out_mask, negate);
+                            return recurse(l, ops, out_mask, negate);
                         }
                     }
                 }
@@ -2313,9 +2310,7 @@ fn simplify_mul_should_apply_constant(op: &Operand) -> bool {
                 ArithOpType::Add | ArithOpType::Sub => {
                     inner(&arith.left) && inner(&arith.right)
                 }
-                ArithOpType::Mul => {
-                    Operand::either(&arith.left, &arith.right, |x| x.if_constant()).is_some()
-                }
+                ArithOpType::Mul => arith.right.if_constant().is_some(),
                 _ => false,
             },
             OperandType::Constant(_) => true,
@@ -2357,10 +2352,10 @@ fn simplify_mul_try_mul_constants(
 ) -> Option<Rc<Operand>> {
     match op.ty {
         OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Add => {
-            Operand::either(&arith.left, &arith.right, |x| x.if_constant())
-                .map(|(c2, other)| {
+            arith.right.if_constant()
+                .map(|c2| {
                     let multiplied = c2.wrapping_mul(c);
-                    ctx.add_const(&ctx.mul_const(other, c), multiplied)
+                    ctx.add_const(&ctx.mul_const(&arith.left, c), multiplied)
                 })
         }
         OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
@@ -3137,7 +3132,7 @@ fn simplify_add_merge_muls(
     fn count_equivalent_opers(ops: &[(Rc<Operand>, bool)], equiv: &Operand) -> Option<u64> {
         ops.iter().map(|&(ref o, neg)| {
             let (mul, val) = o.if_arithmetic_mul()
-                .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                .and_then(|(l, r)| r.if_constant().map(|c| (c, l)))
                 .unwrap_or_else(|| (1, o));
             match *equiv == **val {
                 true => if neg { 0u64.wrapping_sub(mul) } else { mul },
@@ -3154,7 +3149,7 @@ fn simplify_add_merge_muls(
     while pos < ops.len() {
         let merged = {
             let (self_mul, op) = ops[pos].0.if_arithmetic_mul()
-                .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                .and_then(|(l, r)| r.if_constant().map(|c| (c, l)))
                 .unwrap_or_else(|| (1, &ops[pos].0));
 
             let others = count_equivalent_opers(&ops[pos + 1..], op);
@@ -3176,7 +3171,7 @@ fn simplify_add_merge_muls(
                 while other_pos < ops.len() {
                     let is_equiv = ops[other_pos].0
                         .if_arithmetic_mul()
-                        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                        .and_then(|(l, r)| r.if_constant().map(|c| (c, l)))
                         .map(|(_, other)| *other == equiv)
                         .unwrap_or_else(|| ops[other_pos].0 == equiv);
                     if is_equiv {
@@ -3195,14 +3190,14 @@ fn simplify_add_merge_muls(
             Some(None) => {
                 let (op, _) = ops.remove(pos);
                 let equiv = op.if_arithmetic_mul()
-                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                    .and_then(|(l, r)| r.if_constant().map(|c| (c, l)))
                     .map(|(_, other)| other)
                     .unwrap_or_else(|| &op);
                 let mut other_pos = pos;
                 while other_pos < ops.len() {
                     let other = &ops[other_pos].0;
                     let other = other.if_arithmetic_mul()
-                        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                        .and_then(|(l, r)| r.if_constant().map(|c| (c, l)))
                         .map(|(_, other)| other)
                         .unwrap_or_else(|| &other);
                     if other == equiv {
