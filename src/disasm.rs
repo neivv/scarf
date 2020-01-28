@@ -1369,12 +1369,19 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     ) -> Result<(ModRm_Rm, ModRm_R, Rc<Operand>), Failed> {
         let (rm, r, offset) = self.parse_modrm_inner(op_size)?;
         let imm = self.read_variable_size_32(offset, imm_size)?;
-        let imm = match imm_size {
-            x if x == op_size => imm,
-            MemAccessSize::Mem8 => imm as i8 as u64,
-            MemAccessSize::Mem16 => imm as i16 as u64,
-            MemAccessSize::Mem32 => imm as i32 as u64,
-            MemAccessSize::Mem64 => imm,
+        let imm = if imm_size == op_size || imm_size == MemAccessSize::Mem64 {
+            imm
+        } else {
+            // Set any bit above sign bit to 1 if sign bit is 1
+            // (So sign extend without switch on size)
+            // Also avoid u64 shifts as x86 micro-optimization
+            let bits_minus_one = imm_size.bits() - 1;
+            let sign_bit = 1 << bits_minus_one;
+            if (imm as u32) & sign_bit != 0 {
+                imm | (!0u32 >> bits_minus_one << bits_minus_one) as u64 | 0xffff_ffff_0000_0000
+            } else {
+                imm
+            }
         };
         Ok((rm, r, self.ctx.constant(imm)))
     }
@@ -2145,6 +2152,36 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn punpcklbw(&mut self) -> Result<(), Failed> {
+        fn rsh_and_const(
+            ctx: &OperandContext,
+            val: &Rc<Operand>,
+            and_mask: u32,
+            shift: u32,
+        ) -> Rc<Operand> {
+            ctx.rsh_const(
+                &ctx.and_const(
+                    val,
+                    and_mask as u64,
+                ),
+                shift as u64,
+            )
+        }
+
+        fn lsh_and_const(
+            ctx: &OperandContext,
+            val: &Rc<Operand>,
+            and_mask: u32,
+            shift: u32,
+        ) -> Rc<Operand> {
+            ctx.lsh_const(
+                &ctx.and_const(
+                    val,
+                    and_mask as u64,
+                ),
+                shift as u64,
+            )
+        }
+
         use self::operation_helpers::*;
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
@@ -2158,12 +2195,6 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         //      (r.1 & ff00_0000) >> 8 | (rm.1 & ff00_0000)
         // Do things in reverse to avoid overwriting r0/r1
         let ctx = self.ctx;
-        let c_8 = self.ctx.const_8();
-        let c_10 = self.ctx.constant(0x10);
-        let c_ff = self.ctx.const_ff();
-        let c_ff00 = self.ctx.constant(0xff00);
-        let c_ff_0000 = self.ctx.constant(0xff_0000);
-        let c_ff00_0000 = self.ctx.constant(0xff00_0000);
         for &i in &[1, 0] {
             let out0 = r.dest_operand_xmm(i * 2);
             let out1 = r.dest_operand_xmm(i * 2 + 1);
@@ -2171,64 +2202,22 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             let in_rm = self.rm_to_operand_xmm(&rm, i);
             self.output(mov(out1, ctx.or(
                 &ctx.or(
-                    &ctx.rsh(
-                        &ctx.and(
-                            &in_r,
-                            &c_ff_0000,
-                        ),
-                        &c_10,
-                    ),
-                    &ctx.rsh(
-                        &ctx.and(
-                            &in_rm,
-                            &c_ff_0000,
-                        ),
-                        &c_8,
-                    ),
+                    &rsh_and_const(ctx, &in_r, 0xff_0000, 0x10),
+                    &rsh_and_const(ctx, &in_rm, 0xff_0000, 0x8),
                 ),
                 &ctx.or(
-                    &ctx.rsh(
-                        &ctx.and(
-                            &in_r,
-                            &c_ff00_0000,
-                        ),
-                        &c_8,
-                    ),
-                    &ctx.and(
-                        &in_rm,
-                        &c_ff00_0000,
-                    ),
+                    &rsh_and_const(ctx, &in_r, 0xff00_0000, 0x8),
+                    &rsh_and_const(ctx, &in_rm, 0xff00_0000, 0),
                 ),
             )));
             self.output(mov(out0, ctx.or(
                 &ctx.or(
-                    &ctx.and(
-                        &in_r,
-                        &c_ff,
-                    ),
-                    &ctx.lsh(
-                        &ctx.and(
-                            &in_rm,
-                            &c_ff,
-                        ),
-                        &c_8,
-                    ),
+                    &lsh_and_const(ctx, &in_r, 0xff, 0),
+                    &lsh_and_const(ctx, &in_rm, 0xff, 0x8),
                 ),
                 &ctx.or(
-                    &ctx.lsh(
-                        &ctx.and(
-                            &in_r,
-                            &c_ff00,
-                        ),
-                        &c_8,
-                    ),
-                    &ctx.lsh(
-                        &ctx.and(
-                            &in_rm,
-                            &c_ff00,
-                        ),
-                        &c_10,
-                    ),
+                    &lsh_and_const(ctx, &in_r, 0xff00, 0x8),
+                    &lsh_and_const(ctx, &in_rm, 0xff00, 0x10),
                 ),
             )));
         }
@@ -2329,6 +2318,20 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         Ok(())
     }
 
+    /// Packed shift helper
+    fn zero_xmm_if_rm1_nonzer0(&mut self, rm: &ModRm_Rm, dest: ModRm_R) {
+        let ctx = self.ctx;
+        let rm_1 = self.rm_to_operand_xmm(&rm, 1);
+        let high_u32_set = ctx.neq_const(&rm_1, 0);
+        for i in 0..4 {
+            self.output(Operation::Move(
+                dest.dest_operand_xmm(i),
+                ctx.const_0(),
+                Some(high_u32_set.clone()),
+            ));
+        }
+    }
+
     fn packed_shift_left(&mut self) -> Result<(), Failed> {
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
@@ -2341,34 +2344,21 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         // shl dest.2, rm.0
         // Zero everything if rm.1 is set
         let rm_0 = self.rm_to_operand_xmm(&rm, 0);
-        let low = self.r_to_operand_xmm(dest, 0);
-        let high = self.r_to_operand_xmm(dest, 1);
-        self.output_arith(
-            dest.dest_operand_xmm(1),
-            ArithOpType::Or,
-            ctx.lsh(&high, &rm_0),
-            ctx.rsh(&low, &ctx.sub_const_left(0x20, &rm_0)),
-        );
-        self.output_lsh(self.r_to_dest_and_operand_xmm(dest, 0), &rm_0);
-
-        let low = self.r_to_operand_xmm(dest, 2);
-        let high = self.r_to_operand_xmm(dest, 3);
-        self.output_arith(
-            dest.dest_operand_xmm(3),
-            ArithOpType::Or,
-            ctx.lsh(&high, &rm_0),
-            ctx.rsh(&low, &ctx.sub_const_left(0x20, &rm_0)),
-        );
-        self.output_lsh(self.r_to_dest_and_operand_xmm(dest, 2), &rm_0);
-        let rm_1 = self.rm_to_operand_xmm(&rm, 1);
-        let high_u32_set = ctx.neq_const(&rm_1, 0);
-        for i in 0..4 {
-            self.output(Operation::Move(
-                dest.dest_operand_xmm(i),
-                ctx.const_0(),
-                Some(high_u32_set.clone()),
-            ));
+        for i in 0..2 {
+            let low_id = i * 2;
+            let high_id = low_id + 1;
+            let low = self.r_to_operand_xmm(dest, low_id);
+            let high = self.r_to_operand_xmm(dest, high_id);
+            self.output_arith(
+                dest.dest_operand_xmm(high_id),
+                ArithOpType::Or,
+                ctx.lsh(&high, &rm_0),
+                ctx.rsh(&low, &ctx.sub_const_left(0x20, &rm_0)),
+            );
+            self.output_lsh(self.r_to_dest_and_operand_xmm(dest, low_id), &rm_0);
         }
+
+        self.zero_xmm_if_rm1_nonzer0(&rm, dest);
         Ok(())
     }
 
@@ -2384,34 +2374,21 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         // dest.2 = (dest.2 >> rm.0) | (dest.3 << (32 - rm.0))
         // shr dest.3, rm.0
         // Zero everything if rm.1 is set
-        let low = self.r_to_operand_xmm(dest, 0);
-        let high = self.r_to_operand_xmm(dest, 1);
-        self.output_arith(
-            dest.dest_operand_xmm(0),
-            ArithOpType::Or,
-            ctx.rsh(&low, &rm_0),
-            ctx.lsh(&high, &ctx.sub_const_left(0x20, &rm_0)),
-        );
-        self.output_rsh(self.r_to_dest_and_operand_xmm(dest, 1), &rm_0);
-
-        let low = self.r_to_operand_xmm(dest, 2);
-        let high = self.r_to_operand_xmm(dest, 3);
-        self.output_arith(
-            dest.dest_operand_xmm(2),
-            ArithOpType::Or,
-            ctx.rsh(&low, &rm_0),
-            ctx.lsh(&high, &ctx.sub_const_left(0x20, &rm_0)),
-        );
-        self.output_rsh(self.r_to_dest_and_operand_xmm(dest, 3), &rm_0);
-        let rm_1 = self.rm_to_operand_xmm(&rm, 1);
-        let high_u32_set = ctx.neq_const(&rm_1, 0);
-        for i in 0..4 {
-            self.output(Operation::Move(
-                dest.dest_operand_xmm(i),
-                ctx.const_0(),
-                Some(high_u32_set.clone()),
-            ));
+        for i in 0..2 {
+            let low_id = i * 2;
+            let high_id = low_id + 1;
+            let low = self.r_to_operand_xmm(dest, low_id);
+            let high = self.r_to_operand_xmm(dest, high_id);
+            self.output_arith(
+                dest.dest_operand_xmm(low_id),
+                ArithOpType::Or,
+                ctx.rsh(&low, &rm_0),
+                ctx.lsh(&high, &ctx.sub_const_left(0x20, &rm_0)),
+            );
+            self.output_rsh(self.r_to_dest_and_operand_xmm(dest, high_id), &rm_0);
         }
+
+        self.zero_xmm_if_rm1_nonzer0(&rm, dest);
         Ok(())
     }
 
