@@ -722,7 +722,7 @@ fn instruction_operations64_main(
         0x90 => Ok(()),
         0x98 => {
             let eax = s.dest_and_op_register(0);
-            if s.prefixes.rex_prefix & 0x8 == 0 {
+            if s.rex_prefix() & 0x8 == 0 {
                 let cond = ctx.gt_const(&eax.op, 0x7fff);
                 let neg_sign_extend = ctx.or_const(&eax.op, 0xffff_0000);
                 let neg_sign_extend_op =
@@ -741,7 +741,7 @@ fn instruction_operations64_main(
         }
         // Cdq
         0x99 => {
-            if s.prefixes.rex_prefix & 0x8 == 0 {
+            if s.rex_prefix() & 0x8 == 0 {
                 let eax = ctx.register_ref(0);
                 let cond = ctx.gt_const(eax, 0x7fff_ffff);
                 let neg_sign_extend_op = Operation::Move(
@@ -980,6 +980,16 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         self.output(Operation::Move(dest.dest, op, None))
     }
 
+    #[inline]
+    fn rex_prefix(&self) -> u8 {
+        // Ideally eliminates branches checking REX on 32-bit
+        if Va::SIZE == 4 {
+            0
+        } else {
+            self.prefixes.rex_prefix
+        }
+    }
+
     fn has_prefix(&self, val: u8) -> bool {
         match val {
             0x66 => self.prefixes.prefix_66,
@@ -1000,7 +1010,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 false => MemAccessSize::Mem32,
             }
         } else {
-            match self.prefixes.rex_prefix & 0x8 != 0 {
+            match self.rex_prefix() & 0x8 != 0 {
                 true => MemAccessSize::Mem64,
                 false => match self.has_prefix(0x66) {
                     true => MemAccessSize::Mem16,
@@ -1018,7 +1028,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     }
 
     fn reg_variable_size(&self, register: Register, op_size: MemAccessSize) -> &'a Rc<Operand> {
-        if register.0 >= 4 && self.prefixes.rex_prefix == 0 && op_size == MemAccessSize::Mem8 {
+        if register.0 >= 4 && self.rex_prefix() == 0 && op_size == MemAccessSize::Mem8 {
             self.register_cache.register8_high(register.0 - 4)
         } else {
             match op_size {
@@ -1281,14 +1291,14 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     ) -> Result<(ModRm_Rm, ModRm_R, usize), Failed> {
         let modrm = self.read_u8(1)?;
         let rm_val = modrm & 0x7;
-        let register = if self.prefixes.rex_prefix & 0x4 == 0 {
+        let register = if self.rex_prefix() & 0x4 == 0 {
             (modrm >> 3) & 0x7
         } else {
             8 + ((modrm >> 3) & 0x7)
         };
-        let rm_ext = self.prefixes.rex_prefix & 0x1 != 0;
+        let rm_ext = self.rex_prefix() & 0x1 != 0;
         let r_high = register >= 4 &&
-            self.prefixes.rex_prefix == 0 &&
+            self.rex_prefix() == 0 &&
             op_size == MemAccessSize::Mem8;
         let register_size = if r_high {
             RegisterSize::High8
@@ -1341,7 +1351,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 }
                 3 => {
                     let rm_high = rm_val >= 4 &&
-                        self.prefixes.rex_prefix == 0 &&
+                        self.rex_prefix() == 0 &&
                         op_size == MemAccessSize::Mem8;
 
                     if rm_high {
@@ -1393,7 +1403,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     ) -> Result<(ModRm_Rm, usize), Failed> {
         let sib = self.read_u8(2)?;
         let mul = 1 << ((sib >> 6) & 0x3);
-        let base_ext = self.prefixes.rex_prefix & 0x1 != 0;
+        let base_ext = self.rex_prefix() & 0x1 != 0;
         let mut result = ModRm_Rm {
             size: RegisterSize::from_mem_access_size(op_size),
             base: 0,
@@ -1417,7 +1427,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
                 3
             }
         };
-        let index_reg = if self.prefixes.rex_prefix & 0x2 == 0 {
+        let index_reg = if self.rex_prefix() & 0x2 == 0 {
             (sib >> 3) & 0x7
         } else {
             8 + ((sib >> 3) & 0x7)
@@ -1561,7 +1571,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
     fn bswap(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
 
-        let register = if self.prefixes.rex_prefix & 0x1 != 0 {
+        let register = if self.rex_prefix() & 0x1 != 0 {
             8 + (self.read_u8(0)? & 0x7)
         } else {
             self.read_u8(0)? & 0x7
@@ -1638,7 +1648,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let register = if self.prefixes.rex_prefix & 0x1 != 0 {
+        let register = if self.rex_prefix() & 0x1 != 0 {
             8 + (self.read_u8(0)? & 0x7)
         } else {
             self.read_u8(0)? & 0x7
@@ -2229,7 +2239,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
         }
-        let op_size = match self.prefixes.rex_prefix & 0x8 != 0 {
+        let op_size = match self.rex_prefix() & 0x8 != 0 {
             true => MemAccessSize::Mem64,
             false => MemAccessSize::Mem32,
         };
@@ -2743,7 +2753,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
         use self::operation_helpers::*;
         let byte = self.read_u8(0)?;
         let is_push = byte < 0x58;
-        let reg = if self.prefixes.rex_prefix & 0x1 == 0 {
+        let reg = if self.rex_prefix() & 0x1 == 0 {
             byte & 0x7
         } else {
             8 + (byte & 0x7)
