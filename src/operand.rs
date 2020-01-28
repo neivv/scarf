@@ -1038,6 +1038,76 @@ impl OperandContext {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplified_with_ctx(&op, self, &mut simplify)
     }
+
+    pub fn transform<F>(&self, oper: &Rc<Operand>, mut f: F) -> Rc<Operand>
+    where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
+    {
+        self.transform_internal(&oper, &mut f)
+    }
+
+    fn transform_internal<F>(&self, oper: &Rc<Operand>, f: &mut F) -> Rc<Operand>
+    where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
+    {
+        if let Some(val) = f(&oper) {
+            return val;
+        }
+        match oper.ty {
+            OperandType::Arithmetic(ref arith) => {
+                let left = self.transform_internal(&arith.left, f);
+                let right = self.transform_internal(&arith.right, f);
+                if Rc::ptr_eq(&left, &arith.left) && Rc::ptr_eq(&right, &arith.right) {
+                    oper.clone()
+                } else {
+                    self.arithmetic(arith.ty, &left, &right)
+                }
+            },
+            OperandType::Memory(ref m) => {
+                let address = self.transform_internal(&m.address, f);
+                if Rc::ptr_eq(&address, &m.address) {
+                    oper.clone()
+                } else {
+                    self.mem_variable_rc(m.size, &address)
+                }
+            }
+            _ => oper.clone(),
+        }
+    }
+
+    pub fn substitute(
+        &self,
+        oper: &Rc<Operand>,
+        val: &Rc<Operand>,
+        with: &Rc<Operand>,
+    ) -> Rc<Operand> {
+        if let Some(mem) = val.if_memory() {
+            // Transform also Mem16[mem.addr] to with & 0xffff if val is Mem32, etc.
+            // I guess recursing inside mem.addr doesn't make sense here,
+            // but didn't give it too much thought.
+            self.transform(oper, |old| {
+                old.if_memory()
+                    .filter(|old| old.address == mem.address)
+                    .filter(|old| old.size.bits() <= mem.size.bits())
+                    .map(|old| {
+                        if mem.size == old.size || old.size == MemAccessSize::Mem64 {
+                            with.clone()
+                        } else {
+                            let mask = match old.size {
+                                MemAccessSize::Mem64 => unreachable!(),
+                                MemAccessSize::Mem32 => 0xffff_ffff,
+                                MemAccessSize::Mem16 => 0xffff,
+                                MemAccessSize::Mem8 => 0xff,
+                            };
+                            self.and_const(&with, mask)
+                        }
+                    })
+            })
+        } else {
+            self.transform(oper, |old| match old == val {
+                true => Some(with.clone()),
+                false => None,
+            })
+        }
+    }
 }
 
 impl OperandType {
@@ -1421,12 +1491,16 @@ impl Operand {
         simplify::simplified_with_ctx(&s, ctx, &mut swzb_ctx)
     }
 
+    #[deprecated]
+    #[allow(deprecated)]
     pub fn transform<F>(oper: &Rc<Operand>, mut f: F) -> Rc<Operand>
     where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
     {
         Operand::simplified(Operand::transform_internal(&oper, &mut f))
     }
 
+    #[deprecated]
+    #[allow(deprecated)]
     pub fn transform_internal<F>(oper: &Rc<Operand>, f: &mut F) -> Rc<Operand>
     where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
     {
@@ -1451,6 +1525,8 @@ impl Operand {
         Operand::new_not_simplified_rc(ty)
     }
 
+    #[deprecated]
+    #[allow(deprecated)]
     pub fn substitute(oper: &Rc<Operand>, val: &Rc<Operand>, with: &Rc<Operand>) -> Rc<Operand> {
         if let Some(mem) = val.if_memory() {
             // Transform also Mem16[mem.addr] to with & 0xffff if val is Mem32, etc.

@@ -2924,174 +2924,166 @@ fn simplify_shift_and() {
 fn simplify_rotate_mask() {
     // This is mainly useful to make sure rol32(reg32, const) substituted
     // with mem32 is same as just rol32(mem32, const)
-    use super::operand_helpers::*;
     let ctx = &OperandContext::new();
-    let op1 = operand_and(
-        operand_or(
-            operand_rsh(
-                operand_and(
-                    ctx.register(0),
-                    ctx.constant(0xffff_ffff),
+    let op1 = ctx.and(
+        &ctx.or(
+            &ctx.rsh(
+                &ctx.and(
+                    &ctx.register(0),
+                    &ctx.constant(0xffff_ffff),
                 ),
-                ctx.constant(0xb),
+                &ctx.constant(0xb),
             ),
-            operand_lsh(
-                operand_and(
-                    ctx.register(0),
-                    ctx.constant(0xffff_ffff),
+            &ctx.lsh(
+                &ctx.and(
+                    &ctx.register(0),
+                    &ctx.constant(0xffff_ffff),
                 ),
-                ctx.constant(0x15),
+                &ctx.constant(0x15),
             ),
         ),
-        ctx.constant(0xffff_ffff),
+        &ctx.constant(0xffff_ffff),
     );
-    let op1 = Operand::simplified(op1);
-    let subst = Operand::substitute(&op1, &ctx.register(0), &mem32(ctx.constant(0x1234)));
-    let with_mem = operand_and(
-        operand_or(
-            operand_rsh(
-                mem32(ctx.constant(0x1234)),
-                ctx.constant(0xb),
+    let subst = ctx.substitute(&op1, &ctx.register(0), &ctx.mem32(&ctx.constant(0x1234)));
+    let with_mem = ctx.and(
+        &ctx.or(
+            &ctx.rsh(
+                &ctx.mem32(&ctx.constant(0x1234)),
+                &ctx.constant(0xb),
             ),
-            operand_lsh(
-                mem32(ctx.constant(0x1234)),
-                ctx.constant(0x15),
+            &ctx.lsh(
+                &ctx.mem32(&ctx.constant(0x1234)),
+                &ctx.constant(0x15),
             ),
         ),
-        ctx.constant(0xffff_ffff),
+        &ctx.constant(0xffff_ffff),
     );
-    let with_mem = Operand::simplified(with_mem);
     assert_eq!(subst, with_mem);
 }
 
 #[test]
 fn simplify_add_sub_to_zero() {
-    use super::operand_helpers::*;
     let ctx = &OperandContext::new();
-    let op1 = operand_add(
-        operand_and(
-            ctx.register(0),
-            ctx.constant(0xffff_ffff),
+    let op1 = ctx.add(
+        &ctx.and(
+            &ctx.register(0),
+            &ctx.constant(0xffff_ffff),
         ),
-        operand_and(
-            operand_sub(
-                ctx.constant(0),
-                ctx.register(0),
+        &ctx.and(
+            &ctx.sub(
+                &ctx.constant(0),
+                &ctx.register(0),
             ),
-            ctx.constant(0xffff_ffff),
+            &ctx.constant(0xffff_ffff),
         ),
     );
     let eq1 = ctx.constant(0x1_0000_0000);
-    assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    assert_eq!(op1, eq1);
 }
 
 #[test]
 fn simplify_less_or_eq() {
-    use super::operand_helpers::*;
     let ctx = &OperandContext::new();
     // not(c > x) & not(x == c) => not(c + 1 > x)
     // (Same as not((c > x) | (x == c)))
-    let op1 = operand_and(
-        operand_eq(
-            ctx.constant(0),
-            operand_gt(
-                ctx.constant(5),
-                ctx.register(1),
+    let op1 = ctx.and(
+        &ctx.eq(
+            &ctx.constant(0),
+            &ctx.gt(
+                &ctx.constant(5),
+                &ctx.register(1),
             ),
         ),
-        operand_eq(
-            ctx.constant(0),
-            operand_eq(
-                ctx.constant(5),
-                ctx.register(1),
+        &ctx.eq(
+            &ctx.constant(0),
+            &ctx.eq(
+                &ctx.constant(5),
+                &ctx.register(1),
             ),
         ),
     );
-    let eq1 = operand_eq(
-        ctx.constant(0),
-        operand_gt(
-            ctx.constant(6),
-            ctx.register(1),
+    let eq1 = ctx.eq(
+        &ctx.constant(0),
+        &ctx.gt(
+            &ctx.constant(6),
+            &ctx.register(1),
         ),
     );
-    assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    assert_eq!(op1, eq1);
 }
 
 #[test]
 fn simplify_eq_consistency() {
-    use super::operand_helpers::*;
     let ctx = &OperandContext::new();
-    let op1 = Operand::simplified(operand_eq(
-        operand_add(
-            ctx.register(1),
-            ctx.register(2),
+    let op1 = ctx.eq(
+        &ctx.add(
+            &ctx.register(1),
+            &ctx.register(2),
         ),
-        ctx.register(3),
-    ));
-    let eq1a = Operand::simplified(operand_eq(
-        operand_sub(
-            ctx.register(3),
-            ctx.register(2),
+        &ctx.register(3),
+    );
+    let eq1a = ctx.eq(
+        &ctx.sub(
+            &ctx.register(3),
+            &ctx.register(2),
         ),
-        ctx.register(1),
-    ));
-    let eq1b = Operand::simplified(operand_eq(
-        operand_add(
-            ctx.register(2),
-            ctx.register(1),
+        &ctx.register(1),
+    );
+    let eq1b = ctx.eq(
+        &ctx.add(
+            &ctx.register(2),
+            &ctx.register(1),
         ),
-        ctx.register(3),
-    ));
+        &ctx.register(3),
+    );
     assert_eq!(op1, eq1a);
     assert_eq!(op1, eq1b);
 }
 
 #[test]
 fn simplify_mul_consistency() {
-    use super::operand_helpers::*;
     let ctx = &OperandContext::new();
-    let op1 = operand_mul(
-        ctx.register(1),
-        operand_add(
-            ctx.register(0),
-            ctx.register(0),
+    let op1 = ctx.mul(
+        &ctx.register(1),
+        &ctx.add(
+            &ctx.register(0),
+            &ctx.register(0),
         ),
     );
-    let eq1 = operand_mul(
-        operand_mul(
-            ctx.constant(2),
-            ctx.register(0),
+    let eq1 = ctx.mul(
+        &ctx.mul(
+            &ctx.constant(2),
+            &ctx.register(0),
         ),
-        ctx.register(1),
+        &ctx.register(1),
     );
-    assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    assert_eq!(op1, eq1);
 }
 
 #[test]
 fn simplify_sub_add_2_bug() {
-    use super::operand_helpers::*;
     let ctx = &OperandContext::new();
-    let op1 = operand_add(
-        operand_sub(
-            ctx.register(1),
-            operand_add(
-                ctx.register(2),
-                ctx.register(2),
+    let op1 = ctx.add(
+        &ctx.sub(
+            &ctx.register(1),
+            &ctx.add(
+                &ctx.register(2),
+                &ctx.register(2),
             ),
         ),
-        ctx.register(3),
+        &ctx.register(3),
     );
-    let eq1 = operand_add(
-        operand_sub(
-            ctx.register(1),
-            operand_mul(
-                ctx.register(2),
-                ctx.constant(2),
+    let eq1 = ctx.add(
+        &ctx.sub(
+            &ctx.register(1),
+            &ctx.mul(
+                &ctx.register(2),
+                &ctx.constant(2),
             ),
         ),
-        ctx.register(3),
+        &ctx.register(3),
     );
-    assert_eq!(Operand::simplified(op1), Operand::simplified(eq1));
+    assert_eq!(op1, eq1);
 }
 
 #[test]

@@ -301,8 +301,8 @@ impl Constraint {
         }.map(Constraint::new)
      }
 
-    pub(crate) fn apply_to(&self, oper: &Rc<Operand>) -> Rc<Operand> {
-        let new = apply_constraint_split(&self.0, oper, true);
+    pub(crate) fn apply_to(&self, ctx: &OperandContext, oper: &Rc<Operand>) -> Rc<Operand> {
+        let new = apply_constraint_split(ctx, &self.0, oper, true);
         Operand::simplified(new)
     }
 }
@@ -358,19 +358,19 @@ fn other_if_eq_zero(op: &Rc<Operand>) -> Option<&Rc<Operand>> {
 /// Splits the constraint at ands that can be applied separately
 /// Also can handle logical nots
 fn apply_constraint_split(
+    ctx: &OperandContext,
     constraint: &Rc<Operand>,
     val: &Rc<Operand>,
     with: bool,
 ) -> Rc<Operand>{
-    use crate::operand::operand_helpers::*;
     match constraint.ty {
         OperandType::Arithmetic(ref arith) if {
             arith.ty == ArithOpType::And &&
                 arith.left.relevant_bits() == (0..1) &&
                 arith.right.relevant_bits() == (0..1)
         } => {
-            let new = apply_constraint_split(&arith.left, val, with);
-            apply_constraint_split(&arith.right, &new, with)
+            let new = apply_constraint_split(ctx, &arith.left, val, with);
+            apply_constraint_split(ctx, &arith.right, &new, with)
         }
         OperandType::Arithmetic(ref arith) if {
             arith.ty == ArithOpType::Or &&
@@ -388,12 +388,12 @@ fn apply_constraint_split(
                     .unwrap_or_else(|| (val, 0));
                 if let Some((l, r)) = cmp.if_arithmetic_and() {
                     if (l == x && r == y) || (l == y && r == x) {
-                        return constval(subst);
+                        return ctx.constant(subst);
                     }
                 }
             }
-            let subst_val = constval(if with { 1 } else { 0 });
-            Operand::substitute(val, constraint, &subst_val)
+            let subst_val = ctx.constant(if with { 1 } else { 0 });
+            ctx.substitute(val, constraint, &subst_val)
         }
         OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Equal => {
             let (l, r) = (&arith.left, &arith.right);
@@ -401,15 +401,15 @@ fn apply_constraint_split(
                 .map(|x| x.1)
                 .filter(|x| x.relevant_bits() == (0..1));
             if let Some(other) = other {
-                apply_constraint_split(other, val, !with)
+                apply_constraint_split(ctx, other, val, !with)
             } else {
-                let subst_val = constval(if with { 1 } else { 0 });
-                Operand::substitute(val, constraint, &subst_val)
+                let subst_val = ctx.constant(if with { 1 } else { 0 });
+                ctx.substitute(val, constraint, &subst_val)
             }
         }
         _ => {
-            let subst_val = constval(if with { 1 } else { 0 });
-            Operand::substitute(val, constraint, &subst_val)
+            let subst_val = ctx.constant(if with { 1 } else { 0 });
+            ctx.substitute(val, constraint, &subst_val)
         }
     }
 }
@@ -897,7 +897,7 @@ fn apply_constraint() {
         ),
     );
     let old = val.clone();
-    let val = Operand::simplified(constraint.apply_to(&val));
+    let val = constraint.apply_to(&ctx, &val);
     let eq = ctx.neq_const(
         ctx.flag_c(),
         0,
@@ -908,24 +908,23 @@ fn apply_constraint() {
 
 #[test]
 fn apply_constraint_non1bit() {
-    use crate::operand_helpers::*;
+    let ctx = crate::operand::OperandContext::new();
     // This shouldn't cause 0x8000_0000 to be optimized out
-    let constraint = operand_eq(
-        operand_and(
-            constval(0x8000_0000),
-            operand_register(1),
+    let constraint = ctx.eq(
+        &ctx.and(
+            &ctx.constant(0x8000_0000),
+            &ctx.register(1),
         ),
-        constval(0),
+        &ctx.constant(0),
     );
-    let val = operand_and(
-        constval(0x8000_0000),
-        operand_sub(
-            operand_register(1),
-            operand_register(2),
+    let val = ctx.and(
+        &ctx.constant(0x8000_0000),
+        &ctx.sub(
+            &ctx.register(1),
+            &ctx.register(2),
         ),
     );
-    let val = Operand::simplified(val);
-    assert_eq!(Constraint(constraint).apply_to(&val), val);
+    assert_eq!(Constraint(constraint).apply_to(&ctx, &val), val);
 }
 
 #[test]
@@ -954,7 +953,7 @@ fn apply_constraint_or() {
         ),
         0,
     );
-    let applied = Constraint(constraint).apply_to(&val);
+    let applied = Constraint(constraint).apply_to(ctx, &val);
     let eq = ctx.constant(1);
-    assert_eq!(Operand::simplified(applied), Operand::simplified(eq));
+    assert_eq!(applied, eq);
 }

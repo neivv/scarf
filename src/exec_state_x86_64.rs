@@ -309,12 +309,12 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
             &stack_op
         };
         if let Some(ref constraint) = self.unresolved_constraint {
-            stack_op = constraint.apply_to(op_ref);
+            stack_op = constraint.apply_to(self.ctx, op_ref);
             op_ref = &stack_op;
         }
         let val = self.resolve(op_ref, i);
         if let Some(ref constraint) = self.resolved_constraint {
-            constraint.apply_to(&val)
+            constraint.apply_to(self.ctx, &val)
         } else {
             val
         }
