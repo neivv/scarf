@@ -364,12 +364,7 @@ pub struct OperandContext {
 struct OperandCtxGlobals {
     constants: OperandCtxConstants,
     registers: [Rc<Operand>; 16],
-    flag_z: Rc<Operand>,
-    flag_c: Rc<Operand>,
-    flag_o: Rc<Operand>,
-    flag_s: Rc<Operand>,
-    flag_p: Rc<Operand>,
-    flag_d: Rc<Operand>,
+    flags: [Rc<Operand>; 6],
 }
 
 pub struct Iter<'a>(Option<IterState<'a>>);
@@ -530,7 +525,16 @@ pub fn check_tls_simplification_incomplete() -> bool {
 }
 
 #[inline(never)]
-fn make_flag_op(f: Flag) -> Rc<Operand> {
+fn make_flag_op(i: usize) -> Rc<Operand> {
+    let f = match i {
+        0 => Flag::Zero,
+        1 => Flag::Carry,
+        2 => Flag::Overflow,
+        3 => Flag::Parity,
+        4 => Flag::Sign,
+        5 => Flag::Direction,
+        _ => unreachable!(),
+    };
     Operand::new_simplified_rc(OperandType::Flag(f))
 }
 
@@ -538,12 +542,7 @@ impl OperandCtxGlobals {
     fn new() -> OperandCtxGlobals {
         OperandCtxGlobals {
             constants: OperandCtxConstants::new(),
-            flag_c: make_flag_op(Flag::Carry),
-            flag_o: make_flag_op(Flag::Overflow),
-            flag_p: make_flag_op(Flag::Parity),
-            flag_z: make_flag_op(Flag::Zero),
-            flag_s: make_flag_op(Flag::Sign),
-            flag_d: make_flag_op(Flag::Direction),
+            flags: array_init::array_init(|i| make_flag_op(i)),
             registers: array_init::array_init(|i| {
                 Operand::new_simplified_rc(OperandType::Register(Register(i as u8)))
             })
@@ -566,38 +565,35 @@ impl OperandContext {
     }
 
     pub fn flag_z(&self) -> &Rc<Operand> {
-        &self.globals.flag_z
+        &self.globals.flags[Flag::Zero as usize]
     }
 
     pub fn flag_c(&self) -> &Rc<Operand> {
-        &self.globals.flag_c
+        &self.globals.flags[Flag::Carry as usize]
     }
 
     pub fn flag_o(&self) -> &Rc<Operand> {
-        &self.globals.flag_o
+        &self.globals.flags[Flag::Overflow as usize]
     }
 
     pub fn flag_s(&self) -> &Rc<Operand> {
-        &self.globals.flag_s
+        &self.globals.flags[Flag::Sign as usize]
     }
 
     pub fn flag_p(&self) -> &Rc<Operand> {
-        &self.globals.flag_p
+        &self.globals.flags[Flag::Parity as usize]
     }
 
     pub fn flag_d(&self) -> &Rc<Operand> {
-        &self.globals.flag_d
+        &self.globals.flags[Flag::Direction as usize]
     }
 
     pub fn flag(&self, flag: Flag) -> &Rc<Operand> {
-        match flag {
-            Flag::Zero => self.flag_z(),
-            Flag::Carry => self.flag_c(),
-            Flag::Overflow => self.flag_o(),
-            Flag::Parity => self.flag_p(),
-            Flag::Sign => self.flag_s(),
-            Flag::Direction => self.flag_d(),
-        }
+        self.flag_by_index(flag as usize)
+    }
+
+    pub(crate) fn flag_by_index(&self, index: usize) -> &Rc<Operand> {
+        &self.globals.flags[index]
     }
 
     pub fn register(&self, index: u8) -> Rc<Operand> {
@@ -1761,10 +1757,12 @@ impl MemAccessSize {
 #[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd)]
 pub struct Register(pub u8);
 
+// Flags currently are cast to usize index when stored in ExecutionState
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd)]
+#[repr(u8)]
 pub enum Flag {
-    Zero,
+    Zero = 0,
     Carry,
     Overflow,
     Parity,

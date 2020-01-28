@@ -1,8 +1,9 @@
+use std::fmt;
 use std::rc::Rc;
 
 use crate::analysis;
 use crate::disasm::{Disassembler64, DestOperand, Operation};
-use crate::exec_state::{Constraint, InternMap, InternedOperand, Memory, XmmOperand};
+use crate::exec_state::{Constraint, InternMap, InternedOperand, Memory};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{
@@ -11,12 +12,15 @@ use crate::operand::{
 };
 use crate::{BinaryFile, VirtualAddress64};
 
-#[derive(Debug, Clone)]
+const XMM_REGISTER_INDEX: usize = 0x10;
+const FLAGS_INDEX: usize = XMM_REGISTER_INDEX + 0x10 * 4;
+const STATE_OPERANDS: usize = FLAGS_INDEX + 6;
+
+#[derive(Clone)]
 pub struct ExecutionState<'a> {
-    registers: [InternedOperand; 0x10],
+    // 16 registers, 10 xmm registers with 4 parts each, 6 flags
+    state: [InternedOperand; 0x10 + 0x10 * 4 + 0x6],
     cached_low_registers: CachedLowRegisters,
-    xmm_registers: [XmmOperand; 0x10],
-    flags: Flags,
     memory: Memory,
     unresolved_constraint: Option<Constraint>,
     resolved_constraint: Option<Constraint>,
@@ -27,26 +31,9 @@ pub struct ExecutionState<'a> {
     pending_flags: Option<(ArithOperand, MemAccessSize)>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Flags {
-    zero: InternedOperand,
-    carry: InternedOperand,
-    overflow: InternedOperand,
-    sign: InternedOperand,
-    parity: InternedOperand,
-    direction: InternedOperand,
-}
-
-impl Flags {
-    fn initial(ctx: &OperandContext, interner: &mut InternMap) -> Flags {
-        Flags {
-            zero: interner.intern(ctx.flag_z().clone()),
-            carry: interner.intern(ctx.flag_c().clone()),
-            overflow: interner.intern(ctx.flag_o().clone()),
-            sign: interner.intern(ctx.flag_s().clone()),
-            parity: interner.intern(ctx.flag_p().clone()),
-            direction: interner.intern(ctx.const_0().clone()),
-        }
+impl<'e> fmt::Debug for ExecutionState<'e> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ExecutionStateX86_64")
     }
 }
 
@@ -395,22 +382,22 @@ impl<'a> ExecutionState<'a> {
         ctx: &'b OperandContext,
         interner: &mut InternMap,
     ) -> ExecutionState<'b> {
-        let mut registers = [InternedOperand(0); 16];
-        let mut xmm_registers = [XmmOperand(
-            InternedOperand(0),
-            InternedOperand(0),
-            InternedOperand(0),
-            InternedOperand(0),
-        ); 16];
+        let mut state = [InternedOperand(0); STATE_OPERANDS];
         for i in 0..16 {
-            registers[i] = interner.intern(ctx.register(i as u8));
-            xmm_registers[i] = XmmOperand::initial(ctx, i as u8, interner);
+            state[i] = interner.intern(ctx.register(i as u8));
+            for j in 0..4 {
+                state[XMM_REGISTER_INDEX + i * 4 + j] =
+                    interner.intern(ctx.xmm(i as u8, j as u8));
+            }
         }
+        for i in 0..5 {
+            state[FLAGS_INDEX + i] = interner.intern(ctx.flag_by_index(i).clone());
+        }
+        // Direction
+        state[FLAGS_INDEX + 5] = interner.intern(ctx.const_0());
         ExecutionState {
-            registers,
+            state,
             cached_low_registers: CachedLowRegisters::new(),
-            xmm_registers,
-            flags: Flags::initial(ctx, interner),
             memory: Memory::new(),
             unresolved_constraint: None,
             resolved_constraint: None,
@@ -467,22 +454,19 @@ impl<'a> ExecutionState<'a> {
                         self.resolved_constraint = None
                     }
                 }
-                self.registers[0] = ids.next();
-                self.registers[1] = ids.next();
-                self.registers[2] = ids.next();
-                self.registers[4] = ids.next();
-                self.registers[8] = ids.next();
-                self.registers[9] = ids.next();
-                self.registers[10] = ids.next();
-                self.registers[11] = ids.next();
-                self.flags = Flags {
-                    zero: ids.next(),
-                    carry: ids.next(),
-                    overflow: ids.next(),
-                    sign: ids.next(),
-                    parity: ids.next(),
-                    direction: intern_map.intern(ctx.const_0()),
-                };
+                self.state[0] = ids.next();
+                self.state[1] = ids.next();
+                self.state[2] = ids.next();
+                self.state[4] = ids.next();
+                self.state[8] = ids.next();
+                self.state[9] = ids.next();
+                self.state[10] = ids.next();
+                self.state[11] = ids.next();
+                for i in 0..5 {
+                    self.state[FLAGS_INDEX + i] = ids.next();
+                }
+                self.state[FLAGS_INDEX + Flag::Direction as usize] =
+                    intern_map.intern(ctx.const_0());
             }
             Operation::Jump { .. } => {
             }
@@ -530,36 +514,35 @@ impl<'a> ExecutionState<'a> {
             Add => {
                 let overflow = ctx.gt_signed(resolved_left, &result, size);
                 let carry = ctx.gt(resolved_left, &result);
-                self.flags.carry = intern_map.intern(carry);
-                self.flags.overflow = intern_map.intern(overflow);
+                self.state[FLAGS_INDEX + Flag::Carry as usize] = intern_map.intern(carry);
+                self.state[FLAGS_INDEX + Flag::Overflow as usize] = intern_map.intern(overflow);
                 self.result_flags(&result, size, intern_map);
             }
             Sub => {
                 let overflow = ctx.gt_signed(resolved_left, &result, size);
                 let carry = ctx.gt(&result, resolved_left);
-                self.flags.carry = intern_map.intern(carry);
-                self.flags.overflow = intern_map.intern(overflow);
+                self.state[FLAGS_INDEX + Flag::Carry as usize] = intern_map.intern(carry);
+                self.state[FLAGS_INDEX + Flag::Overflow as usize] = intern_map.intern(overflow);
                 self.result_flags(&result, size, intern_map);
             }
             Xor | And | Or => {
                 let zero = intern_map.intern(ctx.const_0());
-                self.flags.carry = zero;
-                self.flags.overflow = zero;
+                self.state[FLAGS_INDEX + Flag::Carry as usize] = zero;
+                self.state[FLAGS_INDEX + Flag::Overflow as usize] = zero;
                 self.result_flags(&result, size, intern_map);
             }
             Lsh | Rsh  => {
                 let mut ids = intern_map.many_undef(ctx, 2);
-                self.flags.carry = ids.next();
-                self.flags.overflow = ids.next();
+                self.state[FLAGS_INDEX + Flag::Carry as usize] = ids.next();
+                self.state[FLAGS_INDEX + Flag::Overflow as usize] = ids.next();
                 self.result_flags(&result, size, intern_map);
             }
             _ => {
                 let mut ids = intern_map.many_undef(ctx, 5);
-                self.flags.zero = ids.next();
-                self.flags.carry = ids.next();
-                self.flags.overflow = ids.next();
-                self.flags.sign = ids.next();
-                self.flags.parity = ids.next();
+                // NOTE: Relies on direction being index 5 so it won't change here
+                for i in 0..5 {
+                    self.state[FLAGS_INDEX + i] = ids.next();
+                }
             }
         }
     }
@@ -589,9 +572,9 @@ impl<'a> ExecutionState<'a> {
         // Parity is defined to be just lowest byte so it doesn't need special handling for
         // 64 bits.
         parity = ctx.arithmetic(ArithOpType::Parity, result, &ctx.const_0());
-        self.flags.zero = intern_map.intern(zero);
-        self.flags.sign = intern_map.intern(sign);
-        self.flags.parity = intern_map.intern(parity);
+        self.state[FLAGS_INDEX + Flag::Zero as usize] = intern_map.intern(zero);
+        self.state[FLAGS_INDEX + Flag::Sign as usize] = intern_map.intern(sign);
+        self.state[FLAGS_INDEX + Flag::Parity as usize] = intern_map.intern(parity);
     }
 
     /// Makes all of memory undefined
@@ -627,38 +610,33 @@ impl<'a> ExecutionState<'a> {
         match *dest {
             DestOperand::Register64(reg) => {
                 self.cached_low_registers.invalidate(reg.0);
-                Destination::Oper(&mut self.registers[reg.0 as usize])
+                Destination::Oper(&mut self.state[(reg.0 & 0xf) as usize])
             }
             DestOperand::Register32(reg) => {
                 self.cached_low_registers.invalidate(reg.0);
-                Destination::Register32(&mut self.registers[reg.0 as usize])
+                Destination::Register32(&mut self.state[(reg.0 & 0xf) as usize])
             }
             DestOperand::Register16(reg) => {
                 self.cached_low_registers.invalidate(reg.0);
-                Destination::Register16(&mut self.registers[reg.0 as usize])
+                Destination::Register16(&mut self.state[(reg.0 & 0xf) as usize])
             }
             DestOperand::Register8High(reg) => {
                 self.cached_low_registers.invalidate(reg.0);
-                Destination::Register8High(&mut self.registers[reg.0 as usize])
+                Destination::Register8High(&mut self.state[(reg.0 & 0xf) as usize])
             }
             DestOperand::Register8Low(reg) => {
                 self.cached_low_registers.invalidate(reg.0);
-                Destination::Register8Low(&mut self.registers[reg.0 as usize])
+                Destination::Register8Low(&mut self.state[(reg.0 & 0xf) as usize])
             }
             DestOperand::Fpu(_) => Destination::Nop,
             DestOperand::Xmm(reg, word) => {
-                Destination::Oper(self.xmm_registers[reg as usize].word_mut(word))
+                Destination::Oper(&mut self.state[
+                    XMM_REGISTER_INDEX + (reg & 0xf) as usize * 4 + (word & 3) as usize
+                ])
             }
             DestOperand::Flag(flag) => {
                 self.update_flags(intern_map);
-                Destination::Oper(match flag {
-                    Flag::Zero => &mut self.flags.zero,
-                    Flag::Carry => &mut self.flags.carry,
-                    Flag::Overflow => &mut self.flags.overflow,
-                    Flag::Sign => &mut self.flags.sign,
-                    Flag::Parity => &mut self.flags.parity,
-                    Flag::Direction => &mut self.flags.direction,
-                })
+                Destination::Oper(&mut self.state[FLAGS_INDEX + flag as usize])
             }
             DestOperand::Memory(ref mem) => {
                 let address = if dest_is_resolved {
@@ -777,16 +755,16 @@ impl<'a> ExecutionState<'a> {
                 _ => return None,
             }
         };
-        let reg = other.if_register()?;
+        let reg = other.if_register()?.0 & 0xf;
         if c <= 0xff {
-            let interned = match self.cached_low_registers.get_low8(reg.0) {
+            let interned = match self.cached_low_registers.get_low8(reg) {
                 InternedOperand(0) => {
                     let op = ctx.and_const(
-                        &interner.operand(self.registers[reg.0 as usize]),
+                        &interner.operand(self.state[reg as usize]),
                         0xff,
                     );
                     let interned = interner.intern(op);
-                    self.cached_low_registers.set_low8(reg.0, interned);
+                    self.cached_low_registers.set_low8(reg, interned);
                     interned
                 }
                 x => x,
@@ -798,14 +776,14 @@ impl<'a> ExecutionState<'a> {
                 Some(ctx.and(&op, const_op))
             }
         } else if c <= 0xffff {
-            let interned = match self.cached_low_registers.get_16(reg.0) {
+            let interned = match self.cached_low_registers.get_16(reg) {
                 InternedOperand(0) => {
                     let op = ctx.and_const(
-                        &interner.operand(self.registers[reg.0 as usize]),
+                        &interner.operand(self.state[reg as usize]),
                         0xffff,
                     );
                     let interned = interner.intern(op);
-                    self.cached_low_registers.set_16(reg.0, interned);
+                    self.cached_low_registers.set_16(reg, interned);
                     interned
                 }
                 x => x,
@@ -817,14 +795,14 @@ impl<'a> ExecutionState<'a> {
                 Some(ctx.and(&op, const_op))
             }
         } else if c <= 0xffff_ffff {
-            let interned = match self.cached_low_registers.get_32(reg.0) {
+            let interned = match self.cached_low_registers.get_32(reg) {
                 InternedOperand(0) => {
                     let op = ctx.and_const(
-                        &interner.operand(self.registers[reg.0 as usize]),
+                        &interner.operand(self.state[reg as usize]),
                         0xffff_ffff
                     );
                     let interned = interner.intern(op);
-                    self.cached_low_registers.set_32(reg.0, interned);
+                    self.cached_low_registers.set_32(reg, interned);
                     interned
                 }
                 x => x,
@@ -847,22 +825,17 @@ impl<'a> ExecutionState<'a> {
     ) -> Rc<Operand> {
         match value.ty {
             OperandType::Register(reg) => {
-                interner.operand(self.registers[reg.0 as usize])
+                interner.operand(self.state[(reg.0 & 0xf) as usize])
             }
             OperandType::Xmm(reg, word) => {
-                interner.operand(self.xmm_registers[reg as usize].word(word))
+                interner.operand(self.state[
+                    XMM_REGISTER_INDEX + (reg & 0xf) as usize * 4 + (word & 3) as usize
+                ])
             }
             OperandType::Fpu(_) => value.clone(),
             OperandType::Flag(flag) => {
                 self.update_flags(interner);
-                interner.operand(match flag {
-                    Flag::Zero => self.flags.zero,
-                    Flag::Carry => self.flags.carry,
-                    Flag::Overflow => self.flags.overflow,
-                    Flag::Sign => self.flags.sign,
-                    Flag::Parity => self.flags.parity,
-                    Flag::Direction => self.flags.direction,
-                }).clone()
+                interner.operand(self.state[FLAGS_INDEX + flag as usize])
             }
             OperandType::Arithmetic(ref op) => {
                 if op.ty == ArithOpType::And {
@@ -925,7 +898,7 @@ impl<'a> ExecutionState<'a> {
     pub fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
         // TODO: Could also check xmm but who honestly uses it for unique storage
         let interned = i.intern(val.clone());
-        for (reg, &val) in self.registers.iter().enumerate() {
+        for (reg, &val) in self.state.iter().enumerate().take(0x10) {
             if interned == val {
                 return Some(self.ctx.register(reg as u8));
             }
@@ -966,20 +939,6 @@ pub fn merge_states<'a: 'r, 'r>(
     let check_eq = |a: InternedOperand, b: InternedOperand| {
         a == b || a.is_undefined()
     };
-    let check_xmm_eq = |a: &XmmOperand, b: &XmmOperand| {
-        check_eq(a.0, b.0) &&
-            check_eq(a.1, b.1) &&
-            check_eq(a.2, b.2) &&
-            check_eq(a.3, b.3)
-    };
-    let check_flags_eq = |a: &Flags, b: &Flags| {
-        check_eq(a.zero, b.zero) &&
-            check_eq(a.carry, b.carry) &&
-            check_eq(a.overflow, b.overflow) &&
-            check_eq(a.sign, b.sign) &&
-            check_eq(a.parity, b.parity) &&
-            check_eq(a.direction, b.direction)
-    };
     let check_memory_eq = |a: &Memory, b: &Memory, interner: &mut InternMap| {
         a.map.iter().all(|(&key, val)| {
             let oper = interner.operand(key);
@@ -999,14 +958,6 @@ pub fn merge_states<'a: 'r, 'r>(
             true => a,
             false => i.new_undef(ctx),
         }
-    };
-    let merge_xmm = |a: &XmmOperand, b: &XmmOperand, i: &mut InternMap| -> XmmOperand {
-        XmmOperand(
-            merge(a.0, b.0, i),
-            merge(a.1, b.1, i),
-            merge(a.2, b.2, i),
-            merge(a.3, b.3, i),
-        )
     };
 
     let merged_ljec = if old.unresolved_constraint != new.unresolved_constraint {
@@ -1040,64 +991,29 @@ pub fn merge_states<'a: 'r, 'r>(
         None
     };
     let changed =
-        old.registers.iter().zip(new.registers.iter())
+        old.state.iter().zip(new.state.iter())
             .any(|(&a, &b)| !check_eq(a, b)) ||
-        old.xmm_registers.iter().zip(new.xmm_registers.iter())
-            .any(|(a, b)| !check_xmm_eq(a, b)) ||
-        !check_flags_eq(&old.flags, &new.flags) ||
         !check_memory_eq(&old.memory, &new.memory, interner) ||
         merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) || (
             old.resolved_constraint.is_some() &&
             old.resolved_constraint != new.resolved_constraint
         );
     if changed {
-        let mut registers = [InternedOperand(0); 16];
+        let state = array_init::array_init(|i| merge(old.state[i], new.state[i], interner));
         let mut cached_low_registers = CachedLowRegisters::new();
-        let mut xmm_registers = [XmmOperand(
-            InternedOperand(0),
-            InternedOperand(0),
-            InternedOperand(0),
-            InternedOperand(0),
-        ); 16];
-        let mut flags = Flags {
-            zero: InternedOperand(0),
-            carry: InternedOperand(0),
-            overflow: InternedOperand(0),
-            sign: InternedOperand(0),
-            parity: InternedOperand(0),
-            direction: InternedOperand(0),
-        };
-        {
-            for i in 0..16 {
-                registers[i] = merge(old.registers[i], new.registers[i], interner);
-                xmm_registers[i] =
-                    merge_xmm(&old.xmm_registers[i], &new.xmm_registers[i], interner);
-                let old_reg = &old.cached_low_registers.registers[i];
-                let new_reg = &new.cached_low_registers.registers[i];
-                for j in 0..old_reg.len() {
-                    if old_reg[j] == new_reg[j] {
-                        // Doesn't merge things but sets them uncached if they differ
-                        cached_low_registers.registers[i][j] = old_reg[j];
-                    }
+        for i in 0..16 {
+            let old_reg = &old.cached_low_registers.registers[i];
+            let new_reg = &new.cached_low_registers.registers[i];
+            for j in 0..old_reg.len() {
+                if old_reg[j] == new_reg[j] {
+                    // Doesn't merge things but sets them uncached if they differ
+                    cached_low_registers.registers[i][j] = old_reg[j];
                 }
-            }
-            let mut flags = [
-                (&mut flags.zero, old.flags.zero, new.flags.zero),
-                (&mut flags.carry, old.flags.carry, new.flags.carry),
-                (&mut flags.overflow, old.flags.overflow, new.flags.overflow),
-                (&mut flags.sign, old.flags.sign, new.flags.sign),
-                (&mut flags.parity, old.flags.parity, new.flags.parity),
-                (&mut flags.direction, old.flags.direction, new.flags.direction),
-            ];
-            for &mut (ref mut out, old, new) in &mut flags {
-                **out = merge(old, new, interner);
             }
         }
         Some(ExecutionState {
-            registers,
+            state,
             cached_low_registers,
-            xmm_registers,
-            flags,
             memory: old.memory.merge(&new.memory, interner, ctx),
             unresolved_constraint: merged_ljec.unwrap_or_else(|| {
                 // They were same, just use one from old
