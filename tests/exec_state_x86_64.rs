@@ -515,6 +515,22 @@ fn movd() {
     ]);
 }
 
+#[test]
+fn mov_al() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0xb0, 0x55, // mov al, 55
+        0xa2, 0x44, 0x33, 0x22, 0x11, 0xdd, 0xcc, 0xbb, 0xaa, // mov [aabbccdd11223344], al
+        0x48, 0xb9, 0x44, 0x33, 0x22, 0x11, 0xdd, 0xcc, 0xbb, 0xaa, // mov rcx, aabbccdd11223344
+        0x0f, 0xb6, 0x09, // movzx ecx, byte [rcx]
+        0xa0, 0x88, 0x77, 0x66, 0x55, 0x78, 0x56, 0x34, 0x12, // mov al, [1234567855667788]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.mem8(&ctx.constant(0x1234567855667788))),
+         (ctx.register(1), ctx.constant(0x55)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

@@ -1632,7 +1632,11 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let constant = self.read_variable_size_64(1, op_size)?;
+        let const_size = match Va::SIZE == 4 {
+            true => MemAccessSize::Mem32,
+            false => MemAccessSize::Mem64,
+        };
+        let constant = self.read_variable_size_64(1, const_size)?;
         let constant = self.ctx.constant(constant);
         let eax_left = self.read_u8(0)? & 0x2 == 0;
         self.output(match eax_left {
