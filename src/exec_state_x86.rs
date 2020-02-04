@@ -502,10 +502,11 @@ impl<'a> ExecutionState<'a> {
                         self.resolved_constraint = None
                     }
                 }
-                self.state[0] = ids.next();
-                self.state[1] = ids.next();
-                self.state[2] = ids.next();
-                self.state[4] = ids.next();
+                static UNDEF_REGISTERS: &[u8] = &[0, 1, 2, 4];
+                for &i in UNDEF_REGISTERS.iter() {
+                    self.state[i as usize] = ids.next();
+                    self.cached_low_registers.invalidate(i);
+                }
                 for i in 0..5 {
                     self.state[FLAGS_INDEX + i] = ids.next();
                 }

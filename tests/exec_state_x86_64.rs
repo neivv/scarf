@@ -531,6 +531,33 @@ fn mov_al() {
     ]);
 }
 
+#[test]
+fn test_eax_after_call() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0x4d, 0x31, 0xff, // xor r15, r15
+        0x85, 0xc0, // test eax, eax
+        0x75, 0x0c, // jne end
+        0xe8, 0x00, 0x00, 0x00, 0x00, // call x
+        0x85, 0xc0, // test eax, eax
+        0x74, 0x03, // je end
+        0x41, 0xb7, 0x01, // mov r15b, 1
+        // end
+        0xeb, 0x00,
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.undefined_rc()),
+         (ctx.register(1), ctx.undefined_rc()),
+         (ctx.register(2), ctx.undefined_rc()),
+         (ctx.register(4), ctx.undefined_rc()),
+         (ctx.register(8), ctx.undefined_rc()),
+         (ctx.register(9), ctx.undefined_rc()),
+         (ctx.register(10), ctx.undefined_rc()),
+         (ctx.register(11), ctx.undefined_rc()),
+         (ctx.register(15), ctx.undefined_rc()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
