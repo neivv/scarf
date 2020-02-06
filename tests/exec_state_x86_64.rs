@@ -558,6 +558,48 @@ fn test_eax_after_call() {
     ]);
 }
 
+#[test]
+fn switch_u32_op() {
+    let ctx = scarf::operand::OperandContext::new();
+    // 3 cases to ok, 4th fake
+    // rsi, rdi  are undef if the cases are run
+    test_inline(&[
+        // base:
+        0x45, 0x89, 0xc5, // mov r13d, r8d
+        0x41, 0x81, 0xfd, 0x04, 0x01, 0x00, 0x00, // cmp r13d, 104
+        0x77, 0x32, // ja end
+        0x74, 0x30, // je end
+        0x41, 0x83, 0xfd, 0x02, // cmp r13d, 2
+        0x77, 0x2a, // ja end
+
+        0x4c, 0x8d, 0x0d, 0xe5, 0xff, 0xff, 0xff, // lea r9 [base]
+        0x43, 0x8b, 0x8c, 0xa9, 0x28, 0x00, 0x00, 0x00, // mov ecx, [r9 + r13 * 4 + switch_table - base]
+        0x4c, 0x01, 0xc9, // add rcx, r9
+        0xff, 0xe1, // jmp rcx
+        // switch_table:
+        0x38, 0x00, 0x00, 0x00,
+        0x38, 0x00, 0x00, 0x00,
+        0x3c, 0x00, 0x00, 0x00,
+        0x41, 0x00, 0x00, 0x00,
+        // case0,1:
+        0x31, 0xf6, // xor esi, esi
+        0xeb, 0x02, // jmp end
+        // case2:
+        0x31, 0xff, // xor edi, edi
+        // end
+        0xeb, 0x00,
+        0xc3, // ret
+        // case3_fake
+        0xcc, // int3
+    ], &[
+         (operand_register(1), ctx.undefined_rc()),
+         (operand_register(6), ctx.undefined_rc()),
+         (operand_register(7), ctx.undefined_rc()),
+         (operand_register(9), ctx.undefined_rc()),
+         (operand_register(13), ctx.and(&ctx.register(8), &ctx.constant(0xffff_ffff))),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }

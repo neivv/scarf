@@ -4620,50 +4620,70 @@ fn simplify_and_consistency14() {
 
 #[test]
 fn simplify_gt3() {
-    use super::operand_helpers::*;
     let ctx = &OperandContext::new();
     // x - y + z > x + z => (x + z) - y > x + z => y > x + z
-    let op1 = operand_gt(
-        operand_add(
-            operand_sub(
-                ctx.register(0),
-                ctx.register(1),
+    let op1 = ctx.gt(
+        &ctx.add(
+            &ctx.sub(
+                &ctx.register(0),
+                &ctx.register(1),
             ),
-            ctx.constant(5),
+            &ctx.constant(5),
         ),
-        operand_add(
-            ctx.register(0),
-            ctx.constant(5),
-        ),
-    );
-    let eq1 = operand_gt(
-        ctx.register(1),
-        operand_add(
-            ctx.register(0),
-            ctx.constant(5),
+        &ctx.add(
+            &ctx.register(0),
+            &ctx.constant(5),
         ),
     );
-    let op1 = Operand::simplified(op1);
-    let eq1 = Operand::simplified(eq1);
+    let eq1 = ctx.gt(
+        &ctx.register(1),
+        &ctx.add(
+            &ctx.register(0),
+            &ctx.constant(5),
+        ),
+    );
     assert_eq!(op1, eq1);
 }
 
 #[test]
 fn simplify_sub_to_zero() {
-    use super::operand_helpers::*;
     let ctx = &OperandContext::new();
-    let op1 = operand_sub(
-        operand_mul(
-            ctx.constant(0x2),
-            ctx.register(0),
+    let op1 = ctx.sub(
+        &ctx.mul(
+            &ctx.constant(0x2),
+            &ctx.register(0),
         ),
-        operand_mul(
-            ctx.constant(0x2),
-            ctx.register(0),
+        &ctx.mul(
+            &ctx.constant(0x2),
+            &ctx.register(0),
         ),
     );
     let eq1 = ctx.const_0();
-    let op1 = Operand::simplified(op1);
-    let eq1 = Operand::simplified(eq1);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_gt_const() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt(
+        &ctx.sub(
+            &ctx.and(
+                &ctx.register(2),
+                &ctx.constant(0xffff_ffff),
+            ),
+            &ctx.constant(2),
+        ),
+        &ctx.and(
+            &ctx.register(2),
+            &ctx.constant(0xffff_ffff),
+        ),
+    );
+    let eq1 = ctx.gt(
+        &ctx.constant(2),
+        &ctx.and(
+            &ctx.register(2),
+            &ctx.constant(0xffff_ffff),
+        ),
+    );
     assert_eq!(op1, eq1);
 }

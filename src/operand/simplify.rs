@@ -54,44 +54,22 @@ pub fn simplified_with_ctx(
                     if left == right {
                         return ctx.const_0();
                     }
-                    let (left_inner, mask) = Operand::and_masked(&left);
-                    let (right_inner, mask2) = Operand::and_masked(&right);
-                    // Can simplify x - y > x to y > x if mask starts from bit 0
-                    let mask_is_continuous_from_0 = mask.wrapping_add(1) & mask == 0;
-                    if mask == mask2 && mask_is_continuous_from_0 {
-                        // TODO collect_add_ops would be more complete
-                        if let OperandType::Arithmetic(ref arith) = left_inner.ty {
-                            if arith.ty == ArithOpType::Sub {
-                                if arith.left == *right_inner {
-                                    left = if mask == u64::max_value() {
-                                        arith.right.clone()
-                                    } else {
-                                        let c = ctx.constant(mask);
-                                        simplify_and(&arith.right, &c, ctx, swzb_ctx)
-                                    };
-                                }
-                            } else if arith.ty == ArithOpType::Add {
-                                // (x - y) + c > x + c
-                                // (Should just use collect_add_ops)
-                                if let Some(c) = arith.right.if_constant() {
-                                    if let Some((x, y)) = arith.left.if_arithmetic_sub() {
-                                        if let Some((x2, c2)) = right_inner.if_arithmetic_add() {
-                                            if let Some(c2) = c2.if_constant() {
-                                                if x == x2 && c == c2 {
-                                                    left = if mask == u64::max_value() {
-                                                        y.clone()
-                                                    } else {
-                                                        let c = ctx.constant(mask);
-                                                        simplify_and(&y, &c, ctx, swzb_ctx)
-                                                    };
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                    // x - y > x == y > x
+                    if let Some(new) = simplify_gt_lhs_sub(&left, &right) {
+                        left = new;
+                    } else {
+                        let (left_inner, mask) = Operand::and_masked(&left);
+                        let (right_inner, mask2) = Operand::and_masked(&right);
+                        // Can simplify x - y > x to y > x if mask starts from bit 0
+                        let mask_is_continuous_from_0 = mask.wrapping_add(1) & mask == 0;
+                        if mask == mask2 && mask_is_continuous_from_0 {
+                            if let Some(new) = simplify_gt_lhs_sub(&left_inner, &right_inner) {
+                                let c = ctx.constant(mask);
+                                left = simplify_and(&new, &c, ctx, swzb_ctx);
                             }
                         }
                     }
+
                     match (left.if_constant(), right.if_constant()) {
                         (Some(a), Some(b)) => match a > b {
                             true => return ctx.const_1(),
@@ -287,6 +265,32 @@ pub fn simplified_with_ctx(
         }
         _ => mark_self_simplified(s),
     }
+}
+
+fn simplify_gt_lhs_sub(left: &Rc<Operand>, right: &Rc<Operand>) -> Option<Rc<Operand>> {
+    // TODO collect_add_ops would be more complete
+    if let OperandType::Arithmetic(ref arith) = left.ty {
+        if arith.ty == ArithOpType::Sub {
+            if arith.left == *right {
+                return Some(arith.right.clone())
+            }
+        } else if arith.ty == ArithOpType::Add {
+            // (x - y) + c > x + c
+            // (Should just use collect_add_ops)
+            if let Some(c) = arith.right.if_constant() {
+                if let Some((x, y)) = arith.left.if_arithmetic_sub() {
+                    if let Some((x2, c2)) = right.if_arithmetic_add() {
+                        if let Some(c2) = c2.if_constant() {
+                            if x == x2 && c == c2 {
+                                return Some(y.clone())
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn simplify_xor_ops(
