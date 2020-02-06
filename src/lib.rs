@@ -243,6 +243,32 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
             .ok_or_else(|| OutOfBounds)
     }
 
+    pub fn read_u8(&self, addr: Va) -> Result<u8, OutOfBounds> {
+        use crate::light_byteorder::ReadLittleEndian;
+        self.section_by_addr(addr)
+            .and_then(|s| {
+                let section_relative = addr.as_u64() - s.virtual_address.as_u64();
+                s.data.get(section_relative as usize..)
+            })
+            .and_then(|mut data| {
+                data.read_u8().ok()
+            })
+            .ok_or_else(|| OutOfBounds)
+    }
+
+    pub fn read_u16(&self, addr: Va) -> Result<u16, OutOfBounds> {
+        use crate::light_byteorder::ReadLittleEndian;
+        self.section_by_addr(addr)
+            .and_then(|s| {
+                let section_relative = addr.as_u64() - s.virtual_address.as_u64();
+                s.data.get(section_relative as usize..)
+            })
+            .and_then(|mut data| {
+                data.read_u16().ok()
+            })
+            .ok_or_else(|| OutOfBounds)
+    }
+
     pub fn read_u32(&self, addr: Va) -> Result<u32, OutOfBounds> {
         use crate::light_byteorder::ReadLittleEndian;
         self.section_by_addr(addr)
