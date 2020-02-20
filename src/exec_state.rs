@@ -2,7 +2,7 @@ use std::collections::{hash_map, HashMap};
 use std::hash::BuildHasherDefault;
 use std::fmt;
 use std::mem;
-use std::ops::{Add};
+use std::ops::{Add, Sub};
 use std::rc::Rc;
 
 use fxhash::FxBuildHasher;
@@ -198,6 +198,7 @@ pub trait ExecutionState<'a> : Clone {
 /// Either `scarf::VirtualAddress` in 32-bit or `scarf::VirtualAddress64` in 64-bit
 pub trait VirtualAddress: Eq + PartialEq + Ord + PartialOrd + Copy + Clone + std::hash::Hash +
     fmt::LowerHex + fmt::UpperHex + fmt::Debug + Add<u32, Output = Self> +
+    Sub<u32, Output = Self> +
     'static
 {
     type Inner: fmt::LowerHex + fmt::UpperHex;
