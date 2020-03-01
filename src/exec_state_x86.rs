@@ -737,36 +737,6 @@ impl<'e> ExecutionState<'e> {
                 .unwrap_or_else(|| ctx.mem32(&high_mem.address));
             return Some(ctx.or(&low, &high));
         }
-        let size_bytes = match mem.size {
-            MemAccessSize::Mem8 => 1,
-            MemAccessSize::Mem16 => 2,
-            MemAccessSize::Mem32 => 4,
-            MemAccessSize::Mem64 => unreachable!(),
-        };
-        if let Some(c) = address.if_constant().map(|c| c as u32) {
-            // Simplify constants stored in code section (constant switch jumps etc)
-            if let Some(end) = c.checked_add(size_bytes) {
-                let section = self.binary.and_then(|b| {
-                    b.code_sections().find(|s| {
-                        s.virtual_address.0 <= c && s.virtual_address.0 + s.virtual_size >= end
-                    })
-                });
-                if let Some(section) = section {
-                    let offset = (c - section.virtual_address.0) as usize;
-                    let val = match mem.size {
-                        MemAccessSize::Mem8 => section.data[offset] as u32,
-                        MemAccessSize::Mem16 => {
-                            (&section.data[offset..]).read_u16().unwrap_or(0) as u32
-                        }
-                        MemAccessSize::Mem32 => {
-                            (&section.data[offset..]).read_u32().unwrap_or(0)
-                        }
-                        MemAccessSize::Mem64 => unreachable!(),
-                    };
-                    return Some(ctx.constant(val as u64));
-                }
-            }
-        }
 
         let mask = match mem.size {
             MemAccessSize::Mem8 => 0xffu32,
@@ -776,6 +746,7 @@ impl<'e> ExecutionState<'e> {
         };
         // Use 4-aligned addresses if there's a const offset
         if let Some((base, offset)) = Operand::const_offset(&address, ctx) {
+            let size_bytes = mem.size.bits() / 8;
             let offset = offset as u32;
             let offset_4 = offset & 3;
             let offset_rest = sext32_64(offset & !3);
@@ -783,6 +754,16 @@ impl<'e> ExecutionState<'e> {
                 let low_base = ctx.add_const(&base, offset_rest);
                 let low = self.memory.get(i.intern(low_base.clone()))
                     .map(|x| i.operand(x))
+                    .or_else(|| {
+                        // Avoid reading Mem32 if it's not necessary as it may go
+                        // past binary end where a smaller read wouldn't
+                        let size = match offset_4 + size_bytes {
+                            1 => MemAccessSize::Mem8,
+                            2 => MemAccessSize::Mem16,
+                            _ => MemAccessSize::Mem32,
+                        };
+                        self.resolve_binary_constant_mem(&low_base, size)
+                    })
                     .unwrap_or_else(|| ctx.mem32(&low_base));
                 let low = ctx.rsh_const(&low, (offset_4 * 8) as u64);
                 let combined = if offset_4 + size_bytes > 4 {
@@ -792,6 +773,14 @@ impl<'e> ExecutionState<'e> {
                     );
                     let high = self.memory.get(i.intern(high_base.clone()))
                         .map(|x| i.operand(x))
+                        .or_else(|| {
+                            let size = match (offset_4 + size_bytes) - 4 {
+                                1 => MemAccessSize::Mem8,
+                                2 => MemAccessSize::Mem16,
+                                _ => MemAccessSize::Mem32,
+                            };
+                            self.resolve_binary_constant_mem(&high_base, size)
+                        })
                         .unwrap_or_else(|| ctx.mem32(&high_base));
                     let high = ctx.and_const(
                         &ctx.lsh_const(
@@ -816,12 +805,13 @@ impl<'e> ExecutionState<'e> {
             .map(|interned| {
                 let operand = i.operand(interned);
                 if mask != 0 {
-                    Some(ctx.and_const(&operand, mask as u64))
+                    ctx.and_const(&operand, mask as u64)
                 } else {
-                    Some(operand)
+                    operand
                 }
             })
-            .unwrap_or_else(|| {
+            .or_else(|| self.resolve_binary_constant_mem(&address, mem.size))
+            .or_else(|| {
                 // Just copy the input value if address didn't change
                 if Rc::ptr_eq(&address, &mem.address) {
                     None
@@ -829,6 +819,39 @@ impl<'e> ExecutionState<'e> {
                     Some(ctx.mem_variable_rc(mem.size, &address))
                 }
             })
+    }
+
+    fn resolve_binary_constant_mem(
+        &self,
+        address: &Rc<Operand>,
+        size: MemAccessSize,
+    ) -> Option<Rc<Operand>> {
+        if let Some(c) = address.if_constant().map(|c| c as u32) {
+            let size_bytes = size.bits() / 8;
+            // Simplify constants stored in code section (constant switch jumps etc)
+            if let Some(end) = c.checked_add(size_bytes) {
+                let section = self.binary.and_then(|b| {
+                    b.code_sections().find(|s| {
+                        s.virtual_address.0 <= c && s.virtual_address.0 + s.virtual_size >= end
+                    })
+                });
+                if let Some(section) = section {
+                    let offset = (c - section.virtual_address.0) as usize;
+                    let val = match size {
+                        MemAccessSize::Mem8 => section.data[offset] as u32,
+                        MemAccessSize::Mem16 => {
+                            (&section.data[offset..]).read_u16().unwrap_or(0) as u32
+                        }
+                        MemAccessSize::Mem32 => {
+                            (&section.data[offset..]).read_u32().unwrap_or(0)
+                        }
+                        MemAccessSize::Mem64 => unreachable!(),
+                    };
+                    return Some(self.ctx.constant(val as u64));
+                }
+            }
+        }
+        None
     }
 
     /// Checks cached/caches `reg & ff` masks.

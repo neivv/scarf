@@ -617,6 +617,26 @@ fn partial_overwrite() {
     ]);
 }
 
+// Exact behaviour on the case of code being executed is not
+// specified, but unrelated bytes in code section are assumed
+// to be modifiable and the modifications are assumed to be readable back.
+#[test]
+fn modifying_code_section() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0xb8, 0x11, 0x10, 0x40, 0x00, // mov eax, 00401011 (&bytes)
+        0x66, 0xc7, 0x40, 0x04, 0x88, 0x77, // mov [eax + 4], word 7788
+        0x8b, 0x08, // mov ecx, [eax]
+        0x8b, 0x40, 0x04, // mov eax, [eax + 4]
+        0xc3, // ret
+        // bytes:
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+    ], &[
+         (ctx.register(0), ctx.constant(0x18177788)),
+         (ctx.register(1), ctx.constant(0x14131211)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
