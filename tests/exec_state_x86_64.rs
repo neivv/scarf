@@ -600,6 +600,23 @@ fn switch_u32_op() {
     ]);
 }
 
+#[test]
+fn partial_overwrite() {
+    let ctx = scarf::operand::OperandContext::new();
+    test_inline(&[
+        0xc7, 0x00, 0x78, 0x56, 0x34, 0x12, // mov [eax], 12345678
+        0xc6, 0x00, 0x99, // mov byte [eax], 99
+        0xc7, 0x41, 0x01, 0x78, 0x56, 0x34, 0x12, // mov [ecx + 1], 12345678
+        0xc6, 0x41, 0x01, 0xaa, // mov byte [ecx + 1], aa
+        0x8b, 0x00, // mov eax, [eax]
+        0x8b, 0x49, 0x01, // mov ecx, [ecx + 1]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0x12345699)),
+         (ctx.register(1), ctx.constant(0x123456aa)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<(ExecutionState<'e>, scarf::exec_state::InternMap)>,
 }
