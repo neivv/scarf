@@ -584,8 +584,8 @@ impl<'exec: 'b, 'b, 'c, A: Analyzer<'exec> + 'b> Control<'exec, 'b, 'c, A> {
     }
 
     /// Convenience for cases where `Mem[address]` is needed
-    pub fn mem_word(&self, addr: Rc<Operand>) -> Rc<Operand> {
-        A::Exec::operand_mem_word(addr)
+    pub fn mem_word(&self, addr: &Rc<Operand>) -> Rc<Operand> {
+        A::Exec::operand_mem_word(self.ctx(), addr)
     }
 
     /// Either `op.if_mem32()` or `op.if_mem64()`, depending on word size
@@ -1020,8 +1020,7 @@ fn try_add_branch<'exec, Exec: ExecutionState<'exec>, S: AnalysisState>(
             Some(address)
         }
         None => {
-            let simplified = Operand::simplified(to);
-            trace!("Couldnt resolve jump dest @ {:x}: {:?}", address, simplified);
+            trace!("Couldnt resolve jump dest @ {:x}: {:?}", address, to);
             None
         }
     }

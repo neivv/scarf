@@ -281,7 +281,6 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     }
 
     fn move_resolved(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap) {
-        let value = Operand::simplified(value);
         let ctx = self.ctx;
         self.unresolved_constraint = None;
         let dest = self.get_dest(dest, i, true);
@@ -301,13 +300,8 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
     }
 
     fn resolve_apply_constraints(&mut self, op: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand> {
-        let mut stack_op;
-        let mut op_ref = if op.is_simplified() {
-            op
-        } else {
-            stack_op = Operand::simplified(op.clone());
-            &stack_op
-        };
+        let stack_op;
+        let mut op_ref = op;
         if let Some(ref constraint) = self.unresolved_constraint {
             stack_op = constraint.apply_to(self.ctx, op_ref);
             op_ref = &stack_op;
@@ -463,7 +457,7 @@ impl<'e> ExecutionState<'e> {
                 let mut ids = intern_map.many_undef(ctx, 13);
                 self.unresolved_constraint = None;
                 if let Some(ref mut c) = self.resolved_constraint {
-                    if c.invalidate_memory() == crate::exec_state::ConstraintFullyInvalid::Yes {
+                    if c.invalidate_memory(ctx) == crate::exec_state::ConstraintFullyInvalid::Yes {
                         self.resolved_constraint = None
                     }
                 }
@@ -597,13 +591,14 @@ impl<'e> ExecutionState<'e> {
         dest: &DestOperand,
         interner: &mut InternMap,
     ) -> Destination<'s, 'e> {
+        let ctx = self.ctx();
         self.unresolved_constraint = match self.unresolved_constraint {
-            Some(ref s) => s.invalidate_dest_operand(dest),
+            Some(ref s) => s.invalidate_dest_operand(ctx, dest),
             None => None,
         };
         if let Some(ref mut s) = self.resolved_constraint {
             if let DestOperand::Memory(_) = dest {
-                if s.invalidate_memory() == crate::exec_state::ConstraintFullyInvalid::Yes {
+                if s.invalidate_memory(ctx) == crate::exec_state::ConstraintFullyInvalid::Yes {
                     self.resolved_constraint = None;
                 }
             }

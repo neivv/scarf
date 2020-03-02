@@ -1376,7 +1376,7 @@ impl Operand {
         Rc::new(Self::new(ty, true))
     }
 
-    pub fn new_not_simplified_rc(ty: OperandType) -> Rc<Operand> {
+    fn new_not_simplified_rc(ty: OperandType) -> Rc<Operand> {
         Rc::new(Self::new(ty, false))
     }
 
@@ -1485,74 +1485,6 @@ impl Operand {
         let ctx = &OperandContext::new();
         let mut swzb_ctx = simplify::SimplifyWithZeroBits::default();
         simplify::simplified_with_ctx(&s, ctx, &mut swzb_ctx)
-    }
-
-    #[deprecated]
-    #[allow(deprecated)]
-    pub fn transform<F>(oper: &Rc<Operand>, mut f: F) -> Rc<Operand>
-    where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
-    {
-        Operand::simplified(Operand::transform_internal(&oper, &mut f))
-    }
-
-    #[deprecated]
-    #[allow(deprecated)]
-    pub fn transform_internal<F>(oper: &Rc<Operand>, f: &mut F) -> Rc<Operand>
-    where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
-    {
-        if let Some(val) = f(&oper) {
-            return val;
-        }
-        let sub = |oper: &Rc<Operand>, f: &mut F| Operand::transform_internal(oper, f);
-        let ty = match oper.ty {
-            OperandType::Arithmetic(ref arith) => OperandType::Arithmetic(ArithOperand {
-                ty: arith.ty,
-                left: sub(&arith.left, f),
-                right: sub(&arith.right, f),
-            }),
-            OperandType::Memory(ref m) => {
-                OperandType::Memory(MemAccess {
-                    address: sub(&m.address, f),
-                    size: m.size,
-                })
-            }
-            ref x => x.clone(),
-        };
-        Operand::new_not_simplified_rc(ty)
-    }
-
-    #[deprecated]
-    #[allow(deprecated)]
-    pub fn substitute(oper: &Rc<Operand>, val: &Rc<Operand>, with: &Rc<Operand>) -> Rc<Operand> {
-        if let Some(mem) = val.if_memory() {
-            // Transform also Mem16[mem.addr] to with & 0xffff if val is Mem32, etc.
-            // I guess recursing inside mem.addr doesn't make sense here,
-            // but didn't give it too much thought.
-            Operand::transform(oper, |old| {
-                old.if_memory()
-                    .filter(|old| old.address == mem.address)
-                    .filter(|old| old.size.bits() <= mem.size.bits())
-                    .map(|old| {
-                        use crate::operand_helpers::*;
-                        if mem.size == old.size || old.size == MemAccessSize::Mem64 {
-                            with.clone()
-                        } else {
-                            let mask = constval(match old.size {
-                                MemAccessSize::Mem64 => unreachable!(),
-                                MemAccessSize::Mem32 => 0xffff_ffff,
-                                MemAccessSize::Mem16 => 0xffff,
-                                MemAccessSize::Mem8 => 0xff,
-                            });
-                            Operand::simplified(operand_and(with.clone(), mask))
-                        }
-                    })
-            })
-        } else {
-            Operand::transform(oper, |old| match old == val {
-                true => Some(with.clone()),
-                false => None,
-            })
-        }
     }
 
     /// Returns `Some(c)` if `self.ty` is `OperandType::Constant(c)`
@@ -1768,121 +1700,6 @@ pub enum Flag {
     Parity,
     Sign,
     Direction,
-}
-
-pub mod operand_helpers {
-    use std::rc::Rc;
-
-    use super::ArithOpType::*;
-    use super::MemAccessSize::*;
-    use super::{
-        ArithOpType, ArithOperand, MemAccess, MemAccessSize, Operand, OperandContext,
-        OperandType,
-    };
-
-    pub fn operand_register(num: u8) -> Rc<Operand> {
-        OperandContext::new().register(num)
-    }
-
-    pub fn operand_arith(ty: ArithOpType, lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        Operand::new_not_simplified_rc(OperandType::Arithmetic(ArithOperand {
-            ty,
-            left: lhs,
-            right: rhs,
-        }))
-    }
-
-    pub fn operand_arith_f32(ty: ArithOpType, lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        Operand::new_not_simplified_rc(OperandType::ArithmeticF32(ArithOperand {
-            ty,
-            left: lhs,
-            right: rhs,
-        }))
-    }
-
-    pub fn operand_add(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Add, lhs, rhs)
-    }
-
-    pub fn operand_sub(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Sub, lhs, rhs)
-    }
-
-    pub fn operand_mul(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Mul, lhs, rhs)
-    }
-
-    pub fn operand_div(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Div, lhs, rhs)
-    }
-
-    pub fn operand_mod(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Modulo, lhs, rhs)
-    }
-
-    pub fn operand_and(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(And, lhs, rhs)
-    }
-
-    pub fn operand_eq(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Equal, lhs, rhs)
-    }
-
-    pub fn operand_ne(ctx: &OperandContext, lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_eq(operand_eq(lhs, rhs), ctx.const_0())
-    }
-
-    pub fn operand_gt(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(GreaterThan, lhs, rhs)
-    }
-
-    pub fn operand_or(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Or, lhs, rhs)
-    }
-
-    pub fn operand_xor(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Xor, lhs, rhs)
-    }
-
-    pub fn operand_lsh(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Lsh, lhs, rhs)
-    }
-
-    pub fn operand_rsh(lhs: Rc<Operand>, rhs: Rc<Operand>) -> Rc<Operand> {
-        operand_arith(Rsh, lhs, rhs)
-    }
-
-    pub fn mem64(val: Rc<Operand>) -> Rc<Operand> {
-        mem_variable_rc(Mem64, val)
-    }
-
-    pub fn mem32(val: Rc<Operand>) -> Rc<Operand> {
-        mem_variable_rc(Mem32, val)
-    }
-
-    pub fn mem16(val: Rc<Operand>) -> Rc<Operand> {
-        mem_variable_rc(Mem16, val)
-    }
-
-    pub fn mem8(val: Rc<Operand>) -> Rc<Operand> {
-        mem_variable_rc(Mem8, val)
-    }
-
-    pub fn mem_variable_rc(size: MemAccessSize, val: Rc<Operand>) -> Rc<Operand> {
-        // Eagerly simplify these as the address cannot affect anything
-        // this operand would get wrapped to.
-        // Only drawback is that if this resulting operand is discarded before
-        // it needed to be simplified, the work was wasted.
-        // Though that should be a rare case.
-        Operand::new_simplified_rc(OperandType::Memory(MemAccess {
-            address: Operand::simplified(val),
-            size,
-        }))
-    }
-
-    pub fn constval(num: u64) -> Rc<Operand> {
-        OperandContext::new().constant(num)
-    }
 }
 
 #[cfg(test)]

@@ -1933,9 +1933,7 @@ impl<'a, 'exec: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'exec, Va> {
 
         self.output(Operation::Move(
             r.dest_operand(),
-            Operand::new_not_simplified_rc(
-                OperandType::SignExtend(self.rm_to_operand(&rm), op_size, dest_size),
-            ),
+            self.ctx.sign_extend(&self.rm_to_operand(&rm), op_size, dest_size),
             None,
         ));
         Ok(())

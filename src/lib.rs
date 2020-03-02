@@ -18,7 +18,7 @@ mod vec_drop_iter;
 pub use crate::analysis::{Analyzer};
 pub use crate::disasm::{DestOperand, Operation, operation_helpers};
 pub use crate::operand::{
-    ArithOpType, MemAccessSize, Operand, OperandType, OperandContext, operand_helpers
+    ArithOpType, MemAccessSize, Operand, OperandType, OperandContext,
 };
 
 pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;

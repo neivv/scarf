@@ -13,43 +13,47 @@ use scarf::{
 };
 use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86 as ExecutionState;
-use scarf::operand_helpers::*;
 use scarf::operand::OperandType;
 
 #[test]
 fn movzx() {
+    let ctx = scarf::operand::OperandContext::new();
     test(0, &[
-         (operand_register(0), constval(1)),
-         (operand_register(1), constval(0xfffd)),
-         (operand_register(2), constval(0xfffd)),
+         (ctx.register(0), ctx.constant(1)),
+         (ctx.register(1), ctx.constant(0xfffd)),
+         (ctx.register(2), ctx.constant(0xfffd)),
     ]);
 }
 
 #[test]
 fn movsx() {
+    let ctx = scarf::operand::OperandContext::new();
     test(1, &[
-         (operand_register(0), constval(1)),
-         (operand_register(1), constval(0xfffd)),
-         (operand_register(2), constval(0xfffffffd)),
+         (ctx.register(0), ctx.constant(1)),
+         (ctx.register(1), ctx.constant(0xfffd)),
+         (ctx.register(2), ctx.constant(0xfffffffd)),
     ]);
 }
 
 #[test]
 fn movzx_mem() {
+    let ctx = scarf::operand::OperandContext::new();
     test(2, &[
-         (operand_register(0), constval(0x90)),
+         (ctx.register(0), ctx.constant(0x90)),
     ]);
 }
 
 #[test]
 fn movsx_mem() {
+    let ctx = scarf::operand::OperandContext::new();
     test(3, &[
-         (operand_register(0), constval(0xffffff90)),
+         (ctx.register(0), ctx.constant(0xffffff90)),
     ]);
 }
 
 #[test]
 fn f6_f7_and_const() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xc7, 0x00, 0x00, 0x45, 0x00, 0x00, // mov [eax], 4500
         0xf7, 0x00, 0x45, 0x40, 0x00, 0x00, // test [eax], 4045
@@ -60,13 +64,14 @@ fn f6_f7_and_const() {
         0x0f, 0xb6, 0xc0, // movzx eax, al
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0)),
-         (operand_register(1), constval(1)),
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.constant(1)),
     ]);
 }
 
 #[test]
 fn movsx_16_self() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xb8, 0x94, 0x12, 0x00, 0x00, // mov eax, 1294
         0x66, 0x0f, 0xbe, 0xc0, // movsx ax, al
@@ -79,15 +84,16 @@ fn movsx_16_self() {
         0x81, 0xe2, 0xff, 0xff, 0x00, 0x00, // and edx, ffff
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0xff94)),
-         (operand_register(1), constval(0xff94)),
-         (operand_register(2), constval(0xff94)),
-         (operand_register(6), constval(0xff94)),
+         (ctx.register(0), ctx.constant(0xff94)),
+         (ctx.register(1), ctx.constant(0xff94)),
+         (ctx.register(2), ctx.constant(0xff94)),
+         (ctx.register(6), ctx.constant(0xff94)),
     ]);
 }
 
 #[test]
 fn cmp_const_16() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x66, 0xc7, 0x03, 0x05, 0x05, // mov word [ebx], 0505
         0x31, 0xc0, // xor eax, eax
@@ -95,36 +101,39 @@ fn cmp_const_16() {
         0x0f, 0x92, 0xc0, // setb al
         0xc3, //ret
     ], &[
-         (operand_register(0), constval(1)),
+         (ctx.register(0), ctx.constant(1)),
     ]);
 }
 
 #[test]
 fn add_i8() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x31, 0xc0, // xor eax, eax
         0x83, 0xc0, 0xfb, // add eax, 0xfffffffb
         0xc3, //ret
     ], &[
-         (operand_register(0), constval(0xfffffffb)),
+         (ctx.register(0), ctx.constant(0xfffffffb)),
     ]);
 }
 
 #[test]
 fn shld() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xb9, 0x23, 0x01, 0x00, 0xff, // mov ecx, 0xff000123
         0xb8, 0x00, 0x00, 0x00, 0x40, // mov eax, 0x40000000
         0x0f, 0xa4, 0xc1, 0x04, // shld ecx, eax, 4
         0xc3, //ret
     ], &[
-         (operand_register(0), constval(0x40000000)),
-         (operand_register(1), constval(0xf0001234)),
+         (ctx.register(0), ctx.constant(0x40000000)),
+         (ctx.register(1), ctx.constant(0xf0001234)),
     ]);
 }
 
 #[test]
 fn double_jbe() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
         0x76, 0x03, // jbe _jbe2
@@ -136,24 +145,26 @@ fn double_jbe() {
         0xcc, // int3
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(1)),
+         (ctx.register(0), ctx.constant(1)),
     ]);
 }
 
 #[test]
 fn shr_mem_10() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xc7, 0x45, 0xf4, 0x78, 0x56, 0x34, 0x12, // mov [ebp - 0xc], 0x12345678
         0xc1, 0x6d, 0xf4, 0x10, // shr [ebp - 0xc], 0x10
         0x8b, 0x45, 0xf4, // mov eax, [ebp - 0xc]
         0xc3, //ret
     ], &[
-         (operand_register(0), constval(0x1234)),
+         (ctx.register(0), ctx.constant(0x1234)),
     ]);
 }
 
 #[test]
 fn shr_mem_10_b() {
+    let ctx = scarf::operand::OperandContext::new();
     // Memory address (base + ffffffff)
     test_inline(&[
         0xc7, 0x45, 0xff, 0x78, 0x56, 0x34, 0x12, // mov [ebp - 0x1], 0x12345678
@@ -161,36 +172,39 @@ fn shr_mem_10_b() {
         0x8b, 0x45, 0xff, // mov eax, [ebp - 0x1]
         0xc3, //ret
     ], &[
-         (operand_register(0), constval(0x1234)),
+         (ctx.register(0), ctx.constant(0x1234)),
     ]);
 }
 
 #[test]
 fn read_ffffffff() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xa1, 0xff, 0xff, 0xff, 0xff, // mov eax, [ffffffff]
         0xc3, //ret
     ], &[
-         (operand_register(0), mem32(constval(0xffff_ffff))),
+         (ctx.register(0), ctx.mem32(&ctx.constant(0xffff_ffff))),
     ]);
 }
 
 #[test]
 fn read_this() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xa1, 0x00, 0x10, 0x40, 0x00, // mov eax, [401000]
         0x8b, 0x0d, 0x0e, 0x10, 0x40, 0x00, // mov ecx, [40100e]
         0x8b, 0x15, 0x0f, 0x10, 0x40, 0x00, // mov edx, [40100f]
         0xc3, //ret
     ], &[
-         (operand_register(0), constval(0x4010_00a1)),
-         (operand_register(1), constval(0xc300_4010)),
-         (operand_register(2), mem32(constval(0x0040_100f))),
+         (ctx.register(0), ctx.constant(0x4010_00a1)),
+         (ctx.register(1), ctx.constant(0xc300_4010)),
+         (ctx.register(2), ctx.mem32(&ctx.constant(0x0040_100f))),
     ]);
 }
 
 #[test]
 fn je_jne_with_memory_write() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x8b, 0x03, // mov eax, [ebx]
         0x01, 0xc8, // add eax, ecx
@@ -201,12 +215,13 @@ fn je_jne_with_memory_write() {
         0x31, 0xc0, // xor eax, eax
         0xc3, //ret
     ], &[
-        (operand_register(0), constval(0)),
+        (ctx.register(0), ctx.constant(0)),
     ]);
 }
 
 #[test]
 fn not_is_xor() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xf7, 0xd0, // not eax
         0x83, 0xf0, 0xff, // xor eax, ffff_ffff
@@ -214,13 +229,14 @@ fn not_is_xor() {
         0x81, 0xf1, 0xff, 0xff, 0x00, 0x00, // xor ecx, ffff
         0xc3, //ret
     ], &[
-        (operand_register(0), operand_register(0)),
-        (operand_register(1), operand_register(1)),
+        (ctx.register(0), ctx.register(0)),
+        (ctx.register(1), ctx.register(1)),
     ]);
 }
 
 #[test]
 fn jge_jge() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x31, 0xc0, // xor eax, eax
         0x39, 0xc8, // cmp eax, ecx
@@ -232,12 +248,13 @@ fn jge_jge() {
         0xcc, // int3
         0xc3, //ret
     ], &[
-        (operand_register(0), constval(0)),
+        (ctx.register(0), ctx.constant(0)),
     ]);
 }
 
 #[test]
 fn inc_dec_flags() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x31, 0xc0, // xor eax, eax
         0x40, // inc eax
@@ -251,12 +268,13 @@ fn inc_dec_flags() {
         0xcc, // int3
         0xc3, //ret
     ], &[
-        (operand_register(0), constval(0xffff_ffff)),
+        (ctx.register(0), ctx.constant(0xffff_ffff)),
     ]);
 }
 
 #[test]
 fn jo_jno_sometimes_undef() {
+    let ctx = scarf::operand::OperandContext::new();
     // jo is guaranteed to not be taken if esi == 0
     test_inline(&[
         0x31, 0xc0, // xor eax, eax
@@ -271,7 +289,7 @@ fn jo_jno_sometimes_undef() {
         0x31, 0xc0, // xor eax, eax
         0xc3, //ret
     ], &[
-        (operand_register(0), constval(0)),
+        (ctx.register(0), ctx.constant(0)),
     ]);
 }
 
@@ -289,36 +307,38 @@ fn call_removes_constraints() {
         0xeb, 0x00, // jmp ret
         0xc3, //ret
     ], &[
-        (operand_register(0), ctx.undefined_rc()),
-        (operand_register(1), ctx.undefined_rc()),
-        (operand_register(2), ctx.undefined_rc()),
-        (operand_register(3), ctx.undefined_rc()),
-        (operand_register(4), ctx.undefined_rc()),
+        (ctx.register(0), ctx.undefined_rc()),
+        (ctx.register(1), ctx.undefined_rc()),
+        (ctx.register(2), ctx.undefined_rc()),
+        (ctx.register(3), ctx.undefined_rc()),
+        (ctx.register(4), ctx.undefined_rc()),
     ]);
 }
 
 #[test]
 fn div_mod() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x33, 0xd2, // xor edx, edx
         0xb9, 0x07, 0x00, 0x00, 0x00, // mov ecx, 7
         0xf7, 0xf1, // div ecx
         0xc3, //ret
     ], &[
-        (operand_register(1), constval(7)),
-        (operand_register(2), operand_mod(
-            operand_and(operand_register(0), constval(0xffff_ffff)),
-            constval(7),
+        (ctx.register(1), ctx.constant(7)),
+        (ctx.register(2), ctx.modulo(
+            &ctx.and(&ctx.register(0), &ctx.constant(0xffff_ffff)),
+            &ctx.constant(7),
         )),
-        (operand_register(0), operand_div(
-            operand_and(operand_register(0), constval(0xffff_ffff)),
-            constval(7),
+        (ctx.register(0), ctx.div(
+            &ctx.and(&ctx.register(0), &ctx.constant(0xffff_ffff)),
+            &ctx.constant(7),
         )),
     ]);
 }
 
 #[test]
 fn cmp_mem8() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x31, 0xc0, // xor eax, eax
         0x04, 0x95, // add al, 95
@@ -328,17 +348,18 @@ fn cmp_mem8() {
         0xcc,
         0xc3, //ret
     ], &[
-         (operand_register(0), constval(0x95)),
+         (ctx.register(0), ctx.constant(0x95)),
     ]);
 }
 
 #[test]
 fn movzx_mem8() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x0f, 0xb6, 0x56, 0x4d, // movzx edx, byte [esi + 4d]
         0xc3, //ret
     ], &[
-         (operand_register(2), mem8(operand_add(operand_register(6), constval(0x4d)))),
+         (ctx.register(2), ctx.mem8(&ctx.add(&ctx.register(6), &ctx.constant(0x4d)))),
     ]);
 }
 
@@ -381,12 +402,13 @@ fn lazy_flag_constraint_invalidation() {
         0xeb, 0x00, // jmp ret
         0xc3, // ret
     ], &[
-         (operand_register(6), ctx.undefined_rc()),
+         (ctx.register(6), ctx.undefined_rc()),
     ]);
 }
 
 #[test]
 fn psllq() {
+    let ctx = scarf::operand::OperandContext::new();
     // ecx:eax = 1212_1212_4545_4545 << 20
     // ebx:edx = 8800_8800_9999_9999 << 20
     test_inline(&[
@@ -405,10 +427,10 @@ fn psllq() {
         0x8b, 0x5c, 0xe4, 0x0c, // mov ebx, [esp + c]
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0x4545_0000)),
-         (operand_register(1), constval(0x1212_4545)),
-         (operand_register(2), constval(0x9999_0000)),
-         (operand_register(3), constval(0x8800_9999)),
+         (ctx.register(0), ctx.constant(0x4545_0000)),
+         (ctx.register(1), ctx.constant(0x1212_4545)),
+         (ctx.register(2), ctx.constant(0x9999_0000)),
+         (ctx.register(3), ctx.constant(0x8800_9999)),
     ]);
 }
 
@@ -427,9 +449,9 @@ fn negative_offset() {
         0x8a, 0x02, // mov al, [edx]
         0xc3, // ret
     ], &[
-         (operand_register(0), ctx.constant(9)),
-         (operand_register(1), operand_add(mem32(ctx.constant(0x123400)), ctx.constant(1))),
-         (operand_register(2), mem32(ctx.constant(0x123400))),
+         (ctx.register(0), ctx.constant(9)),
+         (ctx.register(1), ctx.add(&ctx.mem32(&ctx.constant(0x123400)), &ctx.constant(1))),
+         (ctx.register(2), ctx.mem32(&ctx.constant(0x123400))),
     ]);
 }
 
@@ -467,7 +489,7 @@ fn push_pop() {
          (ctx.register(1), ctx.constant(0x80)),
          (ctx.register(2), ctx.constant(0x90)),
          (ctx.register(3), ctx.constant(0x22)),
-         (ctx.register(4), operand_add(ctx.register(4), ctx.constant(0x10))),
+         (ctx.register(4), ctx.add(&ctx.register(4), &ctx.constant(0x10))),
     ]);
 }
 
@@ -486,7 +508,7 @@ fn stack_sub() {
     ], &[
          (ctx.register(0), ctx.register(4)),
          (ctx.register(1), ctx.constant(0x80)),
-         (ctx.register(4), operand_sub(ctx.register(4), ctx.constant(0x28))),
+         (ctx.register(4), ctx.sub(&ctx.register(4), &ctx.constant(0x28))),
     ]);
 }
 
@@ -692,8 +714,8 @@ fn test_inner(
     assert!(analysis.errors.is_empty());
     let (mut end_state, mut end_i) = collect_end_state.end_state.unwrap();
     for i in 0..8 {
-        let expected = expected_state.resolve(&operand_register(i), &mut interner);
-        let end = end_state.resolve(&operand_register(i), &mut end_i);
+        let expected = expected_state.resolve(&ctx.register(i), &mut interner);
+        let end = end_state.resolve(&ctx.register(i), &mut end_i);
         if end.iter().any(|x| match x.ty {
             OperandType::Undefined(_) => true,
             _ => false,

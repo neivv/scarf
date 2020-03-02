@@ -4,9 +4,13 @@ use std::rc::Rc;
 
 use crate::cfg::{Cfg, CfgState, CfgOutEdges, NodeLink};
 use crate::exec_state::VirtualAddress;
-use crate::operand::{ArithOpType, MemAccessSize, Operand, OperandType};
+use crate::operand::{ArithOpType, MemAccessSize, Operand, OperandType, OperandContext};
 
-pub fn write<W: Write, S: CfgState>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(), io::Error> {
+pub fn write<W: Write, S: CfgState>(
+    ctx: &OperandContext,
+    cfg: &mut Cfg<S>,
+    out: &mut W,
+) -> Result<(), io::Error> {
     writeln!(out, "digraph func {{")?;
     let mut nodes = HashMap::new();
     let mut node_name_pos = 0;
@@ -50,7 +54,7 @@ pub fn write<W: Write, S: CfgState>(cfg: &mut Cfg<S>, out: &mut W) -> Result<(),
             }
             CfgOutEdges::Branch(ref default, ref cond) => {
                 print(default, None)?;
-                print(&cond.node, Some(pretty_print_condition(&cond.condition)))?;
+                print(&cond.node, Some(pretty_print_condition(ctx, &cond.condition)))?;
             }
             CfgOutEdges::None => (),
             CfgOutEdges::Switch(ref cases, _) => {
@@ -146,9 +150,9 @@ fn compare_size(a: &Rc<Operand>, b: &Rc<Operand>) -> MemAccessSize {
 /// Returned value has bitwise and masks removed from left/right,
 /// using `size` field to show what they were.
 fn comparision_from_operand(
+    ctx: &OperandContext,
     oper: &Rc<Operand>
 ) -> Option<ComparisionGuess> {
-    use crate::operand::operand_helpers::*;
     match oper.ty {
         OperandType::Arithmetic(ref arith) => {
             let l = &arith.left;
@@ -161,7 +165,7 @@ fn comparision_from_operand(
                         _ => None,
                     };
                     if let Some(other) = other {
-                        if let Some(inner) = comparision_from_operand(&other) {
+                        if let Some(inner) = comparision_from_operand(ctx, &other) {
                             let inverted = match inner.comparision {
                                 Comparision::Equal => Comparision::NotEqual,
                                 Comparision::NotEqual => Comparision::Equal,
@@ -180,7 +184,7 @@ fn comparision_from_operand(
                             })
                         } else {
                             let (other, size) = extract_mask_single(&other);
-                            let (l2, r2) = compare_base_op(&other).decide();
+                            let (l2, r2) = compare_base_op(ctx, &other).decide(ctx);
                             Some(ComparisionGuess {
                                 comparision: Comparision::Equal,
                                 left: l2.clone(),
@@ -189,8 +193,8 @@ fn comparision_from_operand(
                             })
                         }
                     } else {
-                        if let Some(left) = comparision_from_operand(l) {
-                            let right = comparision_from_operand(r)
+                        if let Some(left) = comparision_from_operand(ctx, l) {
+                            let right = comparision_from_operand(ctx, r)
                                 .filter(|r| r.size == left.size);
                             if let Some(right) = right {
                                 let lc = left.comparision;
@@ -199,24 +203,24 @@ fn comparision_from_operand(
                                 let rc = right.comparision;
                                 let rl = &right.left;
                                 let rr = &right.right;
-                                let result = sign_flag_check(lc, &ll, &lr, left.size)
+                                let result = sign_flag_check(ctx, lc, &ll, &lr, left.size)
                                     .and_then(|x| {
-                                        Some((x, overflow_flag_check(rc, &rl, &rr, right.size)?))
+                                        Some((x, overflow_flag_check(ctx, rc, &rl, &rr, right.size)?))
                                     })
                                     .and_then(|(op1, op2)| {
-                                        op1.decide_with_lhs(&op2.0)
+                                        op1.decide_with_lhs(ctx, &op2.0)
                                             .filter(|op1_new| *op1_new == op2)
                                     })
                                     .or_else(|| {
-                                        sign_flag_check(rc, &rl, &rr, right.size)
+                                        sign_flag_check(ctx, rc, &rl, &rr, right.size)
                                             .and_then(|x| {
                                                 Some((
                                                     x,
-                                                    overflow_flag_check(lc, &ll, &lr, left.size)?,
+                                                    overflow_flag_check(ctx, lc, &ll, &lr, left.size)?,
                                                 ))
                                             })
                                             .and_then(|(op1, op2)| {
-                                                op1.decide_with_lhs(&op2.0)
+                                                op1.decide_with_lhs(ctx, &op2.0)
                                                     .filter(|op1_new| *op1_new == op2)
                                             })
                                     });
@@ -241,12 +245,12 @@ fn comparision_from_operand(
                 }
                 ArithOpType::GreaterThan => {
                     let (left, right, size) = extract_masks(l, r);
-                    if let Some(op) = carry_flag_check(Comparision::GreaterThan, left, right) {
+                    if let Some(op) = carry_flag_check(ctx, Comparision::GreaterThan, left, right) {
                         if check_signed_lt_zero(&op.0, size) {
                             Some(ComparisionGuess {
                                 comparision: Comparision::SignedLessThan,
                                 left: op.1,
-                                right: constval(0),
+                                right: ctx.constant(0),
                                 size: size,
                             })
                         } else {
@@ -258,8 +262,13 @@ fn comparision_from_operand(
                             // Note: Intentionally using top-level left/right
                             // and not Some(op) from carry_flag_check.
                             // (More reason to do this check elsewhere)
-                            let result =
-                                overflow_flag_check(Comparision::GreaterThan, left, right, size);
+                            let result = overflow_flag_check(
+                                ctx,
+                                Comparision::GreaterThan,
+                                left,
+                                right,
+                                size,
+                            );
                             if let Some((left, right)) = result {
                                 Some(ComparisionGuess {
                                     comparision: Comparision::SignedLessThan,
@@ -283,7 +292,7 @@ fn comparision_from_operand(
                             Some(ComparisionGuess {
                                 comparision: Comparision::SignedLessThan,
                                 left: left.clone(),
-                                right: constval(0),
+                                right: ctx.constant(0),
                                 size,
                             })
                         } else {
@@ -297,8 +306,8 @@ fn comparision_from_operand(
                     }
                 }
                 ArithOpType::Or => {
-                    if let Some(left) = comparision_from_operand(l) {
-                        if let Some(right) = comparision_from_operand(r) {
+                    if let Some(left) = comparision_from_operand(ctx, l) {
+                        if let Some(right) = comparision_from_operand(ctx, r) {
                             let size = if left.size.bits() > right.size.bits() {
                                 left.size
                             } else {
@@ -311,15 +320,18 @@ fn comparision_from_operand(
                             let rl = &right.left;
                             let rr = &right.right;
                             let ops = signed_less_check(lc, &ll, &lr)
-                                .and_then(|op1| zero_flag_check(rc, &rl, &rr).map(|op2| (op1, op2)))
+                                .and_then(|op1| {
+                                    zero_flag_check(ctx, rc, &rl, &rr).map(|op2| (op1, op2))
+                                })
                                 .or_else(|| {
                                     signed_less_check(rc, &rl, &rr)
                                         .and_then(|op1| {
-                                            zero_flag_check(lc, &ll, &lr).map(|op2| (op1, op2))
+                                            zero_flag_check(ctx, lc, &ll, &lr)
+                                                .map(|op2| (op1, op2))
                                         })
                                 });
                             if let Some((op1, op2)) = ops {
-                                if let Some((_left, right)) = op2.decide_with_lhs(&op1.0) {
+                                if let Some((_left, right)) = op2.decide_with_lhs(ctx, &op1.0) {
                                     if op1.1 == right {
                                         return Some(ComparisionGuess {
                                             comparision: Comparision::SignedLessOrEqual,
@@ -331,15 +343,18 @@ fn comparision_from_operand(
                                 }
                             }
                             let ops = unsigned_less_check(lc, &ll, &lr)
-                                .and_then(|op1| zero_flag_check(rc, &rl, &rr).map(|op2| (op1, op2)))
+                                .and_then(|op1| {
+                                    zero_flag_check(ctx, rc, &rl, &rr).map(|op2| (op1, op2))
+                                })
                                 .or_else(|| {
                                     unsigned_less_check(rc, &rl, &rr)
                                         .and_then(|op1| {
-                                            zero_flag_check(lc, &ll, &lr).map(|op2| (op1, op2))
+                                            zero_flag_check(ctx, lc, &ll, &lr)
+                                                .map(|op2| (op1, op2))
                                         })
                                 });
                             if let Some((op1, op2)) = ops {
-                                if let Some((_left, right)) = op2.decide_with_lhs(&op1.0) {
+                                if let Some((_left, right)) = op2.decide_with_lhs(ctx, &op1.0) {
                                     if op1.1 == right {
                                         return Some(ComparisionGuess {
                                             comparision: Comparision::LessOrEqual,
@@ -375,11 +390,11 @@ fn check_signed_lt_zero(
 }
 
 fn zero_flag_check(
+    ctx: &OperandContext,
     comp: Comparision,
     l: &Rc<Operand>,
     r: &Rc<Operand>
 ) -> Option<CompareOperands> {
-    use crate::operand::operand_helpers::*;
     if comp == Comparision::Equal {
         let mut ops = Vec::new();
         collect_add_ops(l, &mut ops, false);
@@ -387,7 +402,7 @@ fn zero_flag_check(
         for &mut (ref mut op, ref mut negate) in &mut ops {
             if let Some(c) = op.if_constant() {
                 if c > 0x8000_0000 && *negate == false {
-                    *op = constval(0u64.wrapping_sub(c));
+                    *op = ctx.constant(0u64.wrapping_sub(c));
                     *negate = true;
                 }
             }
@@ -401,6 +416,7 @@ fn zero_flag_check(
 /// Return CompareOperands for `x` if comp(l, r) is equivalent to `sign(x)`
 /// (`signed_less(x, 0)` or `unsigned_less(i32_max, x)`)
 fn sign_flag_check(
+    ctx: &OperandContext,
     comp: Comparision,
     l: &Rc<Operand>,
     r: &Rc<Operand>,
@@ -415,45 +431,46 @@ fn sign_flag_check(
     match (comp, &l.ty, &r.ty) {
         (Comparision::GreaterThan, _, &OperandType::Constant(c)) => {
             if c == int_max {
-                Some(compare_base_op(l))
+                Some(compare_base_op(ctx, l))
             } else {
                 None
             }
         }
         (Comparision::LessThan, &OperandType::Constant(c), _) => {
             if c == int_max {
-                Some(compare_base_op(r))
+                Some(compare_base_op(ctx, r))
             } else {
                 None
             }
         }
         (Comparision::SignedLessThan, _, &OperandType::Constant(0)) => {
-            Some(compare_base_op(l))
+            Some(compare_base_op(ctx, l))
         }
         (Comparision::SignedGreaterOrEqual, &OperandType::Constant(0), _) => {
-            Some(compare_base_op(r))
+            Some(compare_base_op(ctx, r))
         }
         _ => None,
     }
 }
 
 fn carry_flag_check(
+    ctx: &OperandContext,
     comp: Comparision,
     l: &Rc<Operand>,
     r: &Rc<Operand>
 ) -> Option<(Rc<Operand>, Rc<Operand>)> {
     match comp {
         Comparision::GreaterThan => {
-            let op = compare_base_op(l);
-            if let Some(op) = op.decide_with_lhs(r) {
+            let op = compare_base_op(ctx, l);
+            if let Some(op) = op.decide_with_lhs(ctx, r) {
                 Some(op)
             } else {
                 Some((r.clone(), l.clone()))
             }
         }
         Comparision::LessThan => {
-            let op = compare_base_op(r);
-            if let Some(op) = op.decide_with_lhs(l) {
+            let op = compare_base_op(ctx, r);
+            if let Some(op) = op.decide_with_lhs(ctx, l) {
                 Some(op)
             } else {
                 Some((l.clone(), r.clone()))
@@ -512,12 +529,12 @@ fn extract_mask_single(op: &Rc<Operand>) -> (&Rc<Operand>, MemAccessSize) {
 /// Bitwise and masks should be removed and `size` should be provided
 /// by caller.
 fn overflow_flag_check(
+    ctx: &OperandContext,
     comp: Comparision,
     l: &Rc<Operand>,
     r: &Rc<Operand>,
     size: MemAccessSize,
 ) -> Option<(Rc<Operand>, Rc<Operand>)> {
-    use crate::operand_helpers::*;
     let sign_bit = match size {
         MemAccessSize::Mem8 => 0x80,
         MemAccessSize::Mem16 => 0x8000,
@@ -526,16 +543,16 @@ fn overflow_flag_check(
     };
     match comp {
         Comparision::SignedGreaterThan => {
-            let op = compare_base_op(l);
-            if let Some(op) = op.decide_with_lhs(r) {
+            let op = compare_base_op(ctx, l);
+            if let Some(op) = op.decide_with_lhs(ctx, r) {
                 Some((op.0, op.1))
             } else {
                 Some((r.clone(), l.clone()))
             }
         }
         Comparision::SignedLessThan => {
-            let op = compare_base_op(r);
-            if let Some(op) = op.decide_with_lhs(l) {
+            let op = compare_base_op(ctx, r);
+            if let Some(op) = op.decide_with_lhs(ctx, l) {
                 Some((op.0, op.1))
             } else {
                 Some((l.clone(), r.clone()))
@@ -573,10 +590,10 @@ fn overflow_flag_check(
                 }),
                 _ => None,
             };
-            let tree = add_operands_to_tree(ops);
+            let tree = add_operands_to_tree(ctx, ops);
             if left_has_all_ops && left_constant.is_some() {
                 let constant = sign_bit.wrapping_sub(left_constant.unwrap_or(0));
-                Some((tree, constval(constant)))
+                Some((tree, ctx.constant(constant)))
             } else {
                 Some((tree, l.clone()))
             }
@@ -637,8 +654,7 @@ enum CompareOperands {
 }
 
 impl CompareOperands {
-    fn decide(self) -> (Rc<Operand>, Rc<Operand>) {
-        use crate::operand::operand_helpers::*;
+    fn decide(self, ctx: &OperandContext) -> (Rc<Operand>, Rc<Operand>) {
         match self {
             CompareOperands::Certain(l, r) => (l, r),
             CompareOperands::Uncertain(mut opers) |
@@ -647,18 +663,22 @@ impl CompareOperands {
                 let first_negative = opers.iter().position(|x| x.1 == true);
                 let rhs = match first_negative {
                     Some(s) => opers.remove(s).0,
-                    None => constval(0),
+                    None => ctx.constant(0),
                 };
-                let tree = add_operands_to_tree(opers);
+                let tree = add_operands_to_tree(ctx, opers);
                 (tree, rhs)
             }
         }
     }
 
-    fn decide_with_lhs(self, lhs: &Rc<Operand>) -> Option<(Rc<Operand>, Rc<Operand>)> {
+    fn decide_with_lhs(
+        self,
+        ctx: &OperandContext,
+        lhs: &Rc<Operand>,
+    ) -> Option<(Rc<Operand>, Rc<Operand>)> {
         match self {
             CompareOperands::Certain(l, r) => {
-                if Operand::simplified(lhs.clone()) == Operand::simplified(l.clone()) {
+                if *lhs == l {
                     Some((l, r))
                 } else {
                     None
@@ -678,39 +698,40 @@ impl CompareOperands {
                 for &mut (_, ref mut neg) in &mut opers {
                     *neg = !*neg;
                 }
-                let rhs = add_operands_to_tree(opers);
+                let rhs = add_operands_to_tree(ctx, opers);
                 Some((lhs.clone(), rhs))
             }
             CompareOperands::UncertainEitherWay(mut opers) => {
-                CompareOperands::Uncertain(opers.clone()).decide_with_lhs(lhs)
+                CompareOperands::Uncertain(opers.clone()).decide_with_lhs(ctx, lhs)
                     .or_else(|| {
                         for &mut (_, ref mut neg) in &mut opers {
                             *neg = !*neg;
                         }
-                        CompareOperands::Uncertain(opers).decide_with_lhs(lhs)
+                        CompareOperands::Uncertain(opers).decide_with_lhs(ctx, lhs)
                     })
             }
         }
     }
 }
 
-fn add_operands_to_tree(mut opers: Vec<(Rc<Operand>, bool)>) -> Rc<Operand> {
-    use crate::operand::operand_helpers::*;
+fn add_operands_to_tree(
+    ctx: &OperandContext,
+    mut opers: Vec<(Rc<Operand>, bool)>,
+) -> Rc<Operand> {
     let mut tree = opers.pop().map(|(op, neg)| match neg {
-        true => operand_sub(constval(0), op),
+        true => ctx.sub(&ctx.constant(0), &op),
         false => op,
-    }).unwrap_or_else(|| constval(0));
+    }).unwrap_or_else(|| ctx.constant(0));
     while let Some((op, neg)) = opers.pop() {
         match neg {
-            true => tree = operand_sub(tree, op),
-            false => tree = operand_add(tree, op),
+            true => tree = ctx.sub(&tree, &op),
+            false => tree = ctx.add(&tree, &op),
         }
     }
-    Operand::simplified(tree)
+    tree
 }
 
-fn compare_base_op(op: &Rc<Operand>) -> CompareOperands {
-    use crate::operand::operand_helpers::*;
+fn compare_base_op(ctx: &OperandContext, op: &Rc<Operand>) -> CompareOperands {
     match op.ty {
         OperandType::Arithmetic(ref arith) if {
             arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub
@@ -726,14 +747,14 @@ fn compare_base_op(op: &Rc<Operand>) -> CompareOperands {
             for &mut (ref mut op, ref mut negate) in &mut ops {
                 if let OperandType::Constant(c) = op.ty {
                     if c > 0x8000_0000 && *negate == false {
-                        *op = constval(0u64.wrapping_sub(c));
+                        *op = ctx.constant(0u64.wrapping_sub(c));
                         *negate = true;
                     }
                 }
             }
             CompareOperands::Uncertain(ops)
         }
-        _ => CompareOperands::Certain(op.clone(), constval(0)),
+        _ => CompareOperands::Certain(op.clone(), ctx.constant(0)),
     }
 }
 
@@ -753,8 +774,8 @@ fn collect_add_ops(s: &Rc<Operand>, ops: &mut Vec<(Rc<Operand>, bool)>, negate: 
     }
 }
 
-fn pretty_print_condition(cond: &Rc<Operand>) -> String {
-    if let Some(comp) = comparision_from_operand(cond) {
+fn pretty_print_condition(ctx: &OperandContext, cond: &Rc<Operand>) -> String {
+    if let Some(comp) = comparision_from_operand(ctx, cond) {
         let left = comp.left;
         let right = comp.right;
         let bits = comp.size.bits();
@@ -777,306 +798,306 @@ fn pretty_print_condition(cond: &Rc<Operand>) -> String {
 
 #[test]
 fn recognize_compare_operands_32() {
-    use crate::operand::operand_helpers::*;
-    let op = Operand::simplified(operand_eq(
-        constval(0),
-        operand_eq(
-            operand_gt(
-                operand_and(
-                    operand_sub(
-                        operand_register(2),
-                        operand_register(4),
+    let ctx = &OperandContext::new();
+    let op = ctx.eq(
+        &ctx.constant(0),
+        &ctx.eq(
+            &ctx.gt(
+                &ctx.and(
+                    &ctx.sub(
+                        &ctx.register(2),
+                        &ctx.register(4),
                     ),
-                    constval(0xffff_ffff),
+                    &ctx.constant(0xffff_ffff),
                 ),
-                constval(0x7fff_ffff),
+                &ctx.constant(0x7fff_ffff),
             ),
-            operand_gt(
-                operand_and(
-                    operand_add(
-                        operand_sub(
-                            operand_register(2),
-                            operand_register(4),
+            &ctx.gt(
+                &ctx.and(
+                    &ctx.add(
+                        &ctx.sub(
+                            &ctx.register(2),
+                            &ctx.register(4),
                         ),
-                        constval(0x8000_0000),
+                        &ctx.constant(0x8000_0000),
                     ),
-                    constval(0xffff_ffff),
+                    &ctx.constant(0xffff_ffff),
                 ),
-                operand_and(
-                    operand_add(
-                        operand_register(2),
-                        constval(0x8000_0000),
+                &ctx.and(
+                    &ctx.add(
+                        &ctx.register(2),
+                        &ctx.constant(0x8000_0000),
                     ),
-                    constval(0xffff_ffff),
+                    &ctx.constant(0xffff_ffff),
                 ),
             ),
         ),
-    ));
+    );
 
-    let comp = comparision_from_operand(&op).unwrap();
+    let comp = comparision_from_operand(ctx, &op).unwrap();
     assert_eq!(comp, ComparisionGuess {
         comparision: Comparision::SignedLessThan,
-        left: operand_register(2),
-        right: operand_register(4),
+        left: ctx.register(2),
+        right: ctx.register(4),
         size: MemAccessSize::Mem32,
     });
 
     // Comparing against zero
-    let op = Operand::simplified(operand_eq(
-        constval(0),
-        operand_eq(
-            operand_gt(
-                operand_and(
-                    operand_register(2),
-                    constval(0xffff_ffff),
+    let op = ctx.eq(
+        &ctx.constant(0),
+        &ctx.eq(
+            &ctx.gt(
+                &ctx.and(
+                    &ctx.register(2),
+                    &ctx.constant(0xffff_ffff),
                 ),
-                constval(0x7fff_ffff),
+                &ctx.constant(0x7fff_ffff),
             ),
-            operand_gt(
-                operand_and(
-                    operand_add(
-                        operand_register(2),
-                        constval(0x8000_0000),
+            &ctx.gt(
+                &ctx.and(
+                    &ctx.add(
+                        &ctx.register(2),
+                        &ctx.constant(0x8000_0000),
                     ),
-                    constval(0xffff_ffff),
+                    &ctx.constant(0xffff_ffff),
                 ),
-                operand_and(
-                    operand_add(
-                        operand_register(2),
-                        constval(0x8000_0000),
+                &ctx.and(
+                    &ctx.add(
+                        &ctx.register(2),
+                        &ctx.constant(0x8000_0000),
                     ),
-                    constval(0xffff_ffff),
+                    &ctx.constant(0xffff_ffff),
                 ),
             ),
         ),
-    ));
-    let comp = comparision_from_operand(&op).unwrap();
+    );
+    let comp = comparision_from_operand(ctx, &op).unwrap();
     assert_eq!(comp, ComparisionGuess {
         comparision: Comparision::SignedLessThan,
-        left: operand_register(2),
-        right: constval(0),
+        left: ctx.register(2),
+        right: ctx.constant(0),
         size: MemAccessSize::Mem32,
     });
 
     // Comparing with sub
-    let op = Operand::simplified(operand_eq(
-        constval(0),
-        operand_eq(
-            operand_gt(
-                operand_and(
-                    operand_sub(
-                        operand_register(4),
-                        operand_add(
-                            operand_register(2),
-                            constval(123),
+    let op = ctx.eq(
+        &ctx.constant(0),
+        &ctx.eq(
+            &ctx.gt(
+                &ctx.and(
+                    &ctx.sub(
+                        &ctx.register(4),
+                        &ctx.add(
+                            &ctx.register(2),
+                            &ctx.constant(123),
                         ),
                     ),
-                    constval(0xffff_ffff),
+                    &ctx.constant(0xffff_ffff),
                 ),
-                constval(0x7fff_ffff),
+                &ctx.constant(0x7fff_ffff),
             ),
-            operand_gt(
-                operand_and(
-                    operand_add(
-                        operand_sub(
-                            operand_register(4),
-                            operand_add(
-                                operand_register(2),
-                                constval(123),
+            &ctx.gt(
+                &ctx.and(
+                    &ctx.add(
+                        &ctx.sub(
+                            &ctx.register(4),
+                            &ctx.add(
+                                &ctx.register(2),
+                                &ctx.constant(123),
                             ),
                         ),
-                        constval(0x8000_0000),
+                        &ctx.constant(0x8000_0000),
                     ),
-                    constval(0xffff_ffff),
+                    &ctx.constant(0xffff_ffff),
                 ),
-                operand_and(
-                    operand_add(
-                        operand_sub(
-                            operand_register(4),
-                            operand_register(2),
+                &ctx.and(
+                    &ctx.add(
+                        &ctx.sub(
+                            &ctx.register(4),
+                            &ctx.register(2),
                         ),
-                        constval(0x8000_0000),
+                        &ctx.constant(0x8000_0000),
                     ),
-                    constval(0xffff_ffff),
+                    &ctx.constant(0xffff_ffff),
                 ),
             ),
         ),
-    ));
-    let comp = comparision_from_operand(&op).unwrap();
+    );
+    let comp = comparision_from_operand(ctx, &op).unwrap();
     assert_eq!(comp, ComparisionGuess {
         comparision: Comparision::SignedLessThan,
-        left: operand_sub(
-            operand_register(4),
-            operand_register(2),
+        left: ctx.sub(
+            &ctx.register(4),
+            &ctx.register(2),
         ),
-        right: constval(123),
+        right: ctx.constant(123),
         size: MemAccessSize::Mem32,
     });
 }
 
 #[test]
 fn recognize_compare_operands_64() {
-    use crate::operand::operand_helpers::*;
-    let op = Operand::simplified(operand_eq(
-        constval(0),
-        operand_eq(
-            operand_gt(
-                operand_sub(
-                    operand_register(2),
-                    operand_register(4),
+    let ctx = &OperandContext::new();
+    let op = ctx.eq(
+        &ctx.constant(0),
+        &ctx.eq(
+            &ctx.gt(
+                &ctx.sub(
+                    &ctx.register(2),
+                    &ctx.register(4),
                 ),
-                constval(0x7fff_ffff_ffff_ffff),
+                &ctx.constant(0x7fff_ffff_ffff_ffff),
             ),
-            operand_gt(
-                operand_add(
-                    operand_sub(
-                        operand_register(2),
-                        operand_register(4),
+            &ctx.gt(
+                &ctx.add(
+                    &ctx.sub(
+                        &ctx.register(2),
+                        &ctx.register(4),
                     ),
-                    constval(0x8000_0000_0000_0000),
+                    &ctx.constant(0x8000_0000_0000_0000),
                 ),
-                operand_add(
-                    operand_register(2),
-                    constval(0x8000_0000_0000_0000),
+                &ctx.add(
+                    &ctx.register(2),
+                    &ctx.constant(0x8000_0000_0000_0000),
                 ),
             ),
         ),
-    ));
+    );
 
-    let comp = comparision_from_operand(&op).unwrap();
+    let comp = comparision_from_operand(ctx, &op).unwrap();
     assert_eq!(comp, ComparisionGuess {
         comparision: Comparision::SignedLessThan,
-        left: operand_register(2),
-        right: operand_register(4),
+        left: ctx.register(2),
+        right: ctx.register(4),
         size: MemAccessSize::Mem64,
     });
 
     // Comparing against zero
-    let op = Operand::simplified(operand_eq(
-        constval(0),
-        operand_eq(
-            operand_gt(
-                operand_register(2),
-                constval(0x7fff_ffff_ffff_ffff),
+    let op = ctx.eq(
+        &ctx.constant(0),
+        &ctx.eq(
+            &ctx.gt(
+                &ctx.register(2),
+                &ctx.constant(0x7fff_ffff_ffff_ffff),
             ),
-            operand_gt(
-                operand_add(
-                    operand_register(2),
-                    constval(0x8000_0000_0000_0000),
+            &ctx.gt(
+                &ctx.add(
+                    &ctx.register(2),
+                    &ctx.constant(0x8000_0000_0000_0000),
                 ),
-                operand_add(
-                    operand_register(2),
-                    constval(0x8000_0000_0000_0000),
+                &ctx.add(
+                    &ctx.register(2),
+                    &ctx.constant(0x8000_0000_0000_0000),
                 ),
             ),
         ),
-    ));
-    let comp = comparision_from_operand(&op).unwrap();
+    );
+    let comp = comparision_from_operand(ctx, &op).unwrap();
     assert_eq!(comp, ComparisionGuess {
         comparision: Comparision::SignedLessThan,
-        left: operand_register(2),
-        right: constval(0),
+        left: ctx.register(2),
+        right: ctx.constant(0),
         size: MemAccessSize::Mem64,
     });
 
     // Comparing with sub
-    let op = Operand::simplified(operand_eq(
-        constval(0),
-        operand_eq(
-            operand_gt(
-                operand_sub(
-                    operand_register(4),
-                    operand_add(
-                        operand_register(2),
-                        constval(123),
+    let op = ctx.eq(
+        &ctx.constant(0),
+        &ctx.eq(
+            &ctx.gt(
+                &ctx.sub(
+                    &ctx.register(4),
+                    &ctx.add(
+                        &ctx.register(2),
+                        &ctx.constant(123),
                     ),
                 ),
-                constval(0x7fff_ffff_ffff_ffff),
+                &ctx.constant(0x7fff_ffff_ffff_ffff),
             ),
-            operand_gt(
-                operand_add(
-                    operand_sub(
-                        operand_register(4),
-                        operand_add(
-                            operand_register(2),
-                            constval(123),
+            &ctx.gt(
+                &ctx.add(
+                    &ctx.sub(
+                        &ctx.register(4),
+                        &ctx.add(
+                            &ctx.register(2),
+                            &ctx.constant(123),
                         ),
                     ),
-                    constval(0x8000_0000_0000_0000),
+                    &ctx.constant(0x8000_0000_0000_0000),
                 ),
-                operand_add(
-                    operand_sub(
-                        operand_register(4),
-                        operand_register(2),
+                &ctx.add(
+                    &ctx.sub(
+                        &ctx.register(4),
+                        &ctx.register(2),
                     ),
-                    constval(0x8000_0000_0000_0000),
+                    &ctx.constant(0x8000_0000_0000_0000),
                 ),
             ),
         ),
-    ));
-    let comp = comparision_from_operand(&op).unwrap();
+    );
+    let comp = comparision_from_operand(ctx, &op).unwrap();
     assert_eq!(comp, ComparisionGuess {
         comparision: Comparision::SignedLessThan,
-        left: operand_sub(
-            operand_register(4),
-            operand_register(2),
+        left: ctx.sub(
+            &ctx.register(4),
+            &ctx.register(2),
         ),
-        right: constval(123),
+        right: ctx.constant(123),
         size: MemAccessSize::Mem64,
     });
 }
 
 #[test]
 fn recognize_compare_operands_unsigned() {
-    use crate::operand::operand_helpers::*;
-    let op = Operand::simplified(operand_or(
-        operand_eq(
-            constval(0),
-            operand_eq(
-                constval(0),
-                operand_gt(
-                    operand_and(
-                        operand_sub(
-                            operand_sub(
-                                mem32(operand_register(2)),
-                                constval(1234),
+    let ctx = &OperandContext::new();
+    let op = ctx.or(
+        &ctx.eq(
+            &ctx.constant(0),
+            &ctx.eq(
+                &ctx.constant(0),
+                &ctx.gt(
+                    &ctx.and(
+                        &ctx.sub(
+                            &ctx.sub(
+                                &ctx.mem32(&ctx.register(2)),
+                                &ctx.constant(1234),
                             ),
-                            mem32(constval(666)),
+                            &ctx.mem32(&ctx.constant(666)),
                         ),
-                        constval(0xffff_ffff),
+                        &ctx.constant(0xffff_ffff),
                     ),
-                    operand_and(
-                        operand_sub(
-                            mem32(operand_register(2)),
-                            mem32(constval(666)),
+                    &ctx.and(
+                        &ctx.sub(
+                            &ctx.mem32(&ctx.register(2)),
+                            &ctx.mem32(&ctx.constant(666)),
                         ),
-                        constval(0xffff_ffff),
+                        &ctx.constant(0xffff_ffff),
                     ),
                 ),
             ),
         ),
-        operand_eq(
-            constval(0),
-            operand_and(
-                operand_sub(
-                    operand_sub(
-                        mem32(operand_register(2)),
-                        constval(1234),
+        &ctx.eq(
+            &ctx.constant(0),
+            &ctx.and(
+                &ctx.sub(
+                    &ctx.sub(
+                        &ctx.mem32(&ctx.register(2)),
+                        &ctx.constant(1234),
                     ),
-                    mem32(constval(666)),
+                    &ctx.mem32(&ctx.constant(666)),
                 ),
-                constval(0xffff_ffff),
+                &ctx.constant(0xffff_ffff),
             ),
         ),
-    ));
-    let comp = comparision_from_operand(&op).unwrap();
+    );
+    let comp = comparision_from_operand(ctx, &op).unwrap();
     assert_eq!(comp, ComparisionGuess {
         comparision: Comparision::LessOrEqual,
-        left: operand_sub(
-            mem32(operand_register(2)),
-            mem32(constval(666)),
+        left: ctx.sub(
+            &ctx.mem32(&ctx.register(2)),
+            &ctx.mem32(&ctx.constant(666)),
         ),
-        right: constval(1234),
+        right: ctx.constant(1234),
         size: MemAccessSize::Mem32,
     });
 }

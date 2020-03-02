@@ -39,13 +39,13 @@ fn switch_cfg() {
 #[test]
 fn undecideable() {
     let (binary, func) = load_test(1);
-    let ctx = scarf::operand::OperandContext::new();
-    let analysis = Analysis::new(&binary, &ctx, func);
+    let ctx = &scarf::operand::OperandContext::new();
+    let analysis = Analysis::new(&binary, ctx, func);
     let (mut cfg, errors) = analysis.finish();
     assert!(errors.is_empty());
 
     let mut dummy = Vec::new();
-    scarf::cfg_dot::write(&mut cfg, &mut dummy).unwrap();
+    scarf::cfg_dot::write(ctx, &mut cfg, &mut dummy).unwrap();
 }
 
 #[test]

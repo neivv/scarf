@@ -10,11 +10,11 @@ use scarf::{
 };
 use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86_64 as ExecutionState;
-use scarf::operand_helpers::*;
 use scarf::operand::OperandType;
 
 #[test]
 fn test_basic() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xb8, 0x20, 0x00, 0x00, 0x00, // mov eax, 20
         0x48, 0x83, 0xc0, 0x39, // add rax, 39
@@ -23,48 +23,52 @@ fn test_basic() {
         0xcc, // int3
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0x59)),
+         (ctx.register(0), ctx.constant(0x59)),
     ]);
 }
 
 #[test]
 fn test_xor_high() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xb9, 0x04, 0x00, 0x00, 0x00, // mov ecx, 4
         0x30, 0xfd, // xor ch, bh
         0x30, 0xfd, // xor ch, bh
         0xc3, // ret
     ], &[
-         (operand_register(1), constval(0x4)),
+         (ctx.register(1), ctx.constant(0x4)),
     ]);
 }
 
 #[test]
 fn test_neg_mem8() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xc6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, 0x04, // mov byte [rbp + 4ea2d325], 4
         0xf6, 0x9d, 0x25, 0xd3, 0xa2, 0x4e, // neg byte [rbp + 4ea2d325]
         0x0f, 0xb6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, // movzx eax, byte [rbp + 4ea2d325]
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0xfc)),
+         (ctx.register(0), ctx.constant(0xfc)),
     ]);
 }
 
 #[test]
 fn test_neg_mem8_dummy_rex_r() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xc6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, 0x04, // mov byte [rbp + 4ea2d325], 4
         0x4e, 0xf6, 0x9d, 0x25, 0xd3, 0xa2, 0x4e, // neg byte [rbp + 4ea2d325]
         0x0f, 0xb6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, // movzx eax, byte [rbp + 4ea2d325]
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0xfc)),
+         (ctx.register(0), ctx.constant(0xfc)),
     ]);
 }
 
 #[test]
 fn test_new_8bit_regs() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x31, 0xc0, // xor eax, eax
         0x31, 0xf6, // xor esi, esi
@@ -81,29 +85,31 @@ fn test_new_8bit_regs() {
         0x41, 0x80, 0xc7, 0x05, // add r15b, 5
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0x703)),
-         (operand_register(6), constval(0x203)),
-         (operand_register(9), constval(0x203)),
-         (operand_register(15), constval(0x203)),
+         (ctx.register(0), ctx.constant(0x703)),
+         (ctx.register(6), ctx.constant(0x203)),
+         (ctx.register(9), ctx.constant(0x203)),
+         (ctx.register(15), ctx.constant(0x203)),
     ]);
 }
 
 #[test]
 fn test_64bit_regs() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x49, 0xbf, 0x0c, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, // mov r15, c_0000_000c
         0x31, 0xc0, // xor eax, eax
         0x48, 0x8d, 0x88, 0x88, 0x00, 0x00, 0x00, // lea rcx, [rax + 88]
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0)),
-         (operand_register(1), constval(0x88)),
-         (operand_register(15), constval(0xc_0000_000c)),
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.constant(0x88)),
+         (ctx.register(15), ctx.constant(0xc_0000_000c)),
     ]);
 }
 
 #[test]
 fn test_btr() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xb8, 0xff, 0xff, 0x00, 0x00, // mov eax, ffff
         0xb9, 0x08, 0x00, 0x00, 0x00, // mov ecx, 8
@@ -114,24 +120,26 @@ fn test_btr() {
         0xcc, // int3
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0xfeff)),
-         (operand_register(1), constval(0x8)),
+         (ctx.register(0), ctx.constant(0xfeff)),
+         (ctx.register(1), ctx.constant(0x8)),
     ]);
 }
 
 #[test]
 fn test_movsxd() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xc7, 0x44, 0x24, 0x28, 0x44, 0xff, 0x44, 0xff, // mov dword [rsp + 28], ff44ff44
         0x4c, 0x63, 0x5c, 0x24, 0x28, // movsxd r11, dword [rsp + 28]
         0xc3, // ret
     ], &[
-         (operand_register(11), constval(0xffff_ffff_ff44_ff44)),
+         (ctx.register(11), ctx.constant(0xffff_ffff_ff44_ff44)),
     ]);
 }
 
 #[test]
 fn movaps() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xc7, 0x04, 0x24, 0x45, 0x45, 0x45, 0x45, // mov dword [rsp], 45454545
         0xc7, 0x44, 0x24, 0x0c, 0x25, 0x25, 0x25, 0x25, // mov dword [rsp], 25252525
@@ -141,13 +149,14 @@ fn movaps() {
         0x8b, 0x4c, 0x24, 0x2c, // mov ecx, [rsp + 2c]
         0xc3, //ret
     ], &[
-         (operand_register(0), constval(0x45454545)),
-         (operand_register(1), constval(0x25252525)),
+         (ctx.register(0), ctx.constant(0x45454545)),
+         (ctx.register(1), ctx.constant(0x25252525)),
     ]);
 }
 
 #[test]
 fn test_bt() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xb8, 0xff, 0xff, 0x00, 0x00, // mov eax, ffff
         0x48, 0xc1, 0xe0, 0x20, // shl rax, 20
@@ -157,13 +166,14 @@ fn test_bt() {
         0xcc, // int3
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0xffff_0000_0000)),
-         (operand_register(1), constval(0x28)),
+         (ctx.register(0), ctx.constant(0xffff_0000_0000)),
+         (ctx.register(1), ctx.constant(0x28)),
     ]);
 }
 
 #[test]
 fn test_xadd() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xb8, 0x20, 0x00, 0x00, 0x00, // mov eax, 20
         0xc7, 0x04, 0x24, 0x13, 0x00, 0x00, 0x00, // mov dword [rsp], 13
@@ -173,9 +183,9 @@ fn test_xadd() {
         0x0f, 0xc1, 0xd2, // xadd edx, edx
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0x13)),
-         (operand_register(1), constval(0x33)),
-         (operand_register(2), constval(0xa)),
+         (ctx.register(0), ctx.constant(0x13)),
+         (ctx.register(1), ctx.constant(0x33)),
+         (ctx.register(2), ctx.constant(0xa)),
     ]);
 }
 
@@ -210,13 +220,14 @@ fn test_switch() {
         0x31, 0xc0, // xor eax, eax
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0)),
-         (operand_register(1), ctx.undefined_rc()),
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.undefined_rc()),
     ]);
 }
 
 #[test]
 fn test_negative_offset() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xc7, 0x00, 0x05, 0x00, 0x00, 0x00, // mov dword [rax], 5
         0x48, 0x83, 0xc0, 0x04, // add rax, 4
@@ -226,13 +237,14 @@ fn test_negative_offset() {
         0x31, 0xc0, // xor eax, eax
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0)),
-         (operand_register(1), constval(0xa)),
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.constant(0xa)),
     ]);
 }
 
 #[test]
 fn test_negative_offset2() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0xc7, 0x04, 0x10, 0x05, 0x00, 0x00, 0x00, // mov dword [rax + rdx], 5
         0x48, 0x83, 0xc0, 0x04, // add rax, 4
@@ -242,8 +254,8 @@ fn test_negative_offset2() {
         0x31, 0xc0, // xor eax, eax
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0)),
-         (operand_register(1), constval(0xa)),
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.constant(0xa)),
     ]);
 }
 
@@ -262,12 +274,13 @@ fn lazy_flag_constraint_invalidation() {
         0xeb, 0x00, // jmp ret
         0xc3, // ret
     ], &[
-         (operand_register(6), ctx.undefined_rc()),
+         (ctx.register(6), ctx.undefined_rc()),
     ]);
 }
 
 #[test]
 fn punpcklbw() {
+    let ctx = scarf::operand::OperandContext::new();
     test_inline(&[
         0x48, 0xb8, 0x44, 0x33, 0x22, 0x11, 0x78, 0x56, 0x34, 0x12, // mov rax, 12345678_11223344
         0x66, 0x48, 0x0f, 0x6e, 0xc0, // movq xmm0, rax
@@ -279,8 +292,8 @@ fn punpcklbw() {
         0x48, 0x8b, 0x4c, 0x24, 0x08, // mov rcx, [rsp + 8]
         0xc3, // ret
     ], &[
-         (operand_register(0), constval(0x5511_4422_3333_2244)),
-         (operand_register(1), constval(0x9912_8834_7756_6678)),
+         (ctx.register(0), ctx.constant(0x5511_4422_3333_2244)),
+         (ctx.register(1), ctx.constant(0x9912_8834_7756_6678)),
     ]);
 }
 
@@ -347,13 +360,13 @@ fn switch_case_count2() {
         // case3_fake
         0xcc, // int3
     ], &[
-         (operand_register(0), ctx.undefined_rc()),
-         (operand_register(1), ctx.undefined_rc()),
-         (operand_register(2), ctx.undefined_rc()),
-         (operand_register(5), ctx.undefined_rc()),
-         (operand_register(6), ctx.undefined_rc()),
-         (operand_register(7), ctx.undefined_rc()),
-         (operand_register(9), ctx.undefined_rc()),
+         (ctx.register(0), ctx.undefined_rc()),
+         (ctx.register(1), ctx.undefined_rc()),
+         (ctx.register(2), ctx.undefined_rc()),
+         (ctx.register(5), ctx.undefined_rc()),
+         (ctx.register(6), ctx.undefined_rc()),
+         (ctx.register(7), ctx.undefined_rc()),
+         (ctx.register(9), ctx.undefined_rc()),
     ]);
 }
 
@@ -390,13 +403,13 @@ fn switch_case_count3() {
         // case2_fake, case3_fake
         0xcc, // int3
     ], &[
-         (operand_register(0), ctx.undefined_rc()),
-         (operand_register(1), ctx.undefined_rc()),
-         (operand_register(2), ctx.undefined_rc()),
-         (operand_register(5), ctx.undefined_rc()),
-         (operand_register(6), ctx.undefined_rc()),
-         (operand_register(7), ctx.undefined_rc()),
-         (operand_register(9), ctx.undefined_rc()),
+         (ctx.register(0), ctx.undefined_rc()),
+         (ctx.register(1), ctx.undefined_rc()),
+         (ctx.register(2), ctx.undefined_rc()),
+         (ctx.register(5), ctx.undefined_rc()),
+         (ctx.register(6), ctx.undefined_rc()),
+         (ctx.register(7), ctx.undefined_rc()),
+         (ctx.register(9), ctx.undefined_rc()),
     ]);
 }
 
@@ -420,9 +433,9 @@ fn dec_flags() {
         0xeb, 0x00,
         0xc3, // ret
     ], &[
-         (operand_register(0), ctx.undefined_rc()),
-         (operand_register(2), ctx.undefined_rc()),
-         (operand_register(8), ctx.undefined_rc()),
+         (ctx.register(0), ctx.undefined_rc()),
+         (ctx.register(2), ctx.undefined_rc()),
+         (ctx.register(8), ctx.undefined_rc()),
     ]);
 }
 
@@ -445,10 +458,10 @@ fn sub_flags() {
         0xeb, 0x00,
         0xc3, // ret
     ], &[
-         (operand_register(0), ctx.undefined_rc()),
-         (operand_register(1), ctx.undefined_rc()),
-         (operand_register(2), ctx.undefined_rc()),
-         (operand_register(3), ctx.undefined_rc()),
+         (ctx.register(0), ctx.undefined_rc()),
+         (ctx.register(1), ctx.undefined_rc()),
+         (ctx.register(2), ctx.undefined_rc()),
+         (ctx.register(3), ctx.undefined_rc()),
     ]);
 }
 
@@ -462,8 +475,8 @@ fn bswap() {
         0x41, 0x0f, 0xc9, // bswap r9d
         0xc3, // ret
     ], &[
-         (operand_register(1), ctx.constant(0x22334455_66778899)),
-         (operand_register(9), ctx.constant(0x22334455)),
+         (ctx.register(1), ctx.constant(0x22334455_66778899)),
+         (ctx.register(9), ctx.constant(0x22334455)),
     ]);
 }
 
@@ -592,11 +605,11 @@ fn switch_u32_op() {
         // case3_fake
         0xcc, // int3
     ], &[
-         (operand_register(1), ctx.undefined_rc()),
-         (operand_register(6), ctx.undefined_rc()),
-         (operand_register(7), ctx.undefined_rc()),
-         (operand_register(9), ctx.undefined_rc()),
-         (operand_register(13), ctx.and(&ctx.register(8), &ctx.constant(0xffff_ffff))),
+         (ctx.register(1), ctx.undefined_rc()),
+         (ctx.register(6), ctx.undefined_rc()),
+         (ctx.register(7), ctx.undefined_rc()),
+         (ctx.register(9), ctx.undefined_rc()),
+         (ctx.register(13), ctx.and(&ctx.register(8), &ctx.constant(0xffff_ffff))),
     ]);
 }
 
@@ -683,8 +696,8 @@ fn test_inner(
     assert!(analysis.errors.is_empty());
     let (mut end_state, mut end_i) = collect_end_state.end_state.unwrap();
     for i in 0..16 {
-        let expected = expected_state.resolve(&operand_register(i), &mut interner);
-        let end = end_state.resolve(&operand_register(i), &mut end_i);
+        let expected = expected_state.resolve(&ctx.register(i), &mut interner);
+        let end = end_state.resolve(&ctx.register(i), &mut end_i);
         if end.iter().any(|x| match x.ty {
             OperandType::Undefined(_) => true,
             _ => false,

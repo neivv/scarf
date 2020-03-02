@@ -10,7 +10,7 @@ use fxhash::FxBuildHasher;
 use crate::analysis;
 use crate::disasm::{self, DestOperand, Instruction, Operation};
 use crate::operand::{
-    self, ArithOpType, ArithOperand, Operand, OperandType, OperandContext, OperandDummyHasher
+    self, ArithOpType, Operand, OperandType, OperandContext, OperandDummyHasher
 };
 
 /// A trait that does (most of) arch-specific state handling.
@@ -61,12 +61,11 @@ pub trait ExecutionState<'a> : Clone {
     fn apply_call(&mut self, ret: Self::VirtualAddress, i: &mut InternMap);
 
     /// Creates an Mem[addr] with MemAccessSize of VirtualAddress size
-    fn operand_mem_word(address: Rc<Operand>) -> Rc<Operand> {
-        use crate::operand_helpers::*;
+    fn operand_mem_word(ctx: &'a OperandContext, address: &Rc<Operand>) -> Rc<Operand> {
         if <Self::VirtualAddress as VirtualAddress>::SIZE == 4 {
-            mem32(address)
+            ctx.mem32(address)
         } else {
-            mem64(address)
+            ctx.mem64(address)
         }
     }
 
@@ -260,8 +259,8 @@ impl Constraint {
     }
 
     /// Invalidates any assumptions about memory
-    pub(crate) fn invalidate_memory(&mut self) -> ConstraintFullyInvalid {
-        let result = remove_matching_ands(&self.0, &mut |x| match x {
+    pub(crate) fn invalidate_memory(&mut self, ctx: &OperandContext) -> ConstraintFullyInvalid {
+        let result = remove_matching_ands(ctx, &self.0, &mut |x| match x {
             OperandType::Memory(..) => true,
             _ => false,
         });
@@ -275,13 +274,17 @@ impl Constraint {
     }
 
     /// Invalidates any parts of the constraint that depend on unresolved dest.
-    pub(crate) fn invalidate_dest_operand(&self, dest: &DestOperand) -> Option<Constraint> {
+    pub(crate) fn invalidate_dest_operand(
+        &self,
+        ctx: &OperandContext,
+        dest: &DestOperand,
+    ) -> Option<Constraint> {
         match *dest {
             DestOperand::Register32(reg) | DestOperand::Register16(reg) |
                 DestOperand::Register8High(reg) | DestOperand::Register8Low(reg) |
                 DestOperand::Register64(reg) =>
             {
-                remove_matching_ands(&self.0, &mut |x| *x == OperandType::Register(reg))
+                remove_matching_ands(ctx, &self.0, &mut |x| *x == OperandType::Register(reg))
             }
             DestOperand::Xmm(_, _) => {
                 None
@@ -290,11 +293,11 @@ impl Constraint {
                 None
             }
             DestOperand::Flag(flag) => {
-                remove_matching_ands(&self.0, &mut |x| *x == OperandType::Flag(flag))
+                remove_matching_ands(ctx, &self.0, &mut |x| *x == OperandType::Flag(flag))
             },
             DestOperand::Memory(_) => {
                 // Assuming that everything may alias with memory
-                remove_matching_ands(&self.0, &mut |x| match x {
+                remove_matching_ands(ctx, &self.0, &mut |x| match x {
                     OperandType::Memory(..) => true,
                     _ => false,
                 })
@@ -316,7 +319,11 @@ pub enum ConstraintFullyInvalid {
 }
 
 /// Constraint invalidation helper
-fn remove_matching_ands<F>(oper: &Rc<Operand>, fun: &mut F) -> Option<Rc<Operand>>
+fn remove_matching_ands<F>(
+    ctx: &OperandContext,
+    oper: &Rc<Operand>,
+    fun: &mut F,
+) -> Option<Rc<Operand>>
 where F: FnMut(&OperandType) -> bool,
 {
     if let Some((l, r)) = oper.if_arithmetic_and() {
@@ -327,19 +334,12 @@ where F: FnMut(&OperandType) -> bool,
                 false => Some(oper.clone()),
             }
         } else {
-            let left = remove_matching_ands(l, fun);
-            let right = remove_matching_ands(r, fun);
+            let left = remove_matching_ands(ctx, l, fun);
+            let right = remove_matching_ands(ctx, r, fun);
             match (left, right) {
                 (None, None) => None,
                 (Some(x), None) | (None, Some(x)) => Some(x),
-                (Some(left), Some(right)) => {
-                    let op_ty = OperandType::Arithmetic(ArithOperand {
-                        ty: ArithOpType::And,
-                        left,
-                        right,
-                    });
-                    Some(Operand::new_not_simplified_rc(op_ty))
-                }
+                (Some(left), Some(right)) => Some(ctx.and(&left, &right)),
             }
         }
     } else {

@@ -744,7 +744,7 @@ impl<Va: VirtualAddress> NodeLink<Va> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::VirtualAddress;
+    use crate::{OperandContext, VirtualAddress};
 
     struct EmptyState;
     impl CfgState for EmptyState {
@@ -769,13 +769,13 @@ mod test {
         }
     }
 
-    fn node2(addr: u32, out: u32, out2: u32) -> CfgNode<EmptyState> {
+    fn node2(ctx: &OperandContext, addr: u32, out: u32, out2: u32) -> CfgNode<EmptyState> {
         CfgNode {
             out_edges: CfgOutEdges::Branch(
                 NodeLink::new(VirtualAddress(out)),
                 OutEdgeCondition {
                     node: NodeLink::new(VirtualAddress(out2)),
-                    condition: crate::operand_helpers::operand_register(0),
+                    condition: ctx.register(0),
                 },
             ),
             state: EmptyState,
@@ -786,10 +786,11 @@ mod test {
 
     #[test]
     fn distances() {
+        let ctx = &OperandContext::new();
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, 101, 104));
-        cfg.add_node(VirtualAddress(101), node2(101, 102, 104));
-        cfg.add_node(VirtualAddress(102), node2(102, 103, 104));
+        cfg.add_node(VirtualAddress(100), node2(ctx, 100, 101, 104));
+        cfg.add_node(VirtualAddress(101), node2(ctx, 101, 102, 104));
+        cfg.add_node(VirtualAddress(102), node2(ctx, 102, 103, 104));
         cfg.add_node(VirtualAddress(103), node1(103, 104));
         cfg.add_node(VirtualAddress(104), node0(104));
         cfg.calculate_distances();
@@ -804,15 +805,16 @@ mod test {
 
     #[test]
     fn cycles() {
+        let ctx = &OperandContext::new();
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, 101, 103));
+        cfg.add_node(VirtualAddress(100), node2(ctx, 100, 101, 103));
         cfg.add_node(VirtualAddress(101), node1(101, 102));
-        cfg.add_node(VirtualAddress(102), node2(102, 103, 101));
+        cfg.add_node(VirtualAddress(102), node2(ctx, 102, 103, 101));
         cfg.add_node(VirtualAddress(103), node1(103, 104));
-        cfg.add_node(VirtualAddress(104), node2(104, 105, 108));
+        cfg.add_node(VirtualAddress(104), node2(ctx, 104, 105, 108));
         cfg.add_node(VirtualAddress(105), node1(105, 106));
-        cfg.add_node(VirtualAddress(106), node2(106, 104, 107));
-        cfg.add_node(VirtualAddress(107), node2(107, 104, 108));
+        cfg.add_node(VirtualAddress(106), node2(ctx, 106, 104, 107));
+        cfg.add_node(VirtualAddress(107), node2(ctx, 107, 104, 108));
         cfg.add_node(VirtualAddress(108), node0(108));
         let mut cycles = cfg.cycles().into_iter()
             .map(|x| x.into_iter().map(|y| y.address().0).collect::<Vec<_>>())
@@ -826,18 +828,19 @@ mod test {
 
     #[test]
     fn immediate_postdominator() {
+        let ctx = &OperandContext::new();
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
+        cfg.add_node(VirtualAddress(100), node2(ctx, 100, 101, 102));
         cfg.add_node(VirtualAddress(101), node1(101, 104));
         cfg.add_node(VirtualAddress(102), node1(102, 103));
-        cfg.add_node(VirtualAddress(103), node2(103, 110, 106));
+        cfg.add_node(VirtualAddress(103), node2(ctx, 103, 110, 106));
         cfg.add_node(VirtualAddress(104), node1(104, 107));
         cfg.add_node(VirtualAddress(105), node1(105, 107));
         cfg.add_node(VirtualAddress(106), node1(106, 102));
-        cfg.add_node(VirtualAddress(107), node2(107, 108, 109));
+        cfg.add_node(VirtualAddress(107), node2(ctx, 107, 108, 109));
         cfg.add_node(VirtualAddress(108), node0(108));
-        cfg.add_node(VirtualAddress(109), node2(109, 111, 112));
-        cfg.add_node(VirtualAddress(110), node2(110, 104, 105));
+        cfg.add_node(VirtualAddress(109), node2(ctx, 109, 111, 112));
+        cfg.add_node(VirtualAddress(110), node2(ctx, 110, 104, 105));
         cfg.add_node(VirtualAddress(111), node0(111));
         cfg.add_node(VirtualAddress(112), node1(112, 109));
         cfg.calculate_node_indices();
@@ -851,10 +854,10 @@ mod test {
         assert_eq!(cfg.immediate_postdominator(node(109)).unwrap().address.0, 111);
 
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
+        cfg.add_node(VirtualAddress(100), node2(ctx, 100, 101, 102));
         cfg.add_node(VirtualAddress(101), node1(101, 103));
         cfg.add_node(VirtualAddress(102), node1(102, 103));
-        cfg.add_node(VirtualAddress(103), node2(103, 104, 105));
+        cfg.add_node(VirtualAddress(103), node2(ctx, 103, 104, 105));
         cfg.add_node(VirtualAddress(104), node1(104, 105));
         cfg.add_node(VirtualAddress(105), node0(105));
         cfg.calculate_node_indices();
@@ -865,10 +868,10 @@ mod test {
         assert_eq!(cfg.immediate_postdominator(node(104)).unwrap().address.0, 105);
 
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
+        cfg.add_node(VirtualAddress(100), node2(ctx, 100, 101, 102));
         cfg.add_node(VirtualAddress(101), node1(101, 103));
         cfg.add_node(VirtualAddress(102), node1(102, 103));
-        cfg.add_node(VirtualAddress(103), node2(103, 104, 101));
+        cfg.add_node(VirtualAddress(103), node2(ctx, 103, 104, 101));
         cfg.add_node(VirtualAddress(104), node0(104));
         cfg.calculate_node_indices();
         let node = |i| cfg.nodes().find(|x| x.address.0 == i).unwrap().index;
@@ -877,7 +880,7 @@ mod test {
         assert_eq!(cfg.immediate_postdominator(node(103)).unwrap().address.0, 104);
 
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
+        cfg.add_node(VirtualAddress(100), node2(ctx, 100, 101, 102));
         cfg.add_node(VirtualAddress(101), node1(101, 100));
         cfg.add_node(VirtualAddress(102), node0(102));
         cfg.calculate_node_indices();
@@ -886,8 +889,8 @@ mod test {
         assert_eq!(cfg.immediate_postdominator(node(101)).unwrap().address.0, 100);
 
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, 101, 104));
-        cfg.add_node(VirtualAddress(101), node2(101, 100, 103));
+        cfg.add_node(VirtualAddress(100), node2(ctx, 100, 101, 104));
+        cfg.add_node(VirtualAddress(101), node2(ctx, 101, 100, 103));
         cfg.add_node(VirtualAddress(102), node1(102, 101));
         cfg.add_node(VirtualAddress(103), node0(103));
         cfg.add_node(VirtualAddress(104), node1(104, 103));
@@ -899,9 +902,10 @@ mod test {
 
     #[test]
     fn immediate_postdominator2() {
+        let ctx = &OperandContext::new();
         let mut cfg = Cfg::new();
-        cfg.add_node(VirtualAddress(100), node2(100, 101, 102));
-        cfg.add_node(VirtualAddress(101), node2(101, 103, 102));
+        cfg.add_node(VirtualAddress(100), node2(ctx, 100, 101, 102));
+        cfg.add_node(VirtualAddress(101), node2(ctx, 101, 103, 102));
         cfg.add_node(VirtualAddress(102), node1(102, 103));
         cfg.add_node(VirtualAddress(103), node0(103));
         cfg.calculate_node_indices();
