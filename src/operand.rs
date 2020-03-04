@@ -1,190 +1,82 @@
+mod intern;
 mod simplify;
 #[cfg(test)]
 mod simplify_tests;
+
+#[cfg(feature = "serde")]
+mod deserialize;
+#[cfg(feature = "serde")]
+pub use self::deserialize::DeserializeOperand;
 
 use std::cell::Cell;
 use std::cmp::{max, min, Ordering};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
-use std::rc::Rc;
+use std::ptr;
 
 #[cfg(feature = "serde")]
-use serde::{Deserializer, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::bit_misc::{bits_overlap};
 
+#[derive(Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-#[derive(Clone, Eq)]
-pub struct Operand {
-    pub ty: OperandType,
-    #[cfg_attr(feature = "serde", serde(skip_serializing))]
-    simplified: bool,
-    #[cfg_attr(feature = "serde", serde(skip_serializing))]
-    hash: u64,
+pub struct Operand<'e>(&'e OperandBase<'e>);
+
+/// Wrapper around `Operand` which implements `Hash` on the interned address.
+/// Separate struct since hashing by address gives hashes that aren't stable
+/// across executions or even separate `OperandContext`s.
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct OperandHashByAddress<'e>(pub Operand<'e>);
+
+#[cfg_attr(feature = "serde", derive(Serialize))]
+struct OperandBase<'e> {
+    ty: OperandType<'e>,
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     min_zero_bit_simplify_size: u8,
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     relevant_bits: Range<u8>,
 }
 
-#[cfg(feature = "serde")]
-impl<'de> Deserialize<'de> for Operand {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Operand, D::Error> {
-        use serde::de::{self, MapAccess, SeqAccess, Visitor};
-
-        const FIELDS: &[&str] = &["ty"];
-        enum Field {
-            Ty,
-        }
-        impl<'de> Deserialize<'de> for Field {
-            fn deserialize<D>(deserializer: D) -> Result<Field, D::Error>
-                where D: Deserializer<'de>
-            {
-                struct FieldVisitor;
-
-                impl<'de> Visitor<'de> for FieldVisitor {
-                    type Value = Field;
-
-                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                        formatter.write_str("`ty`")
-                    }
-
-                    fn visit_str<E>(self, value: &str) -> Result<Field, E>
-                        where E: de::Error
-                    {
-                        match value {
-                            "ty" => Ok(Field::Ty),
-                            _ => Err(de::Error::unknown_field(value, FIELDS)),
-                        }
-                    }
-                }
-                deserializer.deserialize_identifier(FieldVisitor)
-            }
-        }
-
-        struct OperandVisitor;
-
-        impl<'de> Visitor<'de> for OperandVisitor {
-            type Value = Operand;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("struct Operand")
-            }
-
-            fn visit_seq<V>(self, mut seq: V) -> Result<Operand, V::Error>
-                where V: SeqAccess<'de>
-            {
-                let ty = seq.next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let oper = Operand::new_not_simplified_rc(ty);
-                Ok((*Operand::simplified(oper)).clone())
-            }
-
-            fn visit_map<V>(self, mut map: V) -> Result<Operand, V::Error>
-                where V: MapAccess<'de>
-            {
-                let mut ty = None;
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        Field::Ty => {
-                            if ty.is_some() {
-                                return Err(de::Error::duplicate_field("ty"));
-                            }
-                            ty = Some(map.next_value()?);
-                        }
-                    }
-                }
-                let ty = ty.ok_or_else(|| de::Error::missing_field("ty"))?;
-                let oper = Operand::new_not_simplified_rc(ty);
-                Ok((*Operand::simplified(oper)).clone())
-            }
-        }
-        deserializer.deserialize_struct("Operand", FIELDS, OperandVisitor)
-    }
-}
-
-impl Hash for Operand {
+impl<'e> Hash for OperandHashByAddress<'e> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let Operand {
-            ty: _,
-            simplified: _,
-            min_zero_bit_simplify_size: _,
-            relevant_bits: _,
-            hash,
-        } = *self;
-        hash.hash(state)
+        ((self.0).0 as *const OperandBase<'e> as usize).hash(state)
     }
 }
 
-/// Horrible hasher that relies on data being hashed already being well-spread data
-/// (Like Operands with their cached hash)
-#[derive(Default)]
-pub struct OperandDummyHasher {
-    value: u64,
-}
+impl<'e> Eq for Operand<'e> { }
 
-impl Hasher for OperandDummyHasher {
-    fn finish(&self) -> u64 {
-        self.value
-    }
-
-    fn write(&mut self, data: &[u8]) {
-        for &x in data.iter().take(8) {
-            self.value = (self.value << 8) | u64::from(x);
-        }
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.value = value;
+// Short-circuit the common case of aliasing pointers
+impl<'e> PartialEq for Operand<'e> {
+    fn eq(&self, other: &Operand<'e>) -> bool {
+        ptr::eq(self.0, other.0)
     }
 }
 
 // Short-circuit the common case of aliasing pointers
-impl PartialEq for Operand {
-    fn eq(&self, other: &Operand) -> bool {
-        if other as *const Operand == self as *const Operand {
-            true
-        } else if self.hash != other.hash {
-            false
-        } else {
-            let Operand {
-                ref ty,
-                min_zero_bit_simplify_size: _,
-                simplified: _,
-                relevant_bits: _,
-                hash: _,
-            } = *self;
-            ty.eq(&other.ty)
-        }
-    }
-}
-
-// Short-circuit the common case of aliasing pointers
-impl Ord for Operand {
-    fn cmp(&self, other: &Operand) -> Ordering {
-        if other as *const Operand == self as *const Operand {
+impl<'e> Ord for Operand<'e> {
+    fn cmp(&self, other: &Operand<'e>) -> Ordering {
+        if ptr::eq(self.0, other.0) {
             Ordering::Equal
         } else {
-            let Operand {
+            let OperandBase {
                 ref ty,
                 min_zero_bit_simplify_size: _,
-                simplified: _,
                 relevant_bits: _,
-                hash: _,
-            } = *self;
-            ty.cmp(&other.ty)
+            } = *self.0;
+            ty.cmp(&other.0.ty)
         }
     }
 }
 
-impl PartialOrd for Operand {
-    fn partial_cmp(&self, other: &Operand) -> Option<Ordering> {
+impl<'e> PartialOrd for Operand<'e> {
+    fn partial_cmp(&self, other: &Operand<'e>) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl fmt::Debug for Operand {
+impl<'e> fmt::Debug for Operand<'e> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         /*
         f.debug_struct("Operand")
@@ -199,7 +91,7 @@ impl fmt::Debug for Operand {
     }
 }
 
-impl fmt::Debug for OperandType {
+impl<'e> fmt::Debug for OperandType<'e> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::OperandType::*;
         match self {
@@ -220,11 +112,11 @@ impl fmt::Debug for OperandType {
     }
 }
 
-impl fmt::Display for Operand {
+impl<'e> fmt::Display for Operand<'e> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::ArithOpType::*;
 
-        match self.ty {
+        match *self.ty() {
             OperandType::Register(r) => match r.0 {
                 0 => write!(f, "rax"),
                 1 => write!(f, "rcx"),
@@ -255,8 +147,8 @@ impl fmt::Display for Operand {
             }, mem.address),
             OperandType::Undefined(id) => write!(f, "Undefined_{:x}", id.0),
             OperandType::Arithmetic(ref arith) | OperandType::ArithmeticF32(ref arith) => {
-                let l = &arith.left;
-                let r = &arith.right;
+                let l = arith.left;
+                let r = arith.right;
                 match arith.ty {
                     Add => write!(f, "({} + {})", l, r),
                     Sub => write!(f, "({} - {})", l, r),
@@ -275,7 +167,7 @@ impl fmt::Display for Operand {
                     FloatToInt => write!(f, "float_to_int({})", l),
                     IntToFloat => write!(f, "int_to_float({})", l),
                 }?;
-                match self.ty {
+                match *self.ty() {
                     OperandType::ArithmeticF32(..) => {
                         write!(f, "[f32]")?;
                     }
@@ -293,34 +185,34 @@ impl fmt::Display for Operand {
     }
 }
 
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[derive(Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub enum OperandType {
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub enum OperandType<'e> {
     Register(Register),
     Xmm(u8, u8),
     Fpu(u8),
     Flag(Flag),
     Constant(u64),
-    Memory(MemAccess),
-    Arithmetic(ArithOperand),
-    ArithmeticF32(ArithOperand),
+    Memory(MemAccess<'e>),
+    Arithmetic(ArithOperand<'e>),
+    ArithmeticF32(ArithOperand<'e>),
     Undefined(UndefinedId),
-    SignExtend(Rc<Operand>, MemAccessSize, MemAccessSize),
+    SignExtend(Operand<'e>, MemAccessSize, MemAccessSize),
     /// Arbitrary user-defined variable that does not compare equal with anything,
     /// and is guaranteed not to be generated by scarf's execution simulation.
     Custom(u32),
 }
 
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct ArithOperand {
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct ArithOperand<'e> {
     pub ty: ArithOpType,
-    pub left: Rc<Operand>,
-    pub right: Rc<Operand>,
+    pub left: Operand<'e>,
+    pub right: Operand<'e>,
 }
 
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ArithOpType {
     Add,
     Sub,
@@ -340,7 +232,7 @@ pub enum ArithOpType {
     FloatToInt,
 }
 
-impl ArithOperand {
+impl<'e> ArithOperand<'e> {
     pub fn is_compare_op(&self) -> bool {
         use self::ArithOpType::*;
         match self.ty {
@@ -351,41 +243,53 @@ impl ArithOperand {
 }
 
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub struct UndefinedId(pub u32);
 
-#[derive(Debug)]
 pub struct OperandContext {
     next_undefined: Cell<u32>,
-    globals: Rc<OperandCtxGlobals>,
+    // Contains 0x41 small constants, 0x10 registers, 0x6 flags
+    common_operands: Box<[OperandSelfRef; 0x41 + 0x10 + 0x6]>,
+    interner: intern::Interner,
 }
 
-#[derive(Debug)]
-struct OperandCtxGlobals {
-    constants: OperandCtxConstants,
-    registers: [Rc<Operand>; 16],
-    flags: [Rc<Operand>; 6],
+/// Represents an Operand<'e> stored in OperandContext.
+/// Rust doesn't allow this sort of setup without unsafe code,
+/// so have this sort of wrapper to somewhat separate these
+/// unsafe casts from other operands.
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+struct OperandSelfRef(*const ());
+
+impl OperandSelfRef {
+    fn new<'e>(operand: Operand<'e>) -> OperandSelfRef {
+        OperandSelfRef(operand.0 as *const OperandBase<'e> as *const ())
+    }
+
+    unsafe fn cast<'e>(self) -> Operand<'e> {
+        Operand(&*(self.0 as *const OperandBase<'e>))
+    }
 }
 
-pub struct Iter<'a>(Option<IterState<'a>>);
-pub struct IterNoMemAddr<'a>(Option<IterState<'a>>);
+pub struct Iter<'e>(Option<IterState<'e>>);
+pub struct IterNoMemAddr<'e>(Option<IterState<'e>>);
 
-trait IterVariant<'a> {
+trait IterVariant<'e> {
     fn descend_to_mem_addr() -> bool;
-    fn state<'b>(&'b mut self) -> &'b mut Option<IterState<'a>>;
+    fn state<'b>(&'b mut self) -> &'b mut Option<IterState<'e>>;
 }
 
-impl<'a> IterVariant<'a> for Iter<'a> {
+impl<'e> IterVariant<'e> for Iter<'e> {
     fn descend_to_mem_addr() -> bool {
         true
     }
 
-    fn state<'b>(&'b mut self) -> &'b mut Option<IterState<'a>> {
+    fn state<'b>(&'b mut self) -> &'b mut Option<IterState<'e>> {
         &mut self.0
     }
 }
 
-fn iter_variant_next<'a, T: IterVariant<'a>>(s: &mut T) -> Option<&'a Operand> {
+fn iter_variant_next<'e, T: IterVariant<'e>>(s: &mut T) -> Option<Operand<'e>> {
     use self::OperandType::*;
 
     let inner = match s.state() {
@@ -394,15 +298,15 @@ fn iter_variant_next<'a, T: IterVariant<'a>>(s: &mut T) -> Option<&'a Operand> {
     };
     let next = inner.pos;
 
-    match next.ty {
+    match *next.ty() {
         Arithmetic(ref arith) | ArithmeticF32(ref arith) => {
-            inner.pos = &arith.left;
-            inner.stack.push(&arith.right);
+            inner.pos = arith.left;
+            inner.stack.push(arith.right);
         },
         Memory(ref m) if T::descend_to_mem_addr() => {
-            inner.pos = &m.address;
+            inner.pos = m.address;
         }
-        SignExtend(ref val, _, _) => {
+        SignExtend(val, _, _) => {
             inner.pos = val;
         }
         _ => {
@@ -417,96 +321,43 @@ fn iter_variant_next<'a, T: IterVariant<'a>>(s: &mut T) -> Option<&'a Operand> {
     Some(next)
 }
 
-impl<'a> IterVariant<'a> for IterNoMemAddr<'a> {
+impl<'e> IterVariant<'e> for IterNoMemAddr<'e> {
     fn descend_to_mem_addr() -> bool {
         false
     }
 
-    fn state<'b>(&'b mut self) -> &'b mut Option<IterState<'a>> {
+    fn state<'b>(&'b mut self) -> &'b mut Option<IterState<'e>> {
         &mut self.0
     }
 }
 
-struct IterState<'a> {
-    pos: &'a Operand,
-    stack: Vec<&'a Operand>,
+struct IterState<'e> {
+    pos: Operand<'e>,
+    stack: Vec<Operand<'e>>,
 }
 
-impl<'a> Iterator for Iter<'a> {
-    type Item = &'a Operand;
-    fn next(&mut self) -> Option<&'a Operand> {
+impl<'e> Iterator for Iter<'e> {
+    type Item = Operand<'e>;
+    fn next(&mut self) -> Option<Operand<'e>> {
         iter_variant_next(self)
     }
 }
 
-impl<'a> Iterator for IterNoMemAddr<'a> {
-    type Item = &'a Operand;
-    fn next(&mut self) -> Option<&'a Operand> {
+impl<'e> Iterator for IterNoMemAddr<'e> {
+    type Item = Operand<'e>;
+    fn next(&mut self) -> Option<Operand<'e>> {
         iter_variant_next(self)
     }
 }
 
 macro_rules! operand_context_const_methods {
-    ($($name:ident, $field:ident,)*) => {
+    ($($name:ident, $val:expr,)*) => {
         $(
-            pub fn $name(&self) -> Rc<Operand> {
-                self.globals.constants.$field.clone()
+            pub fn $name<'e>(&'e self) -> Operand<'e> {
+                self.constant($val)
             }
         )*
     }
-}
-
-#[inline(never)]
-fn make_constant_op(c: u32) -> Rc<Operand> {
-    Operand::new_simplified_rc(OperandType::Constant(c as u64))
-}
-
-macro_rules! operand_ctx_constants {
-    ($($name:ident: $value:expr,)*) => {
-        #[derive(Debug)]
-        struct OperandCtxConstants {
-            small_consts: Vec<Rc<Operand>>,
-            $(
-                $name: Rc<Operand>,
-            )*
-        }
-
-        impl OperandCtxConstants {
-            fn new() -> OperandCtxConstants {
-                OperandCtxConstants {
-                    $(
-                        $name: make_constant_op($value),
-                    )*
-                    small_consts: (0..0x41).map(|x| {
-                        make_constant_op(x)
-                    }).collect(),
-                }
-            }
-        }
-    }
-}
-
-operand_ctx_constants! {
-    c_0: 0x0,
-    c_1: 0x1,
-    c_2: 0x2,
-    c_4: 0x4,
-    c_8: 0x8,
-    c_1f: 0x1f,
-    c_20: 0x20,
-    c_7f: 0x7f,
-    c_ff: 0xff,
-    c_7fff: 0x7fff,
-    c_ffff: 0xffff,
-    c_ff00: 0xff00,
-    c_ffffff00: 0xffff_ff00,
-    c_ffff0000: 0xffff_0000,
-    c_ffff00ff: 0xffff_00ff,
-    c_7fffffff: 0x7fff_ffff,
-    c_ffffffff: 0xffff_ffff,
-}
-thread_local! {
-    static OPERAND_CTX_GLOBALS: Rc<OperandCtxGlobals> = Rc::new(OperandCtxGlobals::new());
 }
 
 #[cfg(feature = "fuzz")]
@@ -524,245 +375,206 @@ pub fn check_tls_simplification_incomplete() -> bool {
     SIMPLIFICATION_INCOMPLETE.with(|x| x.replace(false))
 }
 
-#[inline(never)]
-fn make_flag_op(i: usize) -> Rc<Operand> {
-    let f = match i {
-        0 => Flag::Zero,
-        1 => Flag::Carry,
-        2 => Flag::Overflow,
-        3 => Flag::Parity,
-        4 => Flag::Sign,
-        5 => Flag::Direction,
-        _ => unreachable!(),
-    };
-    Operand::new_simplified_rc(OperandType::Flag(f))
-}
-
-impl OperandCtxGlobals {
-    fn new() -> OperandCtxGlobals {
-        OperandCtxGlobals {
-            constants: OperandCtxConstants::new(),
-            flags: array_init::array_init(|i| make_flag_op(i)),
-            registers: array_init::array_init(|i| {
-                Operand::new_simplified_rc(OperandType::Register(Register(i as u8)))
-            })
-        }
-    }
-}
-
 impl OperandContext {
+    pub fn new() -> OperandContext {
+        use std::ptr::null_mut;
+        let common_operands = Box::new([OperandSelfRef(null_mut()); 0x41 + 0x10 + 0x6]);
+        let mut result = OperandContext {
+            next_undefined: Cell::new(0),
+            common_operands,
+            interner: intern::Interner::new(),
+        };
+        for i in 0..0x41 {
+            result.common_operands[i] =
+                result.intern(OperandType::Constant(i as u64)).self_ref();
+        }
+        let base = 0x41;
+        for i in 0..0x10 {
+            result.common_operands[base + i] =
+                result.intern(OperandType::Register(Register(i as u8))).self_ref();
+        }
+        let base = 0x41 + 0x10;
+        result.common_operands[base + 0] =
+            result.intern(OperandType::Flag(Flag::Zero)).self_ref();
+        result.common_operands[base + 1] =
+            result.intern(OperandType::Flag(Flag::Carry)).self_ref();
+        result.common_operands[base + 2] =
+            result.intern(OperandType::Flag(Flag::Overflow)).self_ref();
+        result.common_operands[base + 3] =
+            result.intern(OperandType::Flag(Flag::Parity)).self_ref();
+        result.common_operands[base + 4] =
+            result.intern(OperandType::Flag(Flag::Sign)).self_ref();
+        result.common_operands[base + 5] =
+            result.intern(OperandType::Flag(Flag::Direction)).self_ref();
+        result
+    }
+
+    /// Returns a struct that is used in conjuction with serde's `deserialize_seed` functions
+    /// to allocate deserialized operands with lifetime of this `OperandContext`.
+    #[cfg(feature = "serde")]
+    pub fn deserialize_seed<'e>(&'e self) -> DeserializeOperand<'e> {
+        DeserializeOperand(self)
+    }
+
     operand_context_const_methods! {
-        const_7f, c_7f,
-        const_ff, c_ff,
-        const_7fff, c_7fff,
-        const_ff00, c_ff00,
-        const_ffff, c_ffff,
-        const_ffff0000, c_ffff0000,
-        const_ffffff00, c_ffffff00,
-        const_ffff00ff, c_ffff00ff,
-        const_7fffffff, c_7fffffff,
-        const_ffffffff, c_ffffffff,
+        const_0, 0x0,
+        const_1, 0x1,
+        const_2, 0x2,
+        const_4, 0x4,
+        const_8, 0x8,
+        const_1f, 0x1f,
+        const_20, 0x20,
+        const_7f, 0x7f,
+        const_ff, 0xff,
+        const_7fff, 0x7fff,
+        const_ff00, 0xff00,
+        const_ffff, 0xffff,
+        const_ffff0000, 0xffff0000,
+        const_ffffff00, 0xffffff00,
+        const_ffff00ff, 0xffff00ff,
+        const_7fffffff, 0x7fffffff,
+        const_ffffffff, 0xffffffff,
     }
 
-    pub fn flag_z(&self) -> &Rc<Operand> {
-        &self.globals.flags[Flag::Zero as usize]
+    fn intern<'e>(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+        self.interner.intern(ty)
     }
 
-    pub fn flag_c(&self) -> &Rc<Operand> {
-        &self.globals.flags[Flag::Carry as usize]
+    pub fn new_undef<'e>(&'e self) -> Operand<'e> {
+        // TODO Could just have undefined be on a vector (-like collection which gives stable
+        // addresses)
+        let id = self.next_undefined.get();
+        self.next_undefined.set(id + 1);
+        self.intern(OperandType::Undefined(UndefinedId(id)))
     }
 
-    pub fn flag_o(&self) -> &Rc<Operand> {
-        &self.globals.flags[Flag::Overflow as usize]
+    pub fn flag_z<'e>(&'e self) -> Operand<'e> {
+        self.flag(Flag::Zero)
     }
 
-    pub fn flag_s(&self) -> &Rc<Operand> {
-        &self.globals.flags[Flag::Sign as usize]
+    pub fn flag_c<'e>(&'e self) -> Operand<'e> {
+        self.flag(Flag::Carry)
     }
 
-    pub fn flag_p(&self) -> &Rc<Operand> {
-        &self.globals.flags[Flag::Parity as usize]
+    pub fn flag_o<'e>(&'e self) -> Operand<'e> {
+        self.flag(Flag::Overflow)
     }
 
-    pub fn flag_d(&self) -> &Rc<Operand> {
-        &self.globals.flags[Flag::Direction as usize]
+    pub fn flag_s<'e>(&'e self) -> Operand<'e> {
+        self.flag(Flag::Sign)
     }
 
-    pub fn flag(&self, flag: Flag) -> &Rc<Operand> {
+    pub fn flag_p<'e>(&'e self) -> Operand<'e> {
+        self.flag(Flag::Parity)
+    }
+
+    pub fn flag_d<'e>(&'e self) -> Operand<'e> {
+        self.flag(Flag::Direction)
+    }
+
+    pub fn flag<'e>(&'e self, flag: Flag) -> Operand<'e> {
         self.flag_by_index(flag as usize)
     }
 
-    pub(crate) fn flag_by_index(&self, index: usize) -> &Rc<Operand> {
-        &self.globals.flags[index]
+    pub(crate) fn flag_by_index<'e>(&'e self, index: usize) -> Operand<'e> {
+        assert!(index < 6);
+        unsafe { self.common_operands[0x41 + 0x10 + index as usize].cast() }
     }
 
-    pub fn register(&self, index: u8) -> Rc<Operand> {
-        self.globals.registers[index as usize].clone()
-    }
-
-    pub fn register_ref(&self, index: u8) -> &Rc<Operand> {
-        &self.globals.registers[index as usize]
-    }
-
-    pub fn register_fpu(&self, index: u8) -> Rc<Operand> {
-        Operand::new_simplified_rc(OperandType::Fpu(index))
-    }
-
-    pub fn xmm(&self, num: u8, word: u8) -> Rc<Operand> {
-        Operand::new_simplified_rc(OperandType::Xmm(num, word))
-    }
-
-    pub fn const_0(&self) -> Rc<Operand> {
-        self.globals.constants.small_consts[0].clone()
-    }
-
-    pub fn const_1(&self) -> Rc<Operand> {
-        self.globals.constants.small_consts[1].clone()
-    }
-
-    pub fn const_2(&self) -> Rc<Operand> {
-        self.globals.constants.small_consts[2].clone()
-    }
-
-    pub fn const_4(&self) -> Rc<Operand> {
-        self.globals.constants.small_consts[4].clone()
-    }
-
-    pub fn const_8(&self) -> Rc<Operand> {
-        self.globals.constants.small_consts[8].clone()
-    }
-
-    pub fn const_1f(&self) -> Rc<Operand> {
-        self.globals.constants.small_consts[0x1f].clone()
-    }
-
-    pub fn const_20(&self) -> Rc<Operand> {
-        self.globals.constants.small_consts[0x20].clone()
-    }
-
-    pub fn custom(&self, value: u32) -> Rc<Operand> {
-        Operand::new_simplified_rc(OperandType::Custom(value))
-    }
-
-    pub fn constant(&self, value: u64) -> Rc<Operand> {
-        if value <= u32::max_value() as u64 {
-            match value {
-                0..=0x40 => {
-                    self.globals.constants.small_consts[value as usize].clone()
-                }
-                0xff => self.const_ff(),
-                _ => {
-                    if value & 0x7f00 == 0x7f00 {
-                        match value {
-                            0x7fff => return self.const_7fff(),
-                            0xff00 => return self.const_ff00(),
-                            0xffff => return self.const_ffff(),
-                            0xffff_ff00 => return self.const_ffffff00(),
-                            0x7fff_ffff => return self.const_7fffffff(),
-                            0xffff_ffff => return self.const_ffffffff(),
-                            _ => (),
-                        }
-                    }
-                    Operand::new_simplified_rc(OperandType::Constant(value))
-                }
-            }
+    pub fn register<'e>(&'e self, index: u8) -> Operand<'e> {
+        if index <= 0x10 {
+            unsafe { self.common_operands[0x41 + index as usize].cast() }
         } else {
-            Operand::new_simplified_rc(OperandType::Constant(value))
+            self.intern(OperandType::Register(Register(index)))
         }
     }
 
-    pub fn new() -> OperandContext {
-        OperandContext {
-            next_undefined: Cell::new(0),
-            globals: OPERAND_CTX_GLOBALS.with(|x| x.clone()),
+    pub fn register_ref<'e>(&'e self, index: u8) -> Operand<'e> {
+        self.register(index)
+    }
+
+    pub fn register_fpu<'e>(&'e self, index: u8) -> Operand<'e> {
+        self.intern(OperandType::Fpu(index))
+    }
+
+    pub fn xmm<'e>(&'e self, num: u8, word: u8) -> Operand<'e> {
+        self.intern(OperandType::Xmm(num, word))
+    }
+
+    pub fn custom<'e>(&'e self, value: u32) -> Operand<'e> {
+        self.intern(OperandType::Custom(value))
+    }
+
+    pub fn constant<'e>(&'e self, value: u64) -> Operand<'e> {
+        if value <= 0x40 {
+            unsafe { self.common_operands[value as usize].cast() }
+        } else {
+            self.intern(OperandType::Constant(value))
         }
-    }
-
-    /// Returns first id allocated.
-    pub fn alloc_undefined_ids(&self, count: u32) -> u32 {
-        let id = self.next_undefined.get();
-        // exec_state InternMap relies on this.
-        assert!(id < u32::max_value() / 2 - count);
-        self.next_undefined.set(id + count);
-        id
-    }
-
-    pub fn new_undefined_id(&self) -> u32 {
-        self.alloc_undefined_ids(1)
-    }
-
-    pub fn undefined_rc(&self) -> Rc<Operand> {
-        let id = self.new_undefined_id();
-        Operand::new_simplified_rc(OperandType::Undefined(UndefinedId(id)))
     }
 
     /// Returns operand limited to low `size` bits
-    pub fn truncate(&self, operand: &Rc<Operand>, size: u8) -> Rc<Operand> {
+    pub fn truncate<'e>(&'e self, operand: Operand<'e>, size: u8) -> Operand<'e> {
         let high = 64 - size;
         let mask = !0u64 << high >> high;
         self.and_const(operand, mask)
     }
 
-    pub fn arithmetic(
-        &self,
+    pub fn arithmetic<'e>(
+        &'e self,
         ty: ArithOpType,
-        left: &Rc<Operand>,
-        right: &Rc<Operand>,
-    ) -> Rc<Operand> {
-        let op = Operand::new_not_simplified_rc(OperandType::Arithmetic(ArithOperand {
-            ty,
-            left: left.clone(),
-            right: right.clone(),
-        }));
+        left: Operand<'e>,
+        right: Operand<'e>,
+    ) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplified_with_ctx(&op, self, &mut simplify)
+        simplify::simplify_arith(left, right, ty, self, &mut simplify)
     }
 
-    pub fn f32_arithmetic(
-        &self,
+    pub fn f32_arithmetic<'e>(
+        &'e self,
         ty: ArithOpType,
-        left: &Rc<Operand>,
-        right: &Rc<Operand>,
-    ) -> Rc<Operand> {
-        let op = Operand::new_not_simplified_rc(OperandType::ArithmeticF32(ArithOperand {
+        left: Operand<'e>,
+        right: Operand<'e>,
+    ) -> Operand<'e> {
+        let ty = OperandType::ArithmeticF32(ArithOperand {
             ty,
-            left: left.clone(),
-            right: right.clone(),
-        }));
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplified_with_ctx(&op, self, &mut simplify)
+            left,
+            right,
+        });
+        // No float arith simplifications have been written
+        self.intern(ty)
     }
 
     /// Returns `Operand` for `left + right`.
     ///
     /// The returned value is simplified.
-    pub fn add(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn add<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         simplify::simplify_add_sub(left, right, false, self)
     }
 
     /// Returns `Operand` for `left - right`.
     ///
     /// The returned value is simplified.
-    pub fn sub(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn sub<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         simplify::simplify_add_sub(left, right, true, self)
     }
 
     /// Returns `Operand` for `left * right`.
     ///
     /// The returned value is simplified.
-    pub fn mul(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn mul<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         simplify::simplify_mul(left, right, self)
     }
 
     /// Returns `Operand` for signed `left * right`.
     ///
     /// The returned value is simplified.
-    pub fn signed_mul(
-        &self,
-        left: &Rc<Operand>,
-        right: &Rc<Operand>,
+    pub fn signed_mul<'e>(
+        &'e self,
+        left: Operand<'e>,
+        right: Operand<'e>,
         _size: MemAccessSize,
-    ) -> Rc<Operand> {
+    ) -> Operand<'e> {
         // TODO
         simplify::simplify_mul(left, right, self)
     }
@@ -770,21 +582,21 @@ impl OperandContext {
     /// Returns `Operand` for `left / right`.
     ///
     /// The returned value is simplified.
-    pub fn div(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn div<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         self.arithmetic(ArithOpType::Div, left, right)
     }
 
     /// Returns `Operand` for `left % right`.
     ///
     /// The returned value is simplified.
-    pub fn modulo(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn modulo<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         self.arithmetic(ArithOpType::Modulo, left, right)
     }
 
     /// Returns `Operand` for `left & right`.
     ///
     /// The returned value is simplified.
-    pub fn and(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn and<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_and(left, right, self, &mut simplify)
     }
@@ -792,7 +604,7 @@ impl OperandContext {
     /// Returns `Operand` for `left | right`.
     ///
     /// The returned value is simplified.
-    pub fn or(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn or<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_or(left, right, self, &mut simplify)
     }
@@ -800,7 +612,7 @@ impl OperandContext {
     /// Returns `Operand` for `left ^ right`.
     ///
     /// The returned value is simplified.
-    pub fn xor(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn xor<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_xor(left, right, self, &mut simplify)
     }
@@ -808,7 +620,7 @@ impl OperandContext {
     /// Returns `Operand` for `left << right`.
     ///
     /// The returned value is simplified.
-    pub fn lsh(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn lsh<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_lsh(left, right, self, &mut simplify)
     }
@@ -816,7 +628,7 @@ impl OperandContext {
     /// Returns `Operand` for `left >> right`.
     ///
     /// The returned value is simplified.
-    pub fn rsh(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn rsh<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_rsh(left, right, self, &mut simplify)
     }
@@ -824,33 +636,33 @@ impl OperandContext {
     /// Returns `Operand` for `left == right`.
     ///
     /// The returned value is simplified.
-    pub fn eq(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn eq<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         simplify::simplify_eq(left, right, self)
     }
 
     /// Returns `Operand` for `left != right`.
     ///
     /// The returned value is simplified.
-    pub fn neq(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
-        self.eq_const(&self.eq(left, right), 0)
+    pub fn neq<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+        self.eq_const(self.eq(left, right), 0)
     }
 
     /// Returns `Operand` for unsigned `left > right`.
     ///
     /// The returned value is simplified.
-    pub fn gt(&self, left: &Rc<Operand>, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn gt<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         self.arithmetic(ArithOpType::GreaterThan, left, right)
     }
 
     /// Returns `Operand` for signed `left > right`.
     ///
     /// The returned value is simplified.
-    pub fn gt_signed(
-        &self,
-        left: &Rc<Operand>,
-        right: &Rc<Operand>,
+    pub fn gt_signed<'e>(
+        &'e self,
+        left: Operand<'e>,
+        right: Operand<'e>,
         size: MemAccessSize,
-    ) -> Rc<Operand> {
+    ) -> Operand<'e> {
         let (mask, offset) = match size {
             MemAccessSize::Mem8 => (0xff, 0x80),
             MemAccessSize::Mem16 => (0xffff, 0x8000),
@@ -858,18 +670,18 @@ impl OperandContext {
             MemAccessSize::Mem64 => {
                 let offset = 0x8000_0000_0000_0000;
                 return self.gt(
-                    &self.add_const(left, offset),
-                    &self.add_const(&right, offset),
+                    self.add_const(left, offset),
+                    self.add_const(right, offset),
                 );
             }
         };
         self.gt(
-            &self.and_const(
-                &self.add_const(&left, offset),
+            self.and_const(
+                self.add_const(left, offset),
                 mask,
             ),
-            &self.and_const(
-                &self.add_const(&right, offset),
+            self.and_const(
+                self.add_const(right, offset),
                 mask,
             ),
         )
@@ -878,203 +690,194 @@ impl OperandContext {
     /// Returns `Operand` for `left + right`.
     ///
     /// The returned value is simplified.
-    pub fn add_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn add_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
-        simplify::simplify_add_sub(left, &right, false, self)
+        simplify::simplify_add_sub(left, right, false, self)
     }
 
     /// Returns `Operand` for `left - right`.
     ///
     /// The returned value is simplified.
-    pub fn sub_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn sub_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
-        simplify::simplify_add_sub(left, &right, true, self)
+        simplify::simplify_add_sub(left, right, true, self)
     }
 
     /// Returns `Operand` for `left - right`.
     ///
     /// The returned value is simplified.
-    pub fn sub_const_left(&self, left: u64, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn sub_const_left<'e>(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
         let left = self.constant(left);
-        simplify::simplify_add_sub(&left, right, true, self)
+        simplify::simplify_add_sub(left, right, true, self)
     }
 
     /// Returns `Operand` for `left * right`.
     ///
     /// The returned value is simplified.
-    pub fn mul_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn mul_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
-        simplify::simplify_mul(left, &right, self)
+        simplify::simplify_mul(left, right, self)
     }
 
     /// Returns `Operand` for `left & right`.
     ///
     /// The returned value is simplified.
-    pub fn and_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn and_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_and(left, &right, self, &mut simplify)
+        simplify::simplify_and(left, right, self, &mut simplify)
     }
 
     /// Returns `Operand` for `left | right`.
     ///
     /// The returned value is simplified.
-    pub fn or_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn or_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_or(left, &right, self, &mut simplify)
+        simplify::simplify_or(left, right, self, &mut simplify)
     }
 
     /// Returns `Operand` for `left ^ right`.
     ///
     /// The returned value is simplified.
-    pub fn xor_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn xor_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_xor(left, &right, self, &mut simplify)
+        simplify::simplify_xor(left, right, self, &mut simplify)
     }
 
     /// Returns `Operand` for `left << right`.
     ///
     /// The returned value is simplified.
-    pub fn lsh_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn lsh_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_lsh(left, &right, self, &mut simplify)
+        simplify::simplify_lsh(left, right, self, &mut simplify)
     }
 
     /// Returns `Operand` for `left << right`.
     ///
     /// The returned value is simplified.
-    pub fn lsh_const_left(&self, left: u64, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn lsh_const_left<'e>(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
         let left = self.constant(left);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_lsh(&left, right, self, &mut simplify)
+        simplify::simplify_lsh(left, right, self, &mut simplify)
     }
 
     /// Returns `Operand` for `left >> right`.
     ///
     /// The returned value is simplified.
-    pub fn rsh_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn rsh_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_rsh(left, &right, self, &mut simplify)
+        simplify::simplify_rsh(left, right, self, &mut simplify)
     }
 
     /// Returns `Operand` for `left == right`.
     ///
-    /// The returned value is simplified.
-    pub fn eq_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    /// <'e>(&'e returned value is simplified.
+    pub fn eq_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
-        simplify::simplify_eq(left, &right, self)
+        simplify::simplify_eq(left, right, self)
     }
 
     /// Returns `Operand` for `left != right`.
     ///
     /// The returned value is simplified.
-    pub fn neq_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn neq_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
-        self.eq_const(&self.eq(left, &right), 0)
+        self.eq_const(self.eq(left, right), 0)
     }
 
     /// Returns `Operand` for unsigned `left > right`.
     ///
     /// The returned value is simplified.
-    pub fn gt_const(&self, left: &Rc<Operand>, right: u64) -> Rc<Operand> {
+    pub fn gt_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
-        self.gt(left, &right)
+        self.gt(left, right)
     }
 
     /// Returns `Operand` for unsigned `left > right`.
     ///
     /// The returned value is simplified.
-    pub fn gt_const_left(&self, left: u64, right: &Rc<Operand>) -> Rc<Operand> {
+    pub fn gt_const_left<'e>(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
         let left = self.constant(left);
-        self.gt(&left, right)
+        self.gt(left, right)
     }
 
-    pub fn mem64(&self, val: &Rc<Operand>) -> Rc<Operand> {
+    pub fn mem64<'e>(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem64, val)
     }
 
-    pub fn mem32(&self, val: &Rc<Operand>) -> Rc<Operand> {
+    pub fn mem32<'e>(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem32, val)
     }
 
-    pub fn mem16(&self, val: &Rc<Operand>) -> Rc<Operand> {
+    pub fn mem16<'e>(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem16, val)
     }
 
-    pub fn mem8(&self, val: &Rc<Operand>) -> Rc<Operand> {
+    pub fn mem8<'e>(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem8, val)
     }
 
-    pub fn mem_variable_rc(&self, size: MemAccessSize, val: &Rc<Operand>) -> Rc<Operand> {
-        // Eagerly simplify these as the address cannot affect anything
-        // this operand would get wrapped to.
-        // Only drawback is that if this resulting operand is discarded before
-        // it needed to be simplified, the work was wasted.
-        // Though that should be a rare case.
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        Operand::new_simplified_rc(OperandType::Memory(MemAccess {
-            address: simplify::simplified_with_ctx(val, self, &mut simplify),
+    pub fn mem_variable_rc<'e>(&'e self, size: MemAccessSize, addr: Operand<'e>) -> Operand<'e> {
+        let ty = OperandType::Memory(MemAccess {
+            address: addr,
             size,
-        }))
+        });
+        self.intern(ty)
     }
 
-    pub fn sign_extend(
-        &self,
-        val: &Rc<Operand>,
+    pub fn sign_extend<'e>(
+        &'e self,
+        val: Operand<'e>,
         from: MemAccessSize,
         to: MemAccessSize,
-    ) -> Rc<Operand> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        let val = simplify::simplified_with_ctx(val, self, &mut simplify);
-        let op = Operand::new_not_simplified_rc(OperandType::SignExtend(val, from, to));
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplified_with_ctx(&op, self, &mut simplify)
+    ) -> Operand<'e> {
+        simplify::simplify_sign_extend(val, from, to, self)
     }
 
-    pub fn transform<F>(&self, oper: &Rc<Operand>, mut f: F) -> Rc<Operand>
-    where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
+    pub fn transform<'e, F>(&'e self, oper: Operand<'e>, mut f: F) -> Operand<'e>
+    where F: FnMut(Operand<'e>) -> Option<Operand<'e>>
     {
-        self.transform_internal(&oper, &mut f)
+        self.transform_internal(oper, &mut f)
     }
 
-    fn transform_internal<F>(&self, oper: &Rc<Operand>, f: &mut F) -> Rc<Operand>
-    where F: FnMut(&Rc<Operand>) -> Option<Rc<Operand>>
+    fn transform_internal<'e, F>(&'e self, oper: Operand<'e>, f: &mut F) -> Operand<'e>
+    where F: FnMut(Operand<'e>) -> Option<Operand<'e>>
     {
-        if let Some(val) = f(&oper) {
+        if let Some(val) = f(oper) {
             return val;
         }
-        match oper.ty {
+        match *oper.ty() {
             OperandType::Arithmetic(ref arith) => {
-                let left = self.transform_internal(&arith.left, f);
-                let right = self.transform_internal(&arith.right, f);
-                if Rc::ptr_eq(&left, &arith.left) && Rc::ptr_eq(&right, &arith.right) {
-                    oper.clone()
+                let left = self.transform_internal(arith.left, f);
+                let right = self.transform_internal(arith.right, f);
+                if left == arith.left && right == arith.right {
+                    oper
                 } else {
-                    self.arithmetic(arith.ty, &left, &right)
+                    self.arithmetic(arith.ty, left, right)
                 }
             },
             OperandType::Memory(ref m) => {
-                let address = self.transform_internal(&m.address, f);
-                if Rc::ptr_eq(&address, &m.address) {
-                    oper.clone()
+                let address = self.transform_internal(m.address, f);
+                if address == m.address {
+                    oper
                 } else {
-                    self.mem_variable_rc(m.size, &address)
+                    self.mem_variable_rc(m.size, address)
                 }
             }
-            _ => oper.clone(),
+            _ => oper,
         }
     }
 
-    pub fn substitute(
-        &self,
-        oper: &Rc<Operand>,
-        val: &Rc<Operand>,
-        with: &Rc<Operand>,
-    ) -> Rc<Operand> {
+    pub fn substitute<'e>(
+        &'e self,
+        oper: Operand<'e>,
+        val: Operand<'e>,
+        with: Operand<'e>,
+    ) -> Operand<'e> {
         if let Some(mem) = val.if_memory() {
             // Transform also Mem16[mem.addr] to with & 0xffff if val is Mem32, etc.
             // I guess recursing inside mem.addr doesn't make sense here,
@@ -1085,7 +888,7 @@ impl OperandContext {
                     .filter(|old| old.size.bits() <= mem.size.bits())
                     .map(|old| {
                         if mem.size == old.size || old.size == MemAccessSize::Mem64 {
-                            with.clone()
+                            with
                         } else {
                             let mask = match old.size {
                                 MemAccessSize::Mem64 => unreachable!(),
@@ -1093,20 +896,20 @@ impl OperandContext {
                                 MemAccessSize::Mem16 => 0xffff,
                                 MemAccessSize::Mem8 => 0xff,
                             };
-                            self.and_const(&with, mask)
+                            self.and_const(with, mask)
                         }
                     })
             })
         } else {
             self.transform(oper, |old| match old == val {
-                true => Some(with.clone()),
+                true => Some(with),
                 false => None,
             })
         }
     }
 }
 
-impl OperandType {
+impl<'e> OperandType<'e> {
     /// Returns the minimum size of a zero bit range required in simplify_with_zero_bits for
     /// anything to simplify.
     fn min_zero_bit_simplify_size(&self) -> u8 {
@@ -1123,8 +926,8 @@ impl OperandType {
             OperandType::Arithmetic(ref arith) => match arith.ty {
                 ArithOpType::And | ArithOpType::Or | ArithOpType::Xor => {
                     min(
-                        arith.left.min_zero_bit_simplify_size,
-                        arith.right.min_zero_bit_simplify_size,
+                        arith.left.0.min_zero_bit_simplify_size,
+                        arith.right.0.min_zero_bit_simplify_size,
                     )
                 }
                 ArithOpType::Lsh | ArithOpType::Rsh => {
@@ -1132,7 +935,7 @@ impl OperandType {
                         Some(s) => 32u64.saturating_sub(s),
                         None => 32,
                     } as u8;
-                    arith.left.min_zero_bit_simplify_size.min(right_bits)
+                    arith.left.0.min_zero_bit_simplify_size.min(right_bits)
                 }
                 // Could this be better than 0?
                 ArithOpType::Add => 0,
@@ -1282,16 +1085,16 @@ impl OperandType {
     }
 }
 
-impl Operand {
-    fn new(ty: OperandType, simplified: bool) -> Operand {
-        let hash = fxhash::hash64(&ty);
-        Operand {
-            simplified,
-            hash,
-            min_zero_bit_simplify_size: ty.min_zero_bit_simplify_size(),
-            relevant_bits: ty.calculate_relevant_bits(),
-            ty,
-        }
+impl<'e> Operand<'e> {
+    /// Creates a self ref for OperandContext.
+    /// User has to unsafely make sure the OperandContext still exists when casting
+    /// OperandSelfRef to Operand
+    fn self_ref(self) -> OperandSelfRef {
+        OperandSelfRef::new(self)
+    }
+
+    pub fn ty(self) -> &'e OperandType<'e> {
+        &self.0.ty
     }
 
     /// Generates operand from bytes, meant to help with fuzzing.
@@ -1300,7 +1103,7 @@ impl Operand {
     ///
     /// TODO May be good to have this generate and-const masks a lot?
     #[cfg(feature = "fuzz")]
-    pub fn from_fuzz_bytes(ctx: &OperandContext, bytes: &mut &[u8]) -> Option<Rc<Operand>> {
+    pub fn from_fuzz_bytes(ctx: &'e OperandContext, bytes: &mut &[u8]) -> Option<Operand<'e>> {
         let read_u8 = |bytes: &mut &[u8]| -> Option<u8> {
             let &val = bytes.get(0)?;
             *bytes = &bytes[1..];
@@ -1324,7 +1127,7 @@ impl Operand {
                     _ => MemAccessSize::Mem64,
                 };
                 let inner = Operand::from_fuzz_bytes(ctx, bytes)?;
-                ctx.mem_variable_rc(size, &inner)
+                ctx.mem_variable_rc(size, inner)
             }
             0x4 => {
                 let from = match read_u8(bytes)? & 3 {
@@ -1340,7 +1143,7 @@ impl Operand {
                     _ => MemAccessSize::Mem64,
                 };
                 let inner = Operand::from_fuzz_bytes(ctx, bytes)?;
-                ctx.sign_extend(&inner, from, to);
+                ctx.sign_extend(inner, from, to);
             }
             0x5 => {
                 use self::ArithOpType::*;
@@ -1365,40 +1168,27 @@ impl Operand {
                     0xf => FloatToInt,
                     _ => return None,
                 };
-                ctx.arithmetic(ty, &left, &right)
+                ctx.arithmetic(ty, left, right)
             }
             _ => return None,
         })
     }
 
-    // TODO: Should not be pub?
-    pub(crate) fn new_simplified_rc(ty: OperandType) -> Rc<Operand> {
-        Rc::new(Self::new(ty, true))
-    }
-
-    fn new_not_simplified_rc(ty: OperandType) -> Rc<Operand> {
-        Rc::new(Self::new(ty, false))
-    }
-
-    pub(crate) fn is_simplified(&self) -> bool {
-        self.simplified
-    }
-
-    pub fn is_undefined(&self) -> bool {
-        match self.ty {
+    pub fn is_undefined(self) -> bool {
+        match self.ty() {
             OperandType::Undefined(_) => true,
             _ => false,
         }
     }
 
-    pub fn iter(&self) -> Iter {
+    pub fn iter(self) -> Iter<'e> {
         Iter(Some(IterState {
             pos: self,
             stack: Vec::new(),
         }))
     }
 
-    pub fn iter_no_mem_addr(&self) -> IterNoMemAddr {
+    pub fn iter_no_mem_addr(self) -> IterNoMemAddr<'e> {
         IterNoMemAddr(Some(IterState {
             pos: self,
             stack: Vec::new(),
@@ -1410,41 +1200,42 @@ impl Operand {
     /// End cannot be larger than 64.
     ///
     /// Can be also seen as trailing_zeros .. 64 - leading_zeros range
-    pub fn relevant_bits(&self) -> Range<u8> {
-        self.relevant_bits.clone()
+    pub fn relevant_bits(self) -> Range<u8> {
+        self.0.relevant_bits.clone()
     }
 
-    pub fn relevant_bits_mask(&self) -> u64 {
-        if self.relevant_bits.start >= self.relevant_bits.end {
+    pub fn relevant_bits_mask(self) -> u64 {
+        if self.0.relevant_bits.start >= self.0.relevant_bits.end {
             0
         } else {
-            let low = self.relevant_bits.start;
-            let high = 64 - self.relevant_bits.end;
+            let low = self.0.relevant_bits.start;
+            let high = 64 - self.0.relevant_bits.end;
             !0u64 << high >> high >> low << low
         }
     }
 
-    // "Simplify bitwise and: merge child ors"
-    // Converts things like [x | const1, x | const2] to [x | (const1 & const2)]
-    pub fn const_offset(oper: &Rc<Operand>, ctx: &OperandContext) -> Option<(Rc<Operand>, u64)> {
+    pub fn const_offset(
+        oper: Operand<'e>,
+        ctx: &'e OperandContext,
+    ) -> Option<(Operand<'e>, u64)> {
         // TODO: Investigate if this should be in `recurse`
         if let Some(c) = oper.if_constant() {
             return Some((ctx.const_0(), c));
         }
 
-        fn recurse(oper: &Rc<Operand>) -> Option<u64> {
+        fn recurse<'e>(oper: Operand<'e>) -> Option<u64> {
             // ehhh
-            match oper.ty {
+            match *oper.ty() {
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Add => {
                     if let Some(c) = arith.left.if_constant() {
-                        Some(recurse(&arith.right).unwrap_or(0).wrapping_add(c))
+                        Some(recurse(arith.right).unwrap_or(0).wrapping_add(c))
                     } else if let Some(c) = arith.right.if_constant() {
-                        Some(recurse(&arith.left).unwrap_or(0).wrapping_add(c))
+                        Some(recurse(arith.left).unwrap_or(0).wrapping_add(c))
                     } else {
-                        if let Some(c) = recurse(&arith.left) {
-                            Some(recurse(&arith.right).unwrap_or(0).wrapping_add(c))
-                        } else if let Some(c) = recurse(&arith.right) {
-                            Some(recurse(&arith.left).unwrap_or(0).wrapping_add(c))
+                        if let Some(c) = recurse(arith.left) {
+                            Some(recurse(arith.right).unwrap_or(0).wrapping_add(c))
+                        } else if let Some(c) = recurse(arith.right) {
+                            Some(recurse(arith.left).unwrap_or(0).wrapping_add(c))
                         } else {
                             None
                         }
@@ -1453,14 +1244,14 @@ impl Operand {
                 }
                 OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
                     if let Some(c) = arith.left.if_constant() {
-                        Some(c.wrapping_sub(recurse(&arith.right).unwrap_or(0)))
+                        Some(c.wrapping_sub(recurse(arith.right).unwrap_or(0)))
                     } else if let Some(c) = arith.right.if_constant() {
-                        Some(recurse(&arith.left).unwrap_or(0).wrapping_sub(c))
+                        Some(recurse(arith.left).unwrap_or(0).wrapping_sub(c))
                     } else {
-                        if let Some(c) = recurse(&arith.left) {
-                            Some(c.wrapping_sub(recurse(&arith.right).unwrap_or(0)))
-                        } else if let Some(c) = recurse(&arith.right) {
-                            Some(recurse(&arith.left).unwrap_or(0).wrapping_sub(c))
+                        if let Some(c) = recurse(arith.left) {
+                            Some(c.wrapping_sub(recurse(arith.right).unwrap_or(0)))
+                        } else if let Some(c) = recurse(arith.right) {
+                            Some(recurse(arith.left).unwrap_or(0).wrapping_sub(c))
                         } else {
                             None
                         }
@@ -1478,34 +1269,25 @@ impl Operand {
         }
     }
 
-    pub fn simplified(s: Rc<Operand>) -> Rc<Operand> {
-        if s.simplified {
-            return s;
-        }
-        let ctx = &OperandContext::new();
-        let mut swzb_ctx = simplify::SimplifyWithZeroBits::default();
-        simplify::simplified_with_ctx(&s, ctx, &mut swzb_ctx)
-    }
-
     /// Returns `Some(c)` if `self.ty` is `OperandType::Constant(c)`
-    pub fn if_constant(&self) -> Option<u64> {
-        match self.ty {
+    pub fn if_constant(self) -> Option<u64> {
+        match *self.ty() {
             OperandType::Constant(c) => Some(c),
             _ => None,
         }
     }
 
     /// Returns `Some(r)` if `self.ty` is `OperandType::Register(r)`
-    pub fn if_register(&self) -> Option<Register> {
-        match self.ty {
+    pub fn if_register(self) -> Option<Register> {
+        match *self.ty() {
             OperandType::Register(r) => Some(r),
             _ => None,
         }
     }
 
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)`
-    pub fn if_memory(&self) -> Option<&MemAccess> {
-        match self.ty {
+    pub fn if_memory(self) -> Option<&'e MemAccess<'e>> {
+        match *self.ty() {
             OperandType::Memory(ref mem) => Some(mem),
             _ => None,
         }
@@ -1513,10 +1295,10 @@ impl Operand {
 
     /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem64`
-    pub fn if_mem64(&self) -> Option<&Rc<Operand>> {
-        match self.ty {
+    pub fn if_mem64(self) -> Option<Operand<'e>> {
+        match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem64 {
-                true => Some(&mem.address),
+                true => Some(mem.address),
                 false => None,
             },
             _ => None,
@@ -1525,10 +1307,10 @@ impl Operand {
 
     /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem32`
-    pub fn if_mem32(&self) -> Option<&Rc<Operand>> {
-        match self.ty {
+    pub fn if_mem32(self) -> Option<Operand<'e>> {
+        match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem32 {
-                true => Some(&mem.address),
+                true => Some(mem.address),
                 false => None,
             },
             _ => None,
@@ -1537,10 +1319,10 @@ impl Operand {
 
     /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem16`
-    pub fn if_mem16(&self) -> Option<&Rc<Operand>> {
-        match self.ty {
+    pub fn if_mem16(self) -> Option<Operand<'e>> {
+        match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem16 {
-                true => Some(&mem.address),
+                true => Some(mem.address),
                 false => None,
             },
             _ => None,
@@ -1549,10 +1331,10 @@ impl Operand {
 
     /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem8`
-    pub fn if_mem8(&self) -> Option<&Rc<Operand>> {
-        match self.ty {
+    pub fn if_mem8(self) -> Option<Operand<'e>> {
+        match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem8 {
-                true => Some(&mem.address),
+                true => Some(mem.address),
                 false => None,
             },
             _ => None,
@@ -1561,12 +1343,12 @@ impl Operand {
 
     /// Returns `Some((left, right))` if self.ty is `OperandType::Arithmetic { ty == ty }`
     pub fn if_arithmetic(
-        &self,
+        self,
         ty: ArithOpType,
-    ) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
-        match self.ty {
+    ) -> Option<(Operand<'e>, Operand<'e>)> {
+        match *self.ty() {
             OperandType::Arithmetic(ref arith) if arith.ty == ty => {
-                Some((&arith.left, &arith.right))
+                Some((arith.left, arith.right))
             }
             _ => None,
         }
@@ -1574,10 +1356,10 @@ impl Operand {
 
     /// Returns `true` if self.ty is `OperandType::Arithmetic { ty == ty }`
     pub fn is_arithmetic(
-        &self,
+        self,
         ty: ArithOpType,
     ) -> bool {
-        match self.ty {
+        match *self.ty() {
             OperandType::Arithmetic(ref arith) => arith.ty == ty,
             _ => false,
         }
@@ -1585,43 +1367,43 @@ impl Operand {
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Add(left, right))`
-    pub fn if_arithmetic_add(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+    pub fn if_arithmetic_add(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Add)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Sub(left, right))`
-    pub fn if_arithmetic_sub(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+    pub fn if_arithmetic_sub(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Sub)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Mul(left, right))`
-    pub fn if_arithmetic_mul(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+    pub fn if_arithmetic_mul(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Mul)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Equal(left, right))`
-    pub fn if_arithmetic_eq(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+    pub fn if_arithmetic_eq(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Equal)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::GreaterThan(left, right))`
-    pub fn if_arithmetic_gt(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+    pub fn if_arithmetic_gt(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::GreaterThan)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::And(left, right))`
-    pub fn if_arithmetic_and(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+    pub fn if_arithmetic_and(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::And)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Or(left, right))`
-    pub fn if_arithmetic_or(&self) -> Option<(&Rc<Operand>, &Rc<Operand>)> {
+    pub fn if_arithmetic_or(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Or)
     }
 
@@ -1629,7 +1411,7 @@ impl Operand {
     /// with constant.
     ///
     /// Useful for detecting 32-bit register which is represented as `Register(r) & ffff_ffff`.
-    pub fn if_and_masked_register(&self) -> Option<(Register, u64)> {
+    pub fn if_and_masked_register(self) -> Option<(Register, u64)> {
         let (l, r) = self.if_arithmetic_and()?;
         let (reg, other) = Operand::either(l, r, |x| x.if_register())?;
         let other = other.if_constant()?;
@@ -1638,7 +1420,7 @@ impl Operand {
 
     /// Returns `(other, constant)` if operand is an and mask with constant,
     /// or just (self, u64::max_value())
-    pub fn and_masked(this: &Rc<Operand>) -> (&Rc<Operand>, u64) {
+    pub fn and_masked(this: Operand<'e>) -> (Operand<'e>, u64) {
         this.if_arithmetic_and()
             .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
             .map(|(c, o)| (o, c))
@@ -1647,26 +1429,26 @@ impl Operand {
 
     /// If either of `a` or `b` matches the filter-map `f`, return the mapped result and the other
     /// operand.
-    pub fn either<'a, F, T>(
-        a: &'a Rc<Operand>,
-        b: &'a Rc<Operand>,
+    pub fn either<F, T>(
+        a: Operand<'e>,
+        b: Operand<'e>,
         mut f: F,
-    ) -> Option<(T, &'a Rc<Operand>)>
-    where F: FnMut(&'a Rc<Operand>) -> Option<T>
+    ) -> Option<(T, Operand<'e>)>
+    where F: FnMut(Operand<'e>) -> Option<T>
     {
         f(a).map(|val| (val, b)).or_else(|| f(b).map(|val| (val, a)))
     }
 }
 
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct MemAccess {
-    pub address: Rc<Operand>,
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct MemAccess<'e> {
+    pub address: Operand<'e>,
     pub size: MemAccessSize,
 }
 
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd)]
+#[derive(Clone, Hash, Eq, PartialEq, Copy, Debug, Ord, PartialOrd)]
 pub enum MemAccessSize {
     Mem32,
     Mem16,
@@ -1710,31 +1492,32 @@ mod test {
 
         let ctx = super::OperandContext::new();
         let oper = ctx.and(
-            &ctx.sub(
-                &ctx.constant(1),
-                &ctx.register(6),
+            ctx.sub(
+                ctx.constant(1),
+                ctx.register(6),
             ),
-            &ctx.eq(
-                &ctx.constant(77),
-                &ctx.register(4),
+            ctx.eq(
+                ctx.constant(77),
+                ctx.register(4),
             ),
         );
         let opers = [
             oper.clone(),
-            ctx.sub(&ctx.constant(1), &ctx.register(6)),
+            ctx.sub(ctx.constant(1), ctx.register(6)),
             ctx.constant(1),
             ctx.register(6),
-            ctx.eq(&ctx.constant(77), &ctx.register(4)),
+            ctx.eq(ctx.constant(77), ctx.register(4)),
             ctx.constant(77),
             ctx.register(4),
         ];
         let mut seen = HashSet::new();
         for o in oper.iter() {
-            assert!(!seen.contains(o));
+            let o = super::OperandHashByAddress(o);
+            assert!(!seen.contains(&o));
             seen.insert(o);
         }
-        for o in &opers {
-            assert!(seen.contains(&**o), "Didn't find {}", o);
+        for &o in &opers {
+            assert!(seen.contains(&super::OperandHashByAddress(o)), "Didn't find {}", o);
         }
         assert_eq!(seen.len(), opers.len());
     }

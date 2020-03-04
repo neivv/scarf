@@ -1,5 +1,4 @@
 use std::collections::{hash_map, HashMap};
-use std::hash::BuildHasherDefault;
 use std::fmt;
 use std::mem;
 use std::ops::{Add, Sub};
@@ -10,18 +9,18 @@ use fxhash::FxBuildHasher;
 use crate::analysis;
 use crate::disasm::{self, DestOperand, Instruction, Operation};
 use crate::operand::{
-    self, ArithOpType, Operand, OperandType, OperandContext, OperandDummyHasher
+    ArithOpType, Operand, OperandType, OperandContext, OperandHashByAddress,
 };
 
 /// A trait that does (most of) arch-specific state handling.
 ///
 /// ExecutionState contains the CPU state that is simulated, so registers, flags.
-pub trait ExecutionState<'a> : Clone {
+pub trait ExecutionState<'e> : Clone + 'e {
     type VirtualAddress: VirtualAddress;
     // Technically ExecState shouldn't need to be linked to disassembly code,
     // but I didn't want an additional trait to sit between user-defined AnalysisState and
     // ExecutionState, so ExecutionState shall contain this detail as well.
-    type Disassembler: Disassembler<'a, VirtualAddress = Self::VirtualAddress>;
+    type Disassembler: Disassembler<'e, VirtualAddress = Self::VirtualAddress>;
 
     /// Bit of abstraction leak, but the memory structure is implemented as an partially
     /// immutable hashmap to keep clones not getting out of hand. This function is used to
@@ -31,37 +30,32 @@ pub trait ExecutionState<'a> : Clone {
     /// Adds an additonal assumption that can't be represented by setting registers/etc.
     /// Resolved constraints are useful limiting possible values a variable can have
     /// (`value_limits`)
-    fn add_resolved_constraint(&mut self, constraint: Constraint);
+    fn add_resolved_constraint(&mut self, constraint: Constraint<'e>);
     /// Adds an additonal assumption that can't be represented by setting registers/etc.
     /// Unresolved constraints are useful for knowing that a jump chain such as `jg` followed by
     /// `jle` ends up always jumping at `jle`.
-    fn add_unresolved_constraint(&mut self, constraint: Constraint);
-    fn update(&mut self, operation: &Operation, i: &mut InternMap);
-    fn move_to(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap);
-    fn move_resolved(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap);
-    fn ctx(&self) -> &'a OperandContext;
-    fn resolve(&mut self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand>;
-    fn resolve_apply_constraints(
-        &mut self,
-        operand: &Rc<Operand>,
-        i: &mut InternMap,
-    ) -> Rc<Operand>;
-    fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>>;
-    fn unresolve_memory(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>>;
+    fn add_unresolved_constraint(&mut self, constraint: Constraint<'e>);
+    fn update(&mut self, operation: &Operation<'e>);
+    fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
+    fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
+    fn ctx(&self) -> &'e OperandContext;
+    fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e>;
+    fn resolve_apply_constraints(&mut self, operand: Operand<'e>) -> Operand<'e>;
+    fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>>;
+    fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>>;
     fn initial_state(
-        operand_ctx: &'a OperandContext,
-        binary: &'a crate::BinaryFile<Self::VirtualAddress>,
-        interner: &mut InternMap,
+        operand_ctx: &'e OperandContext,
+        binary: &'e crate::BinaryFile<Self::VirtualAddress>,
     ) -> Self;
-    fn merge_states(old: &mut Self, new: &mut Self, i: &mut InternMap) -> Option<Self>;
+    fn merge_states(old: &mut Self, new: &mut Self) -> Option<Self>;
 
     /// Updates states as if the call instruction was executed (Push return address to stack)
     ///
     /// A separate function as calls are usually just stepped over.
-    fn apply_call(&mut self, ret: Self::VirtualAddress, i: &mut InternMap);
+    fn apply_call(&mut self, ret: Self::VirtualAddress);
 
     /// Creates an Mem[addr] with MemAccessSize of VirtualAddress size
-    fn operand_mem_word(ctx: &'a OperandContext, address: &Rc<Operand>) -> Rc<Operand> {
+    fn operand_mem_word(ctx: &'e OperandContext, address: Operand<'e>) -> Operand<'e> {
         if <Self::VirtualAddress as VirtualAddress>::SIZE == 4 {
             ctx.mem32(address)
         } else {
@@ -72,24 +66,22 @@ pub trait ExecutionState<'a> : Clone {
     /// Returns state with the condition assumed to be true/false.
     fn assume_jump_flag(
         &self,
-        condition: &Rc<Operand>,
+        condition: Operand<'e>,
         jump: bool,
-        i: &mut InternMap,
     ) -> Self {
-
         let ctx = self.ctx();
-        match condition.ty {
+        match *condition.ty() {
             OperandType::Arithmetic(ref arith) => {
-                let left = &arith.left;
-                let right = &arith.right;
+                let left = arith.left;
+                let right = arith.right;
                 match arith.ty {
                     ArithOpType::Equal => {
                         let mut state = self.clone();
                         let unresolved_cond = match jump {
                             true => condition.clone(),
-                            false => ctx.eq_const(&condition, 0)
+                            false => ctx.eq_const(condition, 0)
                         };
-                        let resolved_cond = state.resolve(&unresolved_cond, i);
+                        let resolved_cond = state.resolve(unresolved_cond);
                         state.add_resolved_constraint(Constraint::new(resolved_cond));
                         let assignable_flag =
                             Operand::either(left, right, |x| {
@@ -101,13 +93,13 @@ pub trait ExecutionState<'a> : Clone {
                                     .map(|(c, other)| (other, if c == 0 { jump } else { !jump }))
                                     .unwrap_or_else(|| (other, !jump))
                             })
-                            .and_then(|(other, flag_state)| match other.ty {
+                            .and_then(|(other, flag_state)| match *other.ty() {
                                 OperandType::Flag(f) => Some((f, flag_state)),
                                 _ => None,
                             });
                         if let Some((flag, flag_state)) = assignable_flag {
                             let constant = self.ctx().constant(flag_state as u64);
-                            state.move_to(&DestOperand::Flag(flag), constant, i);
+                            state.move_to(&DestOperand::Flag(flag), constant);
                         } else {
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                         }
@@ -117,17 +109,17 @@ pub trait ExecutionState<'a> : Clone {
                         if jump {
                             let mut state = self.clone();
                             let unresolved_cond = ctx.or(left, right);
-                            let cond = state.resolve(&unresolved_cond, i);
+                            let cond = state.resolve(unresolved_cond);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                             state.add_resolved_constraint(Constraint::new(cond));
                             state
                         } else {
                             let mut state = self.clone();
                             let unresolved_cond = ctx.and(
-                                &ctx.eq_const(left, 0),
-                                &ctx.eq_const(right, 0),
+                                ctx.eq_const(left, 0),
+                                ctx.eq_const(right, 0),
                             );
-                            let cond = state.resolve(&unresolved_cond, i);
+                            let cond = state.resolve(unresolved_cond);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                             state.add_resolved_constraint(Constraint::new(cond));
                             state
@@ -137,17 +129,17 @@ pub trait ExecutionState<'a> : Clone {
                         if jump {
                             let mut state = self.clone();
                             let unresolved_cond = ctx.and(left, right);
-                            let cond = state.resolve(&unresolved_cond, i);
+                            let cond = state.resolve(unresolved_cond);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                             state.add_resolved_constraint(Constraint::new(cond));
                             state
                         } else {
                             let mut state = self.clone();
                             let unresolved_cond = ctx.or(
-                                &ctx.eq_const(left, 0),
-                                &ctx.eq_const(right, 0),
+                                ctx.eq_const(left, 0),
+                                ctx.eq_const(right, 0),
                             );
-                            let cond = state.resolve(&unresolved_cond, i);
+                            let cond = state.resolve(unresolved_cond);
                             state.add_unresolved_constraint(Constraint::new(unresolved_cond));
                             state.add_resolved_constraint(Constraint::new(cond));
                             state
@@ -162,7 +154,7 @@ pub trait ExecutionState<'a> : Clone {
 
     /// Returns smallest and largest (inclusive) value a *resolved* operand can have
     /// (Mainly meant to use extra constraint information)
-    fn value_limits(&self, _value: &Rc<Operand>) -> (u64, u64) {
+    fn value_limits(&self, _value: Operand<'e>) -> (u64, u64) {
         (0, u64::max_value())
     }
 
@@ -250,17 +242,17 @@ impl VirtualAddress for crate::VirtualAddress64 {
 
 /// The constraint is assumed to be something that can be substituted with 1 if met
 /// (so constraint == constval(1)).
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Constraint(pub Rc<Operand>);
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Constraint<'e>(pub Operand<'e>);
 
-impl Constraint {
-    pub fn new(o: Rc<Operand>) -> Constraint {
-        Constraint(Operand::simplified(o))
+impl<'e> Constraint<'e> {
+    pub fn new(o: Operand<'e>) -> Constraint<'e> {
+        Constraint(o)
     }
 
     /// Invalidates any assumptions about memory
-    pub(crate) fn invalidate_memory(&mut self, ctx: &OperandContext) -> ConstraintFullyInvalid {
-        let result = remove_matching_ands(ctx, &self.0, &mut |x| match x {
+    pub(crate) fn invalidate_memory(&mut self, ctx: &'e OperandContext) -> ConstraintFullyInvalid {
+        let result = remove_matching_ands(ctx, self.0, &mut |x| match x {
             OperandType::Memory(..) => true,
             _ => false,
         });
@@ -275,16 +267,16 @@ impl Constraint {
 
     /// Invalidates any parts of the constraint that depend on unresolved dest.
     pub(crate) fn invalidate_dest_operand(
-        &self,
-        ctx: &OperandContext,
-        dest: &DestOperand,
-    ) -> Option<Constraint> {
+        self,
+        ctx: &'e OperandContext,
+        dest: &DestOperand<'e>,
+    ) -> Option<Constraint<'e>> {
         match *dest {
             DestOperand::Register32(reg) | DestOperand::Register16(reg) |
                 DestOperand::Register8High(reg) | DestOperand::Register8Low(reg) |
                 DestOperand::Register64(reg) =>
             {
-                remove_matching_ands(ctx, &self.0, &mut |x| *x == OperandType::Register(reg))
+                remove_matching_ands(ctx, self.0, &mut |x| *x == OperandType::Register(reg))
             }
             DestOperand::Xmm(_, _) => {
                 None
@@ -293,11 +285,11 @@ impl Constraint {
                 None
             }
             DestOperand::Flag(flag) => {
-                remove_matching_ands(ctx, &self.0, &mut |x| *x == OperandType::Flag(flag))
+                remove_matching_ands(ctx, self.0, &mut |x| *x == OperandType::Flag(flag))
             },
             DestOperand::Memory(_) => {
                 // Assuming that everything may alias with memory
-                remove_matching_ands(ctx, &self.0, &mut |x| match x {
+                remove_matching_ands(ctx, self.0, &mut |x| match x {
                     OperandType::Memory(..) => true,
                     _ => false,
                 })
@@ -305,9 +297,8 @@ impl Constraint {
         }.map(Constraint::new)
      }
 
-    pub(crate) fn apply_to(&self, ctx: &OperandContext, oper: &Rc<Operand>) -> Rc<Operand> {
-        let new = apply_constraint_split(ctx, &self.0, oper, true);
-        Operand::simplified(new)
+    pub(crate) fn apply_to(self, ctx: &'e OperandContext, oper: Operand<'e>) -> Operand<'e> {
+        apply_constraint_split(ctx, self.0, oper, true)
     }
 }
 
@@ -319,17 +310,17 @@ pub enum ConstraintFullyInvalid {
 }
 
 /// Constraint invalidation helper
-fn remove_matching_ands<F>(
-    ctx: &OperandContext,
-    oper: &Rc<Operand>,
+fn remove_matching_ands<'e, F>(
+    ctx: &'e OperandContext,
+    oper: Operand<'e>,
     fun: &mut F,
-) -> Option<Rc<Operand>>
-where F: FnMut(&OperandType) -> bool,
+) -> Option<Operand<'e>>
+where F: FnMut(&OperandType<'e>) -> bool,
 {
     if let Some((l, r)) = oper.if_arithmetic_and() {
         // Only going to try partially invalidate cases with logical ands
         if l.relevant_bits() != (0..1) || r.relevant_bits() != (0..1) {
-            match oper.iter().any(|x| fun(&x.ty)) {
+            match oper.iter().any(|x| fun(x.ty())) {
                 true => None,
                 false => Some(oper.clone()),
             }
@@ -339,18 +330,18 @@ where F: FnMut(&OperandType) -> bool,
             match (left, right) {
                 (None, None) => None,
                 (Some(x), None) | (None, Some(x)) => Some(x),
-                (Some(left), Some(right)) => Some(ctx.and(&left, &right)),
+                (Some(left), Some(right)) => Some(ctx.and(left, right)),
             }
         }
     } else {
-        match oper.iter().any(|x| fun(&x.ty)) {
+        match oper.iter().any(|x| fun(x.ty())) {
             true => None,
             false => Some(oper.clone()),
         }
     }
 }
 
-fn other_if_eq_zero(op: &Rc<Operand>) -> Option<&Rc<Operand>> {
+fn other_if_eq_zero<'e>(op: Operand<'e>) -> Option<Operand<'e>> {
     op.if_arithmetic_eq()
         .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant().filter(|&c| c == 0)))
         .map(|x| x.1)
@@ -358,30 +349,30 @@ fn other_if_eq_zero(op: &Rc<Operand>) -> Option<&Rc<Operand>> {
 
 /// Splits the constraint at ands that can be applied separately
 /// Also can handle logical nots
-fn apply_constraint_split(
-    ctx: &OperandContext,
-    constraint: &Rc<Operand>,
-    val: &Rc<Operand>,
+fn apply_constraint_split<'e>(
+    ctx: &'e OperandContext,
+    constraint: Operand<'e>,
+    val: Operand<'e>,
     with: bool,
-) -> Rc<Operand>{
-    match constraint.ty {
-        OperandType::Arithmetic(ref arith) if {
+) -> Operand<'e>{
+    match constraint.ty() {
+        OperandType::Arithmetic(arith) if {
             arith.ty == ArithOpType::And &&
                 arith.left.relevant_bits() == (0..1) &&
                 arith.right.relevant_bits() == (0..1)
         } => {
-            let new = apply_constraint_split(ctx, &arith.left, val, with);
-            apply_constraint_split(ctx, &arith.right, &new, with)
+            let new = apply_constraint_split(ctx, arith.left, val, with);
+            apply_constraint_split(ctx, arith.right, new, with)
         }
-        OperandType::Arithmetic(ref arith) if {
+        OperandType::Arithmetic(arith) if {
             arith.ty == ArithOpType::Or &&
                 arith.left.relevant_bits() == (0..1) &&
                 arith.right.relevant_bits() == (0..1)
         } => {
             // If constraint is (x == 0) | (y == 0),
             // (x & y) can be replaced with 0
-            let x = other_if_eq_zero(&arith.left);
-            let y = other_if_eq_zero(&arith.right);
+            let x = other_if_eq_zero(arith.left);
+            let y = other_if_eq_zero(arith.right);
             if let (Some(x), Some(y)) = (x, y) {
                 // Check also for (x & y) == 0 (Replaced with 1)
                 let (cmp, subst) = other_if_eq_zero(val)
@@ -394,10 +385,10 @@ fn apply_constraint_split(
                 }
             }
             let subst_val = ctx.constant(if with { 1 } else { 0 });
-            ctx.substitute(val, constraint, &subst_val)
+            ctx.substitute(val, constraint, subst_val)
         }
-        OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Equal => {
-            let (l, r) = (&arith.left, &arith.right);
+        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Equal => {
+            let (l, r) = (arith.left, arith.right);
             let other = Operand::either(l, r, |x| x.if_constant().filter(|&c| c == 0))
                 .map(|x| x.1)
                 .filter(|x| x.relevant_bits() == (0..1));
@@ -405,36 +396,36 @@ fn apply_constraint_split(
                 apply_constraint_split(ctx, other, val, !with)
             } else {
                 let subst_val = ctx.constant(if with { 1 } else { 0 });
-                ctx.substitute(val, constraint, &subst_val)
+                ctx.substitute(val, constraint, subst_val)
             }
         }
         _ => {
             let subst_val = ctx.constant(if with { 1 } else { 0 });
-            ctx.substitute(val, constraint, &subst_val)
+            ctx.substitute(val, constraint, subst_val)
         }
     }
 }
 
 /// Helper for ExecutionState::value_limits implementations with constraints
-pub(crate) fn value_limits_recurse(constraint: &Rc<Operand>, value: &Rc<Operand>) -> (u64, u64) {
-    match constraint.ty {
-        OperandType::Arithmetic(ref arith) => {
+pub(crate) fn value_limits_recurse<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64, u64) {
+    match constraint.ty() {
+        OperandType::Arithmetic(arith) => {
             match arith.ty {
                 ArithOpType::And => {
-                    let left = value_limits_recurse(&arith.left, value);
-                    let right = value_limits_recurse(&arith.right, value);
+                    let left = value_limits_recurse(arith.left, value);
+                    let right = value_limits_recurse(arith.right, value);
                     return (left.0.max(right.0), (left.1.min(right.1)));
                 }
                 ArithOpType::GreaterThan => {
                     // 0 > x and x > u64_max should get simplified to 0
                     if let Some(c) = arith.left.if_constant() {
-                        if is_subset(value, &arith.right) {
+                        if is_subset(value, arith.right) {
                             debug_assert!(c != 0);
                             return (0, c.wrapping_sub(1));
                         }
                     }
                     if let Some(c) = arith.right.if_constant() {
-                        if is_subset(value, &arith.left) {
+                        if is_subset(value, arith.left) {
                             debug_assert!(c != u64::max_value());
                             return (c.wrapping_add(1), u64::max_value());
                         }
@@ -450,12 +441,12 @@ pub(crate) fn value_limits_recurse(constraint: &Rc<Operand>, value: &Rc<Operand>
 
 /// Returns true if sub == sup & some_const_mask (Eq is also fine)
 /// Not really considering constants for this (value_limits_recurse)
-fn is_subset(sub: &Rc<Operand>, sup: &Rc<Operand>) -> bool {
-    if sub.ty.expr_size() > sup.ty.expr_size() {
+fn is_subset<'e>(sub: Operand<'e>, sup: Operand<'e>) -> bool {
+    if sub.ty().expr_size() > sup.ty().expr_size() {
         return false;
     }
-    match sub.ty {
-        OperandType::Memory(ref mem) => match sup.if_memory() {
+    match sub.ty() {
+        OperandType::Memory(mem) => match sup.if_memory() {
             Some(mem2) => mem.address == mem2.address,
             None => false,
         }
@@ -464,169 +455,57 @@ fn is_subset(sub: &Rc<Operand>, sup: &Rc<Operand>) -> bool {
 }
 
 /// Trait for disassembling instructions
-pub trait Disassembler<'disasm_bytes> {
+pub trait Disassembler<'e> {
     type VirtualAddress: VirtualAddress;
     fn new(
-        buf: &'disasm_bytes [u8],
+        // Should this use a separate lifetime for clarity?
+        // 'e does still in practice always refer to &BinaryFile as well,
+        // so it should be ok.
+        buf: &'e [u8],
         pos: usize,
         address: Self::VirtualAddress,
-        // Should this use a separate lifetime for clarity?
-        // 'disasm_bytes does still in practice always refer to &BinaryFile as well,
-        // so it should be ok.
-        ctx: &'disasm_bytes OperandContext,
+        ctx: &'e OperandContext,
     ) -> Self;
-    fn next(&mut self) ->
-        Result<Instruction<Self::VirtualAddress>, disasm::Error>;
+    fn next<'s>(&'s mut self) ->
+        Result<Instruction<'s, 'e, Self::VirtualAddress>, disasm::Error>;
     fn address(&self) -> Self::VirtualAddress;
-}
-
-/// Since reanalyzing branches can give equivalent-but-separate `Operand` objects,
-/// a single function's `Operand`s are interned to get guaranteed fast comparisions.
-///
-/// Generally anything that gets set as ExecutionState field gets interned here, other
-/// intermediate values do not.
-///
-/// Additionally, Undefined(n) is always InternedOperand(!n)
-#[derive(Clone)]
-pub struct InternMap {
-    pub map: Vec<Rc<Operand>>,
-    reverse: HashMap<Rc<Operand>, InternedOperand, BuildHasherDefault<OperandDummyHasher>>,
-}
-
-impl fmt::Debug for InternMap {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "InternMap({} entries)", self.map.len())
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub struct InternedOperand(pub u32);
-
-impl InternedOperand {
-    pub fn is_undefined(self) -> bool {
-        self.0 > 0x8000_0000
-    }
-}
-
-impl InternMap {
-    pub fn new() -> InternMap {
-        InternMap {
-            map: Vec::new(),
-            reverse: HashMap::with_hasher(Default::default()),
-        }
-    }
-
-    pub fn intern(&mut self, val: Rc<Operand>) -> InternedOperand {
-        if let OperandType::Undefined(id) = val.ty {
-            InternedOperand(!id.0)
-        } else {
-            match self.reverse.entry(val.clone()) {
-                hash_map::Entry::Occupied(e) => *e.get(),
-                hash_map::Entry::Vacant(e) => {
-                    let new = InternedOperand(self.map.len() as u32 + 1);
-                    e.insert(new);
-                    self.map.push(val);
-                    new
-                }
-            }
-        }
-    }
-
-    pub(crate) fn intern_and_get(&mut self, val: Rc<Operand>) -> Rc<Operand> {
-        if let OperandType::Undefined(_) = val.ty {
-            val
-        } else {
-            match self.reverse.entry(val.clone()) {
-                hash_map::Entry::Occupied(e) => self.map[e.get().0 as usize - 1].clone(),
-                hash_map::Entry::Vacant(e) => {
-                    let new = InternedOperand(self.map.len() as u32 + 1);
-                    e.insert(new);
-                    self.map.push(val.clone());
-                    val
-                }
-            }
-        }
-    }
-
-    /// Faster than `self.intern(ctx.undefined_rc())`
-    pub fn new_undef(&self, ctx: &OperandContext) -> InternedOperand {
-        InternedOperand(!ctx.new_undefined_id())
-    }
-
-    pub(crate) fn many_undef(&self, ctx: &OperandContext, count: u32) -> ManyInternedUndef {
-        let pos = ctx.alloc_undefined_ids(count);
-        ManyInternedUndef {
-            pos,
-            limit: pos + count,
-        }
-    }
-
-    pub fn operand(&self, val: InternedOperand) -> Rc<Operand> {
-        if val.is_undefined() {
-            let ty = OperandType::Undefined(operand::UndefinedId(!val.0));
-            Operand::new_simplified_rc(ty)
-        } else {
-            self.map[val.0 as usize - 1].clone()
-        }
-    }
-}
-
-pub(crate) struct ManyInternedUndef {
-    pos: u32,
-    limit: u32,
-}
-
-impl ManyInternedUndef {
-    pub fn next(&mut self) -> InternedOperand {
-        assert!(self.pos < self.limit);
-        let val = InternedOperand(!self.pos);
-        self.pos += 1;
-        val
-    }
 }
 
 /// Contains memory state as addr -> value hashmap.
 /// The ExecutionState is expected to take care of cases where memory is written with one
 /// address and part of it is read at offset address, in practice by splitting accesses
 /// to be word-sized, and any misaligned accesses become bitwise and-or combinations.
-#[derive(Debug, Clone)]
-pub struct Memory {
-    pub(crate) map: HashMap<InternedOperand, InternedOperand, FxBuildHasher>,
+#[derive(Clone)]
+pub struct Memory<'e> {
+    pub(crate) map: HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>,
     /// Optimization for cases where memory gets large.
     /// The existing mapping can be moved to Rc, where cloning it is effectively free.
-    immutable: Option<Rc<Memory>>,
+    immutable: Option<Rc<Memory<'e>>>,
 }
 
-struct MemoryIterUntilImm<'a> {
-    iter: hash_map::Iter<'a, InternedOperand, InternedOperand>,
-    immutable: &'a Option<Rc<Memory>>,
-    limit: Option<&'a Memory>,
+struct MemoryIterUntilImm<'a, 'e> {
+    iter: hash_map::Iter<'a, OperandHashByAddress<'e>, Operand<'e>>,
+    immutable: &'a Option<Rc<Memory<'e>>>,
+    limit: Option<&'a Memory<'e>>,
     in_immutable: bool,
 }
 
-pub struct MemoryIter<'a>(MemoryIterUntilImm<'a>);
-
-impl Memory {
-    pub fn new() -> Memory {
+impl<'e> Memory<'e> {
+    pub fn new() -> Memory<'e> {
         Memory {
             map: HashMap::with_hasher(Default::default()),
             immutable: None,
         }
     }
 
-    pub fn get(&self, address: InternedOperand) -> Option<InternedOperand> {
-        let op = self.map.get(&address).cloned()
+    pub fn get(&self, address: Operand<'e>) -> Option<Operand<'e>> {
+        let op = self.map.get(&OperandHashByAddress(address)).cloned()
             .or_else(|| self.immutable.as_ref().and_then(|x| x.get(address)));
         op
     }
 
-    pub fn set(&mut self, address: InternedOperand, value: InternedOperand) {
-        self.map.insert(address, value);
-    }
-
-    /// Returns iterator yielding the interned operands.
-    pub fn iter_interned(&self) -> MemoryIter {
-        MemoryIter(self.iter_until_immutable(None))
+    pub fn set(&mut self, address: Operand<'e>, value: Operand<'e>) {
+        self.map.insert(OperandHashByAddress(address), value);
     }
 
     pub fn len(&self) -> usize {
@@ -636,9 +515,9 @@ impl Memory {
     /// The bool is true if the value is in immutable map
     fn get_with_immutable_info(
         &self,
-        address: InternedOperand
-    ) -> Option<(InternedOperand, bool)> {
-        let op = self.map.get(&address).map(|&x| (x, false))
+        address: Operand<'e>
+    ) -> Option<(Operand<'e>, bool)> {
+        let op = self.map.get(&OperandHashByAddress(address)).map(|&x| (x, false))
             .or_else(|| {
                 self.immutable.as_ref().and_then(|x| x.get(address)).map(|x| (x, true))
             });
@@ -647,7 +526,7 @@ impl Memory {
 
     /// Iterates until the immutable block.
     /// Only ref-equality is considered, not deep-eq.
-    fn iter_until_immutable<'a>(&'a self, limit: Option<&'a Memory>) -> MemoryIterUntilImm<'a> {
+    fn iter_until_immutable<'a>(&'a self, limit: Option<&'a Memory<'e>>) -> MemoryIterUntilImm<'a, 'e> {
         MemoryIterUntilImm {
             iter: self.map.iter(),
             immutable: &self.immutable,
@@ -656,7 +535,7 @@ impl Memory {
         }
     }
 
-    fn common_immutable<'a>(&'a self, other: &'a Memory) -> Option<&'a Memory> {
+    fn common_immutable<'a>(&'a self, other: &'a Memory<'e>) -> Option<&'a Memory<'e>> {
         self.immutable.as_ref().and_then(|i| {
             let a = &**i as *const Memory;
             let mut pos = Some(other);
@@ -670,10 +549,10 @@ impl Memory {
         })
     }
 
-    fn has_before_immutable(&self, address: InternedOperand, immutable: &Memory) -> bool {
+    fn has_before_immutable(&self, address: Operand<'e>, immutable: &Memory<'e>) -> bool {
         if self as *const Memory == immutable as *const Memory {
             false
-        } else if self.map.contains_key(&address) {
+        } else if self.map.contains_key(&OperandHashByAddress(address)) {
             true
         } else {
             self.immutable.as_ref()
@@ -694,10 +573,10 @@ impl Memory {
     }
 
     /// Does a value -> key lookup (Finds an address containing value)
-    pub fn reverse_lookup(&self, value: InternedOperand) -> Option<InternedOperand> {
+    pub fn reverse_lookup(&self, value: Operand<'e>) -> Option<Operand<'e>> {
         for (&key, &val) in &self.map {
             if value == val {
-                return Some(key);
+                return Some(key.0);
             }
         }
         if let Some(ref i) = self.immutable {
@@ -707,7 +586,7 @@ impl Memory {
         }
     }
 
-    pub fn merge(&self, new: &Memory, i: &mut InternMap, ctx: &OperandContext) -> Memory {
+    pub fn merge(&self, new: &Memory<'e>, ctx: &'e OperandContext) -> Memory<'e> {
         let a = self;
         let b = new;
         if a.len() == 0 {
@@ -722,7 +601,7 @@ impl Memory {
         if imm_eq {
             // Allows just checking a.map.iter() instead of a.iter()
             for (&key, &a_val) in &a.map {
-                if let Some((b_val, is_imm)) = b.get_with_immutable_info(key) {
+                if let Some((b_val, is_imm)) = b.get_with_immutable_info(key.0) {
                     match a_val == b_val {
                         true => {
                             if !is_imm {
@@ -731,7 +610,7 @@ impl Memory {
                         }
                         false => {
                             if is_imm {
-                                result.insert(key, i.new_undef(ctx));
+                                result.insert(key, ctx.new_undef());
                             }
                         }
                     }
@@ -750,7 +629,7 @@ impl Memory {
             // inserted to the result instead.
             let common = a.common_immutable(b);
             for (&key, &b_val, _is_imm) in b.iter_until_immutable(common) {
-                if let Some((a_val, is_imm)) = a.get_with_immutable_info(key) {
+                if let Some((a_val, is_imm)) = a.get_with_immutable_info(key.0) {
                     match a_val == b_val {
                         true => {
                             if !is_imm {
@@ -759,7 +638,7 @@ impl Memory {
                         }
                         false => {
                             if is_imm {
-                                result.insert(key, i.new_undef(ctx));
+                                result.insert(key, ctx.new_undef());
                             }
                         }
                     }
@@ -778,8 +657,8 @@ impl Memory {
             // If there is no common branch, we don't have to do anything else.
             if let Some(common) = common {
                 for (&key, &a_val, is_imm) in a.iter_until_immutable(Some(common)) {
-                    if !b.has_before_immutable(key, common) {
-                        if let Some(b_val) = common.get(key) {
+                    if !b.has_before_immutable(key.0, common) {
+                        if let Some(b_val) = common.get(key.0) {
                             match a_val == b_val {
                                 true => {
                                     if !is_imm {
@@ -788,7 +667,7 @@ impl Memory {
                                 }
                                 false => {
                                     if is_imm {
-                                        result.insert(key, i.new_undef(ctx));
+                                        result.insert(key, ctx.new_undef());
                                     }
                                 }
                             }
@@ -804,9 +683,9 @@ impl Memory {
     }
 }
 
-impl<'a> Iterator for MemoryIterUntilImm<'a> {
+impl<'a, 'e> Iterator for MemoryIterUntilImm<'a, 'e> {
     /// The bool tells if we're at immutable parts of the calling operand or not
-    type Item = (&'a InternedOperand, &'a InternedOperand, bool);
+    type Item = (&'a OperandHashByAddress<'e>, &'a Operand<'e>, bool);
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
             Some(s) => Some((s.0, s.1, self.in_immutable)),
@@ -829,76 +708,28 @@ impl<'a> Iterator for MemoryIterUntilImm<'a> {
     }
 }
 
-impl<'a> Iterator for MemoryIter<'a> {
-    type Item = (InternedOperand, InternedOperand);
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|(&key, &val, _)| (key, val))
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct XmmOperand(
-    pub InternedOperand,
-    pub InternedOperand,
-    pub InternedOperand,
-    pub InternedOperand,
-);
-
-impl XmmOperand {
-    pub fn initial(ctx: &OperandContext, register: u8, interner: &mut InternMap) -> XmmOperand {
-        XmmOperand(
-            interner.intern(ctx.xmm(register, 0)),
-            interner.intern(ctx.xmm(register, 1)),
-            interner.intern(ctx.xmm(register, 2)),
-            interner.intern(ctx.xmm(register, 3)),
-        )
-    }
-
-    #[inline]
-    pub fn word(&self, idx: u8) -> InternedOperand {
-        match idx {
-            0 => self.0,
-            1 => self.1,
-            2 => self.2,
-            3 => self.3,
-            _ => unreachable!(),
-        }
-    }
-
-    #[inline]
-    pub fn word_mut(&mut self, idx: u8) -> &mut InternedOperand {
-        match idx {
-            0 => &mut self.0,
-            1 => &mut self.1,
-            2 => &mut self.2,
-            3 => &mut self.3,
-            _ => unreachable!(),
-        }
-    }
-}
-
 #[test]
 fn apply_constraint() {
-    let ctx = crate::operand::OperandContext::new();
+    let ctx = &crate::operand::OperandContext::new();
     let constraint = Constraint(ctx.eq_const(
-        &ctx.neq_const(
+        ctx.neq_const(
             ctx.flag_z(),
             0,
         ),
         0,
     ));
     let val = ctx.or(
-        &ctx.neq_const(
+        ctx.neq_const(
             ctx.flag_c(),
             0,
         ),
-        &ctx.neq_const(
+        ctx.neq_const(
             ctx.flag_z(),
             0,
         ),
     );
     let old = val.clone();
-    let val = constraint.apply_to(&ctx, &val);
+    let val = constraint.apply_to(ctx, val);
     let eq = ctx.neq_const(
         ctx.flag_c(),
         0,
@@ -909,52 +740,52 @@ fn apply_constraint() {
 
 #[test]
 fn apply_constraint_non1bit() {
-    let ctx = crate::operand::OperandContext::new();
+    let ctx = &crate::operand::OperandContext::new();
     // This shouldn't cause 0x8000_0000 to be optimized out
     let constraint = ctx.eq(
-        &ctx.and(
-            &ctx.constant(0x8000_0000),
-            &ctx.register(1),
+        ctx.and(
+            ctx.constant(0x8000_0000),
+            ctx.register(1),
         ),
-        &ctx.constant(0),
+        ctx.constant(0),
     );
     let val = ctx.and(
-        &ctx.constant(0x8000_0000),
-        &ctx.sub(
-            &ctx.register(1),
-            &ctx.register(2),
+        ctx.constant(0x8000_0000),
+        ctx.sub(
+            ctx.register(1),
+            ctx.register(2),
         ),
     );
-    assert_eq!(Constraint(constraint).apply_to(&ctx, &val), val);
+    assert_eq!(Constraint(constraint).apply_to(ctx, val), val);
 }
 
 #[test]
 fn apply_constraint_or() {
     let ctx = &crate::operand::OperandContext::new();
     let constraint = ctx.or(
-        &ctx.neq(
+        ctx.neq(
             ctx.flag_o(),
             ctx.flag_s(),
         ),
-        &ctx.neq_const(
+        ctx.neq_const(
             ctx.flag_z(),
             0,
         ),
     );
     let val = ctx.eq_const(
-        &ctx.and(
-            &ctx.eq(
+        ctx.and(
+            ctx.eq(
                 ctx.flag_o(),
                 ctx.flag_s(),
             ),
-            &ctx.eq_const(
+            ctx.eq_const(
                 ctx.flag_z(),
                 0,
             ),
         ),
         0,
     );
-    let applied = Constraint(constraint).apply_to(ctx, &val);
+    let applied = Constraint(constraint).apply_to(ctx, val);
     let eq = ctx.constant(1);
     assert_eq!(applied, eq);
 }

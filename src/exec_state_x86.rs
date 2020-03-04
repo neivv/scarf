@@ -1,9 +1,8 @@
 use std::fmt;
-use std::rc::Rc;
 
 use crate::analysis;
 use crate::disasm::{Disassembler32, DestOperand, Operation};
-use crate::exec_state::{Constraint, InternMap, InternedOperand, Memory};
+use crate::exec_state::{Constraint, Memory};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::{ReadLittleEndian};
 use crate::operand::{
@@ -12,103 +11,96 @@ use crate::operand::{
 };
 use crate::{BinaryFile, VirtualAddress};
 
-impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
+impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     type VirtualAddress = VirtualAddress;
-    type Disassembler = Disassembler32<'a>;
+    type Disassembler = Disassembler32<'e>;
 
     fn maybe_convert_memory_immutable(&mut self) {
         self.memory.maybe_convert_immutable();
     }
 
-    fn add_resolved_constraint(&mut self, constraint: Constraint) {
+    fn add_resolved_constraint(&mut self, constraint: Constraint<'e>) {
         self.resolved_constraint = Some(constraint);
     }
 
-    fn add_unresolved_constraint(&mut self, constraint: Constraint) {
+    fn add_unresolved_constraint(&mut self, constraint: Constraint<'e>) {
         self.unresolved_constraint = Some(constraint);
     }
 
-    fn move_to(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap) {
+    fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         let ctx = self.ctx();
-        let resolved = self.resolve(&value, i);
-        let dest = self.get_dest_invalidate_constraints(dest, i);
-        dest.set(resolved, i, ctx);
+        let resolved = self.resolve(value);
+        let dest = self.get_dest_invalidate_constraints(dest);
+        dest.set(resolved, ctx);
     }
 
-    fn move_resolved(&mut self, dest: &DestOperand, value: Rc<Operand>, i: &mut InternMap) {
+    fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         let ctx = self.ctx;
         self.unresolved_constraint = None;
-        let dest = self.get_dest(dest, i, true);
-        dest.set(value, i, ctx);
+        let dest = self.get_dest(dest, true);
+        dest.set(value, ctx);
     }
 
-    fn ctx(&self) -> &'a OperandContext {
+    fn ctx(&self) -> &'e OperandContext {
         self.ctx
     }
 
-    fn resolve(&mut self, operand: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand> {
-        self.resolve(operand, i)
+    fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e> {
+        self.resolve(operand)
     }
 
-    fn update(&mut self, operation: &Operation, intern_map: &mut InternMap) {
-        self.update(operation, intern_map)
+    fn update(&mut self, operation: &Operation<'e>) {
+        self.update(operation)
     }
 
-    fn resolve_apply_constraints(&mut self, op: &Rc<Operand>, i: &mut InternMap) -> Rc<Operand> {
-        let stack_op;
-        let mut op_ref = op;
+    fn resolve_apply_constraints(&mut self, mut op: Operand<'e>) -> Operand<'e> {
         if let Some(ref constraint) = self.unresolved_constraint {
-            stack_op = constraint.apply_to(self.ctx, op_ref);
-            op_ref = &stack_op;
+            op = constraint.apply_to(self.ctx, op);
         }
-        let val = self.resolve(op_ref, i);
+        let val = self.resolve(op);
         if let Some(ref constraint) = self.resolved_constraint {
-            constraint.apply_to(self.ctx, &val)
+            constraint.apply_to(self.ctx, val)
         } else {
             val
         }
     }
 
-    fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
-        self.unresolve(val, i)
+    fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>> {
+        self.unresolve(val)
     }
 
-    fn unresolve_memory(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
-        self.unresolve_memory(val, i)
+    fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>> {
+        self.unresolve_memory(val)
     }
 
-    fn merge_states(old: &mut Self, new: &mut Self, i: &mut InternMap) -> Option<Self> {
-        merge_states(old, new, i)
+    fn merge_states(old: &mut Self, new: &mut Self) -> Option<Self> {
+        merge_states(old, new)
     }
 
-    fn apply_call(&mut self, ret: VirtualAddress, i: &mut InternMap) {
+    fn apply_call(&mut self, ret: VirtualAddress) {
         let ctx = self.ctx;
         let esp = ctx.register_ref(4);
         self.move_to(
             &DestOperand::from_oper(esp),
-            ctx.sub_const(&esp, 4),
-            i,
+            ctx.sub_const(esp, 4),
         );
         self.move_to(
-            &DestOperand::from_oper(&ctx.mem32(esp)),
+            &DestOperand::from_oper(ctx.mem32(esp)),
             ctx.constant(ret.0 as u64),
-            i,
         );
     }
 
     fn initial_state(
-        ctx: &'a OperandContext,
-        binary: &'a BinaryFile<VirtualAddress>,
-        interner: &mut InternMap,
-    ) -> ExecutionState<'a> {
-        let mut state = ExecutionState::with_binary(binary, ctx, interner);
+        ctx: &'e OperandContext,
+        binary: &'e BinaryFile<VirtualAddress>,
+    ) -> ExecutionState<'e> {
+        let mut state = ExecutionState::with_binary(binary, ctx);
 
         // Set the return address to somewhere in 0x400000 range
         let return_address = ctx.mem32(ctx.register_ref(4));
         state.move_to(
-            &DestOperand::from_oper(&return_address),
+            &DestOperand::from_oper(return_address),
             ctx.constant((binary.code_section().virtual_address.0 + 0x4230) as u64),
-            interner
         );
 
         // Set the bytes above return address to 'call eax' to make it look like a legitmate call.
@@ -116,12 +108,11 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
             &DestOperand::Memory(MemAccess {
                 size: MemAccessSize::Mem16,
                 address: ctx.sub_const(
-                    &return_address,
+                    return_address,
                     2,
                 ),
             }),
             ctx.constant(0xd0ff),
-            interner
         );
         state
     }
@@ -146,9 +137,9 @@ impl<'a> ExecutionStateTrait<'a> for ExecutionState<'a> {
         crate::analysis::find_relocs_x86(file)
     }
 
-    fn value_limits(&self, value: &Rc<Operand>) -> (u64, u64) {
+    fn value_limits(&self, value: Operand<'e>) -> (u64, u64) {
         if let Some(ref constraint) = self.resolved_constraint {
-            crate::exec_state::value_limits_recurse(&constraint.0, value)
+            crate::exec_state::value_limits_recurse(constraint.0, value)
         } else {
             (0, u64::max_value())
         }
@@ -161,16 +152,16 @@ const FLAGS_INDEX: usize = XMM_REGISTER_INDEX + 8 * 4;
 const STATE_OPERANDS: usize = FLAGS_INDEX + 6;
 
 #[derive(Clone)]
-pub struct ExecutionState<'a> {
+pub struct ExecutionState<'e> {
     // 8 registers, 8 fpu registers, 8 xmm registers with 4 parts each, 6 flags
-    state: [InternedOperand; 0x8 + 0x8 * 4 + 0x8 + 0x6],
-    cached_low_registers: CachedLowRegisters,
-    memory: Memory,
-    resolved_constraint: Option<Constraint>,
-    unresolved_constraint: Option<Constraint>,
-    ctx: &'a OperandContext,
-    binary: Option<&'a BinaryFile<VirtualAddress>>,
-    pending_flags: Option<(ArithOperand, MemAccessSize)>,
+    state: [Operand<'e>; 0x8 + 0x8 * 4 + 0x8 + 0x6],
+    cached_low_registers: CachedLowRegisters<'e>,
+    memory: Memory<'e>,
+    resolved_constraint: Option<Constraint<'e>>,
+    unresolved_constraint: Option<Constraint<'e>>,
+    ctx: &'e OperandContext,
+    binary: Option<&'e BinaryFile<VirtualAddress>>,
+    pending_flags: Option<(ArithOperand<'e>, MemAccessSize)>,
 }
 
 impl<'e> fmt::Debug for ExecutionState<'e> {
@@ -180,48 +171,47 @@ impl<'e> fmt::Debug for ExecutionState<'e> {
 }
 
 /// Caches ax/al/ah resolving.
-/// InternedOperand(0) means that a register is not cached.
 #[derive(Debug, Clone)]
-struct CachedLowRegisters {
-    registers: [[InternedOperand; 2]; 8],
+struct CachedLowRegisters<'e> {
+    registers: [[Option<Operand<'e>>; 2]; 8],
 }
 
-impl CachedLowRegisters {
-    fn new() -> CachedLowRegisters {
+impl<'e> CachedLowRegisters<'e> {
+    fn new() -> CachedLowRegisters<'e> {
         CachedLowRegisters {
-            registers: [[InternedOperand(0); 2]; 8],
+            registers: [[None; 2]; 8],
         }
     }
 
-    fn get_16(&self, register: u8) -> InternedOperand {
+    fn get_16(&self, register: u8) -> Option<Operand<'e>> {
         self.registers[register as usize][0]
     }
 
-    fn get_low8(&self, register: u8) -> InternedOperand {
+    fn get_low8(&self, register: u8) -> Option<Operand<'e>> {
         self.registers[register as usize][1]
     }
 
-    fn set_16(&mut self, register: u8, value: InternedOperand) {
-        self.registers[register as usize][0] = value;
+    fn set_16(&mut self, register: u8, value: Operand<'e>) {
+        self.registers[register as usize][0] = Some(value);
     }
 
-    fn set_low8(&mut self, register: u8, value: InternedOperand) {
-        self.registers[register as usize][1] = value;
+    fn set_low8(&mut self, register: u8, value: Operand<'e>) {
+        self.registers[register as usize][1] = Some(value);
     }
 
     fn invalidate(&mut self, register: u8) {
-        self.registers[register as usize] = [InternedOperand(0); 2];
+        self.registers[register as usize] = [None; 2];
     }
 }
 
 /// Handles regular &'mut Operand assign for regs,
 /// and the more complicated one for memory
 enum Destination<'a, 'e> {
-    Oper(&'a mut InternedOperand),
-    Register16(&'a mut InternedOperand),
-    Register8High(&'a mut InternedOperand),
-    Register8Low(&'a mut InternedOperand),
-    Memory(&'a mut ExecutionState<'e>, Rc<Operand>, MemAccessSize),
+    Oper(&'a mut Operand<'e>),
+    Register16(&'a mut Operand<'e>),
+    Register8High(&'a mut Operand<'e>),
+    Register8Low(&'a mut Operand<'e>),
+    Memory(&'a mut ExecutionState<'e>, Operand<'e>, MemAccessSize),
 }
 
 /// Removes 0xffff_ffff masks from registers/undefined,
@@ -232,7 +222,7 @@ enum Destination<'a, 'e> {
 /// operation whose meaning changes based on high bits (div/mod/rsh/eq/gt), then
 /// the result is explicitly masked. (Add / sub constants larger than u32::max will
 /// be still truncated eagerly)
-fn as_32bit_value(value: &Rc<Operand>, ctx: &OperandContext) -> Rc<Operand> {
+fn as_32bit_value<'e>(value: Operand<'e>, ctx: &'e OperandContext) -> Operand<'e> {
     if value.relevant_bits().end > 32 {
         if let Some((l, r)) = value.if_arithmetic_add() {
             // Uh, relying that simplification places constant on the right
@@ -271,16 +261,16 @@ fn sext32_64(val: u32) -> u64 {
 }
 
 impl<'a, 'e> Destination<'a, 'e> {
-    fn set(self, value: Rc<Operand>, intern_map: &mut InternMap, ctx: &'e OperandContext) {
-        let value = as_32bit_value(&value, ctx);
+    fn set(self, value: Operand<'e>, ctx: &'e OperandContext) {
+        let value = as_32bit_value(value, ctx);
         match self {
             Destination::Oper(o) => {
-                *o = intern_map.intern(value);
+                *o = value;
             }
             Destination::Register16(o) => {
-                let old = intern_map.operand(*o);
+                let old = *o;
                 let masked = if value.relevant_bits().end > 16 {
-                    ctx.and_const(&value, 0xffff)
+                    ctx.and_const(value, 0xffff)
                 } else {
                     value
                 };
@@ -289,34 +279,34 @@ impl<'a, 'e> Destination<'a, 'e> {
                     masked
                 } else {
                     ctx.or(
-                        &ctx.and_const(&old, 0xffff_0000),
-                        &masked,
+                        ctx.and_const(old, 0xffff_0000),
+                        masked,
                     )
                 };
-                *o = intern_map.intern(new);
+                *o = new;
             }
             Destination::Register8High(o) => {
-                let old = intern_map.operand(*o);
+                let old = *o;
                 let masked = if value.relevant_bits().end > 8 {
-                    ctx.and_const(&value, 0xff)
+                    ctx.and_const(value, 0xff)
                 } else {
                     value
                 };
                 let old_bits = old.relevant_bits();
                 let new = if old_bits.start >= 8 && old_bits.end <= 16 {
-                    ctx.lsh_const(&masked, 8)
+                    ctx.lsh_const(masked, 8)
                 } else {
                     ctx.or(
-                        &ctx.and_const(&old, 0xffff_00ff),
-                        &ctx.lsh_const(&masked, 8),
+                        ctx.and_const(old, 0xffff_00ff),
+                        ctx.lsh_const(masked, 8),
                     )
                 };
-                *o = intern_map.intern(new);
+                *o = new;
             }
             Destination::Register8Low(o) => {
-                let old = intern_map.operand(*o);
+                let old = *o;
                 let masked = if value.relevant_bits().end > 8 {
-                    ctx.and_const(&value, 0xff)
+                    ctx.and_const(value, 0xff)
                 } else {
                     value
                 };
@@ -325,60 +315,58 @@ impl<'a, 'e> Destination<'a, 'e> {
                     masked
                 } else {
                     ctx.or(
-                        &ctx.and_const(&old, 0xffff_ff00),
-                        &masked,
+                        ctx.and_const(old, 0xffff_ff00),
+                        masked,
                     )
                 };
-                *o = intern_map.intern(new);
+                *o = new;
             }
             Destination::Memory(state, addr, size) => {
                 if size == MemAccessSize::Mem64 {
                     // Split into two u32 sets
                     Destination::Memory(state, addr.clone(), MemAccessSize::Mem32)
-                        .set(ctx.and_const(&value, 0xffff_ffff), intern_map, ctx);
-                    let addr = ctx.add_const(&addr, 4);
+                        .set(ctx.and_const(value, 0xffff_ffff), ctx);
+                    let addr = ctx.add_const(addr, 4);
                     Destination::Memory(state, addr, MemAccessSize::Mem32)
-                        .set(ctx.rsh_const(&value, 32), intern_map, ctx);
+                        .set(ctx.rsh_const(value, 32), ctx);
                     return;
                 }
-                if let Some((base, offset)) = Operand::const_offset(&addr, ctx) {
+                if let Some((base, offset)) = Operand::const_offset(addr, ctx) {
                     let offset = offset as u32;
                     let offset_4 = offset & 3;
                     let offset_rest = sext32_64(offset & !3);
                     if offset_4 != 0 {
                         let size_bits = size.bits();
-                        let low_base = ctx.add_const(&base, offset_rest);
-                        let low_i = intern_map.intern(low_base.clone());
+                        let low_base = ctx.add_const(base, offset_rest);
                         let low_old = state.resolve_mem(
                             &MemAccess {
                                 address: low_base.clone(),
                                 size: MemAccessSize::Mem32,
                             },
-                            intern_map,
-                        ).unwrap_or_else(|| ctx.mem32(&low_base));
+                        ).unwrap_or_else(|| ctx.mem32(low_base));
 
                         let mask_low = offset_4 * 8;
                         let mask_high = (mask_low + size_bits).min(0x20);
                         let mask = !0u32 >> mask_low << mask_low <<
                             (0x20 - mask_high) >> (0x20 - mask_high);
                         let low_value = ctx.or(
-                            &ctx.and_const(
-                                &ctx.lsh_const(
-                                    &value,
+                            ctx.and_const(
+                                ctx.lsh_const(
+                                    value,
                                     8 * offset_4 as u64,
                                 ),
                                 mask as u64,
                             ),
-                            &ctx.and_const(
-                                &low_old,
+                            ctx.and_const(
+                                low_old,
                                 !mask as u64,
                             ),
                         );
-                        state.memory.set(low_i, intern_map.intern(low_value));
+                        state.memory.set(low_base, low_value);
                         let needs_high = mask_low + size_bits > 0x20;
                         if needs_high {
                             let high_base = ctx.add_const(
-                                &base,
+                                base,
                                 offset_rest.wrapping_add(4) & 0xffff_ffff,
                             );
                             let high_old = state.resolve_mem(
@@ -386,25 +374,23 @@ impl<'a, 'e> Destination<'a, 'e> {
                                     address: high_base.clone(),
                                     size: MemAccessSize::Mem32,
                                 },
-                                intern_map,
-                            ).unwrap_or_else(|| ctx.mem32(&high_base));
+                            ).unwrap_or_else(|| ctx.mem32(high_base));
 
-                            let high_i = intern_map.intern(high_base.clone());
                             let mask = !0u32 >> (0x20 - (mask_low + size_bits - 0x20));
                             let high_value = ctx.or(
-                                &ctx.and_const(
-                                    &ctx.rsh_const(
-                                        &value,
+                                ctx.and_const(
+                                    ctx.rsh_const(
+                                        value,
                                         (0x20 - 8 * offset_4) as u64,
                                     ),
                                     mask as u64,
                                 ),
-                                &ctx.and_const(
-                                    &high_old,
+                                ctx.and_const(
+                                    high_old,
                                     !mask as u64,
                                 ),
                             );
-                            state.memory.set(high_i, intern_map.intern(high_value));
+                            state.memory.set(high_base, high_value);
                         }
                         return;
                     }
@@ -417,20 +403,18 @@ impl<'a, 'e> Destination<'a, 'e> {
                             address: addr.clone(),
                             size: MemAccessSize::Mem32,
                         },
-                        intern_map,
-                    ).unwrap_or_else(|| ctx.mem32(&addr));
+                    ).unwrap_or_else(|| ctx.mem32(addr));
                     let new_mask = match size {
                         MemAccessSize::Mem8 => 0xff,
                         MemAccessSize::Mem16 => 0xffff,
                         _ => unreachable!(),
                     };
                     ctx.or(
-                        &ctx.and_const(&value, new_mask),
-                        &ctx.and_const(&old, !new_mask & 0xffff_ffff),
+                        ctx.and_const(value, new_mask),
+                        ctx.and_const(old, !new_mask & 0xffff_ffff),
                     )
                 };
-                let addr = intern_map.intern(addr);
-                state.memory.set(addr, intern_map.intern(value));
+                state.memory.set(addr, value);
             }
         }
     }
@@ -439,22 +423,21 @@ impl<'a, 'e> Destination<'a, 'e> {
 impl<'e> ExecutionState<'e> {
     pub fn new<'b>(
         ctx: &'b OperandContext,
-        interner: &mut InternMap,
     ) -> ExecutionState<'b> {
-        let mut state = [InternedOperand(0); STATE_OPERANDS];
+        let dummy = ctx.const_0();
+        let mut state = [dummy; STATE_OPERANDS];
         for i in 0..8 {
-            state[i] = interner.intern(ctx.register(i as u8));
-            state[FPU_REGISTER_INDEX + i] = interner.intern(ctx.register_fpu(i as u8));
+            state[i] = ctx.register(i as u8);
+            state[FPU_REGISTER_INDEX + i] = ctx.register_fpu(i as u8);
             for j in 0..4 {
-                state[XMM_REGISTER_INDEX + i * 4 + j] =
-                    interner.intern(ctx.xmm(i as u8, j as u8));
+                state[XMM_REGISTER_INDEX + i * 4 + j] = ctx.xmm(i as u8, j as u8);
             }
         }
         for i in 0..5 {
-            state[FLAGS_INDEX + i] = interner.intern(ctx.flag_by_index(i).clone());
+            state[FLAGS_INDEX + i] = ctx.flag_by_index(i).clone();
         }
         // Direction
-        state[FLAGS_INDEX + 5] = interner.intern(ctx.const_0());
+        state[FLAGS_INDEX + 5] = ctx.const_0();
         ExecutionState {
             state,
             cached_low_registers: CachedLowRegisters::new(),
@@ -470,44 +453,42 @@ impl<'e> ExecutionState<'e> {
     pub fn with_binary<'b>(
         binary: &'b crate::BinaryFile<VirtualAddress>,
         ctx: &'b OperandContext,
-        interner: &mut InternMap,
     ) -> ExecutionState<'b> {
-        let mut result = ExecutionState::new(ctx, interner);
+        let mut result = ExecutionState::new(ctx);
         result.binary = Some(binary);
         result
     }
 
-    pub fn update(&mut self, operation: &Operation, intern_map: &mut InternMap) {
+    pub fn update(&mut self, operation: &Operation<'e>) {
         let ctx = self.ctx;
-        match operation {
-            Operation::Move(dest, value, cond) => {
+        match *operation {
+            Operation::Move(ref dest, value, cond) => {
                 let value = value.clone();
                 if let Some(cond) = cond {
-                    match self.resolve(&cond, intern_map).if_constant() {
+                    match self.resolve(cond).if_constant() {
                         Some(0) => (),
                         Some(_) => {
-                            self.move_to(&dest, value, intern_map);
+                            self.move_to(&dest, value);
                         }
                         None => {
-                            self.get_dest_invalidate_constraints(&dest, intern_map)
-                                .set(ctx.undefined_rc(), intern_map, ctx)
+                            self.get_dest_invalidate_constraints(&dest)
+                                .set(ctx.new_undef(), ctx)
                         }
                     }
                 } else {
-                    self.move_to(&dest, value, intern_map);
+                    self.move_to(&dest, value);
                 }
             }
-            Operation::MoveSet(moves) => {
-                let resolved: Vec<Rc<Operand>> = moves.iter()
-                    .map(|x| self.resolve(&x.1, intern_map))
+            Operation::MoveSet(ref moves) => {
+                let resolved: Vec<Operand<'e>> = moves.iter()
+                    .map(|x| self.resolve(x.1))
                     .collect();
                 for (tp, val) in moves.iter().zip(resolved.into_iter()) {
-                    self.get_dest_invalidate_constraints(&tp.0, intern_map)
-                        .set(val, intern_map, ctx);
+                    self.get_dest_invalidate_constraints(&tp.0)
+                        .set(val, ctx);
                 }
             }
             Operation::Call(_) => {
-                let mut ids = intern_map.many_undef(ctx, 9);
                 self.unresolved_constraint = None;
                 if let Some(ref mut c) = self.resolved_constraint {
                     if c.invalidate_memory(ctx) == crate::exec_state::ConstraintFullyInvalid::Yes {
@@ -516,20 +497,19 @@ impl<'e> ExecutionState<'e> {
                 }
                 static UNDEF_REGISTERS: &[u8] = &[0, 1, 2, 4];
                 for &i in UNDEF_REGISTERS.iter() {
-                    self.state[i as usize] = ids.next();
+                    self.state[i as usize] = ctx.new_undef();
                     self.cached_low_registers.invalidate(i);
                 }
                 for i in 0..5 {
-                    self.state[FLAGS_INDEX + i] = ids.next();
+                    self.state[FLAGS_INDEX + i] = ctx.new_undef();
                 }
-                self.state[FLAGS_INDEX + Flag::Direction as usize] =
-                    intern_map.intern(ctx.const_0());
+                self.state[FLAGS_INDEX + Flag::Direction as usize] = ctx.const_0();
             }
             Operation::Jump { .. } => {
             }
             Operation::Return(_) => {
             }
-            Operation::Special(code) => {
+            Operation::Special(ref code) => {
                 if code == &[0xd9, 0xf6] {
                     // fdecstp
                     (&mut self.state[FPU_REGISTER_INDEX..][..8]).rotate_left(1);
@@ -538,15 +518,15 @@ impl<'e> ExecutionState<'e> {
                     (&mut self.state[FPU_REGISTER_INDEX..][..8]).rotate_right(1);
                 }
             }
-            Operation::SetFlags(arith, size) => {
-                let left = self.resolve(&arith.left, intern_map);
-                let right = self.resolve(&arith.right, intern_map);
+            Operation::SetFlags(ref arith, size) => {
+                let left = self.resolve(arith.left);
+                let right = self.resolve(arith.right);
                 let arith = ArithOperand {
                     left,
                     right,
                     ty: arith.ty,
                 };
-                self.pending_flags = Some((arith, *size));
+                self.pending_flags = Some((arith, size));
                 // Could try to do smarter invalidation, but since in practice unresolved
                 // constraints always are bunch of flags, invalidate it completely.
                 self.unresolved_constraint = None;
@@ -554,54 +534,51 @@ impl<'e> ExecutionState<'e> {
         }
     }
 
-    fn update_flags(&mut self, intern_map: &mut InternMap) {
+    fn update_flags(&mut self) {
         if let Some((arith, size)) = self.pending_flags.take() {
-            self.set_flags(arith, size, intern_map);
+            self.set_flags(arith, size);
         }
     }
 
     fn set_flags(
         &mut self,
-        arith: ArithOperand,
+        arith: ArithOperand<'e>,
         size: MemAccessSize,
-        intern_map: &mut InternMap,
     ) {
         use crate::operand::ArithOpType::*;
         let ctx = self.ctx;
-        let resolved_left = &arith.left;
-        let result = ctx.arithmetic(arith.ty, &arith.left, &arith.right);
+        let resolved_left = arith.left;
+        let result = ctx.arithmetic(arith.ty, arith.left, arith.right);
         match arith.ty {
             Add => {
-                let carry = ctx.gt(&resolved_left, &result);
-                let overflow = ctx.gt_signed(&resolved_left, &result, size);
-                self.state[FLAGS_INDEX + Flag::Carry as usize] = intern_map.intern(carry);
-                self.state[FLAGS_INDEX + Flag::Overflow as usize] = intern_map.intern(overflow);
-                self.result_flags(&result, size, intern_map);
+                let carry = ctx.gt(resolved_left, result);
+                let overflow = ctx.gt_signed(resolved_left, result, size);
+                self.state[FLAGS_INDEX + Flag::Carry as usize] = carry;
+                self.state[FLAGS_INDEX + Flag::Overflow as usize] = overflow;
+                self.result_flags(result, size);
             }
             Sub => {
-                let carry = ctx.gt(&result, &resolved_left);
-                let overflow = ctx.gt_signed(&result, &resolved_left, size);
-                self.state[FLAGS_INDEX + Flag::Carry as usize] = intern_map.intern(carry);
-                self.state[FLAGS_INDEX + Flag::Overflow as usize] = intern_map.intern(overflow);
-                self.result_flags(&result, size, intern_map);
+                let carry = ctx.gt(result, resolved_left);
+                let overflow = ctx.gt_signed(result, resolved_left, size);
+                self.state[FLAGS_INDEX + Flag::Carry as usize] = carry;
+                self.state[FLAGS_INDEX + Flag::Overflow as usize] = overflow;
+                self.result_flags(result, size);
             }
             Xor | And | Or => {
-                let zero = intern_map.intern(self.ctx.const_0());
+                let zero = self.ctx.const_0();
                 self.state[FLAGS_INDEX + Flag::Carry as usize] = zero;
                 self.state[FLAGS_INDEX + Flag::Overflow as usize] = zero;
-                self.result_flags(&result, size, intern_map);
+                self.result_flags(result, size);
             }
             Lsh | Rsh  => {
-                let mut ids = intern_map.many_undef(self.ctx, 2);
-                self.state[FLAGS_INDEX + Flag::Carry as usize] = ids.next();
-                self.state[FLAGS_INDEX + Flag::Overflow as usize] = ids.next();
-                self.result_flags(&result, size, intern_map);
+                self.state[FLAGS_INDEX + Flag::Carry as usize] = ctx.new_undef();
+                self.state[FLAGS_INDEX + Flag::Overflow as usize] = ctx.new_undef();
+                self.result_flags(result, size);
             }
             _ => {
-                let mut ids = intern_map.many_undef(self.ctx, 5);
                 // NOTE: Relies on direction being index 5 so it won't change here
                 for i in 0..5 {
-                    self.state[FLAGS_INDEX + i] = ids.next();
+                    self.state[FLAGS_INDEX + i] = ctx.new_undef();
                 }
             }
         }
@@ -609,9 +586,8 @@ impl<'e> ExecutionState<'e> {
 
     fn result_flags(
         &mut self,
-        result: &Rc<Operand>,
+        result: Operand<'e>,
         size: MemAccessSize,
-        intern_map: &mut InternMap,
     ) {
         let ctx = self.ctx;
         let zero = ctx.eq_const(result, 0);
@@ -622,16 +598,16 @@ impl<'e> ExecutionState<'e> {
             MemAccessSize::Mem64 => 0x8000_0000_0000_0000,
         };
         let sign = ctx.neq_const(
-            &ctx.and_const(
-                &result,
+            ctx.and_const(
+                result,
                 sign_bit,
             ),
             0,
         );
-        let parity = ctx.arithmetic(ArithOpType::Parity, result, &ctx.const_0());
-        self.state[FLAGS_INDEX + Flag::Zero as usize] = intern_map.intern(zero);
-        self.state[FLAGS_INDEX + Flag::Sign as usize] = intern_map.intern(sign);
-        self.state[FLAGS_INDEX + Flag::Parity as usize] = intern_map.intern(parity);
+        let parity = ctx.arithmetic(ArithOpType::Parity, result, ctx.const_0());
+        self.state[FLAGS_INDEX + Flag::Zero as usize] = zero;
+        self.state[FLAGS_INDEX + Flag::Sign as usize] = sign;
+        self.state[FLAGS_INDEX + Flag::Parity as usize] = parity;
     }
 
     /// Makes all of memory undefined
@@ -641,8 +617,7 @@ impl<'e> ExecutionState<'e> {
 
     fn get_dest_invalidate_constraints<'s>(
         &'s mut self,
-        dest: &DestOperand,
-        interner: &mut InternMap,
+        dest: &DestOperand<'e>,
     ) -> Destination<'s, 'e> {
         let ctx = self.ctx();
         self.unresolved_constraint = match self.unresolved_constraint {
@@ -656,13 +631,12 @@ impl<'e> ExecutionState<'e> {
                 }
             }
         }
-        self.get_dest(dest, interner, false)
+        self.get_dest(dest, false)
     }
 
     fn get_dest<'s>(
         &'s mut self,
-        dest: &DestOperand,
-        intern_map: &mut InternMap,
+        dest: &DestOperand<'e>,
         dest_is_resolved: bool,
     ) -> Destination<'s, 'e> {
         match *dest {
@@ -691,14 +665,14 @@ impl<'e> ExecutionState<'e> {
                 ])
             }
             DestOperand::Flag(flag) => {
-                self.update_flags(intern_map);
+                self.update_flags();
                 Destination::Oper(&mut self.state[FLAGS_INDEX + flag as usize])
             }
             DestOperand::Memory(ref mem) => {
                 let address = if dest_is_resolved {
                     mem.address.clone()
                 } else {
-                    self.resolve(&mem.address, intern_map)
+                    self.resolve(mem.address)
                 };
                 Destination::Memory(self, address, mem.size)
             }
@@ -708,29 +682,29 @@ impl<'e> ExecutionState<'e> {
     /// Returns None if the value won't change.
     ///
     /// Empirical tests seem to imply that happens about 15~20% of time
-    fn resolve_mem(&mut self, mem: &MemAccess, i: &mut InternMap) -> Option<Rc<Operand>> {
+    fn resolve_mem(&mut self, mem: &MemAccess<'e>) -> Option<Operand<'e>> {
         let ctx = self.ctx;
-        let address = self.resolve(&mem.address, i);
+        let address = self.resolve(mem.address);
         if MemAccessSize::Mem64 == mem.size {
             // Split into 2 32-bit resolves
             let low_mem = MemAccess {
-                address: mem.address.clone(),
+                address: mem.address,
                 size: MemAccessSize::Mem32,
             };
             let high_mem = MemAccess {
-                address: ctx.add_const(&mem.address, 4),
+                address: ctx.add_const(mem.address, 4),
                 size: MemAccessSize::Mem32,
             };
-            let low = self.resolve_mem(&low_mem, i);
-            let high = self.resolve_mem(&high_mem, i);
+            let low = self.resolve_mem(&low_mem);
+            let high = self.resolve_mem(&high_mem);
             if low.is_none() && high.is_none() {
                 return None;
             }
             let low = low
-                .unwrap_or_else(|| ctx.mem32(&low_mem.address));
+                .unwrap_or_else(|| ctx.mem32(low_mem.address));
             let high = high
-                .unwrap_or_else(|| ctx.mem32(&high_mem.address));
-            return Some(ctx.or(&low, &high));
+                .unwrap_or_else(|| ctx.mem32(high_mem.address));
+            return Some(ctx.or(low, high));
         }
 
         let mask = match mem.size {
@@ -740,15 +714,14 @@ impl<'e> ExecutionState<'e> {
             MemAccessSize::Mem64 => 0,
         };
         // Use 4-aligned addresses if there's a const offset
-        if let Some((base, offset)) = Operand::const_offset(&address, ctx) {
+        if let Some((base, offset)) = Operand::const_offset(address, ctx) {
             let size_bytes = mem.size.bits() / 8;
             let offset = offset as u32;
             let offset_4 = offset & 3;
             let offset_rest = sext32_64(offset & !3);
             if offset_4 != 0 {
-                let low_base = ctx.add_const(&base, offset_rest);
-                let low = self.memory.get(i.intern(low_base.clone()))
-                    .map(|x| i.operand(x))
+                let low_base = ctx.add_const(base, offset_rest);
+                let low = self.memory.get(low_base)
                     .or_else(|| {
                         // Avoid reading Mem32 if it's not necessary as it may go
                         // past binary end where a smaller read wouldn't
@@ -757,70 +730,68 @@ impl<'e> ExecutionState<'e> {
                             2 => MemAccessSize::Mem16,
                             _ => MemAccessSize::Mem32,
                         };
-                        self.resolve_binary_constant_mem(&low_base, size)
+                        self.resolve_binary_constant_mem(low_base, size)
                     })
-                    .unwrap_or_else(|| ctx.mem32(&low_base));
-                let low = ctx.rsh_const(&low, (offset_4 * 8) as u64);
+                    .unwrap_or_else(|| ctx.mem32(low_base));
+                let low = ctx.rsh_const(low, (offset_4 * 8) as u64);
                 let combined = if offset_4 + size_bytes > 4 {
                     let high_base = ctx.add_const(
-                        &base,
+                        base,
                         offset_rest.wrapping_add(4) & 0xffff_ffff,
                     );
-                    let high = self.memory.get(i.intern(high_base.clone()))
-                        .map(|x| i.operand(x))
+                    let high = self.memory.get(high_base)
                         .or_else(|| {
                             let size = match (offset_4 + size_bytes) - 4 {
                                 1 => MemAccessSize::Mem8,
                                 2 => MemAccessSize::Mem16,
                                 _ => MemAccessSize::Mem32,
                             };
-                            self.resolve_binary_constant_mem(&high_base, size)
+                            self.resolve_binary_constant_mem(high_base, size)
                         })
-                        .unwrap_or_else(|| ctx.mem32(&high_base));
+                        .unwrap_or_else(|| ctx.mem32(high_base));
                     let high = ctx.and_const(
-                        &ctx.lsh_const(
-                            &high,
+                        ctx.lsh_const(
+                            high,
                             (0x20 - offset_4 * 8) as u64,
                         ),
                         0xffff_ffff,
                     );
-                    ctx.or(&low, &high)
+                    ctx.or(low, high)
                 } else {
                     low
                 };
                 let masked = if mem.size != MemAccessSize::Mem32 {
-                    ctx.and_const(&combined, mask as u64)
+                    ctx.and_const(combined, mask as u64)
                 } else {
                     combined
                 };
                 return Some(masked);
             }
         }
-        self.memory.get(i.intern(address.clone()))
-            .map(|interned| {
-                let operand = i.operand(interned);
+        self.memory.get(address)
+            .map(|operand| {
                 if mask != 0 {
-                    ctx.and_const(&operand, mask as u64)
+                    ctx.and_const(operand, mask as u64)
                 } else {
                     operand
                 }
             })
-            .or_else(|| self.resolve_binary_constant_mem(&address, mem.size))
+            .or_else(|| self.resolve_binary_constant_mem(address, mem.size))
             .or_else(|| {
                 // Just copy the input value if address didn't change
-                if Rc::ptr_eq(&address, &mem.address) {
+                if address == mem.address {
                     None
                 } else {
-                    Some(ctx.mem_variable_rc(mem.size, &address))
+                    Some(ctx.mem_variable_rc(mem.size, address))
                 }
             })
     }
 
     fn resolve_binary_constant_mem(
         &self,
-        address: &Rc<Operand>,
+        address: Operand<'e>,
         size: MemAccessSize,
-    ) -> Option<Rc<Operand>> {
+    ) -> Option<Operand<'e>> {
         if let Some(c) = address.if_constant().map(|c| c as u32) {
             let size_bytes = size.bits() / 8;
             // Simplify constants stored in code section (constant switch jumps etc)
@@ -852,167 +823,123 @@ impl<'e> ExecutionState<'e> {
     /// Checks cached/caches `reg & ff` masks.
     fn try_resolve_partial_register(
         &mut self,
-        left: &Rc<Operand>,
-        right: &Rc<Operand>,
-        interner: &mut InternMap,
-    ) -> Option<Rc<Operand>> {
+        left: Operand<'e>,
+        right: Operand<'e>,
+    ) -> Option<Operand<'e>> {
         let ctx = self.ctx;
-        let (const_op, c, other) = match left.ty {
-            OperandType::Constant(c) => (left, c, right),
-            _ => match right.ty {
-                OperandType::Constant(c) => (right, c, left),
+        let (const_op, c, other) = match left.if_constant() {
+            Some(c) => (left, c, right),
+            _ => match right.if_constant() {
+                Some(c) => (right, c, left),
                 _ => return None,
             }
         };
         let reg = other.if_register()?.0 & 0x7;
         if c <= 0xff {
-            let interned = match self.cached_low_registers.get_low8(reg) {
-                InternedOperand(0) => {
+            let op = match self.cached_low_registers.get_low8(reg) {
+                None => {
                     let op = ctx.and_const(
-                        &interner.operand(self.state[reg as usize]),
+                        self.state[reg as usize],
                         0xff,
                     );
-                    let interned = interner.intern(op);
-                    self.cached_low_registers.set_low8(reg, interned);
-                    interned
+                    self.cached_low_registers.set_low8(reg, op);
+                    op
                 }
-                x => x,
+                Some(x) => x,
             };
-            let op = interner.operand(interned);
             if c == 0xff {
                 Some(op)
             } else {
-                Some(ctx.and(&op, const_op))
+                Some(ctx.and(op, const_op))
             }
         } else if c <= 0xffff {
-            let interned = match self.cached_low_registers.get_16(reg) {
-                InternedOperand(0) => {
+            let op = match self.cached_low_registers.get_16(reg) {
+                None => {
                     let op = ctx.and_const(
-                        &interner.operand(self.state[reg as usize]),
+                        self.state[reg as usize],
                         0xffff
                     );
-                    let interned = interner.intern(op);
-                    self.cached_low_registers.set_16(reg, interned);
-                    interned
+                    self.cached_low_registers.set_16(reg, op);
+                    op
                 }
-                x => x,
+                Some(x) => x,
             };
-            let op = interner.operand(interned);
             if c == 0xffff {
                 Some(op)
             } else {
-                Some(ctx.and(&op, const_op))
+                Some(ctx.and(op, const_op))
             }
         } else {
             None
         }
     }
 
-    fn resolve_inner(
-        &mut self,
-        value: &Rc<Operand>,
-        interner: &mut InternMap,
-    ) -> Rc<Operand> {
-        match value.ty {
+    pub fn resolve(&mut self, value: Operand<'e>) -> Operand<'e> {
+        match *value.ty() {
             OperandType::Register(reg) => {
-                interner.operand(self.state[reg.0 as usize & 7])
+                self.state[reg.0 as usize & 7]
             }
             OperandType::Xmm(reg, word) => {
-                interner.operand(
-                    self.state[XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize]
-                )
+                self.state[XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize]
             }
             OperandType::Fpu(id) => {
-                interner.operand(self.state[FPU_REGISTER_INDEX + (id & 7) as usize])
+                self.state[FPU_REGISTER_INDEX + (id & 7) as usize]
             }
             OperandType::Flag(flag) => {
-                self.update_flags(interner);
-                interner.operand(self.state[FLAGS_INDEX + flag as usize])
+                self.update_flags();
+                self.state[FLAGS_INDEX + flag as usize]
             }
             OperandType::Arithmetic(ref op) => {
                 if op.ty == ArithOpType::And {
-                    let r = self.try_resolve_partial_register(&op.left, &op.right, interner);
+                    let r = self.try_resolve_partial_register(op.left, op.right);
                     if let Some(r) = r {
                         return r;
                     }
                 };
-                let left = self.resolve(&op.left, interner);
-                let right = self.resolve(&op.right, interner);
-                self.ctx.arithmetic(op.ty, &left, &right)
+                let left = self.resolve(op.left);
+                let right = self.resolve(op.right);
+                self.ctx.arithmetic(op.ty, left, right)
             }
             OperandType::ArithmeticF32(ref op) => {
-                let left = self.resolve(&op.left, interner);
-                let right = self.resolve(&op.right, interner);
-                self.ctx.f32_arithmetic(op.ty, &left, &right)
+                let left = self.resolve(op.left);
+                let right = self.resolve(op.right);
+                self.ctx.f32_arithmetic(op.ty, left, right)
             }
-            OperandType::Constant(_) => value.clone(),
-            OperandType::Custom(_) => value.clone(),
+            OperandType::Constant(_) => value,
+            OperandType::Custom(_) => value,
             OperandType::Memory(ref mem) => {
-                self.resolve_mem(mem, interner)
-                    .unwrap_or_else(|| value.clone())
+                self.resolve_mem(mem)
+                    .unwrap_or_else(|| value)
             }
-            OperandType::Undefined(_) => value.clone(),
-            OperandType::SignExtend(ref val, from, to) => {
-                let val = self.resolve(val, interner);
-                self.ctx.sign_extend(&val, from, to)
+            OperandType::Undefined(_) => value,
+            OperandType::SignExtend(val, from, to) => {
+                let val = self.resolve(val);
+                self.ctx.sign_extend(val, from, to)
             }
-        }
-    }
-
-    pub fn resolve(&mut self, value: &Rc<Operand>, interner: &mut InternMap) -> Rc<Operand> {
-        let mut x = self.resolve_inner(value, interner);
-        // Intern in case the simplification created a very deeply different operand tree,
-        // as repeating the resolving would give an equal operand with different addresses.
-        // Bandaid fix, not necessarily the best.
-
-        // Assume that only resolving x + y or Mem[x + y] may cause heavy simplifications
-        let needs_interning = match value.ty {
-            OperandType::Arithmetic(..) => true,
-            OperandType::Memory(ref mem) => match mem.address.ty {
-                OperandType::Arithmetic(..) => true,
-                _ => false,
-            },
-            _ => false,
-        };
-
-        if needs_interning {
-            if x.relevant_bits().end > 32 {
-                x = as_32bit_value(&x, self.ctx);
-            }
-            interner.intern_and_get(x)
-        } else {
-            x
         }
     }
 
     /// Tries to find an register/memory address corresponding to a resolved value.
-    pub fn unresolve(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
+    pub fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>> {
         // TODO: Could also check xmm but who honestly uses it for unique storage
-        let interned = i.intern(val.clone());
-        for (reg, &val) in self.state.iter().enumerate().take(8) {
-            if interned == val {
+        for (reg, &val2) in self.state.iter().enumerate().take(8) {
+            if val == val2 {
                 return Some(self.ctx.register(reg as u8));
-            }
-        }
-        for (&key, &val) in &self.memory.map {
-            if interned == val {
-                return Some(i.operand(key));
             }
         }
         None
     }
 
     /// Tries to find an memory address corresponding to a resolved value.
-    pub fn unresolve_memory(&self, val: &Rc<Operand>, i: &mut InternMap) -> Option<Rc<Operand>> {
-        let interned = i.intern(val.clone());
-        self.memory.reverse_lookup(interned).map(|x| self.ctx.mem32(&i.operand(x)))
+    pub fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>> {
+        self.memory.reverse_lookup(val).map(|x| self.ctx.mem32(x))
     }
 
     pub fn memory(&self) -> &Memory {
         &self.memory
     }
 
-    pub fn replace_memory(&mut self, new: Memory) {
+    pub fn replace_memory(&mut self, new: Memory<'e>) {
         self.memory = new;
     }
 }
@@ -1022,32 +949,30 @@ impl<'e> ExecutionState<'e> {
 pub fn merge_states<'a: 'r, 'r>(
     old: &'r mut ExecutionState<'a>,
     new: &'r mut ExecutionState<'a>,
-    interner: &mut InternMap,
 ) -> Option<ExecutionState<'a>> {
-    old.update_flags(interner);
-    new.update_flags(interner);
+    old.update_flags();
+    new.update_flags();
 
-    let check_eq = |a: InternedOperand, b: InternedOperand| {
+    fn check_eq<'e>(a: Operand<'e>, b: Operand<'e>) -> bool {
         a == b || a.is_undefined()
-    };
-    let check_memory_eq = |a: &Memory, b: &Memory, interner: &mut InternMap| {
+    }
+    fn check_memory_eq<'e>(a: &Memory<'e>, b: &Memory<'e>) -> bool {
         a.map.iter().all(|(&key, val)| {
-            let oper = interner.operand(key);
-            match contains_undefined(&oper) {
+            match contains_undefined(key.0) {
                 true => true,
-                false => match b.get(key) {
+                false => match b.get(key.0) {
                     Some(b_val) => check_eq(*val, b_val),
                     None => true,
                 },
             }
         })
-    };
+    }
 
     let ctx = old.ctx;
-    let merge = |a: InternedOperand, b: InternedOperand, i: &mut InternMap| -> InternedOperand {
+    fn merge<'e>(ctx: &'e OperandContext, a: Operand<'e>, b: Operand<'e>) -> Operand<'e> {
         match a == b {
             true => a,
-            false => i.new_undef(ctx),
+            false => ctx.new_undef(),
         }
     };
 
@@ -1059,8 +984,8 @@ pub fn merge_states<'a: 'r, 'r>(
             if let Some(ref con) = new.unresolved_constraint {
                 // As long as we're working with flags, limiting to lowest bit
                 // allows simplifying cases like (undef | 1)
-                let lowest_bit = ctx.and_const(&con.0, 1);
-                match old.resolve_apply_constraints(&lowest_bit, interner).if_constant() {
+                let lowest_bit = ctx.and_const(con.0, 1);
+                match old.resolve_apply_constraints(lowest_bit).if_constant() {
                     Some(1) => result = Some(con.clone()),
                     _ => (),
                 }
@@ -1070,8 +995,8 @@ pub fn merge_states<'a: 'r, 'r>(
             if let Some(ref con) = old.unresolved_constraint {
                 // As long as we're working with flags, limiting to lowest bit
                 // allows simplifying cases like (undef | 1)
-                let lowest_bit = ctx.and_const(&con.0, 1);
-                match new.resolve_apply_constraints(&lowest_bit, interner).if_constant() {
+                let lowest_bit = ctx.and_const(con.0, 1);
+                match new.resolve_apply_constraints(lowest_bit).if_constant() {
                     Some(1) => result = Some(con.clone()),
                     _ => (),
                 }
@@ -1084,13 +1009,13 @@ pub fn merge_states<'a: 'r, 'r>(
     let changed =
         old.state.iter().zip(new.state.iter())
             .any(|(&a, &b)| !check_eq(a, b)) ||
-        !check_memory_eq(&old.memory, &new.memory, interner) ||
+        !check_memory_eq(&old.memory, &new.memory) ||
         merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) || (
             old.resolved_constraint.is_some() &&
             old.resolved_constraint != new.resolved_constraint
         );
     if changed {
-        let state = array_init::array_init(|i| merge(old.state[i], new.state[i], interner));
+        let state = array_init::array_init(|i| merge(ctx, old.state[i], new.state[i]));
         let mut cached_low_registers = CachedLowRegisters::new();
         for i in 0..8 {
             let old_reg = &old.cached_low_registers.registers[i];
@@ -1105,7 +1030,7 @@ pub fn merge_states<'a: 'r, 'r>(
         Some(ExecutionState {
             state,
             cached_low_registers,
-            memory: old.memory.merge(&new.memory, interner, ctx),
+            memory: old.memory.merge(&new.memory, ctx),
             unresolved_constraint: merged_ljec.unwrap_or_else(|| {
                 // They were same, just use one from old
                 old.unresolved_constraint.clone()
@@ -1124,54 +1049,49 @@ pub fn merge_states<'a: 'r, 'r>(
     }
 }
 
-fn contains_undefined(oper: &Operand) -> bool {
-    oper.iter().any(|x| match x.ty {
-        OperandType::Undefined(_) => true,
-        _ => false,
-    })
+fn contains_undefined(oper: Operand<'_>) -> bool {
+    oper.iter().any(|x| x.is_undefined())
 }
 
 #[test]
 fn merge_state_constraints_eq() {
-    let mut i = InternMap::new();
-    let ctx = crate::operand::OperandContext::new();
-    let state_a = ExecutionState::new(&ctx, &mut i);
-    let mut state_b = ExecutionState::new(&ctx, &mut i);
+    let ctx = &crate::operand::OperandContext::new();
+    let state_a = ExecutionState::new(ctx);
+    let mut state_b = ExecutionState::new(ctx);
     let sign_eq_overflow_flag = ctx.eq(
         ctx.flag_o(),
         ctx.flag_s(),
     );
-    let mut state_a = state_a.assume_jump_flag(&sign_eq_overflow_flag, true, &mut i);
-    state_b.move_to(&DestOperand::from_oper(&ctx.flag_o()), ctx.constant(1), &mut i);
-    state_b.move_to(&DestOperand::from_oper(&ctx.flag_s()), ctx.constant(1), &mut i);
-    let merged = merge_states(&mut state_b, &mut state_a, &mut i).unwrap();
+    let mut state_a = state_a.assume_jump_flag(sign_eq_overflow_flag, true);
+    state_b.move_to(&DestOperand::from_oper(ctx.flag_o()), ctx.constant(1));
+    state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
+    let merged = merge_states(&mut state_b, &mut state_a).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 }
 
 #[test]
 fn merge_state_constraints_or() {
-    let mut i = InternMap::new();
-    let ctx = crate::operand::OperandContext::new();
-    let state_a = ExecutionState::new(&ctx, &mut i);
-    let mut state_b = ExecutionState::new(&ctx, &mut i);
+    let ctx = &crate::operand::OperandContext::new();
+    let state_a = ExecutionState::new(ctx);
+    let mut state_b = ExecutionState::new(ctx);
     let sign_or_overflow_flag = ctx.or(
         ctx.flag_o(),
         ctx.flag_s(),
     );
-    let mut state_a = state_a.assume_jump_flag(&sign_or_overflow_flag, true, &mut i);
-    state_b.move_to(&DestOperand::from_oper(&ctx.flag_s()), ctx.constant(1), &mut i);
-    let merged = merge_states(&mut state_b, &mut state_a, &mut i).unwrap();
+    let mut state_a = state_a.assume_jump_flag(sign_or_overflow_flag, true);
+    state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
+    let merged = merge_states(&mut state_b, &mut state_a).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
     // Should also happen other way, though then state_a must have something that is converted
     // to undef.
-    let merged = merge_states(&mut state_a, &mut state_b, &mut i).unwrap();
+    let merged = merge_states(&mut state_a, &mut state_b).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 
-    state_a.move_to(&DestOperand::from_oper(&ctx.flag_c()), ctx.constant(1), &mut i);
-    let merged = merge_states(&mut state_a, &mut state_b, &mut i).unwrap();
+    state_a.move_to(&DestOperand::from_oper(ctx.flag_c()), ctx.constant(1));
+    let merged = merge_states(&mut state_a, &mut state_b).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 }
@@ -1180,20 +1100,20 @@ fn merge_state_constraints_or() {
 fn test_as_32bit_value() {
     let ctx = &crate::operand::OperandContext::new();
     let op = ctx.add(
-        &ctx.register(0),
-        &ctx.constant(0x1_0000_0000),
+        ctx.register(0),
+        ctx.constant(0x1_0000_0000),
     );
     let expected = ctx.register(0);
-    assert_eq!(as_32bit_value(&op, ctx), expected);
+    assert_eq!(as_32bit_value(op, ctx), expected);
 
     let op = ctx.and(
-        &ctx.register(0),
-        &ctx.constant(0xffff_ffff),
+        ctx.register(0),
+        ctx.constant(0xffff_ffff),
     );
     let expected = ctx.register(0);
-    assert_eq!(as_32bit_value(&op, ctx), expected);
+    assert_eq!(as_32bit_value(op, ctx), expected);
 
     let op = ctx.constant(0x1_0000_0000);
     let expected = ctx.constant(0);
-    assert_eq!(as_32bit_value(&op, ctx), expected);
+    assert_eq!(as_32bit_value(op, ctx), expected);
 }
