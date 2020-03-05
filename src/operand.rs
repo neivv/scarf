@@ -1154,6 +1154,10 @@ impl<'e> Operand<'e> {
         &self.0.ty
     }
 
+    pub fn hash_by_address(self) -> OperandHashByAddress<'e> {
+        OperandHashByAddress(self)
+    }
+
     /// Generates operand from bytes, meant to help with fuzzing.
     ///
     /// Does not generate every variation of operands (skips fpu and such).
