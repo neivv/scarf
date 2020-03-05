@@ -271,6 +271,15 @@ impl OperandSelfRef {
     }
 }
 
+/// A single operand which carries all of its data with it.
+///
+/// Actually accessing the operand requires calling `operand()`, which
+/// gives the operand with lifetime bound to this struct.
+pub struct SelfOwnedOperand {
+    ctx: OperandContext,
+    op: OperandSelfRef,
+}
+
 pub struct Iter<'e>(Option<IterState<'e>>);
 pub struct IterNoMemAddr<'e>(Option<IterState<'e>>);
 
@@ -414,6 +423,40 @@ impl OperandContext {
     #[cfg(feature = "serde")]
     pub fn deserialize_seed<'e>(&'e self) -> DeserializeOperand<'e> {
         DeserializeOperand(self)
+    }
+
+    /// Copies an operand referring to some other OperandContext to this OperandContext
+    /// and returns the copied reference.
+    pub fn copy_operand<'e, 'other>(&'e self, op: Operand<'other>) -> Operand<'e> {
+        let ty = match *op.ty() {
+            OperandType::Register(reg) => OperandType::Register(reg),
+            OperandType::Xmm(a, b) => OperandType::Xmm(a, b),
+            OperandType::Flag(f) => OperandType::Flag(f),
+            OperandType::Fpu(f) => OperandType::Fpu(f),
+            OperandType::Constant(c) => OperandType::Constant(c),
+            OperandType::Undefined(c) => OperandType::Undefined(c),
+            OperandType::Custom(c) => OperandType::Custom(c),
+            OperandType::Memory(ref mem) => OperandType::Memory(MemAccess {
+                address: self.copy_operand(mem.address),
+                size: mem.size,
+            }),
+            OperandType::Arithmetic(ref arith) | OperandType::ArithmeticF32(ref arith) => {
+                let arith = ArithOperand {
+                    ty: arith.ty,
+                    left: self.copy_operand(arith.left),
+                    right: self.copy_operand(arith.right),
+                };
+                if let OperandType::Arithmetic(..) = op.ty() {
+                    OperandType::Arithmetic(arith)
+                } else {
+                    OperandType::ArithmeticF32(arith)
+                }
+            }
+            OperandType::SignExtend(a, b, c) => {
+                OperandType::SignExtend(self.copy_operand(a), b, c)
+            }
+        };
+        self.intern(ty)
     }
 
     operand_context_const_methods! {
@@ -1093,6 +1136,20 @@ impl<'e> Operand<'e> {
         OperandSelfRef::new(self)
     }
 
+    /// Converts this reference to `&'e OperandContext` to a struct
+    /// which carries the backing `OperandContext` with it.
+    ///
+    /// As this means that a new `OperandContext` will be allocated and all operands this
+    /// refers to will be copied there, the operation can be relatively slow.
+    pub fn to_self_owned(self) -> SelfOwnedOperand {
+        let ctx = OperandContext::new();
+        let op = ctx.copy_operand(self).self_ref();
+        SelfOwnedOperand {
+            ctx,
+            op,
+        }
+    }
+
     pub fn ty(self) -> &'e OperandType<'e> {
         &self.0.ty
     }
@@ -1437,6 +1494,22 @@ impl<'e> Operand<'e> {
     where F: FnMut(Operand<'e>) -> Option<T>
     {
         f(a).map(|val| (val, b)).or_else(|| f(b).map(|val| (val, a)))
+    }
+}
+
+impl SelfOwnedOperand {
+    pub fn operand(&self) -> Operand<'_> {
+        unsafe { self.op.cast() }
+    }
+
+    pub fn ctx(&self) -> &OperandContext {
+        &self.ctx
+    }
+}
+
+impl fmt::Debug for SelfOwnedOperand {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "SelfOwnedOperand({})", self.operand())
     }
 }
 
