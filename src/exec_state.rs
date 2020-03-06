@@ -9,7 +9,7 @@ use fxhash::FxBuildHasher;
 use crate::analysis;
 use crate::disasm::{self, DestOperand, Instruction, Operation};
 use crate::operand::{
-    ArithOpType, Operand, OperandType, OperandContext, OperandHashByAddress,
+    ArithOpType, Operand, OperandType, OperandCtx, OperandHashByAddress,
 };
 
 /// A trait that does (most of) arch-specific state handling.
@@ -38,13 +38,13 @@ pub trait ExecutionState<'e> : Clone + 'e {
     fn update(&mut self, operation: &Operation<'e>);
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
     fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
-    fn ctx(&self) -> &'e OperandContext;
+    fn ctx(&self) -> OperandCtx<'e>;
     fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e>;
     fn resolve_apply_constraints(&mut self, operand: Operand<'e>) -> Operand<'e>;
     fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>>;
     fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>>;
     fn initial_state(
-        operand_ctx: &'e OperandContext,
+        operand_ctx: OperandCtx<'e>,
         binary: &'e crate::BinaryFile<Self::VirtualAddress>,
     ) -> Self;
     fn merge_states(old: &mut Self, new: &mut Self) -> Option<Self>;
@@ -55,7 +55,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     fn apply_call(&mut self, ret: Self::VirtualAddress);
 
     /// Creates an Mem[addr] with MemAccessSize of VirtualAddress size
-    fn operand_mem_word(ctx: &'e OperandContext, address: Operand<'e>) -> Operand<'e> {
+    fn operand_mem_word(ctx: OperandCtx<'e>, address: Operand<'e>) -> Operand<'e> {
         if <Self::VirtualAddress as VirtualAddress>::SIZE == 4 {
             ctx.mem32(address)
         } else {
@@ -251,7 +251,7 @@ impl<'e> Constraint<'e> {
     }
 
     /// Invalidates any assumptions about memory
-    pub(crate) fn invalidate_memory(&mut self, ctx: &'e OperandContext) -> ConstraintFullyInvalid {
+    pub(crate) fn invalidate_memory(&mut self, ctx: OperandCtx<'e>) -> ConstraintFullyInvalid {
         let result = remove_matching_ands(ctx, self.0, &mut |x| match x {
             OperandType::Memory(..) => true,
             _ => false,
@@ -268,7 +268,7 @@ impl<'e> Constraint<'e> {
     /// Invalidates any parts of the constraint that depend on unresolved dest.
     pub(crate) fn invalidate_dest_operand(
         self,
-        ctx: &'e OperandContext,
+        ctx: OperandCtx<'e>,
         dest: &DestOperand<'e>,
     ) -> Option<Constraint<'e>> {
         match *dest {
@@ -297,7 +297,7 @@ impl<'e> Constraint<'e> {
         }.map(Constraint::new)
      }
 
-    pub(crate) fn apply_to(self, ctx: &'e OperandContext, oper: Operand<'e>) -> Operand<'e> {
+    pub(crate) fn apply_to(self, ctx: OperandCtx<'e>, oper: Operand<'e>) -> Operand<'e> {
         apply_constraint_split(ctx, self.0, oper, true)
     }
 }
@@ -311,7 +311,7 @@ pub enum ConstraintFullyInvalid {
 
 /// Constraint invalidation helper
 fn remove_matching_ands<'e, F>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     oper: Operand<'e>,
     fun: &mut F,
 ) -> Option<Operand<'e>>
@@ -350,7 +350,7 @@ fn other_if_eq_zero<'e>(op: Operand<'e>) -> Option<Operand<'e>> {
 /// Splits the constraint at ands that can be applied separately
 /// Also can handle logical nots
 fn apply_constraint_split<'e>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     constraint: Operand<'e>,
     val: Operand<'e>,
     with: bool,
@@ -464,7 +464,7 @@ pub trait Disassembler<'e> {
         buf: &'e [u8],
         pos: usize,
         address: Self::VirtualAddress,
-        ctx: &'e OperandContext,
+        ctx: OperandCtx<'e>,
     ) -> Self;
     fn next<'s>(&'s mut self) ->
         Result<Instruction<'s, 'e, Self::VirtualAddress>, disasm::Error>;
@@ -586,7 +586,7 @@ impl<'e> Memory<'e> {
         }
     }
 
-    pub fn merge(&self, new: &Memory<'e>, ctx: &'e OperandContext) -> Memory<'e> {
+    pub fn merge(&self, new: &Memory<'e>, ctx: OperandCtx<'e>) -> Memory<'e> {
         let a = self;
         let b = new;
         if a.len() == 0 {

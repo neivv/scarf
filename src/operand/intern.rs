@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::marker::PhantomData;
 use std::mem;
 
 use hashbrown::hash_map::{HashMap, RawEntryMut};
@@ -46,7 +47,7 @@ impl Interner {
                         relevant_bits,
                     };
                     let operand: Operand<'static> =
-                        Operand(mem::transmute(self.arena.alloc(base)));
+                        Operand(mem::transmute(self.arena.alloc(base)), PhantomData);
                     e.insert(InternHashOperand {
                         hash,
                         operand,

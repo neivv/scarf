@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 
 use crate::exec_state::{VirtualAddress};
 use crate::operand::{
-    self, ArithOpType, Flag, MemAccess, Operand, OperandContext, OperandType, Register,
+    self, ArithOpType, Flag, MemAccess, Operand, OperandCtx, OperandType, Register,
     MemAccessSize, ArithOperand,
 };
 use crate::VirtualAddress as VirtualAddress32;
@@ -44,7 +44,7 @@ pub struct Disassembler32<'e> {
     is_branching: bool,
     register_cache: RegisterCache<'e>,
     ops_buffer: SmallVec<[Operation<'e>; 8]>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 }
 
 fn instruction_length_32(buf: &[u8]) -> usize {
@@ -88,7 +88,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
         buf: &'a [u8],
         pos: usize,
         address: VirtualAddress32,
-        ctx: &'a OperandContext,
+        ctx: OperandCtx<'a>,
     ) -> Disassembler32<'a> {
         assert!(pos < buf.len());
         Disassembler32 {
@@ -151,7 +151,7 @@ pub struct Disassembler64<'e> {
     is_branching: bool,
     register_cache: RegisterCache<'e>,
     ops_buffer: SmallVec<[Operation<'e>; 8]>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 }
 
 impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
@@ -161,7 +161,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
         buf: &'a [u8],
         pos: usize,
         address: VirtualAddress64,
-        ctx: &'a OperandContext,
+        ctx: OperandCtx<'a>,
     ) -> Disassembler64<'a> {
         assert!(pos < buf.len());
         Disassembler64 {
@@ -259,11 +259,11 @@ struct RegisterCache<'e> {
     register8_high: [Option<Operand<'e>>; 4],
     register16: [Option<Operand<'e>>; 16],
     register32: [Option<Operand<'e>>; 16],
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 }
 
 impl<'e> RegisterCache<'e> {
-    fn new(ctx: &'e OperandContext) -> RegisterCache<'e> {
+    fn new(ctx: OperandCtx<'e>) -> RegisterCache<'e> {
         RegisterCache {
             ctx,
             register8_low: [None; 16],
@@ -311,7 +311,7 @@ struct InstructionOpsState<'a, 'e: 'a, Va: VirtualAddress> {
     full_data: &'a [u8],
     prefixes: InstructionPrefixes,
     len: u8,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     register_cache: &'a mut RegisterCache<'e>,
     out: &'a mut OperationVec<'e>,
     /// Initialize to false.
@@ -325,7 +325,7 @@ struct InstructionOpsState<'a, 'e: 'a, Va: VirtualAddress> {
 fn instruction_operations32<'e>(
     address: VirtualAddress32,
     data: &[u8],
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     out: &mut OperationVec<'e>,
     register_cache: &mut RegisterCache<'e>,
 ) -> Result<(), Error> {
@@ -587,7 +587,7 @@ fn instruction_operations32_main(
 fn instruction_operations64<'e>(
     address: VirtualAddress64,
     data: &[u8],
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     out: &mut OperationVec<'e>,
     register_cache: &mut RegisterCache<'e>,
 ) -> Result<(), Error> {
@@ -871,7 +871,7 @@ enum BitTest {
     Complement,
 }
 
-fn x87_variant<'e>(ctx: &'e OperandContext, op: Operand<'e>, offset: i8) -> Operand<'e> {
+fn x87_variant<'e>(ctx: OperandCtx<'e>, op: Operand<'e>, offset: i8) -> Operand<'e> {
     match *op.ty() {
         OperandType::Register(Register(r)) => ctx.register_fpu((r as i8 + offset) as u8 & 7),
         _ => op,
@@ -2156,7 +2156,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn punpcklbw(&mut self) -> Result<(), Failed> {
         fn rsh_and_const<'e>(
-            ctx: &'e OperandContext,
+            ctx: OperandCtx<'e>,
             val: Operand<'e>,
             and_mask: u32,
             shift: u32,
@@ -2171,7 +2171,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
 
         fn lsh_and_const<'e>(
-            ctx: &'e OperandContext,
+            ctx: OperandCtx<'e>,
             val: Operand<'e>,
             and_mask: u32,
             shift: u32,
@@ -2965,7 +2965,7 @@ enum ArithOperation {
 }
 
 fn make_f32_operation<'e>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     dest: DestOperand<'e>,
     ty: ArithOpType,
     left: Operand<'e>,
@@ -3125,7 +3125,7 @@ impl<'e> DestOperand<'e> {
         dest_operand(val)
     }
 
-    pub fn as_operand(&self, ctx: &'e OperandContext) -> Operand<'e> {
+    pub fn as_operand(&self, ctx: OperandCtx<'e>) -> Operand<'e> {
         match *self {
             DestOperand::Register32(x) => ctx.and_const(ctx.register_ref(x.0), 0xffff_ffff),
             DestOperand::Register16(x) => ctx.and_const(ctx.register_ref(x.0), 0xffff),

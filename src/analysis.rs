@@ -8,7 +8,7 @@ use crate::disasm::{self, Operation};
 use crate::exec_state::{self, Disassembler, ExecutionState};
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::light_byteorder::ReadLittleEndian;
-use crate::operand::{MemAccessSize, Operand, OperandContext};
+use crate::operand::{MemAccessSize, Operand, OperandCtx};
 use crate::{BinaryFile, BinarySection, VirtualAddress, VirtualAddress64};
 
 quick_error! {
@@ -431,7 +431,7 @@ pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     binary: &'a BinaryFile<Exec::VirtualAddress>,
     cfg: Cfg<'a, Exec, State>,
     unchecked_branches: BTreeMap<Exec::VirtualAddress, Box<(Exec, State)>>,
-    operand_ctx: &'a OperandContext,
+    operand_ctx: OperandCtx<'a>,
     /// (Func, arg1, arg2)
     pub errors: Vec<(Exec::VirtualAddress, Error)>,
 }
@@ -545,7 +545,7 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         }
     }
 
-    pub fn ctx(&self) -> &'e OperandContext {
+    pub fn ctx(&self) -> OperandCtx<'e> {
         self.inner.analysis.operand_ctx
     }
 
@@ -604,7 +604,7 @@ pub trait Analyzer<'exec> : Sized {
 impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
     pub fn new(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
-        operand_ctx: &'a OperandContext,
+        operand_ctx: OperandCtx<'a>,
         start_address: Exec::VirtualAddress,
     ) -> FuncAnalysis<'a, Exec, DefaultState> {
         FuncAnalysis {
@@ -623,7 +623,7 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
 
     pub fn with_state(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
-        operand_ctx: &'a OperandContext,
+        operand_ctx: OperandCtx<'a>,
         start_address: Exec::VirtualAddress,
         state: Exec,
     ) -> FuncAnalysis<'a, Exec, DefaultState> {
@@ -644,7 +644,7 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
 impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, State> {
     pub fn custom_state(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
-        operand_ctx: &'a OperandContext,
+        operand_ctx: OperandCtx<'a>,
         start_address: Exec::VirtualAddress,
         exec_state: Exec,
         analysis_state: State,

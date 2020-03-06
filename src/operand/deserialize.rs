@@ -3,12 +3,12 @@ use std::fmt;
 use serde::{Deserializer, Deserialize};
 use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 
-use super::{MemAccess, MemAccessSize, ArithOperand, Operand, OperandContext, OperandType};
+use super::{MemAccess, MemAccessSize, ArithOperand, Operand, OperandCtx, OperandType};
 
-pub struct DeserializeOperand<'e>(pub(crate) &'e OperandContext);
-pub struct DeserializeOperandType<'e>(&'e OperandContext);
-pub struct DeserializeMemory<'e>(&'e OperandContext);
-pub struct DeserializeArith<'e>(&'e OperandContext);
+pub struct DeserializeOperand<'e>(pub(crate) OperandCtx<'e>);
+pub struct DeserializeOperandType<'e>(OperandCtx<'e>);
+pub struct DeserializeMemory<'e>(OperandCtx<'e>);
+pub struct DeserializeArith<'e>(OperandCtx<'e>);
 
 impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperand<'e> {
     type Value = Operand<'e>;
@@ -44,7 +44,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperand<'e> {
             }
         }
 
-        struct OperandVisitor<'e>(&'e OperandContext);
+        struct OperandVisitor<'e>(OperandCtx<'e>);
 
         impl<'de, 'e> Visitor<'de> for OperandVisitor<'e> {
             type Value = Operand<'e>;
@@ -184,7 +184,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
             }
         }
 
-        struct SextVisitor<'e>(&'e OperandContext);
+        struct SextVisitor<'e>(OperandCtx<'e>);
 
         impl<'de, 'e> Visitor<'de> for SextVisitor<'e> {
             type Value = (Operand<'e>, MemAccessSize, MemAccessSize);
@@ -205,7 +205,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
             }
         }
 
-        struct OperandTypeVisitor<'e>(&'e OperandContext);
+        struct OperandTypeVisitor<'e>(OperandCtx<'e>);
 
         impl<'de, 'e> Visitor<'de> for OperandTypeVisitor<'e> {
             type Value = OperandType<'e>;
@@ -289,7 +289,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeMemory<'e> {
             }
         }
 
-        struct MemoryVisitor<'e>(&'e OperandContext);
+        struct MemoryVisitor<'e>(OperandCtx<'e>);
 
         impl<'de, 'e> Visitor<'de> for MemoryVisitor<'e> {
             type Value = MemAccess<'e>;
@@ -383,7 +383,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeArith<'e> {
             }
         }
 
-        struct ArithVisitor<'e>(&'e OperandContext);
+        struct ArithVisitor<'e>(OperandCtx<'e>);
 
         impl<'de, 'e> Visitor<'de> for ArithVisitor<'e> {
             type Value = ArithOperand<'e>;

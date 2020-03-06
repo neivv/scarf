@@ -4,7 +4,7 @@ extern crate scarf;
 #[allow(dead_code)] mod helpers;
 
 use scarf::{
-    BinaryFile, BinarySection, DestOperand, Operand, Operation, OperandContext, VirtualAddress64
+    BinaryFile, BinarySection, DestOperand, Operand, Operation, OperandContext, VirtualAddress64,
 };
 use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86_64 as ExecutionState;
@@ -12,7 +12,7 @@ use scarf::ExecutionStateX86_64 as ExecutionState;
 #[test]
 fn test_basic() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xb8, 0x20, 0x00, 0x00, 0x00, // mov eax, 20
         0x48, 0x83, 0xc0, 0x39, // add rax, 39
         0xa8, 0x62, // test al, 62
@@ -27,7 +27,7 @@ fn test_basic() {
 #[test]
 fn test_xor_high() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xb9, 0x04, 0x00, 0x00, 0x00, // mov ecx, 4
         0x30, 0xfd, // xor ch, bh
         0x30, 0xfd, // xor ch, bh
@@ -40,7 +40,7 @@ fn test_xor_high() {
 #[test]
 fn test_neg_mem8() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xc6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, 0x04, // mov byte [rbp + 4ea2d325], 4
         0xf6, 0x9d, 0x25, 0xd3, 0xa2, 0x4e, // neg byte [rbp + 4ea2d325]
         0x0f, 0xb6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, // movzx eax, byte [rbp + 4ea2d325]
@@ -53,7 +53,7 @@ fn test_neg_mem8() {
 #[test]
 fn test_neg_mem8_dummy_rex_r() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xc6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, 0x04, // mov byte [rbp + 4ea2d325], 4
         0x4e, 0xf6, 0x9d, 0x25, 0xd3, 0xa2, 0x4e, // neg byte [rbp + 4ea2d325]
         0x0f, 0xb6, 0x85, 0x25, 0xd3, 0xa2, 0x4e, // movzx eax, byte [rbp + 4ea2d325]
@@ -66,7 +66,7 @@ fn test_neg_mem8_dummy_rex_r() {
 #[test]
 fn test_new_8bit_regs() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0x31, 0xc0, // xor eax, eax
         0x31, 0xf6, // xor esi, esi
         0x4d, 0x31, 0xc9, // xor r9, r9
@@ -92,7 +92,7 @@ fn test_new_8bit_regs() {
 #[test]
 fn test_64bit_regs() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0x49, 0xbf, 0x0c, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, // mov r15, c_0000_000c
         0x31, 0xc0, // xor eax, eax
         0x48, 0x8d, 0x88, 0x88, 0x00, 0x00, 0x00, // lea rcx, [rax + 88]
@@ -107,7 +107,7 @@ fn test_64bit_regs() {
 #[test]
 fn test_btr() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xb8, 0xff, 0xff, 0x00, 0x00, // mov eax, ffff
         0xb9, 0x08, 0x00, 0x00, 0x00, // mov ecx, 8
         0x0f, 0xb3, 0xc8, // btr eax, ecx
@@ -125,7 +125,7 @@ fn test_btr() {
 #[test]
 fn test_movsxd() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xc7, 0x44, 0x24, 0x28, 0x44, 0xff, 0x44, 0xff, // mov dword [rsp + 28], ff44ff44
         0x4c, 0x63, 0x5c, 0x24, 0x28, // movsxd r11, dword [rsp + 28]
         0xc3, // ret
@@ -137,7 +137,7 @@ fn test_movsxd() {
 #[test]
 fn movaps() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xc7, 0x04, 0x24, 0x45, 0x45, 0x45, 0x45, // mov dword [rsp], 45454545
         0xc7, 0x44, 0x24, 0x0c, 0x25, 0x25, 0x25, 0x25, // mov dword [rsp], 25252525
         0x0f, 0x28, 0x04, 0x24, // movaps xmm0, [rsp]
@@ -154,7 +154,7 @@ fn movaps() {
 #[test]
 fn test_bt() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xb8, 0xff, 0xff, 0x00, 0x00, // mov eax, ffff
         0x48, 0xc1, 0xe0, 0x20, // shl rax, 20
         0xb9, 0x28, 0x00, 0x00, 0x00, // mov ecx, 28
@@ -171,7 +171,7 @@ fn test_bt() {
 #[test]
 fn test_xadd() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xb8, 0x20, 0x00, 0x00, 0x00, // mov eax, 20
         0xc7, 0x04, 0x24, 0x13, 0x00, 0x00, 0x00, // mov dword [rsp], 13
         0xf0, 0x0f, 0xc1, 0x04, 0x24, // lock xadd dword [rsp], eax
@@ -191,7 +191,7 @@ fn test_switch() {
     let ctx = &OperandContext::new();
     // 2 cases to ok, 3rd fake
     // rcx is undef if the cases are run
-    test_inline(ctx, &[
+    test_inline(&[
         0x31, 0xc9, // xor ecx, ecx
         0x48, 0x83, 0xf8, 0x02, // cmp rax, 2
         0x73, 0x28, // jae end
@@ -225,7 +225,7 @@ fn test_switch() {
 #[test]
 fn test_negative_offset() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xc7, 0x00, 0x05, 0x00, 0x00, 0x00, // mov dword [rax], 5
         0x48, 0x83, 0xc0, 0x04, // add rax, 4
         0x8b, 0x48, 0xfc, // mov ecx, [rax - 4]
@@ -242,7 +242,7 @@ fn test_negative_offset() {
 #[test]
 fn test_negative_offset2() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xc7, 0x04, 0x10, 0x05, 0x00, 0x00, 0x00, // mov dword [rax + rdx], 5
         0x48, 0x83, 0xc0, 0x04, // add rax, 4
         0x8b, 0x4c, 0x10, 0xfc, // mov ecx, [rax + rdx - 4]
@@ -261,7 +261,7 @@ fn lazy_flag_constraint_invalidation() {
     let ctx = &OperandContext::new();
     // Had a bug that lazy flag updates didn't invalidate extra constraints
     // (So the unrelated cmp -> ja would always be taken)
-    test_inline(ctx, &[
+    test_inline(&[
         0x31, 0xf6, // xor esi, esi
         0x39, 0xc8, // cmp eax, ecx
         0x76, 0x07, // jbe ret_
@@ -278,7 +278,7 @@ fn lazy_flag_constraint_invalidation() {
 #[test]
 fn punpcklbw() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0x48, 0xb8, 0x44, 0x33, 0x22, 0x11, 0x78, 0x56, 0x34, 0x12, // mov rax, 12345678_11223344
         0x66, 0x48, 0x0f, 0x6e, 0xc0, // movq xmm0, rax
         0x48, 0xb9, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, // mov rcx, 99887766_55443322
@@ -298,7 +298,7 @@ fn punpcklbw() {
 fn overflow_not_set_bug() {
     let ctx = &OperandContext::new();
     // Had a bug that made the `jl maybe` never be taken
-    test_inline(ctx, &[
+    test_inline(&[
         0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
         0x0f, 0xbf, 0x46, 0x16, // movsx eax, word [rsi + 16]
         0x89, 0xc1, // mov ecx, eax,
@@ -328,7 +328,7 @@ fn switch_case_count2() {
     let ctx = &OperandContext::new();
     // 3 cases to ok, 4th fake
     // rdx, rsi, rdi, rbp are undef if the cases are run
-    test_inline(ctx, &[
+    test_inline(&[
         // base:
         0x49, 0x83, 0xf8, 0x02, // cmp r8, 2
         0x76, 0x04, // jbe switch
@@ -372,7 +372,7 @@ fn switch_case_count3() {
     let ctx = &OperandContext::new();
     // 2 cases to ok, 3rd fake
     // rdx, rsi, rdi, rbp are undef if the cases are run
-    test_inline(ctx, &[
+    test_inline(&[
         // base:
         0x49, 0x83, 0xf8, 0x01, // cmp r8, 1
         0x76, 0x04, // jbe switch
@@ -413,7 +413,7 @@ fn switch_case_count3() {
 #[test]
 fn dec_flags() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0x33, 0xc0, // xor eax, eax
         0x33, 0xd2, // xor eax, eax
         0x4d, 0x85, 0xc0, // test r8, r8
@@ -439,7 +439,7 @@ fn dec_flags() {
 #[test]
 fn sub_flags() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0x85, 0xd2, // test edx, edx
         0x74, 0x0f, // je set_ecx_1
         0x83, 0xea, 0x01, // sub edx, 1
@@ -465,7 +465,7 @@ fn sub_flags() {
 #[test]
 fn bswap() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0x48, 0xb9, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, // mov rcx, 99887766_55443322
         0x49, 0xb9, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, // mov r9, 99887766_55443322
         0x48, 0x0f, 0xc9, // bswap rcx
@@ -480,7 +480,7 @@ fn bswap() {
 #[test]
 fn sbb() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0x31, 0xc0, // xor eax, eax
         0xb9, 0x01, 0x00, 0x00, 0x00, // mov ecx, 1
         0x83, 0xf8, 0x01, // cmp eax, 1 (c = 1)
@@ -495,7 +495,7 @@ fn sbb() {
 #[test]
 fn adc() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0x31, 0xc0, // xor eax, eax
         0x83, 0xf8, 0x01, // cmp eax, 1 (c = 1)
         0x11, 0xc0, // adc eax, eax (eax = 0 + 0 + 1 = 1)
@@ -508,7 +508,7 @@ fn adc() {
 #[test]
 fn movd() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xc7, 0x04, 0xe4, 0x78, 0x56, 0x34, 0x12, // mov [esp], 12345678
         0x66, 0x0f, 0x6e, 0x04, 0xe4, // movd xmm0, [esp]
         0x0f, 0x11, 0x44, 0xe4, 0x10, // movups [esp + 10], xmm0
@@ -528,7 +528,7 @@ fn movd() {
 #[test]
 fn mov_al() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xb0, 0x55, // mov al, 55
         0xa2, 0x44, 0x33, 0x22, 0x11, 0xdd, 0xcc, 0xbb, 0xaa, // mov [aabbccdd11223344], al
         0x48, 0xb9, 0x44, 0x33, 0x22, 0x11, 0xdd, 0xcc, 0xbb, 0xaa, // mov rcx, aabbccdd11223344
@@ -544,7 +544,7 @@ fn mov_al() {
 #[test]
 fn test_eax_after_call() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0x4d, 0x31, 0xff, // xor r15, r15
         0x85, 0xc0, // test eax, eax
         0x75, 0x0c, // jne end
@@ -573,7 +573,7 @@ fn switch_u32_op() {
     let ctx = &OperandContext::new();
     // 3 cases to ok, 4th fake
     // rsi, rdi  are undef if the cases are run
-    test_inline(ctx, &[
+    test_inline(&[
         // base:
         0x45, 0x89, 0xc5, // mov r13d, r8d
         0x41, 0x81, 0xfd, 0x04, 0x01, 0x00, 0x00, // cmp r13d, 104
@@ -613,7 +613,7 @@ fn switch_u32_op() {
 #[test]
 fn partial_overwrite() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xc7, 0x00, 0x78, 0x56, 0x34, 0x12, // mov [eax], 12345678
         0xc6, 0x00, 0x99, // mov byte [eax], 99
         0xc7, 0x41, 0x01, 0x78, 0x56, 0x34, 0x12, // mov [ecx + 1], 12345678
@@ -633,7 +633,7 @@ fn partial_overwrite() {
 #[test]
 fn modifying_code_section() {
     let ctx = &OperandContext::new();
-    test_inline(ctx, &[
+    test_inline(&[
         0xb8, 0x11, 0x10, 0x40, 0x00, // mov eax, 00401011 (&bytes)
         0x66, 0xc7, 0x40, 0x04, 0x88, 0x77, // mov [eax + 4], word 7788
         0x8b, 0x08, // mov ecx, [eax]
@@ -669,15 +669,19 @@ impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
     }
 }
 
-fn test_inner<'e>(
-    ctx: &'e OperandContext,
-    file: &BinaryFile<VirtualAddress64>,
+fn test_inner<'e, 'b>(
+    file: &'e BinaryFile<VirtualAddress64>,
     func: VirtualAddress64,
-    changes: &[(Operand<'e>, Operand<'e>)],
+    changes: &[(Operand<'b>, Operand<'b>)],
 ) {
+    let ctx = &OperandContext::new();
+    let changes = changes.iter().map(|&(a, b)| {
+        (ctx.copy_operand(a), ctx.copy_operand(b))
+    }).collect::<Vec<_>>();
+
     let state = ExecutionState::with_binary(file, ctx);
     let mut expected_state = state.clone();
-    for &(op, val) in changes {
+    for &(op, val) in &changes {
         let op = Operation::Move(DestOperand::from_oper(op), val, None);
         expected_state.update(&op);
     }
@@ -702,7 +706,7 @@ fn test_inner<'e>(
     }
 }
 
-fn test_inline<'e>(ctx: &'e OperandContext, code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
+fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
     let binary = scarf::raw_bin(VirtualAddress64(0x00400000), vec![BinarySection {
         name: {
             // ugh
@@ -716,5 +720,5 @@ fn test_inline<'e>(ctx: &'e OperandContext, code: &[u8], changes: &[(Operand<'e>
         virtual_size: code.len() as u32,
         data: code.into(),
     }]);
-    test_inner(ctx, &binary, binary.code_section().virtual_address, changes);
+    test_inner(&binary, binary.code_section().virtual_address, changes);
 }

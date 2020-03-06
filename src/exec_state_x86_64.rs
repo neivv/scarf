@@ -6,7 +6,7 @@ use crate::exec_state::{Constraint, Memory};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{
-    ArithOperand, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType,
+    ArithOperand, Flag, MemAccess, MemAccessSize, Operand, OperandCtx, OperandType,
     ArithOpType,
 };
 use crate::{BinaryFile, VirtualAddress64};
@@ -23,7 +23,7 @@ pub struct ExecutionState<'e> {
     memory: Memory<'e>,
     unresolved_constraint: Option<Constraint<'e>>,
     resolved_constraint: Option<Constraint<'e>>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     binary: Option<&'e BinaryFile<VirtualAddress64>>,
     /// Lazily update flags since a lot of instructions set them and
     /// they get discarded later.
@@ -91,7 +91,7 @@ enum Destination<'a, 'e> {
 }
 
 impl<'a, 'e> Destination<'a, 'e> {
-    fn set(self, value: Operand<'e>, ctx: &'e OperandContext) {
+    fn set(self, value: Operand<'e>, ctx: OperandCtx<'e>) {
         match self {
             Destination::Oper(o) => {
                 *o = value;
@@ -279,7 +279,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         dest.set(value, ctx);
     }
 
-    fn ctx(&self) -> &'e OperandContext {
+    fn ctx(&self) -> OperandCtx<'e> {
         self.ctx
     }
 
@@ -329,7 +329,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     }
 
     fn initial_state(
-        ctx: &'e OperandContext,
+        ctx: OperandCtx<'e>,
         binary: &'e BinaryFile<VirtualAddress64>,
     ) -> ExecutionState<'e> {
         ExecutionState::with_binary(binary, ctx)
@@ -372,7 +372,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
 
 impl<'e> ExecutionState<'e> {
     pub fn new<'b>(
-        ctx: &'b OperandContext,
+        ctx: OperandCtx<'b>,
     ) -> ExecutionState<'b> {
         let dummy = ctx.const_0();
         let mut state = [dummy; STATE_OPERANDS];
@@ -401,7 +401,7 @@ impl<'e> ExecutionState<'e> {
 
     pub fn with_binary<'b>(
         binary: &'b crate::BinaryFile<VirtualAddress64>,
-        ctx: &'b OperandContext,
+        ctx: OperandCtx<'b>,
     ) -> ExecutionState<'b> {
         let mut result = ExecutionState::new(ctx);
         result.binary = Some(binary);
@@ -904,7 +904,7 @@ pub fn merge_states<'a: 'r, 'r>(
     }
 
     let ctx = old.ctx;
-    fn merge<'e>(ctx: &'e OperandContext, a: Operand<'e>, b: Operand<'e>) -> Operand<'e> {
+    fn merge<'e>(ctx: OperandCtx<'e>, a: Operand<'e>, b: Operand<'e>) -> Operand<'e> {
         match a == b {
             true => a,
             false => ctx.new_undef(),

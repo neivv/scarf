@@ -1,6 +1,6 @@
 use super::*;
 
-fn check_simplification_consistency<'e>(ctx: &'e OperandContext, op: Operand<'e>) {
+fn check_simplification_consistency<'e>(ctx: OperandCtx<'e>, op: Operand<'e>) {
     let config = bincode::config();
     let bytes = config.serialize(&op).unwrap();
     let back: Operand<'e> = config.deserialize_seed(ctx.deserialize_seed(), &bytes).unwrap();
@@ -361,7 +361,7 @@ fn simplify_lsh_or_rsh() {
 
 #[test]
 fn simplify_and_or_bug() {
-    fn rol<'e>(ctx: &'e OperandContext, lhs: Operand<'e>, rhs: Operand<'e>) -> Operand<'e> {
+    fn rol<'e>(ctx: OperandCtx<'e>, lhs: Operand<'e>, rhs: Operand<'e>) -> Operand<'e> {
         // rol(x, y) == (x << y) | (x >> (32 - y))
         ctx.or(
             ctx.lsh(lhs, rhs),

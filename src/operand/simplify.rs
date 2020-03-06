@@ -6,7 +6,7 @@ use crate::heapsort;
 use crate::vec_drop_iter::VecDropIter;
 
 use super::{
-    ArithOperand, ArithOpType, MemAccessSize, Operand, OperandType, OperandContext,
+    ArithOperand, ArithOpType, MemAccessSize, Operand, OperandType, OperandCtx,
 };
 
 #[derive(Default)]
@@ -23,7 +23,7 @@ pub fn simplify_arith<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
     ty: ArithOpType,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     // NOTE OperandContext assumes it can call these arith child functions
@@ -219,7 +219,7 @@ pub fn simplify_sign_extend<'e>(
     val: Operand<'e>,
     from: MemAccessSize,
     to: MemAccessSize,
-    ctx: &'e OperandContext
+    ctx: OperandCtx<'e>
 ) -> Operand<'e> {
     if from.bits() >= to.bits() {
         return ctx.const_0();
@@ -279,7 +279,7 @@ fn simplify_gt_lhs_sub<'e>(left: Operand<'e>, right: Operand<'e>) -> Option<Oper
 
 fn simplify_xor_ops<'e>(
     ops: &mut Vec<Operand<'e>>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     let mut const_val = 0;
@@ -396,7 +396,7 @@ fn simplify_xor_remove_reverting<'e>(ops: &mut Vec<Operand<'e>>) {
 pub fn simplify_lsh<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     let default = || {
@@ -535,7 +535,7 @@ pub fn simplify_lsh<'e>(
 pub fn simplify_rsh<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     let default = || {
@@ -829,7 +829,7 @@ fn relevant_bits_for_eq<'e>(ops: &Vec<(Operand<'e>, bool)>) -> (u64, u64) {
 pub fn simplify_eq<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     // Possibly common enough to be worth the early exit
     if left == right {
@@ -941,7 +941,7 @@ pub fn simplify_eq<'e>(
             };
             let mask = add_sub_mask;
             fn make_op<'e>(
-                ctx: &'e OperandContext,
+                ctx: OperandCtx<'e>,
                 op: Operand<'e>,
                 mask: u64,
                 negate: bool,
@@ -1034,7 +1034,7 @@ pub fn simplify_eq<'e>(
 fn simplify_eq_2_ops<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     fn mask_maskee<'e>(x: Operand<'e>) -> Option<(u64, Operand<'e>)> {
         match x.ty() {
@@ -1144,7 +1144,7 @@ fn try_merge_ands<'e>(
     b: Operand<'e>,
     a_mask: u64,
     b_mask: u64,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Option<Operand<'e>> {
     if a == b {
@@ -1236,7 +1236,7 @@ fn check_quick_arith_simplify<'e>(
 pub fn simplify_and<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     if !bits_overlap(&left.relevant_bits(), &right.relevant_bits()) {
@@ -1573,7 +1573,7 @@ fn simplify_and_remove_unnecessary_ors(
     }
 }
 
-fn simplify_and_merge_child_ors<'e>(ops: &mut Vec<Operand<'e>>, ctx: &'e OperandContext) {
+fn simplify_and_merge_child_ors<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCtx<'e>) {
     fn or_const<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
         match op.ty() {
             OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Or => {
@@ -1615,7 +1615,7 @@ fn simplify_and_merge_child_ors<'e>(ops: &mut Vec<Operand<'e>>, ctx: &'e Operand
 // to cases where x and y are xors.
 fn simplify_or_merge_xors<'e>(
     ops: &mut Vec<Operand<'e>>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) {
     fn is_xor(op: Operand<'_>) -> bool {
@@ -1653,7 +1653,7 @@ fn simplify_or_merge_xors<'e>(
 /// Also used by xors with only_nonoverlapping true
 fn simplify_or_merge_child_ands<'e>(
     ops: &mut Vec<Operand<'e>>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
     only_nonoverlapping: bool,
 ) {
@@ -1728,7 +1728,7 @@ fn simplify_or_merge_child_ands<'e>(
 // (x > c) | (x == c) to (x > c + 1).
 // Cannot do for values that can overflow, so just limit it to constants for now.
 // (Well, could do (c + 1 > x) | (c == max_value), but that isn't really simpler)
-fn simplify_or_merge_comparisions<'e>(ops: &mut Vec<Operand<'e>>, ctx: &'e OperandContext) {
+fn simplify_or_merge_comparisions<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCtx<'e>) {
     #[derive(Eq, PartialEq, Copy, Clone)]
     enum MatchType {
         ConstantGreater,
@@ -1867,7 +1867,7 @@ fn collect_arith_ops<'e>(
     ops: &mut Vec<Operand<'e>>,
     arith_type: ArithOpType,
     limit: usize,
-    mut ctx_swzb: Option<(&'e OperandContext, &mut SimplifyWithZeroBits)>,
+    mut ctx_swzb: Option<(OperandCtx<'e>, &mut SimplifyWithZeroBits)>,
 ) {
     if ops.len() >= limit {
         if ops.len() == limit {
@@ -1895,7 +1895,7 @@ fn collect_and_ops<'e>(
     s: Operand<'e>,
     ops: &mut Vec<Operand<'e>>,
     limit: usize,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) {
     collect_arith_ops(s, ops, ArithOpType::And, limit, Some((ctx, swzb)));
@@ -1904,7 +1904,7 @@ fn collect_and_ops<'e>(
 fn collect_or_ops<'e>(
     s: Operand<'e>,
     ops: &mut Vec<Operand<'e>>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) {
     collect_arith_ops(s, ops, ArithOpType::Or, usize::max_value(), Some((ctx, swzb)));
@@ -1914,7 +1914,7 @@ fn collect_xor_ops<'e>(
     s: Operand<'e>,
     ops: &mut Vec<Operand<'e>>,
     limit: usize,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) {
     collect_arith_ops(s, ops, ArithOpType::Xor, limit, Some((ctx, swzb)));
@@ -1923,7 +1923,7 @@ fn collect_xor_ops<'e>(
 /// Return (offset, len, value_offset)
 fn is_offset_mem<'e>(
     op: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Option<(Operand<'e>, (u64, u32, u32))> {
     match op.ty() {
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Lsh => {
@@ -1976,7 +1976,7 @@ fn try_merge_memory<'e>(
     val: Operand<'e>,
     shift: (u64, u32, u32),
     other_shift: (u64, u32, u32),
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
     let (shift, other_shift) = match (shift.2, other_shift.2) {
         (0, 0) => return None,
@@ -2003,7 +2003,7 @@ fn try_merge_memory<'e>(
 /// Simplify or: merge memory
 /// Converts (Mem32[x] >> 8) | (Mem32[x + 4] << 18) to Mem32[x + 1]
 /// Also used for xor since x ^ y == x | y if x and y do not overlap at all.
-fn simplify_or_merge_mem<'e>(ops: &mut Vec<Operand<'e>>, ctx: &'e OperandContext) {
+fn simplify_or_merge_mem<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCtx<'e>) {
     let mut iter = VecDropIter::new(ops);
     while let Some(mut op) = iter.next() {
         let mut new = None;
@@ -2036,7 +2036,7 @@ pub fn simplify_add_sub<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
     is_sub: bool,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     if let Some((l, r)) = check_quick_arith_simplify(left, right) {
         if !is_sub || l == left {
@@ -2066,7 +2066,7 @@ pub fn simplify_add_sub<'e>(
 
 fn add_sub_ops_to_tree<'e>(
     ops: &mut Vec<(Operand<'e>, bool)>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     use self::ArithOpType::*;
 
@@ -2129,7 +2129,7 @@ fn add_sub_ops_to_tree<'e>(
 pub fn simplify_mul<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     let const_other = Operand::either(left, right, |x| x.if_constant());
     if let Some((c, other)) = const_other {
@@ -2256,10 +2256,10 @@ fn simplify_mul_should_apply_constant(op: Operand<'_>) -> bool {
 fn simplify_mul_apply_constant<'e>(
     op: Operand<'e>,
     val: u64,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     let constant = ctx.constant(val);
-    fn inner<'e>(op: Operand<'e>, constant: Operand<'e>, ctx: &'e OperandContext) -> Operand<'e> {
+    fn inner<'e>(op: Operand<'e>, constant: Operand<'e>, ctx: OperandCtx<'e>) -> Operand<'e> {
         match op.ty() {
             OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Add => {
                 ctx.add(inner(arith.left, constant, ctx), inner(arith.right, constant, ctx))
@@ -2278,7 +2278,7 @@ fn simplify_mul_apply_constant<'e>(
 fn simplify_mul_try_mul_constants<'e>(
     op: Operand<'e>,
     c: u64,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
     match op.ty() {
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Add => {
@@ -2310,7 +2310,7 @@ fn simplify_add_sub_ops<'e>(
     right: Operand<'e>,
     is_sub: bool,
     mask: u64,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Vec<(Operand<'e>, bool)> {
     let mut ops = Vec::new();
     let const1 = collect_add_ops(left, &mut ops, mask, false);
@@ -2322,7 +2322,7 @@ fn simplify_add_sub_ops<'e>(
 
 fn simplify_collected_add_sub_ops<'e>(
     ops: &mut Vec<(Operand<'e>, bool)>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     const_sum: u64,
 ) {
     heapsort::sort(ops);
@@ -2350,7 +2350,7 @@ fn simplify_collected_add_sub_ops<'e>(
 pub fn simplify_or<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     let left_bits = left.relevant_bits();
@@ -2384,7 +2384,7 @@ pub fn simplify_or<'e>(
 
 fn simplify_or_ops<'e>(
     mut ops: Vec<Operand<'e>>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     let ops = &mut ops;
@@ -2525,7 +2525,7 @@ fn should_stop_with_and_mask(swzb_ctx: &mut SimplifyWithZeroBits) -> bool {
 fn simplify_with_and_mask<'e>(
     op: Operand<'e>,
     mask: u64,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     if op.relevant_bits_mask() & mask == 0 {
@@ -2542,7 +2542,7 @@ fn simplify_with_and_mask<'e>(
 fn simplify_with_and_mask_inner<'e>(
     op: Operand<'e>,
     mask: u64,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     match *op.ty() {
@@ -2720,7 +2720,7 @@ fn simplify_with_and_mask_inner<'e>(
 fn simplify_with_zero_bits<'e>(
     op: Operand<'e>,
     bits: &Range<u8>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Option<Operand<'e>> {
     if op.0.min_zero_bit_simplify_size > bits.end - bits.start || bits.start >= bits.end {
@@ -2924,7 +2924,7 @@ fn simplify_with_zero_bits<'e>(
 fn simplify_with_one_bits<'e>(
     op: Operand<'e>,
     bits: &Range<u8>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
     fn check_useless_and_mask<'e>(
         left: Operand<'e>,
@@ -3055,7 +3055,7 @@ fn simplify_with_one_bits<'e>(
 /// Merges things like [2 * b, a, c, b, c] to [a, 3 * b, 2 * c]
 fn simplify_add_merge_muls<'e>(
     ops: &mut Vec<(Operand<'e>, bool)>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
 ) {
     fn count_equivalent_opers<'e>(ops: &[(Operand<'e>, bool)], equiv: Operand<'e>) -> Option<u64> {
         ops.iter().map(|&(o, neg)| {
@@ -3145,7 +3145,7 @@ fn simplify_add_merge_muls<'e>(
 pub fn simplify_xor<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     let left_bits = left.relevant_bits();
@@ -3185,10 +3185,10 @@ pub fn simplify_xor<'e>(
 
 fn simplify_xor_try_extract_constant<'e>(
     op: Operand<'e>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Option<(Operand<'e>, u64)> {
-    fn recurse<'e>(op: Operand<'e>, ctx: &'e OperandContext) -> Option<(Operand<'e>, u64)> {
+    fn recurse<'e>(op: Operand<'e>, ctx: OperandCtx<'e>) -> Option<(Operand<'e>, u64)> {
         match op.ty() {
             OperandType::Arithmetic(arith) => {
                 match arith.ty {

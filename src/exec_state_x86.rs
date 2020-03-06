@@ -6,7 +6,7 @@ use crate::exec_state::{Constraint, Memory};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::{ReadLittleEndian};
 use crate::operand::{
-    ArithOperand, Flag, MemAccess, MemAccessSize, Operand, OperandContext, OperandType,
+    ArithOperand, Flag, MemAccess, MemAccessSize, Operand, OperandCtx, OperandType,
     ArithOpType,
 };
 use crate::{BinaryFile, VirtualAddress};
@@ -41,7 +41,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         dest.set(value, ctx);
     }
 
-    fn ctx(&self) -> &'e OperandContext {
+    fn ctx(&self) -> OperandCtx<'e> {
         self.ctx
     }
 
@@ -91,7 +91,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     }
 
     fn initial_state(
-        ctx: &'e OperandContext,
+        ctx: OperandCtx<'e>,
         binary: &'e BinaryFile<VirtualAddress>,
     ) -> ExecutionState<'e> {
         let mut state = ExecutionState::with_binary(binary, ctx);
@@ -159,7 +159,7 @@ pub struct ExecutionState<'e> {
     memory: Memory<'e>,
     resolved_constraint: Option<Constraint<'e>>,
     unresolved_constraint: Option<Constraint<'e>>,
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     binary: Option<&'e BinaryFile<VirtualAddress>>,
     pending_flags: Option<(ArithOperand<'e>, MemAccessSize)>,
 }
@@ -222,7 +222,7 @@ enum Destination<'a, 'e> {
 /// operation whose meaning changes based on high bits (div/mod/rsh/eq/gt), then
 /// the result is explicitly masked. (Add / sub constants larger than u32::max will
 /// be still truncated eagerly)
-fn as_32bit_value<'e>(value: Operand<'e>, ctx: &'e OperandContext) -> Operand<'e> {
+fn as_32bit_value<'e>(value: Operand<'e>, ctx: OperandCtx<'e>) -> Operand<'e> {
     if value.relevant_bits().end > 32 {
         if let Some((l, r)) = value.if_arithmetic_add() {
             // Uh, relying that simplification places constant on the right
@@ -261,7 +261,7 @@ fn sext32_64(val: u32) -> u64 {
 }
 
 impl<'a, 'e> Destination<'a, 'e> {
-    fn set(self, value: Operand<'e>, ctx: &'e OperandContext) {
+    fn set(self, value: Operand<'e>, ctx: OperandCtx<'e>) {
         let value = as_32bit_value(value, ctx);
         match self {
             Destination::Oper(o) => {
@@ -422,7 +422,7 @@ impl<'a, 'e> Destination<'a, 'e> {
 
 impl<'e> ExecutionState<'e> {
     pub fn new<'b>(
-        ctx: &'b OperandContext,
+        ctx: OperandCtx<'b>,
     ) -> ExecutionState<'b> {
         let dummy = ctx.const_0();
         let mut state = [dummy; STATE_OPERANDS];
@@ -452,7 +452,7 @@ impl<'e> ExecutionState<'e> {
 
     pub fn with_binary<'b>(
         binary: &'b crate::BinaryFile<VirtualAddress>,
-        ctx: &'b OperandContext,
+        ctx: OperandCtx<'b>,
     ) -> ExecutionState<'b> {
         let mut result = ExecutionState::new(ctx);
         result.binary = Some(binary);
@@ -935,7 +935,7 @@ impl<'e> ExecutionState<'e> {
         self.memory.reverse_lookup(val).map(|x| self.ctx.mem32(x))
     }
 
-    pub fn memory(&self) -> &Memory {
+    pub fn memory(&self) -> &Memory<'e> {
         &self.memory
     }
 
@@ -969,7 +969,7 @@ pub fn merge_states<'a: 'r, 'r>(
     }
 
     let ctx = old.ctx;
-    fn merge<'e>(ctx: &'e OperandContext, a: Operand<'e>, b: Operand<'e>) -> Operand<'e> {
+    fn merge<'e>(ctx: OperandCtx<'e>, a: Operand<'e>, b: Operand<'e>) -> Operand<'e> {
         match a == b {
             true => a,
             false => ctx.new_undef(),

@@ -12,6 +12,7 @@ use std::cell::Cell;
 use std::cmp::{max, min, Ordering};
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 use std::ops::Range;
 use std::ptr;
 
@@ -22,7 +23,7 @@ use crate::bit_misc::{bits_overlap};
 
 #[derive(Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct Operand<'e>(&'e OperandBase<'e>);
+pub struct Operand<'e>(&'e OperandBase<'e>, PhantomData<&'e mut &'e ()>);
 
 /// Wrapper around `Operand` which implements `Hash` on the interned address.
 /// Separate struct since hashing by address gives hashes that aren't stable
@@ -246,12 +247,17 @@ impl<'e> ArithOperand<'e> {
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub struct UndefinedId(pub u32);
 
-pub struct OperandContext {
+pub struct OperandContext<'e> {
     next_undefined: Cell<u32>,
     // Contains 0x41 small constants, 0x10 registers, 0x6 flags
     common_operands: Box<[OperandSelfRef; 0x41 + 0x10 + 0x6]>,
     interner: intern::Interner,
+    invariant_lifetime: PhantomData<&'e mut &'e ()>,
 }
+
+/// Convenience alias for `OperandContext` reference that avoids having to
+/// type the `'e` lifetime twice.
+pub type OperandCtx<'e> = &'e OperandContext<'e>;
 
 /// Represents an Operand<'e> stored in OperandContext.
 /// Rust doesn't allow this sort of setup without unsafe code,
@@ -267,7 +273,7 @@ impl OperandSelfRef {
     }
 
     unsafe fn cast<'e>(self) -> Operand<'e> {
-        Operand(&*(self.0 as *const OperandBase<'e>))
+        Operand(&*(self.0 as *const OperandBase<'e>), PhantomData)
     }
 }
 
@@ -276,7 +282,8 @@ impl OperandSelfRef {
 /// Actually accessing the operand requires calling `operand()`, which
 /// gives the operand with lifetime bound to this struct.
 pub struct SelfOwnedOperand {
-    ctx: OperandContext,
+    #[allow(dead_code)]
+    ctx: OperandContext<'static>,
     op: OperandSelfRef,
 }
 
@@ -360,9 +367,9 @@ impl<'e> Iterator for IterNoMemAddr<'e> {
 }
 
 macro_rules! operand_context_const_methods {
-    ($($name:ident, $val:expr,)*) => {
+    ($lt:lifetime, $($name:ident, $val:expr,)*) => {
         $(
-            pub fn $name<'e>(&'e self) -> Operand<'e> {
+            pub fn $name(&$lt self) -> Operand<$lt> {
                 self.constant($val)
             }
         )*
@@ -384,50 +391,51 @@ pub fn check_tls_simplification_incomplete() -> bool {
     SIMPLIFICATION_INCOMPLETE.with(|x| x.replace(false))
 }
 
-impl OperandContext {
-    pub fn new() -> OperandContext {
+impl<'e> OperandContext<'e> {
+    pub fn new() -> OperandContext<'e> {
         use std::ptr::null_mut;
         let common_operands = Box::new([OperandSelfRef(null_mut()); 0x41 + 0x10 + 0x6]);
-        let mut result = OperandContext {
+        let mut result: OperandContext<'e> = OperandContext {
             next_undefined: Cell::new(0),
             common_operands,
             interner: intern::Interner::new(),
+            invariant_lifetime: PhantomData,
         };
         for i in 0..0x41 {
             result.common_operands[i] =
-                result.intern(OperandType::Constant(i as u64)).self_ref();
+                result.interner.intern(OperandType::Constant(i as u64)).self_ref();
         }
         let base = 0x41;
         for i in 0..0x10 {
             result.common_operands[base + i] =
-                result.intern(OperandType::Register(Register(i as u8))).self_ref();
+                result.interner.intern(OperandType::Register(Register(i as u8))).self_ref();
         }
         let base = 0x41 + 0x10;
         result.common_operands[base + 0] =
-            result.intern(OperandType::Flag(Flag::Zero)).self_ref();
+            result.interner.intern(OperandType::Flag(Flag::Zero)).self_ref();
         result.common_operands[base + 1] =
-            result.intern(OperandType::Flag(Flag::Carry)).self_ref();
+            result.interner.intern(OperandType::Flag(Flag::Carry)).self_ref();
         result.common_operands[base + 2] =
-            result.intern(OperandType::Flag(Flag::Overflow)).self_ref();
+            result.interner.intern(OperandType::Flag(Flag::Overflow)).self_ref();
         result.common_operands[base + 3] =
-            result.intern(OperandType::Flag(Flag::Parity)).self_ref();
+            result.interner.intern(OperandType::Flag(Flag::Parity)).self_ref();
         result.common_operands[base + 4] =
-            result.intern(OperandType::Flag(Flag::Sign)).self_ref();
+            result.interner.intern(OperandType::Flag(Flag::Sign)).self_ref();
         result.common_operands[base + 5] =
-            result.intern(OperandType::Flag(Flag::Direction)).self_ref();
+            result.interner.intern(OperandType::Flag(Flag::Direction)).self_ref();
         result
     }
 
     /// Returns a struct that is used in conjuction with serde's `deserialize_seed` functions
     /// to allocate deserialized operands with lifetime of this `OperandContext`.
     #[cfg(feature = "serde")]
-    pub fn deserialize_seed<'e>(&'e self) -> DeserializeOperand<'e> {
+    pub fn deserialize_seed(&'e self) -> DeserializeOperand<'e> {
         DeserializeOperand(self)
     }
 
     /// Copies an operand referring to some other OperandContext to this OperandContext
     /// and returns the copied reference.
-    pub fn copy_operand<'e, 'other>(&'e self, op: Operand<'other>) -> Operand<'e> {
+    pub fn copy_operand<'other>(&'e self, op: Operand<'other>) -> Operand<'e> {
         let ty = match *op.ty() {
             OperandType::Register(reg) => OperandType::Register(reg),
             OperandType::Xmm(a, b) => OperandType::Xmm(a, b),
@@ -460,6 +468,7 @@ impl OperandContext {
     }
 
     operand_context_const_methods! {
+        'e,
         const_0, 0x0,
         const_1, 0x1,
         const_2, 0x2,
@@ -479,11 +488,11 @@ impl OperandContext {
         const_ffffffff, 0xffffffff,
     }
 
-    fn intern<'e>(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+    fn intern(&'e self, ty: OperandType<'e>) -> Operand<'e> {
         self.interner.intern(ty)
     }
 
-    pub fn new_undef<'e>(&'e self) -> Operand<'e> {
+    pub fn new_undef(&'e self) -> Operand<'e> {
         // TODO Could just have undefined be on a vector (-like collection which gives stable
         // addresses)
         let id = self.next_undefined.get();
@@ -491,40 +500,40 @@ impl OperandContext {
         self.intern(OperandType::Undefined(UndefinedId(id)))
     }
 
-    pub fn flag_z<'e>(&'e self) -> Operand<'e> {
+    pub fn flag_z(&'e self) -> Operand<'e> {
         self.flag(Flag::Zero)
     }
 
-    pub fn flag_c<'e>(&'e self) -> Operand<'e> {
+    pub fn flag_c(&'e self) -> Operand<'e> {
         self.flag(Flag::Carry)
     }
 
-    pub fn flag_o<'e>(&'e self) -> Operand<'e> {
+    pub fn flag_o(&'e self) -> Operand<'e> {
         self.flag(Flag::Overflow)
     }
 
-    pub fn flag_s<'e>(&'e self) -> Operand<'e> {
+    pub fn flag_s(&'e self) -> Operand<'e> {
         self.flag(Flag::Sign)
     }
 
-    pub fn flag_p<'e>(&'e self) -> Operand<'e> {
+    pub fn flag_p(&'e self) -> Operand<'e> {
         self.flag(Flag::Parity)
     }
 
-    pub fn flag_d<'e>(&'e self) -> Operand<'e> {
+    pub fn flag_d(&'e self) -> Operand<'e> {
         self.flag(Flag::Direction)
     }
 
-    pub fn flag<'e>(&'e self, flag: Flag) -> Operand<'e> {
+    pub fn flag(&'e self, flag: Flag) -> Operand<'e> {
         self.flag_by_index(flag as usize)
     }
 
-    pub(crate) fn flag_by_index<'e>(&'e self, index: usize) -> Operand<'e> {
+    pub(crate) fn flag_by_index(&'e self, index: usize) -> Operand<'e> {
         assert!(index < 6);
         unsafe { self.common_operands[0x41 + 0x10 + index as usize].cast() }
     }
 
-    pub fn register<'e>(&'e self, index: u8) -> Operand<'e> {
+    pub fn register(&'e self, index: u8) -> Operand<'e> {
         if index <= 0x10 {
             unsafe { self.common_operands[0x41 + index as usize].cast() }
         } else {
@@ -532,23 +541,23 @@ impl OperandContext {
         }
     }
 
-    pub fn register_ref<'e>(&'e self, index: u8) -> Operand<'e> {
+    pub fn register_ref(&'e self, index: u8) -> Operand<'e> {
         self.register(index)
     }
 
-    pub fn register_fpu<'e>(&'e self, index: u8) -> Operand<'e> {
+    pub fn register_fpu(&'e self, index: u8) -> Operand<'e> {
         self.intern(OperandType::Fpu(index))
     }
 
-    pub fn xmm<'e>(&'e self, num: u8, word: u8) -> Operand<'e> {
+    pub fn xmm(&'e self, num: u8, word: u8) -> Operand<'e> {
         self.intern(OperandType::Xmm(num, word))
     }
 
-    pub fn custom<'e>(&'e self, value: u32) -> Operand<'e> {
+    pub fn custom(&'e self, value: u32) -> Operand<'e> {
         self.intern(OperandType::Custom(value))
     }
 
-    pub fn constant<'e>(&'e self, value: u64) -> Operand<'e> {
+    pub fn constant(&'e self, value: u64) -> Operand<'e> {
         if value <= 0x40 {
             unsafe { self.common_operands[value as usize].cast() }
         } else {
@@ -557,13 +566,13 @@ impl OperandContext {
     }
 
     /// Returns operand limited to low `size` bits
-    pub fn truncate<'e>(&'e self, operand: Operand<'e>, size: u8) -> Operand<'e> {
+    pub fn truncate(&'e self, operand: Operand<'e>, size: u8) -> Operand<'e> {
         let high = 64 - size;
         let mask = !0u64 << high >> high;
         self.and_const(operand, mask)
     }
 
-    pub fn arithmetic<'e>(
+    pub fn arithmetic(
         &'e self,
         ty: ArithOpType,
         left: Operand<'e>,
@@ -573,7 +582,7 @@ impl OperandContext {
         simplify::simplify_arith(left, right, ty, self, &mut simplify)
     }
 
-    pub fn f32_arithmetic<'e>(
+    pub fn f32_arithmetic(
         &'e self,
         ty: ArithOpType,
         left: Operand<'e>,
@@ -591,28 +600,28 @@ impl OperandContext {
     /// Returns `Operand` for `left + right`.
     ///
     /// The returned value is simplified.
-    pub fn add<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn add(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         simplify::simplify_add_sub(left, right, false, self)
     }
 
     /// Returns `Operand` for `left - right`.
     ///
     /// The returned value is simplified.
-    pub fn sub<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn sub(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         simplify::simplify_add_sub(left, right, true, self)
     }
 
     /// Returns `Operand` for `left * right`.
     ///
     /// The returned value is simplified.
-    pub fn mul<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn mul(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         simplify::simplify_mul(left, right, self)
     }
 
     /// Returns `Operand` for signed `left * right`.
     ///
     /// The returned value is simplified.
-    pub fn signed_mul<'e>(
+    pub fn signed_mul(
         &'e self,
         left: Operand<'e>,
         right: Operand<'e>,
@@ -625,21 +634,21 @@ impl OperandContext {
     /// Returns `Operand` for `left / right`.
     ///
     /// The returned value is simplified.
-    pub fn div<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn div(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         self.arithmetic(ArithOpType::Div, left, right)
     }
 
     /// Returns `Operand` for `left % right`.
     ///
     /// The returned value is simplified.
-    pub fn modulo<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn modulo(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         self.arithmetic(ArithOpType::Modulo, left, right)
     }
 
     /// Returns `Operand` for `left & right`.
     ///
     /// The returned value is simplified.
-    pub fn and<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn and(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_and(left, right, self, &mut simplify)
     }
@@ -647,7 +656,7 @@ impl OperandContext {
     /// Returns `Operand` for `left | right`.
     ///
     /// The returned value is simplified.
-    pub fn or<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn or(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_or(left, right, self, &mut simplify)
     }
@@ -655,7 +664,7 @@ impl OperandContext {
     /// Returns `Operand` for `left ^ right`.
     ///
     /// The returned value is simplified.
-    pub fn xor<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn xor(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_xor(left, right, self, &mut simplify)
     }
@@ -663,7 +672,7 @@ impl OperandContext {
     /// Returns `Operand` for `left << right`.
     ///
     /// The returned value is simplified.
-    pub fn lsh<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn lsh(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_lsh(left, right, self, &mut simplify)
     }
@@ -671,7 +680,7 @@ impl OperandContext {
     /// Returns `Operand` for `left >> right`.
     ///
     /// The returned value is simplified.
-    pub fn rsh<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn rsh(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_rsh(left, right, self, &mut simplify)
     }
@@ -679,28 +688,28 @@ impl OperandContext {
     /// Returns `Operand` for `left == right`.
     ///
     /// The returned value is simplified.
-    pub fn eq<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn eq(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         simplify::simplify_eq(left, right, self)
     }
 
     /// Returns `Operand` for `left != right`.
     ///
     /// The returned value is simplified.
-    pub fn neq<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn neq(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         self.eq_const(self.eq(left, right), 0)
     }
 
     /// Returns `Operand` for unsigned `left > right`.
     ///
     /// The returned value is simplified.
-    pub fn gt<'e>(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+    pub fn gt(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         self.arithmetic(ArithOpType::GreaterThan, left, right)
     }
 
     /// Returns `Operand` for signed `left > right`.
     ///
     /// The returned value is simplified.
-    pub fn gt_signed<'e>(
+    pub fn gt_signed(
         &'e self,
         left: Operand<'e>,
         right: Operand<'e>,
@@ -733,7 +742,7 @@ impl OperandContext {
     /// Returns `Operand` for `left + right`.
     ///
     /// The returned value is simplified.
-    pub fn add_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn add_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         simplify::simplify_add_sub(left, right, false, self)
     }
@@ -741,7 +750,7 @@ impl OperandContext {
     /// Returns `Operand` for `left - right`.
     ///
     /// The returned value is simplified.
-    pub fn sub_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn sub_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         simplify::simplify_add_sub(left, right, true, self)
     }
@@ -749,7 +758,7 @@ impl OperandContext {
     /// Returns `Operand` for `left - right`.
     ///
     /// The returned value is simplified.
-    pub fn sub_const_left<'e>(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
+    pub fn sub_const_left(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
         let left = self.constant(left);
         simplify::simplify_add_sub(left, right, true, self)
     }
@@ -757,7 +766,7 @@ impl OperandContext {
     /// Returns `Operand` for `left * right`.
     ///
     /// The returned value is simplified.
-    pub fn mul_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn mul_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         simplify::simplify_mul(left, right, self)
     }
@@ -765,7 +774,7 @@ impl OperandContext {
     /// Returns `Operand` for `left & right`.
     ///
     /// The returned value is simplified.
-    pub fn and_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn and_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_and(left, right, self, &mut simplify)
@@ -774,7 +783,7 @@ impl OperandContext {
     /// Returns `Operand` for `left | right`.
     ///
     /// The returned value is simplified.
-    pub fn or_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn or_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_or(left, right, self, &mut simplify)
@@ -783,7 +792,7 @@ impl OperandContext {
     /// Returns `Operand` for `left ^ right`.
     ///
     /// The returned value is simplified.
-    pub fn xor_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn xor_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_xor(left, right, self, &mut simplify)
@@ -792,7 +801,7 @@ impl OperandContext {
     /// Returns `Operand` for `left << right`.
     ///
     /// The returned value is simplified.
-    pub fn lsh_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn lsh_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_lsh(left, right, self, &mut simplify)
@@ -801,7 +810,7 @@ impl OperandContext {
     /// Returns `Operand` for `left << right`.
     ///
     /// The returned value is simplified.
-    pub fn lsh_const_left<'e>(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
+    pub fn lsh_const_left(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
         let left = self.constant(left);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_lsh(left, right, self, &mut simplify)
@@ -810,7 +819,7 @@ impl OperandContext {
     /// Returns `Operand` for `left >> right`.
     ///
     /// The returned value is simplified.
-    pub fn rsh_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn rsh_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_rsh(left, right, self, &mut simplify)
@@ -818,8 +827,8 @@ impl OperandContext {
 
     /// Returns `Operand` for `left == right`.
     ///
-    /// <'e>(&'e returned value is simplified.
-    pub fn eq_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    /// The returned value is simplified.
+    pub fn eq_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         simplify::simplify_eq(left, right, self)
     }
@@ -827,7 +836,7 @@ impl OperandContext {
     /// Returns `Operand` for `left != right`.
     ///
     /// The returned value is simplified.
-    pub fn neq_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn neq_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         self.eq_const(self.eq(left, right), 0)
     }
@@ -835,7 +844,7 @@ impl OperandContext {
     /// Returns `Operand` for unsigned `left > right`.
     ///
     /// The returned value is simplified.
-    pub fn gt_const<'e>(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
+    pub fn gt_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
         self.gt(left, right)
     }
@@ -843,28 +852,28 @@ impl OperandContext {
     /// Returns `Operand` for unsigned `left > right`.
     ///
     /// The returned value is simplified.
-    pub fn gt_const_left<'e>(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
+    pub fn gt_const_left(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
         let left = self.constant(left);
         self.gt(left, right)
     }
 
-    pub fn mem64<'e>(&'e self, val: Operand<'e>) -> Operand<'e> {
+    pub fn mem64(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem64, val)
     }
 
-    pub fn mem32<'e>(&'e self, val: Operand<'e>) -> Operand<'e> {
+    pub fn mem32(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem32, val)
     }
 
-    pub fn mem16<'e>(&'e self, val: Operand<'e>) -> Operand<'e> {
+    pub fn mem16(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem16, val)
     }
 
-    pub fn mem8<'e>(&'e self, val: Operand<'e>) -> Operand<'e> {
+    pub fn mem8(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem8, val)
     }
 
-    pub fn mem_variable_rc<'e>(&'e self, size: MemAccessSize, addr: Operand<'e>) -> Operand<'e> {
+    pub fn mem_variable_rc(&'e self, size: MemAccessSize, addr: Operand<'e>) -> Operand<'e> {
         let ty = OperandType::Memory(MemAccess {
             address: addr,
             size,
@@ -872,7 +881,7 @@ impl OperandContext {
         self.intern(ty)
     }
 
-    pub fn sign_extend<'e>(
+    pub fn sign_extend(
         &'e self,
         val: Operand<'e>,
         from: MemAccessSize,
@@ -881,13 +890,13 @@ impl OperandContext {
         simplify::simplify_sign_extend(val, from, to, self)
     }
 
-    pub fn transform<'e, F>(&'e self, oper: Operand<'e>, mut f: F) -> Operand<'e>
+    pub fn transform<F>(&'e self, oper: Operand<'e>, mut f: F) -> Operand<'e>
     where F: FnMut(Operand<'e>) -> Option<Operand<'e>>
     {
         self.transform_internal(oper, &mut f)
     }
 
-    fn transform_internal<'e, F>(&'e self, oper: Operand<'e>, f: &mut F) -> Operand<'e>
+    fn transform_internal<F>(&'e self, oper: Operand<'e>, f: &mut F) -> Operand<'e>
     where F: FnMut(Operand<'e>) -> Option<Operand<'e>>
     {
         if let Some(val) = f(oper) {
@@ -915,7 +924,7 @@ impl OperandContext {
         }
     }
 
-    pub fn substitute<'e>(
+    pub fn substitute(
         &'e self,
         oper: Operand<'e>,
         val: Operand<'e>,
@@ -1143,7 +1152,13 @@ impl<'e> Operand<'e> {
     /// refers to will be copied there, the operation can be relatively slow.
     pub fn to_self_owned(self) -> SelfOwnedOperand {
         let ctx = OperandContext::new();
-        let op = ctx.copy_operand(self).self_ref();
+        // Somewhat weird but  as SelfOwnedOperand's point is not to have a lifetime dependency,
+        // it has OperandContext<'static>. However, calling copy_operand here would mean
+        // that there has to be &'static OperandContext<'static> which cannot be this local
+        // variable that's being returned, so transmute it to have arbitrary different lifetime
+        // for this call.
+        let op = unsafe { std::mem::transmute::<_, OperandCtx<'_>>(&ctx) }
+            .copy_operand(self).self_ref();
         SelfOwnedOperand {
             ctx,
             op,
@@ -1164,7 +1179,7 @@ impl<'e> Operand<'e> {
     ///
     /// TODO May be good to have this generate and-const masks a lot?
     #[cfg(feature = "fuzz")]
-    pub fn from_fuzz_bytes(ctx: &'e OperandContext, bytes: &mut &[u8]) -> Option<Operand<'e>> {
+    pub fn from_fuzz_bytes(ctx: OperandCtx<'e>, bytes: &mut &[u8]) -> Option<Operand<'e>> {
         let read_u8 = |bytes: &mut &[u8]| -> Option<u8> {
             let &val = bytes.get(0)?;
             *bytes = &bytes[1..];
@@ -1277,7 +1292,7 @@ impl<'e> Operand<'e> {
 
     pub fn const_offset(
         oper: Operand<'e>,
-        ctx: &'e OperandContext,
+        ctx: OperandCtx<'e>,
     ) -> Option<(Operand<'e>, u64)> {
         // TODO: Investigate if this should be in `recurse`
         if let Some(c) = oper.if_constant() {
@@ -1505,10 +1520,6 @@ impl SelfOwnedOperand {
     pub fn operand(&self) -> Operand<'_> {
         unsafe { self.op.cast() }
     }
-
-    pub fn ctx(&self) -> &OperandContext {
-        &self.ctx
-    }
 }
 
 impl fmt::Debug for SelfOwnedOperand {
@@ -1599,3 +1610,36 @@ mod test {
         assert_eq!(seen.len(), opers.len());
     }
 }
+
+/// ```compile_fail
+/// use scarf::{OperandCtx, OperandContext};
+/// fn x<'e>(ctx: OperandCtx<'e>) {
+///     let a = ctx.constant(1);
+///     let ctx2 = OperandContext::new();
+///     let b = ctx2.constant(2);
+///     let sum = ctx.add(a, b);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use scarf::{OperandCtx, OperandContext};
+/// fn x<'e>(ctx: OperandCtx<'e>) {
+///     let a = ctx.constant(1);
+///     let ctx2 = OperandContext::new();
+///     let b = ctx2.constant(2);
+///     let sum = ctx2.add(a, b);
+/// }
+/// ```
+///
+/// A passing test in similar form as the above ones to make sure
+/// the code doesn't fail for unrelated reasons.
+/// ```
+/// use scarf::{OperandCtx, OperandContext};
+/// fn x<'e>(ctx: OperandCtx<'e>) {
+///     let a = ctx.constant(1);
+///     let b = ctx.constant(2);
+///     let sum = ctx.add(a, b);
+/// }
+/// ```
+#[cfg(doctest)]
+extern {}

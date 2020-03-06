@@ -3,10 +3,10 @@ use std::io::{self, Write};
 
 use crate::cfg::{Cfg, CfgState, CfgOutEdges, NodeLink};
 use crate::exec_state::VirtualAddress;
-use crate::operand::{ArithOpType, MemAccessSize, Operand, OperandType, OperandContext};
+use crate::operand::{ArithOpType, MemAccessSize, Operand, OperandType, OperandCtx};
 
 pub fn write<'e, W: Write, S: CfgState>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     cfg: &mut Cfg<'e, S>,
     out: &mut W,
 ) -> Result<(), io::Error> {
@@ -149,7 +149,7 @@ fn compare_size<'e>(a: Operand<'e>, b: Operand<'e>) -> MemAccessSize {
 /// Returned value has bitwise and masks removed from left/right,
 /// using `size` field to show what they were.
 fn comparision_from_operand<'e>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     oper: Operand<'e>,
 ) -> Option<ComparisionGuess<'e>> {
     match oper.ty() {
@@ -389,7 +389,7 @@ fn check_signed_lt_zero(
 }
 
 fn zero_flag_check<'e>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     comp: Comparision,
     l: Operand<'e>,
     r: Operand<'e>,
@@ -415,7 +415,7 @@ fn zero_flag_check<'e>(
 /// Return CompareOperands for `x` if comp(l, r) is equivalent to `sign(x)`
 /// (`signed_less(x, 0)` or `unsigned_less(i32_max, x)`)
 fn sign_flag_check<'e>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     comp: Comparision,
     l: Operand<'e>,
     r: Operand<'e>,
@@ -453,7 +453,7 @@ fn sign_flag_check<'e>(
 }
 
 fn carry_flag_check<'e>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     comp: Comparision,
     l: Operand<'e>,
     r: Operand<'e>,
@@ -528,7 +528,7 @@ fn extract_mask_single<'e>(op: Operand<'e>) -> (Operand<'e>, MemAccessSize) {
 /// Bitwise and masks should be removed and `size` should be provided
 /// by caller.
 fn overflow_flag_check<'e>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     comp: Comparision,
     l: Operand<'e>,
     r: Operand<'e>,
@@ -653,7 +653,7 @@ enum CompareOperands<'e> {
 }
 
 impl<'e> CompareOperands<'e> {
-    fn decide(self, ctx: &'e OperandContext) -> (Operand<'e>, Operand<'e>) {
+    fn decide(self, ctx: OperandCtx<'e>) -> (Operand<'e>, Operand<'e>) {
         match self {
             CompareOperands::Certain(l, r) => (l, r),
             CompareOperands::Uncertain(mut opers) |
@@ -672,7 +672,7 @@ impl<'e> CompareOperands<'e> {
 
     fn decide_with_lhs(
         self,
-        ctx: &'e OperandContext,
+        ctx: OperandCtx<'e>,
         lhs: Operand<'e>,
     ) -> Option<(Operand<'e>, Operand<'e>)> {
         match self {
@@ -714,7 +714,7 @@ impl<'e> CompareOperands<'e> {
 }
 
 fn add_operands_to_tree<'e>(
-    ctx: &'e OperandContext,
+    ctx: OperandCtx<'e>,
     mut opers: Vec<(Operand<'e>, bool)>,
 ) -> Operand<'e> {
     let mut tree = opers.pop().map(|(op, neg)| match neg {
@@ -730,7 +730,7 @@ fn add_operands_to_tree<'e>(
     tree
 }
 
-fn compare_base_op<'e>(ctx: &'e OperandContext, op: Operand<'e>) -> CompareOperands<'e> {
+fn compare_base_op<'e>(ctx: OperandCtx<'e>, op: Operand<'e>) -> CompareOperands<'e> {
     match op.ty() {
         OperandType::Arithmetic(arith) if {
             arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub
@@ -773,7 +773,7 @@ fn collect_add_ops<'e>(s: Operand<'e>, ops: &mut Vec<(Operand<'e>, bool)>, negat
     }
 }
 
-fn pretty_print_condition<'e>(ctx: &'e OperandContext, cond: Operand<'e>) -> String {
+fn pretty_print_condition<'e>(ctx: OperandCtx<'e>, cond: Operand<'e>) -> String {
     if let Some(comp) = comparision_from_operand(ctx, cond) {
         let left = comp.left;
         let right = comp.right;
@@ -797,7 +797,7 @@ fn pretty_print_condition<'e>(ctx: &'e OperandContext, cond: Operand<'e>) -> Str
 
 #[test]
 fn recognize_compare_operands_32() {
-    let ctx = &OperandContext::new();
+    let ctx = &crate::OperandContext::new();
     let op = ctx.eq(
         ctx.constant(0),
         ctx.eq(
@@ -936,7 +936,7 @@ fn recognize_compare_operands_32() {
 
 #[test]
 fn recognize_compare_operands_64() {
-    let ctx = &OperandContext::new();
+    let ctx = &crate::OperandContext::new();
     let op = ctx.eq(
         ctx.constant(0),
         ctx.eq(
@@ -1048,7 +1048,7 @@ fn recognize_compare_operands_64() {
 
 #[test]
 fn recognize_compare_operands_unsigned() {
-    let ctx = &OperandContext::new();
+    let ctx = &crate::OperandContext::new();
     let op = ctx.or(
         ctx.eq(
             ctx.constant(0),

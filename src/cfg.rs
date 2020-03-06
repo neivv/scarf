@@ -765,7 +765,7 @@ mod test {
     }
 
     fn node2<'e>(
-        ctx: &'e OperandContext,
+        ctx: &'e OperandContext<'e>,
         addr: u32,
         out: u32,
         out2: u32,
