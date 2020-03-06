@@ -1528,6 +1528,12 @@ impl fmt::Debug for SelfOwnedOperand {
     }
 }
 
+impl Clone for SelfOwnedOperand {
+    fn clone(&self) -> Self {
+        self.operand().to_self_owned()
+    }
+}
+
 #[cfg_attr(feature = "serde", derive(Serialize))]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct MemAccess<'e> {
