@@ -277,6 +277,8 @@ impl OperandSelfRef {
     }
 }
 
+unsafe impl Send for OperandSelfRef {}
+
 /// A single operand which carries all of its data with it.
 ///
 /// Actually accessing the operand requires calling `operand()`, which
