@@ -58,7 +58,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperand<'e> {
             {
                 let ty = seq.next_element_seed(DeserializeOperandType(self.0))?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                Ok(self.0.intern(ty))
+                Ok(ty)
             }
 
             fn visit_map<V>(self, mut map: V) -> Result<Self::Value, V::Error>
@@ -76,7 +76,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperand<'e> {
                     }
                 }
                 let ty = ty.ok_or_else(|| de::Error::missing_field("ty"))?;
-                Ok(self.0.intern(ty))
+                Ok(ty)
             }
         }
         deserializer.deserialize_struct("Operand", FIELDS, OperandVisitor(self.0))
@@ -84,7 +84,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperand<'e> {
 }
 
 impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
-    type Value = OperandType<'e>;
+    type Value = Operand<'e>;
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         const VARIANTS: &[&str] = &[
@@ -208,42 +208,65 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
         struct OperandTypeVisitor<'e>(OperandCtx<'e>);
 
         impl<'de, 'e> Visitor<'de> for OperandTypeVisitor<'e> {
-            type Value = OperandType<'e>;
+            type Value = Operand<'e>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("enum OperandType")
             }
 
-            fn visit_enum<V>(self, e: V) -> Result<OperandType<'e>, V::Error>
+            fn visit_enum<V>(self, e: V) -> Result<Operand<'e>, V::Error>
                 where V: EnumAccess<'de>
             {
                 let (variant, v) = e.variant()?;
                 match variant {
-                    Variant::Register => Ok(OperandType::Register(v.newtype_variant()?)),
-                    Variant::Fpu => Ok(OperandType::Fpu(v.newtype_variant()?)),
-                    Variant::Flag => Ok(OperandType::Flag(v.newtype_variant()?)),
-                    Variant::Constant => Ok(OperandType::Constant(v.newtype_variant()?)),
-                    Variant::Undefined => Ok(OperandType::Undefined(v.newtype_variant()?)),
-                    Variant::Custom => Ok(OperandType::Custom(v.newtype_variant()?)),
+                    Variant::Register => {
+                        let r: super::Register = v.newtype_variant()?;
+                        Ok(self.0.register(r.0))
+                    }
+                    Variant::Fpu => {
+                        let r: u8 = v.newtype_variant()?;
+                        Ok(self.0.register_fpu(r))
+                    }
+                    Variant::Flag => {
+                        let flag = v.newtype_variant()?;
+                        Ok(self.0.flag(flag))
+                    }
+                    Variant::Constant => {
+                        let c = v.newtype_variant()?;
+                        Ok(self.0.constant(c))
+                    }
+                    Variant::Undefined => {
+                        // TODO: Not sure if undefined should deserialize to given id
+                        // or if this only should guarantee that two undefs with same id
+                        // in input are serialized to a new but same id.
+                        //
+                        // For now this returns what id was serialized.
+                        let ty = OperandType::Undefined(v.newtype_variant()?);
+                        Ok(self.0.intern(ty))
+                    }
+                    Variant::Custom => {
+                        let c = v.newtype_variant()?;
+                        Ok(self.0.custom(c))
+                    }
                     Variant::Xmm => {
                         let (a, b) = v.tuple_variant(2, XmmVisitor)?;
-                        Ok(OperandType::Xmm(a, b))
+                        Ok(self.0.xmm(a, b))
                     }
                     Variant::Memory => {
                         let mem = v.newtype_variant_seed(DeserializeMemory(self.0))?;
-                        Ok(OperandType::Memory(mem))
+                        Ok(self.0.mem_variable_rc(mem.size, mem.address))
                     }
                     Variant::Arithmetic | Variant::ArithmeticF32 => {
                         let arith = v.newtype_variant_seed(DeserializeArith(self.0))?;
-                        if let Variant::Arithmetic = variant {
-                            Ok(OperandType::Arithmetic(arith))
+                        return if let Variant::Arithmetic = variant {
+                            Ok(self.0.arithmetic(arith.ty, arith.left, arith.right))
                         } else {
-                            Ok(OperandType::ArithmeticF32(arith))
-                        }
+                            Ok(self.0.f32_arithmetic(arith.ty, arith.left, arith.right))
+                        };
                     }
                     Variant::SignExtend => {
                         let (a, b, c) = v.tuple_variant(3, SextVisitor(self.0))?;
-                        Ok(OperandType::SignExtend(a, b, c))
+                        Ok(self.0.sign_extend(a, b, c))
                     }
                 }
             }

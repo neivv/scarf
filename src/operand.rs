@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::bit_misc::{bits_overlap};
 
 #[derive(Copy, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", derive(Serialize), serde(transparent))]
 pub struct Operand<'e>(&'e OperandBase<'e>, PhantomData<&'e mut &'e ()>);
 
 /// Wrapper around `Operand` which implements `Hash` on the interned address.
@@ -1582,11 +1582,13 @@ pub enum Flag {
 
 #[cfg(test)]
 mod test {
+    use super::*;
+
     #[test]
     fn operand_iter() {
         use std::collections::HashSet;
 
-        let ctx = super::OperandContext::new();
+        let ctx = OperandContext::new();
         let oper = ctx.and(
             ctx.sub(
                 ctx.constant(1),
@@ -1608,14 +1610,89 @@ mod test {
         ];
         let mut seen = HashSet::new();
         for o in oper.iter() {
-            let o = super::OperandHashByAddress(o);
+            let o = OperandHashByAddress(o);
             assert!(!seen.contains(&o));
             seen.insert(o);
         }
         for &o in &opers {
-            assert!(seen.contains(&super::OperandHashByAddress(o)), "Didn't find {}", o);
+            assert!(seen.contains(&OperandHashByAddress(o)), "Didn't find {}", o);
         }
         assert_eq!(seen.len(), opers.len());
+    }
+
+    #[test]
+    fn serialize_json() {
+        use serde::de::DeserializeSeed;
+        let ctx = &OperandContext::new();
+        let op = ctx.and(
+            ctx.register(6),
+            ctx.mem32(
+                ctx.sub(
+                    ctx.constant(6),
+                    ctx.register(3),
+                ),
+            ),
+        );
+        let json = serde_json::to_string(&op).unwrap();
+        let mut des = serde_json::Deserializer::from_str(&json);
+        let op2: Operand<'_> = ctx.deserialize_seed().deserialize(&mut des).unwrap();
+        assert_eq!(op, op2);
+    }
+
+    #[test]
+    fn serialize_json_fmt() {
+        use serde::de::DeserializeSeed;
+        // Verify that JSON serialization is stable to this
+        // (Other details may not necessarily be)
+        let json = r#"{
+            "ty": {
+                "Arithmetic": {
+                    "ty": "And",
+                    "left": {
+                        "ty": {
+                            "Register": 6
+                        }
+                    },
+                    "right": {
+                        "ty": {
+                            "Memory": {
+                                "address": {
+                                    "ty": {
+                                        "Arithmetic": {
+                                            "ty": "Sub",
+                                            "left": {
+                                                "ty": {
+                                                    "Constant": 6
+                                                }
+                                            },
+                                            "right": {
+                                                "ty": {
+                                                    "Register": 3
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "size": "Mem32"
+                            }
+                        }
+                    }
+                }
+            }
+        }"#;
+        let ctx = &OperandContext::new();
+        let op = ctx.and(
+            ctx.register(6),
+            ctx.mem32(
+                ctx.sub(
+                    ctx.constant(6),
+                    ctx.register(3),
+                ),
+            ),
+        );
+        let mut des = serde_json::Deserializer::from_str(&json);
+        let op2: Operand<'_> = ctx.deserialize_seed().deserialize(&mut des).unwrap();
+        assert_eq!(op, op2);
     }
 }
 
