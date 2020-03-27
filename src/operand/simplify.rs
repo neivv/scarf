@@ -166,10 +166,7 @@ pub fn simplify_arith<'e>(
         ArithOpType::FloatToInt => {
             let val = left;
             if let Some(c) = val.if_constant() {
-                use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-                let mut buf = [0; 4];
-                (&mut buf[..]).write_u32::<LE>(c as u32).unwrap();
-                let float = (&buf[..]).read_f32::<LE>().unwrap();
+                let float = f32::from_bits(c as u32);
                 let overflow = float > i32::max_value() as f32 ||
                     float < i32::min_value() as f32;
                 let int = if overflow {
@@ -190,10 +187,7 @@ pub fn simplify_arith<'e>(
         ArithOpType::IntToFloat => {
             let val = left;
             if let Some(c) = val.if_constant() {
-                use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-                let mut buf = [0; 4];
-                (&mut buf[..]).write_f32::<LE>(c as i32 as f32).unwrap();
-                let float = (&buf[..]).read_u32::<LE>().unwrap();
+                let float = f32::to_bits(c as i32 as f32);
                 ctx.constant(float as u64)
             } else {
                 let ty = OperandType::Arithmetic(ArithOperand {
