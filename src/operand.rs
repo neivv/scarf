@@ -922,6 +922,14 @@ impl<'e> OperandContext<'e> {
                     self.mem_variable_rc(m.size, address)
                 }
             }
+            OperandType::SignExtend(val, from, to) => {
+                let new_val = self.transform_internal(val, f);
+                if val == new_val {
+                    oper
+                } else {
+                    self.sign_extend(new_val, from, to)
+                }
+            }
             _ => oper,
         }
     }
