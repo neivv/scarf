@@ -1355,6 +1355,14 @@ impl<'e> Operand<'e> {
         }
     }
 
+    /// Returns `Some(c)` if `self.ty` is `OperandType::Custom(c)`
+    pub fn if_custom(self) -> Option<u32> {
+        match *self.ty() {
+            OperandType::Custom(c) => Some(c),
+            _ => None,
+        }
+    }
+
     /// Returns `Some(r)` if `self.ty` is `OperandType::Register(r)`
     pub fn if_register(self) -> Option<Register> {
         match *self.ty() {
