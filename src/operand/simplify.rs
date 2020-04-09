@@ -2702,6 +2702,19 @@ fn simplify_with_and_mask_inner<'e>(
         } else {
             op
         }
+        OperandType::SignExtend(val, from, _) => {
+            let from_mask = match from {
+                MemAccessSize::Mem8 => 0xffu32,
+                MemAccessSize::Mem16 => 0xffff,
+                MemAccessSize::Mem32 => 0xffff_ffff,
+                MemAccessSize::Mem64 => return val,
+            };
+            if from_mask as u64 & mask == mask {
+                ctx.and_const(val, mask)
+            } else {
+                op
+            }
+        }
         _ => op,
     }
 }

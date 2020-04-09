@@ -4610,3 +4610,31 @@ fn masked_gt_const() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_sign_extend() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and(
+        ctx.sign_extend(
+            ctx.register(2),
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+        ),
+        ctx.constant(0xffff),
+    );
+    let eq1 = ctx.and(
+        ctx.register(2),
+        ctx.constant(0xffff),
+    );
+    let op2 = ctx.and(
+        ctx.sign_extend(
+            ctx.mem16(ctx.constant(0x100)),
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+        ),
+        ctx.constant(0xffff),
+    );
+    let eq2 = ctx.mem16(ctx.constant(0x100));
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+}
