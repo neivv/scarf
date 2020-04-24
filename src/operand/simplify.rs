@@ -198,6 +198,41 @@ pub fn simplify_arith<'e>(
                 ctx.intern(ty)
             }
         }
+        ArithOpType::DoubleToInt => {
+            let val = left;
+            if let Some(c) = val.if_constant() {
+                let float = f64::from_bits(c);
+                let overflow = float > i64::max_value() as f64 ||
+                    float < i64::min_value() as f64;
+                let int = if overflow {
+                    0x8000_0000_0000_0000
+                } else {
+                    float as i64 as u64
+                };
+                ctx.constant(int as u64)
+            } else {
+                let ty = OperandType::Arithmetic(ArithOperand {
+                    ty,
+                    left: val,
+                    right: ctx.const_0(),
+                });
+                ctx.intern(ty)
+            }
+        }
+        ArithOpType::IntToDouble => {
+            let val = left;
+            if let Some(c) = val.if_constant() {
+                let float = f64::to_bits(c as i64 as f64);
+                ctx.constant(float)
+            } else {
+                let ty = OperandType::Arithmetic(ArithOperand {
+                    ty,
+                    left: val,
+                    right: ctx.const_0(),
+                });
+                ctx.intern(ty)
+            }
+        }
         _ => {
             let ty = OperandType::Arithmetic(ArithOperand {
                 ty,

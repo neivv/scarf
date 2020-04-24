@@ -167,6 +167,8 @@ impl<'e> fmt::Display for Operand<'e> {
                     Parity => write!(f, "parity({})", l),
                     FloatToInt => write!(f, "float_to_int({})", l),
                     IntToFloat => write!(f, "int_to_float({})", l),
+                    DoubleToInt => write!(f, "double_to_int({})", l),
+                    IntToDouble => write!(f, "int_to_double({})", l),
                 }?;
                 match *self.ty() {
                     OperandType::ArithmeticF32(..) => {
@@ -231,6 +233,8 @@ pub enum ArithOpType {
     GreaterThan,
     IntToFloat,
     FloatToInt,
+    IntToDouble,
+    DoubleToInt,
 }
 
 impl<'e> ArithOperand<'e> {

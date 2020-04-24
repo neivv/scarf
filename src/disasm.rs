@@ -579,6 +579,7 @@ fn instruction_operations32_main(
         0x1c8 | 0x1c9 | 0x1ca | 0x1cb | 0x1cc | 0x1cd | 0x1ce | 0x1cf => s.bswap(),
         0x1d3 => s.packed_shift_right(),
         0x1d6 => s.mov_sse_d6(),
+        0x1e6 => s.sse_int_double_conversion(),
         0x1f3 => s.packed_shift_left(),
         _ => Err(s.unknown_opcode()),
     }
@@ -859,6 +860,7 @@ fn instruction_operations64_main(
         0x1c8 | 0x1c9 | 0x1ca | 0x1cb | 0x1cc | 0x1cd | 0x1ce | 0x1cf => s.bswap(),
         0x1d3 => s.packed_shift_right(),
         0x1d6 => s.mov_sse_d6(),
+        0x1e6 => s.sse_int_double_conversion(),
         0x1f3 => s.packed_shift_left(),
         _ => Err(s.unknown_opcode()),
     }
@@ -1189,6 +1191,16 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         } else {
             self.ctx.xmm(rm.base, i)
         }
+    }
+
+    fn rm_to_operand_xmm_64(&self, rm: &ModRm_Rm, i: u8) -> Operand<'e> {
+        self.ctx.or(
+            self.rm_to_operand_xmm(rm, i * 2),
+            self.ctx.lsh_const(
+                self.rm_to_operand_xmm(rm, i * 2 + 1),
+                0x20,
+            ),
+        )
     }
 
     fn rm_to_operand(&mut self, rm: &ModRm_Rm) -> Operand<'e> {
@@ -2123,6 +2135,45 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             rm,
             self.ctx.const_0(),
         );
+        Ok(())
+    }
+
+    fn sse_int_double_conversion(&mut self) -> Result<(), Failed> {
+        use self::operation_helpers::*;
+
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let ctx = self.ctx;
+        let zero = ctx.const_0();
+        if self.has_prefix(0xf3) {
+            // 2 i32 to 2 f64.
+            // High one first to account for rm == r
+            for i in (0..2).rev() {
+                let result_f64 = ctx.arithmetic(
+                    ArithOpType::IntToDouble,
+                    self.rm_to_operand_xmm(&rm, i),
+                    zero,
+                );
+                let high = ctx.rsh_const(result_f64, 0x20);
+                self.output(mov(r.dest_operand_xmm(i * 2 + 1), high));
+                let low = ctx.and_const(result_f64, 0xffff_ffff);
+                self.output(mov(r.dest_operand_xmm(i * 2), low));
+            }
+        } else if self.has_prefix(0xf2) {
+            // 2 f64 to 2 i32
+            for i in 0..2 {
+                self.output_arith(
+                    r.dest_operand_xmm(i),
+                    ArithOpType::DoubleToInt,
+                    self.rm_to_operand_xmm_64(&rm, i),
+                    zero,
+                );
+            }
+            for i in 2..4 {
+                self.output(mov(r.dest_operand_xmm(i), zero));
+            }
+        } else {
+            return Err(self.unknown_opcode());
+        }
         Ok(())
     }
 
