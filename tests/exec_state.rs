@@ -710,6 +710,21 @@ fn sse_i32_to_f64_2() {
 }
 
 #[test]
+fn movd_to_reg() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xc7, 0x04, 0xe4, 0x02, 0x00, 0x00, 0x00, // mov [esp], 2
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x66, 0x0f, 0x7e, 0xc0, // movd eax, xmm0
+        0x66, 0x0f, 0x7e, 0xc1, // movd ecx, xmm0
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(2)),
+         (ctx.register(1), ctx.constant(2)),
+    ]);
+}
+
+#[test]
 fn sse_f64_to_i32() {
     let ctx = &OperandContext::new();
     test_inline(&[

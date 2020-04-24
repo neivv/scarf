@@ -2319,11 +2319,12 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         use self::operation_helpers::*;
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
         let r = r.to_rm();
-        let (src, dest) = match self.read_u8(0)? {
+        let byte = self.read_u8(0)?;
+        let (src, dest) = match byte {
             0x10 | 0x28 | 0x7e | 0x13 => (&rm, &r),
             _ => (&r, &rm),
         };
-        let len = match self.read_u8(0)? {
+        let len = match byte {
             0x10 | 0x11 => match (self.has_prefix(0xf3), self.has_prefix(0xf2)) {
                 // movss
                 (true, false) => 1,
@@ -2340,8 +2341,26 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 false => return Err(self.unknown_opcode()),
             }
             0x7e => match (self.has_prefix(0xf3), Va::SIZE) {
-                (true, 4) | (_, 8) => 2,
-                (false, 4) => 1,
+                (true, 4) | (true, 8) => 2,
+                (false, 4) => {
+                    // This is special, moves to r32/mem from xmm
+                    // dest/src are intentionally swapped here since the other 0x7e
+                    // has them in this order
+                    let dest_op = self.rm_to_dest_operand(src);
+                    let src = self.rm_to_operand_xmm(dest, 0);
+                    self.output(mov(dest_op, src));
+                    return Ok(());
+                }
+                (false, 8) => {
+                    let mut src = src.clone();
+                    if self.rex_prefix() & 0x8 != 0 {
+                        src.size = RegisterSize::R64;
+                    }
+                    let dest_op = self.rm_to_dest_operand(&src);
+                    let src = self.rm_to_operand_xmm_64(dest, 0);
+                    self.output(mov(dest_op, src));
+                    return Ok(());
+                }
                 _ => unreachable!(),
             },
             0x7f => match self.has_prefix(0xf3) || self.has_prefix(0x66) {
@@ -3034,6 +3053,7 @@ fn make_f32_operation<'e>(
 struct ModRm_R(u8, RegisterSize);
 
 #[allow(bad_style)]
+#[derive(Clone)]
 struct ModRm_Rm {
     size: RegisterSize,
     /// u8::max_value signifies that this is constant base.

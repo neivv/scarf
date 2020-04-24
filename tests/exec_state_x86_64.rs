@@ -743,6 +743,22 @@ fn sse_f64_to_i32_2() {
     ]);
 }
 
+#[test]
+fn movd_to_reg() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xc7, 0x04, 0xe4, 0x02, 0x00, 0x00, 0x00, // mov [esp], 2
+        0xc7, 0x44, 0xe4, 0x04, 0x04, 0x00, 0x00, 0x00, // mov [esp + 4], 4
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x66, 0x0f, 0x7e, 0xc0, // movd eax, xmm0
+        0x66, 0x48, 0x0f, 0x7e, 0xc1, // movq rcx, xmm0
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0x2)),
+         (ctx.register(1), ctx.constant(0x4_0000_0002)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
