@@ -60,7 +60,12 @@ fn instruction_length_32(buf: &[u8]) -> usize {
             0
         }
     } else {
-        length
+        if buf.len() > 4 && &buf[..3] == &[0x66, 0x0f, 0x73] {
+            // Another lde bug
+            5
+        } else {
+            length
+        }
     }
 }
 
@@ -77,7 +82,12 @@ fn instruction_length_64(buf: &[u8]) -> usize {
             _ => 0,
         }
     } else {
-        length
+        if buf.len() > 4 && &buf[..3] == &[0x66, 0x0f, 0x73] {
+            // Another lde bug
+            5
+        } else {
+            length
+        }
     }
 }
 
@@ -535,6 +545,7 @@ fn instruction_operations32_main(
         0x15b => s.cvtdq2ps(),
         0x160 => s.punpcklbw(),
         0x16e => s.mov_sse_6e(),
+        0x173 => s.packed_shift_imm(),
         0x180 | 0x181 | 0x182 | 0x183 | 0x184 | 0x185 | 0x186 | 0x187 |
             0x188 | 0x189 | 0x18a | 0x18b | 0x18c | 0x18d | 0x18e | 0x18f =>
         {
@@ -816,6 +827,7 @@ fn instruction_operations64_main(
         0x15b => s.cvtdq2ps(),
         0x160 => s.punpcklbw(),
         0x16e => s.mov_sse_6e(),
+        0x173 => s.packed_shift_imm(),
         0x180 | 0x181 | 0x182 | 0x183 | 0x184 | 0x185 | 0x186 | 0x187 |
             0x188 | 0x189 | 0x18a | 0x18b | 0x18c | 0x18d | 0x18e | 0x18f =>
         {
@@ -2406,32 +2418,208 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
     }
 
+    fn packed_shift_imm(&mut self) -> Result<(), Failed> {
+        let byte = self.read_u8(1)?;
+        if !self.has_prefix(0x66) || byte & 0xc0 != 0xc0 {
+            return Err(self.unknown_opcode());
+        }
+        let variant = (byte >> 3) & 0x7;
+        let dest = ModRm_R(byte & 0x7, RegisterSize::R32);
+        let mut constant = self.read_u8(2)? as u64;
+        // variants 3/7 shift in bytes
+        if variant == 3 || variant == 7 {
+            constant = constant << 3;
+        }
+        let constant = self.ctx.constant(constant);
+        match variant {
+            2 => self.packed_shift_right_xmm_u64(dest, constant),
+            3 => self.packed_shift_right_xmm_u128(dest, constant),
+            6 => self.packed_shift_left_xmm_u64(dest, constant),
+            7 => self.packed_shift_left_xmm_u128(dest, constant),
+            _ => return Err(self.unknown_opcode()),
+        }
+        Ok(())
+    }
+
+    fn packed_shift_left_xmm_u64(&mut self, dest: ModRm_R, with: Operand<'e>) {
+        // let x = with & 0x1f
+        // dest.1 = (dest.1 << x) | (dest.0 >> (32 - x))
+        // dest.0 = (dest.0 << x)
+        // dest.3 = (dest.3 << x) | (dest.2 >> (32 - x))
+        // dest.2 = (dest.2 << x)
+        // let x = with & 0x20
+        // dest.1 = (dest.1 << x) | (dest.0 >> (32 - x))
+        // dest.0 = (dest.0 << x)
+        // dest.3 = (dest.3 << x) | (dest.2 >> (32 - x))
+        // dest.2 = (dest.2 << x)
+        let ctx = self.ctx;
+        let x_arr = [
+            ctx.and_const(with, 0x1f),
+            ctx.and_const(with, !0x1f),
+        ];
+        for &x in &x_arr {
+            for i in 0..2 {
+                let low_id = i * 2;
+                let high_id = low_id + 1;
+                let low = self.r_to_operand_xmm(dest, low_id);
+                let high = self.r_to_operand_xmm(dest, high_id);
+                self.output_arith(
+                    dest.dest_operand_xmm(high_id),
+                    ArithOpType::Or,
+                    ctx.lsh(high, x),
+                    ctx.rsh(low, ctx.sub_const_left(0x20, x)),
+                );
+                self.output_lsh(self.r_to_dest_and_operand_xmm(dest, low_id), x);
+            }
+        }
+    }
+
+    fn packed_shift_left_xmm_u128(&mut self, dest: ModRm_R, with: Operand<'e>) {
+        // let x = with & 0x1f
+        // dest.3 = (dest.3 << x) | (dest.2 >> (32 - x))
+        // dest.2 = (dest.2 << x) | (dest.1 >> (32 - x))
+        // dest.1 = (dest.1 << x) | (dest.0 >> (32 - x))
+        // dest.0 = (dest.0 << x)
+        // let x = with & 0x20
+        // dest.3 = (dest.3 << x) | (dest.2 >> (32 - x))
+        // dest.2 = (dest.2 << x) | (dest.1 >> (32 - x))
+        // dest.1 = (dest.1 << x) | (dest.0 >> (32 - x))
+        // dest.0 = (dest.0 << x)
+        // (The following is done twice)
+        // let x = (with & 0xffff_ffc0) >> 1
+        // dest.3 = (dest.3 << x) | (dest.2 >> (32 - x))
+        // dest.2 = (dest.2 << x) | (dest.1 >> (32 - x))
+        // dest.1 = (dest.1 << x) | (dest.0 >> (32 - x))
+        // dest.0 = (dest.0 << x)
+        let ctx = self.ctx;
+        let high_bits = ctx.rsh_const(
+            ctx.and_const(
+                with,
+                !0x3f,
+            ),
+            0x1,
+        );
+        let x_arr = [
+            ctx.and_const(with, 0x1f),
+            ctx.and_const(with, 0x20),
+            high_bits,
+        ];
+        let dest_zero = self.r_to_dest_and_operand_xmm(dest, 0);
+        let dests = [
+            dest.dest_operand_xmm(1),
+            dest.dest_operand_xmm(2),
+            dest.dest_operand_xmm(3),
+        ];
+        let ops = [
+            self.r_to_operand_xmm(dest, 0),
+            self.r_to_operand_xmm(dest, 1),
+            self.r_to_operand_xmm(dest, 2),
+            self.r_to_operand_xmm(dest, 3),
+        ];
+        for &x in &x_arr {
+            for i in (1..4).rev() {
+                self.output_arith(
+                    dests[i - 1].clone(),
+                    ArithOpType::Or,
+                    ctx.lsh(ops[i], x),
+                    ctx.rsh(ops[i - 1], ctx.sub_const_left(0x20, x)),
+                );
+            }
+            self.output_lsh(dest_zero.clone(), x);
+        }
+        for _ in 0..4 {
+            let val = self.out[self.out.len() - 4].clone();
+            self.output(val);
+        }
+    }
+
+    fn packed_shift_right_xmm_u64(&mut self, dest: ModRm_R, with: Operand<'e>) {
+        // let x = with & 0x1f
+        // dest.0 = (dest.0 >> x) | (dest.1 << (32 - x))
+        // dest.1 = (dest.1 >> x)
+        // dest.2 = (dest.2 >> x) | (dest.3 << (32 - x))
+        // dest.3 = (dest.3 >> x)
+        // ...
+        let ctx = self.ctx;
+        let x_arr = [
+            ctx.and_const(with, 0x1f),
+            ctx.and_const(with, !0x1f),
+        ];
+        for &x in &x_arr {
+            for i in 0..2 {
+                let low_id = i * 2;
+                let high_id = low_id + 1;
+                let low = self.r_to_operand_xmm(dest, low_id);
+                let high = self.r_to_operand_xmm(dest, high_id);
+                self.output_arith(
+                    dest.dest_operand_xmm(low_id),
+                    ArithOpType::Or,
+                    ctx.rsh(low, x),
+                    ctx.lsh(high, ctx.sub_const_left(0x20, x)),
+                );
+                self.output_rsh(self.r_to_dest_and_operand_xmm(dest, high_id), x);
+            }
+        }
+    }
+
+    fn packed_shift_right_xmm_u128(&mut self, dest: ModRm_R, with: Operand<'e>) {
+        // let x = with & 0x1f
+        // dest.0 = (dest.0 >> x) | (dest.1 << (32 - x))
+        // dest.1 = (dest.1 >> x) | (dest.2 << (32 - x))
+        // dest.2 = (dest.2 >> x) | (dest.3 << (32 - x))
+        // dest.3 = (dest.3 >> x)
+        // let x = with & 0x20
+        // ...
+        let ctx = self.ctx;
+        let high_bits = ctx.rsh_const(
+            ctx.and_const(
+                with,
+                !0x3f,
+            ),
+            0x1,
+        );
+        let x_arr = [
+            ctx.and_const(with, 0x1f),
+            ctx.and_const(with, 0x20),
+            high_bits,
+        ];
+        let dest_three = self.r_to_dest_and_operand_xmm(dest, 3);
+        let dests = [
+            dest.dest_operand_xmm(0),
+            dest.dest_operand_xmm(1),
+            dest.dest_operand_xmm(2),
+        ];
+        let ops = [
+            self.r_to_operand_xmm(dest, 0),
+            self.r_to_operand_xmm(dest, 1),
+            self.r_to_operand_xmm(dest, 2),
+            self.r_to_operand_xmm(dest, 3),
+        ];
+        for &x in &x_arr {
+            for i in 0..3 {
+                self.output_arith(
+                    dests[i].clone(),
+                    ArithOpType::Or,
+                    ctx.rsh(ops[i], x),
+                    ctx.lsh(ops[i + 1], ctx.sub_const_left(0x20, x)),
+                );
+            }
+            self.output_rsh(dest_three.clone(), x);
+        }
+        for _ in 0..4 {
+            let val = self.out[self.out.len() - 4].clone();
+            self.output(val);
+        }
+    }
+
     fn packed_shift_left(&mut self) -> Result<(), Failed> {
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
         }
-        let ctx = self.ctx;
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
-        // dest.1 = (dest.1 << rm.0) | (dest.0 >> (32 - rm.0))
-        // shl dest.0, rm.0
-        // dest.3 = (dest.3 << rm.0) | (dest.2 >> (32 - rm.0))
-        // shl dest.2, rm.0
         // Zero everything if rm.1 is set
         let rm_0 = self.rm_to_operand_xmm(&rm, 0);
-        for i in 0..2 {
-            let low_id = i * 2;
-            let high_id = low_id + 1;
-            let low = self.r_to_operand_xmm(dest, low_id);
-            let high = self.r_to_operand_xmm(dest, high_id);
-            self.output_arith(
-                dest.dest_operand_xmm(high_id),
-                ArithOpType::Or,
-                ctx.lsh(high, rm_0),
-                ctx.rsh(low, ctx.sub_const_left(0x20, rm_0)),
-            );
-            self.output_lsh(self.r_to_dest_and_operand_xmm(dest, low_id), rm_0);
-        }
-
+        self.packed_shift_left_xmm_u64(dest, rm_0);
         self.zero_xmm_if_rm1_nonzer0(&rm, dest);
         Ok(())
     }
@@ -2440,28 +2628,10 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
         }
-        let ctx = self.ctx;
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
         let rm_0 = self.rm_to_operand_xmm(&rm, 0);
-        // dest.0 = (dest.0 >> rm.0) | (dest.1 << (32 - rm.0))
-        // shr dest.1, rm.0
-        // dest.2 = (dest.2 >> rm.0) | (dest.3 << (32 - rm.0))
-        // shr dest.3, rm.0
         // Zero everything if rm.1 is set
-        for i in 0..2 {
-            let low_id = i * 2;
-            let high_id = low_id + 1;
-            let low = self.r_to_operand_xmm(dest, low_id);
-            let high = self.r_to_operand_xmm(dest, high_id);
-            self.output_arith(
-                dest.dest_operand_xmm(low_id),
-                ArithOpType::Or,
-                ctx.rsh(low, rm_0),
-                ctx.lsh(high, ctx.sub_const_left(0x20, rm_0)),
-            );
-            self.output_rsh(self.r_to_dest_and_operand_xmm(dest, high_id), rm_0);
-        }
-
+        self.packed_shift_right_xmm_u64(dest, rm_0);
         self.zero_xmm_if_rm1_nonzer0(&rm, dest);
         Ok(())
     }
