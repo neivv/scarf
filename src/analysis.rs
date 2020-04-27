@@ -736,8 +736,17 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             return control.inner.end;
         }
 
-        let init_state = clone_state(control.inner.state);
-        let mut cfg_out_edge = CfgOutEdges::None;
+        // Create CfgNode in advance to avoid some small moves.
+        // state doesn't get changed after creation, other fields do.
+        let mut node = CfgNode {
+            out_edges: CfgOutEdges::None,
+            end_address: Exec::VirtualAddress::from_u64(0),
+            distance: 0,
+            state: CfgState {
+                phantom: Default::default(),
+                data: clone_state(control.inner.state),
+            }
+        };
         // skip_operation from branch_start is no-op, clear the flag here
         // if it was set by user code
         control.inner.skip_operation = false;
@@ -776,7 +785,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                             condition,
                             to,
                             instruction,
-                            &mut cfg_out_edge,
+                            &mut node.out_edges,
                         );
                         break 'branch_loop end;
                     }
@@ -790,15 +799,8 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                 }
             }
         };
-        self.cfg.add_node(addr, CfgNode {
-            out_edges: cfg_out_edge,
-            state: CfgState {
-                data: init_state,
-                phantom: Default::default(),
-            },
-            end_address: current_address, // Is this correct?
-            distance: 0,
-        });
+        node.end_address = current_address; // Is this correct?
+        self.cfg.add_node(addr, node);
 
         end
     }
@@ -1029,8 +1031,6 @@ fn try_add_branch<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     }
 }
 
-// TODO this should probs take state as Box<(Exec, S)> to avoid copies, and have it be
-// error if a branch has something after the jump.
 fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     analysis: &mut FuncAnalysis<'e, Exec, S>,
     mut state: Box<(Exec, S)>,
@@ -1046,7 +1046,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     /// E.g. dest = ret.2 + read_'ret.3'_bytes(ret.0 + ret.1 * ret.3)
     fn is_switch_jump<'e, VirtualAddress: exec_state::VirtualAddress>(
         to: Operand<'e>,
-    ) -> Option<(VirtualAddress, Operand<'e>, u64, u32)> {
+    ) -> Option<(VirtualAddress, Operand<'e>, u64, MemAccessSize)> {
         let (base, mem) = match to.if_arithmetic_add() {
             Some((l, r)) => Operand::either(l, r, |x| x.if_constant())?,
             None => (0, to),
@@ -1060,10 +1060,53 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                     |x| x.if_constant().and_then(|c| u32::try_from(c).ok())
                 })?;
                 if c == VirtualAddress::SIZE || base != 0 {
-                    Some((VirtualAddress::from_u64(switch_table), index, base, c))
+                    let mem_size = match c {
+                        1 => MemAccessSize::Mem8,
+                        2 => MemAccessSize::Mem16,
+                        4 => MemAccessSize::Mem32,
+                        8 => MemAccessSize::Mem64,
+                        _ => return None,
+                    };
+                    Some((VirtualAddress::from_u64(switch_table), index, base, mem_size))
                 } else {
                     None
                 }
+            })
+    }
+
+    fn switch_cases<'e, Va: VaTrait>(
+        ctx: OperandCtx<'e>,
+        binary: &'e BinaryFile<Va>,
+        mem_size: MemAccessSize,
+        switch_table_addr: Va,
+        limits: (u64, u64),
+        base_addr: u64,
+    ) -> impl Iterator<Item = Operand<'e>> {
+        let case_size = mem_size.bits() / 8;
+        let base = ctx.constant(base_addr);
+
+        let start = limits.0.min(u32::max_value() as u64) as u32;
+        let end = limits.1.min(u32::max_value() as u64) as u32;
+        (start..=end)
+            .take_while(move |index| {
+                if !binary.relocs.is_empty() {
+                    let addr = switch_table_addr + index * case_size;
+                    if binary.relocs.binary_search(&addr).is_err() {
+                        return false;
+                    }
+                }
+                true
+            })
+            .map(move |index| {
+                ctx.add(
+                    base,
+                    ctx.mem_variable_rc(
+                        mem_size,
+                        ctx.constant(
+                            switch_table_addr.as_u64() + (index as u64 * case_size as u64)
+                        ),
+                    ),
+                )
             })
     }
 
@@ -1079,57 +1122,33 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         Some(_) => {
             let to = state.0.resolve(to);
             let is_switch = is_switch_jump::<Exec::VirtualAddress>(to);
-            if let Some((switch_table_addr, index, base_addr, case_size)) = is_switch {
+            if let Some((switch_table_addr, index, base_addr, mem_size)) = is_switch {
                 let mut cases = Vec::new();
-                let code_offset = analysis.binary.code_section().virtual_address;
-                let code_len = analysis.binary.code_section().data.len() as u32;
-                let mem_size = match case_size {
-                    1 => Some(MemAccessSize::Mem8),
-                    2 => Some(MemAccessSize::Mem16),
-                    4 => Some(MemAccessSize::Mem32),
-                    8 => Some(MemAccessSize::Mem64),
-                    _ => None,
-                };
                 let ctx = analysis.operand_ctx;
-                let base = ctx.constant(base_addr);
                 let binary = analysis.binary;
-                if let Some(mem_size) = mem_size {
-                    let limits = state.0.value_limits(index);
-                    let start = limits.0.min(u32::max_value() as u64) as u32;
-                    let end = limits.1.min(u32::max_value() as u64) as u32;
-
-                    for index in start..=end {
-                        let case = ctx.add(
-                            base,
-                            ctx.mem_variable_rc(
-                                mem_size,
-                                ctx.constant(
-                                    switch_table_addr.as_u64() + (index as u64 * case_size as u64)
-                                ),
-                            ),
-                        );
-                        if !binary.relocs.is_empty() {
-                            let addr = switch_table_addr + index * case_size;
-                            if binary.relocs.binary_search(&addr).is_err() {
-                                break;
-                            }
-                        }
-                        let addr = state.0.resolve(case).if_constant()
-                            .map(Exec::VirtualAddress::from_u64)
-                            .filter(|&x| x >= code_offset && x < code_offset + code_len);
-                        if let Some(case) = addr {
-                            analysis.add_unchecked_branch(case, state.clone());
-                            cases.push(NodeLink::new(case));
-                        } else {
-                            break;
-                        }
-                    }
-                    if !cases.is_empty() {
-                        *cfg_out_edge = CfgOutEdges::Switch(cases, index.clone());
+                let code_section = binary.code_section();
+                let code_offset = code_section.virtual_address;
+                let code_len = code_section.data.len() as u32;
+                let limits = state.0.value_limits(index);
+                let case_iter =
+                    switch_cases(ctx, binary, mem_size, switch_table_addr, limits, base_addr);
+                for case in case_iter {
+                    let addr = state.0.resolve(case).if_constant()
+                        .map(Exec::VirtualAddress::from_u64)
+                        .filter(|&x| x >= code_offset && x < code_offset + code_len);
+                    if let Some(case) = addr {
+                        analysis.add_unchecked_branch(case, clone_state(&state));
+                        cases.push(NodeLink::new(case));
+                    } else {
+                        break;
                     }
                 }
+
+                if !cases.is_empty() {
+                    *cfg_out_edge = CfgOutEdges::Switch(cases, index);
+                }
             } else {
-                let dest = try_add_branch(analysis, state.clone(), to.clone(), address);
+                let dest = try_add_branch(analysis, state, to, address);
                 *cfg_out_edge = CfgOutEdges::Single(
                     dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
                 );
@@ -1137,15 +1156,15 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         }
         None => {
             let no_jump_addr = address + instruction_len;
-            let mut jump_state = state.0.assume_jump_flag(condition, true);
-            let no_jump_state = state.0.assume_jump_flag(condition, false);
-            let to = jump_state.resolve(to);
+            let mut jump_state = clone_state(&state);
+            jump_state.0.assume_jump_flag(condition, true);
+            state.0.assume_jump_flag(condition, false);
+            let to = jump_state.0.resolve(to);
             analysis.add_unchecked_branch(
                 no_jump_addr,
-                Box::new((no_jump_state, state.1.clone())),
+                state,
             );
-            let s = Box::new((jump_state, state.1.clone()));
-            let dest = try_add_branch(analysis, s, to, address);
+            let dest = try_add_branch(analysis, jump_state, to, address);
             *cfg_out_edge = CfgOutEdges::Branch(
                 NodeLink::new(no_jump_addr),
                 OutEdgeCondition {

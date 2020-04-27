@@ -1074,13 +1074,13 @@ fn contains_undefined(oper: Operand<'_>) -> bool {
 #[test]
 fn merge_state_constraints_eq() {
     let ctx = &crate::operand::OperandContext::new();
-    let state_a = ExecutionState::new(ctx);
+    let mut state_a = ExecutionState::new(ctx);
     let mut state_b = ExecutionState::new(ctx);
     let sign_eq_overflow_flag = ctx.eq(
         ctx.flag_o(),
         ctx.flag_s(),
     );
-    let mut state_a = state_a.assume_jump_flag(sign_eq_overflow_flag, true);
+    state_a.assume_jump_flag(sign_eq_overflow_flag, true);
     state_b.move_to(&DestOperand::from_oper(ctx.flag_o()), ctx.constant(1));
     state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
     let merged = merge_states(&mut state_b, &mut state_a).unwrap();
@@ -1091,13 +1091,13 @@ fn merge_state_constraints_eq() {
 #[test]
 fn merge_state_constraints_or() {
     let ctx = &crate::operand::OperandContext::new();
-    let state_a = ExecutionState::new(ctx);
+    let mut state_a = ExecutionState::new(ctx);
     let mut state_b = ExecutionState::new(ctx);
     let sign_or_overflow_flag = ctx.or(
         ctx.flag_o(),
         ctx.flag_s(),
     );
-    let mut state_a = state_a.assume_jump_flag(sign_or_overflow_flag, true);
+    state_a.assume_jump_flag(sign_or_overflow_flag, true);
     state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
     let merged = merge_states(&mut state_b, &mut state_a).unwrap();
     assert!(merged.unresolved_constraint.is_some());

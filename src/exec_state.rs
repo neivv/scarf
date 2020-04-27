@@ -63,12 +63,12 @@ pub trait ExecutionState<'e> : Clone + 'e {
         }
     }
 
-    /// Returns state with the condition assumed to be true/false.
+    /// Updates state with the condition assumed to be true/false.
     fn assume_jump_flag(
-        &self,
+        &mut self,
         condition: Operand<'e>,
         jump: bool,
-    ) -> Self {
+    ) {
         let ctx = self.ctx();
         match *condition.ty() {
             OperandType::Arithmetic(ref arith) => {
@@ -76,13 +76,12 @@ pub trait ExecutionState<'e> : Clone + 'e {
                 let right = arith.right;
                 match arith.ty {
                     ArithOpType::Equal => {
-                        let mut state = self.clone();
                         let unresolved_cond = match jump {
                             true => condition.clone(),
                             false => ctx.eq_const(condition, 0)
                         };
-                        let resolved_cond = state.resolve(unresolved_cond);
-                        state.add_resolved_constraint(Constraint::new(resolved_cond));
+                        let resolved_cond = self.resolve(unresolved_cond);
+                        self.add_resolved_constraint(Constraint::new(resolved_cond));
                         let assignable_flag =
                             Operand::either(left, right, |x| {
                                 x.if_constant().filter(|&c| c == 0)
@@ -99,56 +98,47 @@ pub trait ExecutionState<'e> : Clone + 'e {
                             });
                         if let Some((flag, flag_state)) = assignable_flag {
                             let constant = self.ctx().constant(flag_state as u64);
-                            state.move_to(&DestOperand::Flag(flag), constant);
+                            self.move_to(&DestOperand::Flag(flag), constant);
                         } else {
-                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
+                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
                         }
-                        state
                     }
                     ArithOpType::Or => {
                         if jump {
-                            let mut state = self.clone();
                             let unresolved_cond = ctx.or(left, right);
-                            let cond = state.resolve(unresolved_cond);
-                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
-                            state.add_resolved_constraint(Constraint::new(cond));
-                            state
+                            let cond = self.resolve(unresolved_cond);
+                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
+                            self.add_resolved_constraint(Constraint::new(cond));
                         } else {
-                            let mut state = self.clone();
                             let unresolved_cond = ctx.and(
                                 ctx.eq_const(left, 0),
                                 ctx.eq_const(right, 0),
                             );
-                            let cond = state.resolve(unresolved_cond);
-                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
-                            state.add_resolved_constraint(Constraint::new(cond));
-                            state
+                            let cond = self.resolve(unresolved_cond);
+                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
+                            self.add_resolved_constraint(Constraint::new(cond));
                         }
                     }
                     ArithOpType::And => {
                         if jump {
-                            let mut state = self.clone();
                             let unresolved_cond = ctx.and(left, right);
-                            let cond = state.resolve(unresolved_cond);
-                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
-                            state.add_resolved_constraint(Constraint::new(cond));
-                            state
+                            let cond = self.resolve(unresolved_cond);
+                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
+                            self.add_resolved_constraint(Constraint::new(cond));
                         } else {
-                            let mut state = self.clone();
                             let unresolved_cond = ctx.or(
                                 ctx.eq_const(left, 0),
                                 ctx.eq_const(right, 0),
                             );
-                            let cond = state.resolve(unresolved_cond);
-                            state.add_unresolved_constraint(Constraint::new(unresolved_cond));
-                            state.add_resolved_constraint(Constraint::new(cond));
-                            state
+                            let cond = self.resolve(unresolved_cond);
+                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
+                            self.add_resolved_constraint(Constraint::new(cond));
                         }
                     }
-                    _ => self.clone(),
+                    _ => (),
                 }
             }
-            _ => self.clone(),
+            _ => (),
         }
     }
 
