@@ -21,7 +21,6 @@ lde = { git = "https://github.com/CasualX/lde" }
 log = "0.4"
 quick-error = "1.2.0"
 serde = { version = "1.0.104", features = ["derive", "rc"], optional = true }
-smallvec = "1.0"
 typed-arena = "2.0"
 
 clap = { version = "2.27.1", optional = true }

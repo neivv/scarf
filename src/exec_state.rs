@@ -457,15 +457,19 @@ fn is_subset<'e>(sub: Operand<'e>, sup: Operand<'e>) -> bool {
 /// Trait for disassembling instructions
 pub trait Disassembler<'e> {
     type VirtualAddress: VirtualAddress;
-    fn new(
+    /// Creates a new Disassembler. It is expected that set_pos() is called
+    /// afterwards before next().
+    fn new(ctx: OperandCtx<'e>) -> Self;
+    /// Seeks to a address.
+    fn set_pos(
+        &mut self,
         // Should this use a separate lifetime for clarity?
         // 'e does still in practice always refer to &BinaryFile as well,
         // so it should be ok.
         buf: &'e [u8],
         pos: usize,
         address: Self::VirtualAddress,
-        ctx: OperandCtx<'e>,
-    ) -> Self;
+    );
     fn next<'s>(&'s mut self) ->
         Result<Instruction<'s, 'e, Self::VirtualAddress>, disasm::Error>;
     fn address(&self) -> Self::VirtualAddress;

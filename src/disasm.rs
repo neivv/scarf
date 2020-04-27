@@ -1,6 +1,5 @@
 use lde::Isa;
 use quick_error::quick_error;
-use smallvec::SmallVec;
 
 use crate::exec_state::{VirtualAddress};
 use crate::operand::{
@@ -37,7 +36,7 @@ quick_error! {
 /// Error should be stored in &mut self
 struct Failed;
 
-pub type OperationVec<'e> = SmallVec<[Operation<'e>; 8]>;
+pub type OperationVec<'e> = Vec<Operation<'e>>;
 
 pub struct Disassembler32<'e> {
     buf: &'e [u8],
@@ -45,7 +44,7 @@ pub struct Disassembler32<'e> {
     virtual_address: VirtualAddress32,
     is_branching: bool,
     register_cache: RegisterCache<'e>,
-    ops_buffer: SmallVec<[Operation<'e>; 8]>,
+    ops_buffer: Vec<Operation<'e>>,
     ctx: OperandCtx<'e>,
 }
 
@@ -96,22 +95,27 @@ fn instruction_length_64(buf: &[u8]) -> usize {
 impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
     type VirtualAddress = VirtualAddress32;
 
-    fn new(
-        buf: &'a [u8],
-        pos: usize,
-        address: VirtualAddress32,
-        ctx: OperandCtx<'a>,
-    ) -> Disassembler32<'a> {
-        assert!(pos < buf.len());
+    // Inline(never) seems to help binary size *enough* and this function
+    // is only called once per function-to-be-analyzed
+    #[inline(never)]
+    fn new(ctx: OperandCtx<'a>) -> Disassembler32<'a> {
         Disassembler32 {
-            buf,
-            pos,
-            virtual_address: address,
+            buf: &[],
+            pos: 0,
+            virtual_address: VirtualAddress32(0),
             is_branching: false,
             register_cache: RegisterCache::new(ctx),
-            ops_buffer: SmallVec::new(),
+            ops_buffer: Vec::with_capacity(16),
             ctx,
         }
+    }
+
+    fn set_pos(&mut self, buf: &'a [u8], pos: usize, address: VirtualAddress32) {
+        assert!(pos < buf.len());
+        self.buf = buf;
+        self.pos = pos;
+        self.virtual_address = address;
+        self.is_branching = false;
     }
 
     fn next<'s>(&'s mut self) -> Result<Instruction<'s, 'a, VirtualAddress32>, Error> {
@@ -164,29 +168,34 @@ pub struct Disassembler64<'e> {
     virtual_address: VirtualAddress64,
     is_branching: bool,
     register_cache: RegisterCache<'e>,
-    ops_buffer: SmallVec<[Operation<'e>; 8]>,
+    ops_buffer: Vec<Operation<'e>>,
     ctx: OperandCtx<'e>,
 }
 
 impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
     type VirtualAddress = VirtualAddress64;
 
-    fn new(
-        buf: &'a [u8],
-        pos: usize,
-        address: VirtualAddress64,
-        ctx: OperandCtx<'a>,
-    ) -> Disassembler64<'a> {
-        assert!(pos < buf.len());
+    // Inline(never) seems to help binary size *enough* and this function
+    // is only called once per function-to-be-analyzed
+    #[inline(never)]
+    fn new(ctx: OperandCtx<'a>) -> Disassembler64<'a> {
         Disassembler64 {
-            buf,
-            pos,
-            virtual_address: address,
+            buf: &[],
+            pos: 0,
+            virtual_address: VirtualAddress64(0),
             is_branching: false,
             register_cache: RegisterCache::new(ctx),
-            ops_buffer: SmallVec::new(),
+            ops_buffer: Vec::with_capacity(16),
             ctx,
         }
+    }
+
+    fn set_pos(&mut self, buf: &'a [u8], pos: usize, address: VirtualAddress64) {
+        assert!(pos < buf.len());
+        self.buf = buf;
+        self.pos = pos;
+        self.virtual_address = address;
+        self.is_branching = false;
     }
 
     fn next<'s>(&'s mut self) -> Result<Instruction<'s, 'a, VirtualAddress64>, Error> {
@@ -235,7 +244,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
 
 pub struct Instruction<'a, 'e, Va: VirtualAddress> {
     address: Va,
-    ops: &'a SmallVec<[Operation<'e>; 8]>,
+    ops: &'a [Operation<'e>],
     length: u32,
 }
 
@@ -913,10 +922,12 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         self.len as usize
     }
 
-    /// Separate function mainly since SmallVec::push and SmallVec::reserve
-    /// are marked as #[inline], so calling them directly at 100+ different
-    /// places, often also used by rare instruction ends up being really
-    /// wasteful wrt. binary size.
+    /// This is a separate function mainly since SmallVec::push and SmallVec::reserve
+    /// are marked as #[inline], and it hurted binary size a lot.
+    ///
+    /// Now SmallVec isn't used anymore since Disassembler is being kept alive for
+    /// entire analysis, so this is more of a legacy function. Probably still nicer
+    /// to keep as is.
     #[inline(never)]
     fn output(&mut self, op: Operation<'e>) {
         self.out.push(op);
@@ -3467,7 +3478,8 @@ mod test {
 
         let ctx = &OperandContext::new();
         let buf = [0x66, 0xc7, 0x47, 0x62, 0x00, 0x20];
-        let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0), ctx);
+        let mut disasm = Disassembler32::new(ctx);
+        disasm.set_pos(&buf[..], 0, VirtualAddress(0));
         let ins = disasm.next().unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
@@ -3482,7 +3494,8 @@ mod test {
 
         let ctx = &OperandContext::new();
         let buf = [0x89, 0x84, 0xb5, 0x18, 0xeb, 0xff, 0xff];
-        let mut disasm = Disassembler32::new(&buf[..], 0, VirtualAddress(0), ctx);
+        let mut disasm = Disassembler32::new(ctx);
+        disasm.set_pos(&buf[..], 0, VirtualAddress(0));
         let ins = disasm.next().unwrap();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];

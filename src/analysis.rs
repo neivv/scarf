@@ -689,36 +689,37 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     }
 
     pub fn analyze<A: Analyzer<'a, State = State, Exec = Exec>>(&mut self, analyzer: &mut A) {
+        let mut disasm = Exec::Disassembler::new(self.operand_ctx);
+
         while let Some((addr, state)) = self.pop_next_branch_merge_with_cfg() {
-            let end = self.analyze_branch(analyzer, addr, state);
-            if end == Some(End::Function) {
-                break;
+            if let Ok(()) = self.disasm_set_pos(&mut disasm, addr) {
+                let end = self.analyze_branch(analyzer, &mut disasm, addr, state);
+                if end == Some(End::Function) {
+                    break;
+                }
             }
         }
     }
 
-    fn create_disassembler(&self, address: Exec::VirtualAddress) -> Option<Exec::Disassembler> {
-        let section = self.binary.section_by_addr(address)?;
+    fn disasm_set_pos(
+        &self,
+        disasm: &mut Exec::Disassembler,
+        address: Exec::VirtualAddress,
+    ) -> Result<(), ()> {
+        let section = self.binary.section_by_addr(address).ok_or(())?;
         let rva = (address.as_u64() - section.virtual_address.as_u64()) as usize;
-        Some(Exec::Disassembler::new(
-            &section.data,
-            rva,
-            section.virtual_address,
-            self.operand_ctx,
-        ))
+        disasm.set_pos(&section.data, rva, section.virtual_address);
+        Ok(())
     }
 
+    /// Disasm must have been set to `addr`
     fn analyze_branch<'b, A: Analyzer<'a, State = State, Exec = Exec>>(
         &mut self,
         analyzer: &mut A,
+        disasm: &mut Exec::Disassembler,
         addr: Exec::VirtualAddress,
         mut state: Box<(Exec, State)>,
     ) -> Option<End> {
-        // Disasm contains SmallVec, avoid unwrapping Option which likely would
-        // end up causing a memcpy.
-        let mut disasm = self.create_disassembler(addr);
-        let disasm = disasm.as_mut()?;
-
         let mut inner = ControlInner {
             analysis: self,
             address: addr,
