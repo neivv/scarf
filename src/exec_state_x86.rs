@@ -151,7 +151,6 @@ const XMM_REGISTER_INDEX: usize = FPU_REGISTER_INDEX + 8;
 const FLAGS_INDEX: usize = XMM_REGISTER_INDEX + 8 * 4;
 const STATE_OPERANDS: usize = FLAGS_INDEX + 6;
 
-#[derive(Clone)]
 pub struct ExecutionState<'e> {
     // 8 registers, 8 fpu registers, 8 xmm registers with 4 parts each, 6 flags
     state: [Operand<'e>; 0x8 + 0x8 * 4 + 0x8 + 0x6],
@@ -162,6 +161,25 @@ pub struct ExecutionState<'e> {
     ctx: OperandCtx<'e>,
     binary: Option<&'e BinaryFile<VirtualAddress>>,
     pending_flags: Option<(ArithOperand<'e>, MemAccessSize)>,
+}
+
+// Manual impl since derive adds an unwanted inline hint
+impl<'e> Clone for ExecutionState<'e> {
+    fn clone(&self) -> Self {
+        Self {
+            // Codegen optimization: memory cloning isn't a memcpy,
+            // doing all memcpys at the end, after other function calls
+            // or branching code generally avoids temporaries.
+            memory: self.memory.clone(),
+            cached_low_registers: self.cached_low_registers.clone(),
+            state: self.state,
+            resolved_constraint: self.resolved_constraint,
+            unresolved_constraint: self.unresolved_constraint,
+            ctx: self.ctx,
+            binary: self.binary,
+            pending_flags: self.pending_flags,
+        }
+    }
 }
 
 impl<'e> fmt::Debug for ExecutionState<'e> {

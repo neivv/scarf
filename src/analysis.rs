@@ -735,7 +735,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             return control.inner.end;
         }
 
-        let init_state = Box::new(control.inner.state.clone());
+        let init_state = clone_state(control.inner.state);
         let mut cfg_out_edge = CfgOutEdges::None;
         // skip_operation from branch_start is no-op, clear the flag here
         // if it was set by user code
@@ -745,9 +745,10 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             let address = disasm.address();
             current_address = address;
             control.inner.address = address;
-            let instruction = match disasm.next() {
-                Ok(o) => o,
-                Err(e) => {
+            let mut instruction = disasm.next();
+            let instruction = match instruction {
+                Ok(ref o) => o,
+                Err(ref mut e) => {
                     control.inner.analysis.add_error(address, e);
                     analyzer.branch_end(&mut control);
                     break 'branch_loop control.inner.end;
@@ -763,7 +764,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                     control.inner.skip_operation = false;
                     continue;
                 }
-                match op {
+                match *op {
                     disasm::Operation::Jump { condition, to } => {
                         analyzer.branch_end(&mut control);
                         let end = control.inner.end;
@@ -771,10 +772,9 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                         update_analysis_for_jump(
                             self,
                             state,
-                            condition.clone(),
-                            to.clone(),
-                            instruction.address(),
-                            instruction.len(),
+                            condition,
+                            to,
+                            instruction,
                             &mut cfg_out_edge,
                         );
                         break 'branch_loop end;
@@ -783,7 +783,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                         analyzer.branch_end(&mut control);
                         break 'branch_loop control.inner.end;
                     }
-                    o => {
+                    ref o => {
                         control.inner.state.0.update(o);
                     }
                 }
@@ -802,8 +802,11 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         end
     }
 
+    // Micro-optimization:
+    // Take error as reference so that the caller side doesn't have to move out of Result.
     #[cold]
-    fn add_error(&mut self, address: Exec::VirtualAddress, error: disasm::Error) {
+    fn add_error(&mut self, address: Exec::VirtualAddress, error: &mut disasm::Error) {
+        let error = std::mem::replace(error, disasm::Error::End);
         self.errors.push((address, error.into()));
     }
 
@@ -873,6 +876,20 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         });
         (cfg, self.errors)
     }
+}
+
+/// Meant for cloning and boxing &(ExecutionState, AnalysisState)
+///
+/// Does a big stack allocation that is immediately boxed.
+/// Having this be a separate function so that it can be shared between compatible
+/// generic instantations to save some binary size.
+/// And avoids having the parent function having to allocate ~300 extra stack bytes just
+/// for this clone (Though LLVM could likely reuse the space?)
+///
+/// Using Box<MaybeUninit> would likely even avoid the single
+/// stack allocation but it being unsafe is a shame.
+fn clone_state<A: Clone, B: Clone>(val: &(A, B)) -> Box<(A, B)> {
+    Box::new(val.clone())
 }
 
 struct RunHookAnalyzer<'e, F, Exec: ExecutionState<'e>, S: AnalysisState> {
@@ -1018,8 +1035,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     mut state: Box<(Exec, S)>,
     condition: Operand<'e>,
     to: Operand<'e>,
-    address: Exec::VirtualAddress,
-    instruction_len: u32,
+    instruction: &disasm::Instruction<'_, 'e, Exec::VirtualAddress>,
     cfg_out_edge: &mut CfgOutEdges<'e, Exec::VirtualAddress>,
 ) {
     /// Returns address of the table,
@@ -1051,6 +1067,8 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     }
 
     state.0.maybe_convert_memory_immutable();
+    let address = instruction.address();
+    let instruction_len = instruction.len();
     match state.0.resolve_apply_constraints(condition).if_constant() {
         Some(0) => {
             let address = address + instruction_len;

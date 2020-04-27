@@ -207,7 +207,7 @@ pub enum OperandType<'e> {
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize))]
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ArithOperand<'e> {
     pub ty: ArithOpType,
     pub left: Operand<'e>,

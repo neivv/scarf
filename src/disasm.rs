@@ -11,11 +11,13 @@ use crate::VirtualAddress as VirtualAddress32;
 use crate::VirtualAddress64;
 
 quick_error! {
+    // NOTE: Try avoid making this have a destructor
     #[derive(Debug)]
     pub enum Error {
-        UnknownOpcode(op: Vec<u8>) {
+        // First 8 bytes of the instruction should be enough information
+        UnknownOpcode(op: [u8; 8], len: u8) {
             description("Unknown opcode")
-            display("Unknown opcode {:02x?}", op)
+            display("Unknown opcode {:02x?}", &op[..*len as usize])
         }
         End {
             description("End of file")
@@ -121,7 +123,9 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
             if self.pos == self.buf.len() {
                 return Err(Error::End);
             } else {
-                return Err(Error::UnknownOpcode(vec![self.buf[self.pos]]));
+                let mut bytes = [0u8; 8];
+                bytes[0] = self.buf[self.pos];
+                return Err(Error::UnknownOpcode(bytes, 1));
             }
         }
         let address = self.virtual_address + self.pos as u32;
@@ -194,7 +198,9 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
             if self.pos == self.buf.len() {
                 return Err(Error::End);
             } else {
-                return Err(Error::UnknownOpcode(vec![self.buf[self.pos]]));
+                let mut bytes = [0u8; 8];
+                bytes[0] = self.buf[self.pos];
+                return Err(Error::UnknownOpcode(bytes, 1));
             }
         }
         let address = self.virtual_address + self.pos as u32;
@@ -392,7 +398,12 @@ fn instruction_operations32<'e>(
         if s.error_is_decode_error {
             Err(Error::InternalDecodeError)
         } else {
-            Err(Error::UnknownOpcode(full_data.into()))
+            let mut bytes = [0u8; 8];
+            let len = full_data.len().min(bytes.len());
+            for (out, &val) in bytes.iter_mut().zip(full_data.iter()) {
+                *out = val;
+            }
+            Err(Error::UnknownOpcode(bytes, len as u8))
         }
     } else {
         Ok(())
@@ -658,7 +669,12 @@ fn instruction_operations64<'e>(
         if s.error_is_decode_error {
             Err(Error::InternalDecodeError)
         } else {
-            Err(Error::UnknownOpcode(full_data.into()))
+            let mut bytes = [0u8; 8];
+            let len = full_data.len().min(bytes.len());
+            for (out, &val) in bytes.iter_mut().zip(full_data.iter()) {
+                *out = val;
+            }
+            Err(Error::UnknownOpcode(bytes, len as u8))
         }
     } else {
         Ok(())
