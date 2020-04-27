@@ -57,6 +57,10 @@ impl Interner {
             }
         }
     }
+
+    pub fn interned_count(&self) -> usize {
+        self.interned_operands.borrow().len()
+    }
 }
 
 fn operand_type_hash(ty: &OperandType<'_>) -> usize {

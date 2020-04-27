@@ -973,6 +973,11 @@ impl<'e> OperandContext<'e> {
             })
         }
     }
+
+    /// Gets amount of operands interned. Intented for debug / diagnostic info.
+    pub fn interned_count(&self) -> usize {
+        self.interner.interned_count()
+    }
 }
 
 impl<'e> OperandType<'e> {
