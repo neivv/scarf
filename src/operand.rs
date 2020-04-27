@@ -781,9 +781,8 @@ impl<'e> OperandContext<'e> {
     ///
     /// The returned value is simplified.
     pub fn and_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        let right = self.constant(right);
         let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_and(left, right, self, &mut simplify)
+        simplify::simplify_and_const(left, right, self, &mut simplify)
     }
 
     /// Returns `Operand` for `left | right`.
