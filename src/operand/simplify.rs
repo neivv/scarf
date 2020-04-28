@@ -1294,13 +1294,20 @@ fn quick_and_simplify<'e>(
 
 /// Having a bitwise and with a constant is really common.
 pub fn simplify_and_const<'e>(
-    left: Operand<'e>,
-    right: u64,
+    mut left: Operand<'e>,
+    mut right: u64,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
+    // Check if left is x & const
+    if let Some((l, r)) = left.if_arithmetic_and() {
+        if let Some(c) = r.if_constant() {
+            right &= c;
+            left = l;
+        }
+    }
     let left_mask = match left.if_constant() {
-        Some(c) => c,
+        Some(c) => return ctx.constant(c & right),
         None => left.relevant_bits_mask(),
     };
     if left_mask & right == 0 {
@@ -1325,9 +1332,7 @@ pub fn simplify_and<'e>(
     }
     let const_other = Operand::either(left, right, |x| x.if_constant());
     if let Some((c, other)) = const_other {
-        if let Some(result) = quick_and_simplify(other, c, ctx) {
-            return result;
-        }
+        return simplify_and_const(other, c, ctx, swzb_ctx);
     }
 
     let mut ops = vec![];
