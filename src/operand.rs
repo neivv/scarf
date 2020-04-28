@@ -249,7 +249,7 @@ impl<'e> ArithOperand<'e> {
 
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
-pub struct UndefinedId(pub u32);
+pub struct UndefinedId(#[cfg_attr(feature = "serde", serde(skip))] pub u32);
 
 pub struct OperandContext<'e> {
     next_undefined: Cell<u32>,

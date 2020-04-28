@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserializer, Deserialize};
 use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 
-use super::{MemAccess, MemAccessSize, ArithOperand, Operand, OperandCtx, OperandType};
+use super::{MemAccess, MemAccessSize, ArithOperand, Operand, OperandCtx};
 
 pub struct DeserializeOperand<'e>(pub(crate) OperandCtx<'e>);
 pub struct DeserializeOperandType<'e>(OperandCtx<'e>);
@@ -240,9 +240,8 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                         // or if this only should guarantee that two undefs with same id
                         // in input are serialized to a new but same id.
                         //
-                        // For now this returns what id was serialized.
-                        let ty = OperandType::Undefined(v.newtype_variant()?);
-                        Ok(self.0.intern(ty))
+                        // For now this returns new id every time
+                        Ok(self.0.new_undef())
                     }
                     Variant::Custom => {
                         let c = v.newtype_variant()?;
