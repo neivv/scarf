@@ -189,7 +189,7 @@ impl<'e> fmt::Display for Operand<'e> {
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize))]
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum OperandType<'e> {
     Register(Register),
     Xmm(u8, u8),
