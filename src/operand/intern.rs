@@ -3,6 +3,7 @@ use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem;
 
+use arrayvec::ArrayVec;
 use hashbrown::hash_map::{HashMap, RawEntryMut};
 use typed_arena::Arena;
 
@@ -17,6 +18,13 @@ pub struct Interner<'e> {
     // Using static lifetime as cannot refer to 'self.
     arena: Arena<OperandBase<'e>>,
 }
+
+/// Interner for undefined, which can just do a by-index lookup.
+pub struct UndefInterner {
+    chunks: RefCell<Vec<Box<ArrayVec<[OperandBase<'static>; UNDEF_CHUNK_SIZE]>>>>,
+}
+
+const UNDEF_CHUNK_SIZE: usize = 1024;
 
 impl<'e> Interner<'e> {
     pub fn new() -> Interner<'e> {
@@ -155,3 +163,33 @@ impl Hasher for DummyHasher {
     }
 }
 
+impl UndefInterner {
+    pub fn new() -> UndefInterner{
+        UndefInterner {
+            chunks: RefCell::new(Vec::new()),
+        }
+    }
+
+    pub fn push<'e>(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+        let relevant_bits = ty.calculate_relevant_bits();
+        let min_zero_bit_simplify_size = ty.min_zero_bit_simplify_size();
+        let base: OperandBase<'static> = OperandBase {
+            ty: unsafe { mem::transmute(ty) },
+            min_zero_bit_simplify_size,
+            relevant_bits,
+        };
+        let mut chunks = self.chunks.borrow_mut();
+        loop {
+            if let Some(chunk) = chunks.last_mut() {
+                if !chunk.is_full() {
+                    chunk.push(base);
+                    let base: &OperandBase<'static> = &chunk[chunk.len() - 1];
+                    let base: &'e OperandBase<'e> = unsafe { mem::transmute(base) };
+                    return Operand(base, PhantomData);
+                }
+            }
+
+            chunks.push(Box::new(ArrayVec::new()));
+        }
+    }
+}

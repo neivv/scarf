@@ -256,6 +256,7 @@ pub struct OperandContext<'e> {
     // Contains 0x41 small constants, 0x10 registers, 0x6 flags
     common_operands: Box<[OperandSelfRef; 0x41 + 0x10 + 0x6]>,
     interner: intern::Interner<'e>,
+    undef_interner: intern::UndefInterner,
     invariant_lifetime: PhantomData<&'e mut &'e ()>,
 }
 
@@ -405,6 +406,7 @@ impl<'e> OperandContext<'e> {
             next_undefined: Cell::new(0),
             common_operands,
             interner: intern::Interner::new(),
+            undef_interner: intern::UndefInterner::new(),
             invariant_lifetime: PhantomData,
         };
         let common_operands = &mut result.common_operands;
@@ -502,11 +504,9 @@ impl<'e> OperandContext<'e> {
     }
 
     pub fn new_undef(&'e self) -> Operand<'e> {
-        // TODO Could just have undefined be on a vector (-like collection which gives stable
-        // addresses)
         let id = self.next_undefined.get();
         self.next_undefined.set(id + 1);
-        self.intern(OperandType::Undefined(UndefinedId(id)))
+        self.undef_interner.push(OperandType::Undefined(UndefinedId(id)))
     }
 
     pub fn flag_z(&'e self) -> Operand<'e> {
@@ -978,7 +978,7 @@ impl<'e> OperandContext<'e> {
 
     /// Gets amount of operands interned. Intented for debug / diagnostic info.
     pub fn interned_count(&self) -> usize {
-        self.interner.interned_count()
+        self.interner.interned_count() + self.next_undefined.get() as usize
     }
 }
 
