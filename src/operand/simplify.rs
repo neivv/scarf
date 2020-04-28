@@ -2102,32 +2102,128 @@ fn simplify_or_merge_mem<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCtx<'e>) {
     }
 }
 
+pub fn simplify_add_const<'e>(
+    mut left: Operand<'e>,
+    mut right: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    if right == 0 {
+        return left;
+    }
+    // Check if left is x +/- const
+    // Useful since push/pop/esp/ebp offsets are really common.
+    match left.ty() {
+        OperandType::Arithmetic(ref arith) => {
+            if let Some(c) = arith.right.if_constant() {
+                if arith.ty == ArithOpType::Add {
+                    // (x + c1) + c2 => x + (c2 + c1)
+                    left = arith.left;
+                    right = right.wrapping_add(c);
+                } else if arith.ty == ArithOpType::Sub {
+                    // (x - c1) + c2 => x + (c2 - c1)
+                    left = arith.left;
+                    right = right.wrapping_sub(c);
+                }
+            }
+        }
+        _ => (),
+    }
+    if right == 0 {
+        return left;
+    }
+    if can_quick_simplify_type(left.ty()) {
+        let arith = if right > 0x8000_0000_0000_0000 {
+            ArithOperand {
+                ty: ArithOpType::Sub,
+                left: left,
+                right: ctx.constant(0u64.wrapping_sub(right)),
+            }
+        } else {
+            ArithOperand {
+                ty: ArithOpType::Add,
+                left: left,
+                right: ctx.constant(right),
+            }
+        };
+        return ctx.intern(OperandType::Arithmetic(arith));
+    }
+
+    let mut ops = Vec::new();
+    let const1 = collect_add_ops(left, &mut ops, u64::max_value(), false);
+    let const_sum = const1.wrapping_add(right);
+    simplify_collected_add_sub_ops(&mut ops, ctx, const_sum);
+    add_sub_ops_to_tree(&mut ops, ctx)
+}
+
+pub fn simplify_sub_const<'e>(
+    mut left: Operand<'e>,
+    mut right: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    if right == 0 {
+        return left;
+    }
+    // Check if left is x +/- const
+    // Useful since push/pop/esp/ebp offsets are really common.
+    match left.ty() {
+        OperandType::Arithmetic(ref arith) => {
+            if let Some(c) = arith.right.if_constant() {
+                if arith.ty == ArithOpType::Add {
+                    // (x + c1) - c2 => x - (c2 - c1)
+                    left = arith.left;
+                    right = right.wrapping_sub(c);
+                } else if arith.ty == ArithOpType::Sub {
+                    // (x - c1) - c2 => x - (c1 + c2)
+                    left = arith.left;
+                    right = c.wrapping_add(right);
+                }
+            }
+        }
+        _ => (),
+    }
+    if right == 0 {
+        return left;
+    }
+    if can_quick_simplify_type(left.ty()) {
+        let arith = if right > 0x8000_0000_0000_0000 {
+            ArithOperand {
+                ty: ArithOpType::Add,
+                left: left,
+                right: ctx.constant(0u64.wrapping_sub(right)),
+            }
+        } else {
+            ArithOperand {
+                ty: ArithOpType::Sub,
+                left: left,
+                right: ctx.constant(right),
+            }
+        };
+        return ctx.intern(OperandType::Arithmetic(arith));
+    }
+
+    let mut ops = Vec::new();
+    let const1 = collect_add_ops(left, &mut ops, u64::max_value(), false);
+    let const_sum = const1.wrapping_sub(right);
+    simplify_collected_add_sub_ops(&mut ops, ctx, const_sum);
+    add_sub_ops_to_tree(&mut ops, ctx)
+}
+
 pub fn simplify_add_sub<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
     is_sub: bool,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
-    if let Some((l, r)) = check_quick_arith_simplify(left, right) {
-        if !is_sub || l == left {
-            let c = r.if_constant().unwrap_or(0);
-            if c == 0 {
-                return l.clone();
-            }
-            let arith = if !is_sub && c > 0x8000_0000_0000_0000 {
-                ArithOperand {
-                    ty: ArithOpType::Sub,
-                    left: l.clone(),
-                    right: ctx.constant(0u64.wrapping_sub(c)),
-                }
-            } else {
-                ArithOperand {
-                    ty: if is_sub { ArithOpType::Sub } else { ArithOpType::Add },
-                    left: l.clone(),
-                    right: r.clone(),
-                }
-            };
-            return ctx.intern(OperandType::Arithmetic(arith));
+    if !is_sub {
+        if let Some(c) = left.if_constant() {
+            return simplify_add_const(right, c, ctx);
+        }
+    }
+    if let Some(c) = right.if_constant() {
+        if is_sub {
+            return simplify_sub_const(left, c, ctx);
+        } else {
+            return simplify_add_const(left, c, ctx);
         }
     }
     let mut ops = simplify_add_sub_ops(left, right, is_sub, u64::max_value(), ctx);

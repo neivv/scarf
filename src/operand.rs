@@ -752,16 +752,14 @@ impl<'e> OperandContext<'e> {
     ///
     /// The returned value is simplified.
     pub fn add_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        let right = self.constant(right);
-        simplify::simplify_add_sub(left, right, false, self)
+        simplify::simplify_add_const(left, right, self)
     }
 
     /// Returns `Operand` for `left - right`.
     ///
     /// The returned value is simplified.
     pub fn sub_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        let right = self.constant(right);
-        simplify::simplify_add_sub(left, right, true, self)
+        simplify::simplify_sub_const(left, right, self)
     }
 
     /// Returns `Operand` for `left - right`.
