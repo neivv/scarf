@@ -8,18 +8,18 @@ use typed_arena::Arena;
 
 use super::{ArithOperand, MemAccess, Operand, OperandHashByAddress, OperandType, OperandBase};
 
-pub struct Interner {
+pub struct Interner<'e> {
     // Lookups are done by using raw entry api.
     // To be precise, hash is calculated from OperandType to be interned,
     // after which the hash is looked up, comparing input OperandType
     // with `InternHashOperand.operand`.
     interned_operands: RefCell<HashMap<InternHashOperand, (), BuildHasherDefault<DummyHasher>>>,
     // Using static lifetime as cannot refer to 'self.
-    arena: Arena<OperandBase<'static>>,
+    arena: Arena<OperandBase<'e>>,
 }
 
-impl Interner {
-    pub fn new() -> Interner {
+impl<'e> Interner<'e> {
+    pub fn new() -> Interner<'e> {
         Interner {
             interned_operands:
                 RefCell::new(HashMap::with_capacity_and_hasher(160, Default::default())),
@@ -27,7 +27,7 @@ impl Interner {
         }
     }
 
-    pub fn intern<'e>(&self, ty: OperandType<'e>) -> Operand<'e> {
+    pub fn intern(&'e self, ty: OperandType<'e>) -> Operand<'e> {
         let hash = operand_type_hash(&ty);
         let mut map = self.interned_operands.borrow_mut();
         let raw_entry = map.raw_entry_mut();
@@ -42,7 +42,7 @@ impl Interner {
                     let relevant_bits = ty.calculate_relevant_bits();
                     let min_zero_bit_simplify_size = ty.min_zero_bit_simplify_size();
                     let base = OperandBase {
-                        ty: mem::transmute::<OperandType<'e>, OperandType<'static>>(ty),
+                        ty,
                         min_zero_bit_simplify_size,
                         relevant_bits,
                     };

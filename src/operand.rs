@@ -255,7 +255,7 @@ pub struct OperandContext<'e> {
     next_undefined: Cell<u32>,
     // Contains 0x41 small constants, 0x10 registers, 0x6 flags
     common_operands: Box<[OperandSelfRef; 0x41 + 0x10 + 0x6]>,
-    interner: intern::Interner,
+    interner: intern::Interner<'e>,
     invariant_lifetime: PhantomData<&'e mut &'e ()>,
 }
 
@@ -407,28 +407,31 @@ impl<'e> OperandContext<'e> {
             interner: intern::Interner::new(),
             invariant_lifetime: PhantomData,
         };
+        let common_operands = &mut result.common_operands;
+        // Accessing interner here would force the invariant lifetime 'e to this stack frame.
+        // Cast the interner reference to arbitrary lifetime to allow returning the result.
+        let interner: &intern::Interner<'_> = unsafe { std::mem::transmute(&result.interner) };
         for i in 0..0x41 {
-            result.common_operands[i] =
-                result.interner.intern(OperandType::Constant(i as u64)).self_ref();
+            common_operands[i] = interner.intern(OperandType::Constant(i as u64)).self_ref();
         }
         let base = 0x41;
         for i in 0..0x10 {
-            result.common_operands[base + i] =
-                result.interner.intern(OperandType::Register(Register(i as u8))).self_ref();
+            common_operands[base + i] =
+                interner.intern(OperandType::Register(Register(i as u8))).self_ref();
         }
         let base = 0x41 + 0x10;
-        result.common_operands[base + 0] =
-            result.interner.intern(OperandType::Flag(Flag::Zero)).self_ref();
-        result.common_operands[base + 1] =
-            result.interner.intern(OperandType::Flag(Flag::Carry)).self_ref();
-        result.common_operands[base + 2] =
-            result.interner.intern(OperandType::Flag(Flag::Overflow)).self_ref();
-        result.common_operands[base + 3] =
-            result.interner.intern(OperandType::Flag(Flag::Parity)).self_ref();
-        result.common_operands[base + 4] =
-            result.interner.intern(OperandType::Flag(Flag::Sign)).self_ref();
-        result.common_operands[base + 5] =
-            result.interner.intern(OperandType::Flag(Flag::Direction)).self_ref();
+        common_operands[base + 0] =
+            interner.intern(OperandType::Flag(Flag::Zero)).self_ref();
+        common_operands[base + 1] =
+            interner.intern(OperandType::Flag(Flag::Carry)).self_ref();
+        common_operands[base + 2] =
+            interner.intern(OperandType::Flag(Flag::Overflow)).self_ref();
+        common_operands[base + 3] =
+            interner.intern(OperandType::Flag(Flag::Parity)).self_ref();
+        common_operands[base + 4] =
+            interner.intern(OperandType::Flag(Flag::Sign)).self_ref();
+        common_operands[base + 5] =
+            interner.intern(OperandType::Flag(Flag::Direction)).self_ref();
         result
     }
 
