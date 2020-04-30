@@ -193,18 +193,22 @@ pub trait VirtualAddress: Eq + PartialEq + Ord + PartialOrd + Copy + Clone + std
 impl VirtualAddress for crate::VirtualAddress {
     type Inner = u32;
     const SIZE: u32 = 4;
+    #[inline]
     fn max_value() -> Self {
         crate::VirtualAddress(!0)
     }
 
+    #[inline]
     fn inner(self) -> Self::Inner {
         self.0
     }
 
+    #[inline]
     fn from_u64(val: u64) -> Self {
         crate::VirtualAddress(val as u32)
     }
 
+    #[inline]
     fn as_u64(self) -> u64 {
         self.0 as u64
     }
@@ -213,18 +217,22 @@ impl VirtualAddress for crate::VirtualAddress {
 impl VirtualAddress for crate::VirtualAddress64 {
     type Inner = u64;
     const SIZE: u32 = 8;
+    #[inline]
     fn max_value() -> Self {
         crate::VirtualAddress64(!0)
     }
 
+    #[inline]
     fn inner(self) -> Self::Inner {
         self.0
     }
 
+    #[inline]
     fn from_u64(val: u64) -> Self {
         crate::VirtualAddress64(val)
     }
 
+    #[inline]
     fn as_u64(self) -> u64 {
         self.0
     }

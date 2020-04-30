@@ -87,7 +87,7 @@ pub fn find_functions_with_callers_x86(
                 })
         );
     }
-    out.sort_by_key(|x| (x.callee, x.caller));
+    out.sort_unstable_by_key(|x| (x.callee, x.caller));
     out
 }
 
@@ -120,7 +120,7 @@ pub fn find_functions_with_callers_x86_64(
                 })
         );
     }
-    out.sort_by_key(|x| (x.callee, x.caller));
+    out.sort_unstable_by_key(|x| (x.callee, x.caller));
     out
 }
 
@@ -207,7 +207,7 @@ pub fn find_functions<'a, E: ExecutionState<'a>>(
         let first = confirmed_pos.next().unwrap();
         let mut current_start = file.base + first.0;
         let mut current_end = file.base + first.1;
-        called_functions.sort();
+        called_functions.sort_unstable();
         called_functions.dedup();
         called_functions.retain(|&addr| {
             loop {
@@ -231,7 +231,7 @@ pub fn find_functions<'a, E: ExecutionState<'a>>(
     }
     called_functions.extend(confirmed_ranges.iter().map(|x| file.base + x.0));
     called_functions.extend(find_funcptrs(file, relocs).iter().map(|x| x.callee));
-    called_functions.sort();
+    called_functions.sort_unstable();
     called_functions.dedup();
     called_functions
 }
@@ -341,7 +341,7 @@ pub fn find_relocs_x86(file: &BinaryFile<VirtualAddress>) -> Result<Vec<VirtualA
         }
         offset += size;
     }
-    result.sort();
+    result.sort_unstable();
     Ok(result)
 }
 
@@ -371,7 +371,7 @@ pub fn find_relocs_x86_64(
         }
         offset += size;
     }
-    result.sort();
+    result.sort_unstable();
     Ok(result)
 }
 
@@ -397,21 +397,30 @@ pub fn relocs_with_values<Va: VaTrait>(
                 continue 'outer;
             }
         };
-        for &address in &relocs[..reloc_count] {
-            let relative = (address.as_u64() - start_address.as_u64()) as usize;
+        let values = (&relocs[..reloc_count]).iter().map(|&address| {
+            let relative = (address.as_u64().wrapping_sub(start_address.as_u64())) as usize;
             let value = if Va::SIZE == 4 {
-                (&section[relative..]).read_u32().unwrap_or(0) as u64
+                Va::from_u64(
+                    section.get(relative..relative.wrapping_add(4))
+                        .and_then(|mut x| x.read_u32().ok())
+                        .unwrap_or(0) as u64
+                )
             } else {
-                (&section[relative..]).read_u64().unwrap_or(0)
+                Va::from_u64(
+                    section.get(relative..relative.wrapping_add(8))
+                        .and_then(|mut x| x.read_u64().ok())
+                        .unwrap_or(0)
+                )
             };
-            result.push(RelocValues {
+            RelocValues {
                 address,
-                value: Va::from_u64(value),
-            });
-        }
+                value,
+            }
+        });
+        result.extend(values);
         relocs = &relocs[reloc_count..];
     }
-    result.sort_by_key(|x| x.value);
+    result.sort_unstable_by_key(|x| x.value);
     Ok(result)
 }
 
@@ -1173,5 +1182,124 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                 },
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    static X86_CALL_TEST_DATA: &[u8] = &[
+        // 0x0 => Call to 0x10, 0x8 => call to 0x18
+        0xe8, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xe8, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+        // Invalid, 0x16 => call to 0x10
+        0x00, 0x00, 0x00, 0xe8, 0x00, 0x00, 0xe8, 0xf5,
+        0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+        // 0x24 => Call to 0x5, 0x29 => call to 0x33
+        0x00, 0x00, 0x00, 0x00, 0xe8, 0xdc, 0xff, 0xff,
+        0xff, 0xe8, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+        // Invalid
+        0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xff, 0x00, 0x00, 0xe8, 0x00, 0xe8, 0x00,
+    ];
+
+    #[test]
+    fn test_x86_calls() {
+        use crate::VirtualAddress;
+        use crate::exec_state_x86::ExecutionState;
+
+        let mut result = Vec::new();
+        super::find_functions_from_calls::<ExecutionState>(
+            X86_CALL_TEST_DATA,
+            VirtualAddress(0x1000),
+            &mut result,
+        );
+        assert_eq!(result.len(), 5);
+        result.sort();
+        result.dedup();
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0], VirtualAddress(0x1005));
+        assert_eq!(result[1], VirtualAddress(0x1010));
+        assert_eq!(result[2], VirtualAddress(0x1018));
+        assert_eq!(result[3], VirtualAddress(0x1033));
+    }
+
+    #[test]
+    fn test_x86_calls_callers() {
+        use crate::VirtualAddress;
+        use crate::exec_state_x86::ExecutionState;
+
+        let file = crate::raw_bin(
+            VirtualAddress(0x1000),
+            vec![
+                crate::BinarySection {
+                    name: *b".text\0\0\0",
+                    virtual_address: VirtualAddress(0x1000),
+                    virtual_size: 0x100,
+                    data: X86_CALL_TEST_DATA.into(),
+                },
+            ],
+        );
+        let result = super::find_functions_with_callers::<ExecutionState>(&file);
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0].callee, VirtualAddress(0x1005));
+        assert_eq!(result[0].caller, VirtualAddress(0x1024));
+        assert_eq!(result[1].callee, VirtualAddress(0x1010));
+        assert_eq!(result[2].callee, VirtualAddress(0x1010));
+        assert_eq!(result[3].callee, VirtualAddress(0x1018));
+        assert_eq!(result[3].caller, VirtualAddress(0x1008));
+        assert_eq!(result[4].callee, VirtualAddress(0x1033));
+        assert_eq!(result[4].caller, VirtualAddress(0x1029));
+    }
+
+    #[test]
+    fn test_x86_64_calls() {
+        use crate::VirtualAddress64;
+        use crate::exec_state_x86_64::ExecutionState;
+
+        let mut result = Vec::new();
+        super::find_functions_from_calls::<ExecutionState>(
+            X86_CALL_TEST_DATA,
+            VirtualAddress64(0x1000),
+            &mut result,
+        );
+        assert_eq!(result.len(), 5);
+        result.sort();
+        result.dedup();
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0], VirtualAddress64(0x1005));
+        assert_eq!(result[1], VirtualAddress64(0x1010));
+        assert_eq!(result[2], VirtualAddress64(0x1018));
+        assert_eq!(result[3], VirtualAddress64(0x1033));
+    }
+
+    #[test]
+    fn test_x86_64_calls_callers() {
+        use crate::VirtualAddress64;
+        use crate::exec_state_x86_64::ExecutionState;
+
+        let file = crate::raw_bin(
+            VirtualAddress64(0x1000),
+            vec![
+                crate::BinarySection {
+                    name: *b".text\0\0\0",
+                    virtual_address: VirtualAddress64(0x1000),
+                    virtual_size: 0x100,
+                    data: X86_CALL_TEST_DATA.into(),
+                },
+            ],
+        );
+        let result = super::find_functions_with_callers::<ExecutionState>(&file);
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0].callee, VirtualAddress64(0x1005));
+        assert_eq!(result[0].caller, VirtualAddress64(0x1024));
+        assert_eq!(result[1].callee, VirtualAddress64(0x1010));
+        assert_eq!(result[2].callee, VirtualAddress64(0x1010));
+        assert_eq!(result[3].callee, VirtualAddress64(0x1018));
+        assert_eq!(result[3].caller, VirtualAddress64(0x1008));
+        assert_eq!(result[4].callee, VirtualAddress64(0x1033));
+        assert_eq!(result[4].caller, VirtualAddress64(0x1029));
     }
 }
