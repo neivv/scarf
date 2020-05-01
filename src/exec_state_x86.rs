@@ -918,10 +918,10 @@ impl<'e> ExecutionState<'e> {
                 let right = self.resolve(op.right);
                 self.ctx.arithmetic(op.ty, left, right)
             }
-            OperandType::ArithmeticF32(ref op) => {
+            OperandType::ArithmeticFloat(ref op, size) => {
                 let left = self.resolve(op.left);
                 let right = self.resolve(op.right);
-                self.ctx.f32_arithmetic(op.ty, left, right)
+                self.ctx.float_arithmetic(op.ty, left, right, size)
             }
             OperandType::Constant(_) => value,
             OperandType::Custom(_) => value,

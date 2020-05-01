@@ -105,7 +105,9 @@ impl<'e> fmt::Debug for OperandType<'e> {
             Undefined(r) => write!(f, "Undefined_{:x}", r.0),
             Memory(r) => f.debug_tuple("Memory").field(r).finish(),
             Arithmetic(r) => f.debug_tuple("Arithmetic").field(r).finish(),
-            ArithmeticF32(r) => f.debug_tuple("ArithmeticF32").field(r).finish(),
+            ArithmeticFloat(r, size) => {
+                f.debug_tuple("ArithmeticFloat").field(size).field(r).finish()
+            }
             SignExtend(a, b, c) => {
                 f.debug_tuple("SignExtend").field(a).field(b).field(c).finish()
             }
@@ -147,7 +149,7 @@ impl<'e> fmt::Display for Operand<'e> {
                 MemAccessSize::Mem64 => "64",
             }, mem.address),
             OperandType::Undefined(id) => write!(f, "Undefined_{:x}", id.0),
-            OperandType::Arithmetic(ref arith) | OperandType::ArithmeticF32(ref arith) => {
+            OperandType::Arithmetic(ref arith) | OperandType::ArithmeticFloat(ref arith, _) => {
                 let l = arith.left;
                 let r = arith.right;
                 match arith.ty {
@@ -165,14 +167,13 @@ impl<'e> fmt::Display for Operand<'e> {
                     GreaterThan => write!(f, "({} > {})", l, r),
                     SignedMul => write!(f, "mul_signed({}, {})", l, r),
                     Parity => write!(f, "parity({})", l),
-                    FloatToInt => write!(f, "float_to_int({})", l),
-                    IntToFloat => write!(f, "int_to_float({})", l),
-                    DoubleToInt => write!(f, "double_to_int({})", l),
-                    IntToDouble => write!(f, "int_to_double({})", l),
+                    ToFloat => write!(f, "to_float({})", l),
+                    ToDouble => write!(f, "to_double({})", l),
+                    ToInt => write!(f, "to_int({})", l),
                 }?;
                 match *self.ty() {
-                    OperandType::ArithmeticF32(..) => {
-                        write!(f, "[f32]")?;
+                    OperandType::ArithmeticFloat(_, size) => {
+                        write!(f, "[f{}]", size.bits())?;
                     }
                     _ => (),
                 }
@@ -198,7 +199,7 @@ pub enum OperandType<'e> {
     Constant(u64),
     Memory(MemAccess<'e>),
     Arithmetic(ArithOperand<'e>),
-    ArithmeticF32(ArithOperand<'e>),
+    ArithmeticFloat(ArithOperand<'e>, MemAccessSize),
     Undefined(UndefinedId),
     SignExtend(Operand<'e>, MemAccessSize, MemAccessSize),
     /// Arbitrary user-defined variable that does not compare equal with anything,
@@ -231,10 +232,9 @@ pub enum ArithOpType {
     Equal,
     Parity,
     GreaterThan,
-    IntToFloat,
-    FloatToInt,
-    IntToDouble,
-    DoubleToInt,
+    ToFloat,
+    ToDouble,
+    ToInt,
 }
 
 impl<'e> ArithOperand<'e> {
@@ -322,7 +322,7 @@ fn iter_variant_next<'e, T: IterVariant<'e>>(s: &mut T) -> Option<Operand<'e>> {
     let next = inner.pos;
 
     match *next.ty() {
-        Arithmetic(ref arith) | ArithmeticF32(ref arith) => {
+        Arithmetic(ref arith) | ArithmeticFloat(ref arith, _) => {
             inner.pos = arith.left;
             inner.stack.push(arith.right);
         },
@@ -459,17 +459,21 @@ impl<'e> OperandContext<'e> {
                 address: self.copy_operand(mem.address),
                 size: mem.size,
             }),
-            OperandType::Arithmetic(ref arith) | OperandType::ArithmeticF32(ref arith) => {
+            OperandType::Arithmetic(ref arith) => {
                 let arith = ArithOperand {
                     ty: arith.ty,
                     left: self.copy_operand(arith.left),
                     right: self.copy_operand(arith.right),
                 };
-                if let OperandType::Arithmetic(..) = op.ty() {
-                    OperandType::Arithmetic(arith)
-                } else {
-                    OperandType::ArithmeticF32(arith)
-                }
+                OperandType::Arithmetic(arith)
+            }
+            OperandType::ArithmeticFloat(ref arith, size) => {
+                let arith = ArithOperand {
+                    ty: arith.ty,
+                    left: self.copy_operand(arith.left),
+                    right: self.copy_operand(arith.right),
+                };
+                OperandType::ArithmeticFloat(arith, size)
             }
             OperandType::SignExtend(a, b, c) => {
                 OperandType::SignExtend(self.copy_operand(a), b, c)
@@ -591,19 +595,14 @@ impl<'e> OperandContext<'e> {
         simplify::simplify_arith(left, right, ty, self, &mut simplify)
     }
 
-    pub fn f32_arithmetic(
+    pub fn float_arithmetic(
         &'e self,
         ty: ArithOpType,
         left: Operand<'e>,
         right: Operand<'e>,
+        size: MemAccessSize,
     ) -> Operand<'e> {
-        let ty = OperandType::ArithmeticF32(ArithOperand {
-            ty,
-            left,
-            right,
-        });
-        // No float arith simplifications have been written
-        self.intern(ty)
+        simplify::simplify_float_arith(left, right, ty, size, self)
     }
 
     /// Returns `Operand` for `left + right`.
@@ -1148,9 +1147,9 @@ impl<'e> OperandType<'e> {
         use self::OperandType::*;
         match *self {
             Memory(ref mem) => mem.size,
-            Xmm(..) | Flag(..) | Fpu(..) | ArithmeticF32(..) => MemAccessSize::Mem32,
+            Xmm(..) | Flag(..) | Fpu(..) => MemAccessSize::Mem32,
             Register(..) | Constant(..) | Arithmetic(..) | Undefined(..) |
-                Custom(..) => MemAccessSize::Mem64,
+                Custom(..) | ArithmeticFloat(..) => MemAccessSize::Mem64,
             SignExtend(_, _from, to) => to,
         }
     }
@@ -1259,8 +1258,8 @@ impl<'e> Operand<'e> {
                     0xb => Equal,
                     0xc => Parity,
                     0xd => GreaterThan,
-                    0xe => IntToFloat,
-                    0xf => FloatToInt,
+                    0xe => ToFloat,
+                    0xf => ToInt,
                     _ => return None,
                 };
                 ctx.arithmetic(ty, left, right)
@@ -1657,6 +1656,27 @@ mod test {
                     ctx.register(3),
                 ),
             ),
+        );
+        let json = serde_json::to_string(&op).unwrap();
+        let mut des = serde_json::Deserializer::from_str(&json);
+        let op2: Operand<'_> = ctx.deserialize_seed().deserialize(&mut des).unwrap();
+        assert_eq!(op, op2);
+    }
+
+    #[test]
+    fn serialize_json2() {
+        use serde::de::DeserializeSeed;
+        let ctx = &OperandContext::new();
+        let op = ctx.float_arithmetic(
+            ArithOpType::Sub,
+            ctx.register(6),
+            ctx.mem32(
+                ctx.sub(
+                    ctx.constant(6),
+                    ctx.register(3),
+                ),
+            ),
+            MemAccessSize::Mem32,
         );
         let json = serde_json::to_string(&op).unwrap();
         let mut des = serde_json::Deserializer::from_str(&json);

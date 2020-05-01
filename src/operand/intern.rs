@@ -96,13 +96,27 @@ fn operand_type_hash(ty: &OperandType<'_>) -> usize {
                 }
             }
         }
-        OperandType::Arithmetic(ref arith) | OperandType::ArithmeticF32(ref arith) => {
+        OperandType::Arithmetic(ref arith) => {
             match *arith {
                 ArithOperand {
                     ty,
                     left,
                     right
                 } => {
+                    ty.hash(&mut hasher);
+                    OperandHashByAddress(left).hash(&mut hasher);
+                    OperandHashByAddress(right).hash(&mut hasher);
+                }
+            }
+        }
+        OperandType::ArithmeticFloat(ref arith, size) => {
+            match *arith {
+                ArithOperand {
+                    ty,
+                    left,
+                    right
+                } => {
+                    size.hash(&mut hasher);
                     ty.hash(&mut hasher);
                     OperandHashByAddress(left).hash(&mut hasher);
                     OperandHashByAddress(right).hash(&mut hasher);

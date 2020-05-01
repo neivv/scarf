@@ -162,28 +162,7 @@ pub fn simplify_arith<'e>(
                 ctx.intern(ty)
             }
         }
-        ArithOpType::FloatToInt => {
-            let val = left;
-            if let Some(c) = val.if_constant() {
-                let float = f32::from_bits(c as u32);
-                let overflow = float > i32::max_value() as f32 ||
-                    float < i32::min_value() as f32;
-                let int = if overflow {
-                    0x8000_0000
-                } else {
-                    float as i32 as u32
-                };
-                ctx.constant(int as u64)
-            } else {
-                let ty = OperandType::Arithmetic(ArithOperand {
-                    ty,
-                    left: val,
-                    right: ctx.const_0(),
-                });
-                ctx.intern(ty)
-            }
-        }
-        ArithOpType::IntToFloat => {
+        ArithOpType::ToFloat => {
             let val = left;
             if let Some(c) = val.if_constant() {
                 let float = f32::to_bits(c as i32 as f32);
@@ -197,28 +176,7 @@ pub fn simplify_arith<'e>(
                 ctx.intern(ty)
             }
         }
-        ArithOpType::DoubleToInt => {
-            let val = left;
-            if let Some(c) = val.if_constant() {
-                let float = f64::from_bits(c);
-                let overflow = float > i64::max_value() as f64 ||
-                    float < i64::min_value() as f64;
-                let int = if overflow {
-                    0x8000_0000_0000_0000
-                } else {
-                    float as i64 as u64
-                };
-                ctx.constant(int as u64)
-            } else {
-                let ty = OperandType::Arithmetic(ArithOperand {
-                    ty,
-                    left: val,
-                    right: ctx.const_0(),
-                });
-                ctx.intern(ty)
-            }
-        }
-        ArithOpType::IntToDouble => {
+        ArithOpType::ToDouble => {
             let val = left;
             if let Some(c) = val.if_constant() {
                 let float = f64::to_bits(c as i64 as f64);
@@ -241,6 +199,100 @@ pub fn simplify_arith<'e>(
             ctx.intern(ty)
         }
     }
+}
+
+pub fn simplify_float_arith<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ty: ArithOpType,
+    size: MemAccessSize,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    // NOTE OperandContext assumes it can call these arith child functions
+    // directly. Don't add anything here that is expected to be ran for
+    // arith simplify.
+    match ty {
+        ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul | ArithOpType::Div => {
+            match (left.if_constant(), right.if_constant()) {
+                (Some(l), Some(r)) if size == MemAccessSize::Mem32 => {
+                    let l = f32::from_bits(l as u32);
+                    let r = f32::from_bits(r as u32);
+                    let result = match ty {
+                        ArithOpType::Add => l + r,
+                        ArithOpType::Sub => l - r,
+                        ArithOpType::Mul => l * r,
+                        ArithOpType::Div | _ => l / r,
+                    };
+                    return ctx.constant(f32::to_bits(result) as u64);
+                }
+                (Some(l), Some(r)) if size == MemAccessSize::Mem64 => {
+                    let l = f64::from_bits(l);
+                    let r = f64::from_bits(r);
+                    let result = match ty {
+                        ArithOpType::Add => l + r,
+                        ArithOpType::Sub => l - r,
+                        ArithOpType::Mul => l * r,
+                        ArithOpType::Div | _ => l / r,
+                    };
+                    return ctx.constant(f64::to_bits(result));
+                }
+                _ => (),
+            }
+        }
+        ArithOpType::ToInt if size == MemAccessSize::Mem32 => {
+            let val = left;
+            if let Some(c) = val.if_constant() {
+                let float = f32::from_bits(c as u32);
+                let overflow = float > i32::max_value() as f32 ||
+                    float < i32::min_value() as f32;
+                let int = if overflow {
+                    0x8000_0000
+                } else {
+                    float as i32 as u32
+                };
+                return ctx.constant(int as u64);
+            }
+        }
+        ArithOpType::ToDouble if size == MemAccessSize::Mem32 => {
+            let val = left;
+            if let Some(c) = val.if_constant() {
+                let float = f32::from_bits(c as u32);
+                let double = float as f64;
+                let int = f64::to_bits(double);
+                return ctx.constant(int);
+            }
+        }
+        ArithOpType::ToInt if size == MemAccessSize::Mem64 => {
+            let val = left;
+            if let Some(c) = val.if_constant() {
+                let float = f64::from_bits(c);
+                let overflow = float > i64::max_value() as f64 ||
+                    float < i64::min_value() as f64;
+                let int = if overflow {
+                    0x8000_0000_0000_0000
+                } else {
+                    float as i64 as u64
+                };
+                return ctx.constant(int as u64);
+            }
+        }
+        ArithOpType::ToFloat if size == MemAccessSize::Mem64 => {
+            let val = left;
+            if let Some(c) = val.if_constant() {
+                let double = f64::from_bits(c);
+                let float = double as f32;
+                let int = f32::to_bits(float);
+                return ctx.constant(int as u64);
+            }
+        }
+        _ => (),
+    }
+    let ty = OperandType::ArithmeticFloat(ArithOperand {
+        ty,
+        left,
+        right,
+    }, size);
+    ctx.intern(ty)
 }
 
 pub fn simplify_sign_extend<'e>(

@@ -840,7 +840,7 @@ impl<'e> ExecutionState<'e> {
             OperandType::Xmm(reg, word) => {
                 self.state[XMM_REGISTER_INDEX + (reg & 0xf) as usize * 4 + (word & 3) as usize]
             }
-            OperandType::Fpu(_) => value.clone(),
+            OperandType::Fpu(_) => value,
             OperandType::Flag(flag) => {
                 self.update_flags();
                 self.state[FLAGS_INDEX + flag as usize]
@@ -856,10 +856,10 @@ impl<'e> ExecutionState<'e> {
                 let right = self.resolve(op.right);
                 self.ctx.arithmetic(op.ty, left, right)
             }
-            OperandType::ArithmeticF32(ref op) => {
+            OperandType::ArithmeticFloat(ref op, size) => {
                 let left = self.resolve(op.left);
                 let right = self.resolve(op.right);
-                self.ctx.f32_arithmetic(op.ty, left, right)
+                self.ctx.float_arithmetic(op.ty, left, right, size)
             }
             OperandType::Constant(_) => value,
             OperandType::Custom(_) => value,
@@ -867,7 +867,7 @@ impl<'e> ExecutionState<'e> {
                 self.resolve_mem(mem)
                     .unwrap_or_else(|| value)
             }
-            OperandType::Undefined(_) => value.clone(),
+            OperandType::Undefined(_) => value,
             OperandType::SignExtend(val, from, to) => {
                 let val = self.resolve(val);
                 self.ctx.sign_extend(val, from, to)

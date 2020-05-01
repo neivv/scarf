@@ -88,7 +88,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         const VARIANTS: &[&str] = &[
-            "Register", "Xmm", "Fpu", "Flag", "Constant", "Memory", "Arithmetic", "ArithmeticF32",
+            "Register", "Xmm", "Fpu", "Flag", "Constant", "Memory", "Arithmetic", "ArithmeticFloat",
             "Undefined", "SignExtend", "Custom",
         ];
 
@@ -101,7 +101,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
             Constant,
             Memory,
             Arithmetic,
-            ArithmeticF32,
+            ArithmeticFloat,
             Undefined,
             SignExtend,
             Custom,
@@ -131,7 +131,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                             4 => Ok(Variant::Constant),
                             5 => Ok(Variant::Memory),
                             6 => Ok(Variant::Arithmetic),
-                            7 => Ok(Variant::ArithmeticF32),
+                            7 => Ok(Variant::ArithmeticFloat),
                             8 => Ok(Variant::Undefined),
                             9 => Ok(Variant::SignExtend),
                             10 => Ok(Variant::Custom),
@@ -153,7 +153,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                             "Constant" => Ok(Variant::Constant),
                             "Memory" => Ok(Variant::Memory),
                             "Arithmetic" => Ok(Variant::Arithmetic),
-                            "ArithmeticF32" => Ok(Variant::ArithmeticF32),
+                            "ArithmeticFloat" => Ok(Variant::ArithmeticFloat),
                             "Undefined" => Ok(Variant::Undefined),
                             "SignExtend" => Ok(Variant::SignExtend),
                             "Custom" => Ok(Variant::Custom),
@@ -179,6 +179,26 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
             {
                 Ok((
                     seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?,
+                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?,
+                ))
+            }
+        }
+
+        struct ArithFloatVisitor<'e>(OperandCtx<'e>);
+
+        impl<'de, 'e> Visitor<'de> for ArithFloatVisitor<'e> {
+            type Value = (ArithOperand<'e>, MemAccessSize);
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("(ArithOperand, MemAccessSize)")
+            }
+
+            fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error>
+                where V: SeqAccess<'de>
+            {
+                let arith = seq.next_element_seed(DeserializeArith(self.0))?;
+                Ok((
+                    arith.ok_or_else(|| de::Error::invalid_length(0, &self))?,
                     seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?,
                 ))
             }
@@ -255,13 +275,13 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                         let mem = v.newtype_variant_seed(DeserializeMemory(self.0))?;
                         Ok(self.0.mem_variable_rc(mem.size, mem.address))
                     }
-                    Variant::Arithmetic | Variant::ArithmeticF32 => {
+                    Variant::Arithmetic => {
                         let arith = v.newtype_variant_seed(DeserializeArith(self.0))?;
-                        return if let Variant::Arithmetic = variant {
-                            Ok(self.0.arithmetic(arith.ty, arith.left, arith.right))
-                        } else {
-                            Ok(self.0.f32_arithmetic(arith.ty, arith.left, arith.right))
-                        };
+                        Ok(self.0.arithmetic(arith.ty, arith.left, arith.right))
+                    }
+                    Variant::ArithmeticFloat => {
+                        let (a, b) = v.tuple_variant(2, ArithFloatVisitor(self.0))?;
+                        Ok(self.0.float_arithmetic(a.ty, a.left, a.right, b))
                     }
                     Variant::SignExtend => {
                         let (a, b, c) = v.tuple_variant(3, SextVisitor(self.0))?;

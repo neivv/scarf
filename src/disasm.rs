@@ -562,7 +562,12 @@ fn instruction_operations32_main(
         0x140 | 0x141 | 0x142 | 0x143 | 0x144 | 0x145 | 0x146 | 0x147 |
             0x148 | 0x149 | 0x14a | 0x14b | 0x14c | 0x14d | 0x14e | 0x14f => s.cmov(),
         0x157 => s.xorps(),
+        0x158 => s.sse_float_arith(ArithOpType::Add),
+        0x159 => s.sse_float_arith(ArithOpType::Mul),
+        0x15a => s.sse_f32_f64_conversion(),
         0x15b => s.cvtdq2ps(),
+        0x15c => s.sse_float_arith(ArithOpType::Sub),
+        0x15e => s.sse_float_arith(ArithOpType::Div),
         0x160 => s.punpcklbw(),
         0x16e => s.mov_sse_6e(),
         0x173 => s.packed_shift_imm(),
@@ -849,7 +854,12 @@ fn instruction_operations64_main(
         0x140 | 0x141 | 0x142 | 0x143 | 0x144 | 0x145 | 0x146 | 0x147 |
             0x148 | 0x149 | 0x14a | 0x14b | 0x14c | 0x14d | 0x14e | 0x14f => s.cmov(),
         0x157 => s.xorps(),
+        0x158 => s.sse_float_arith(ArithOpType::Add),
+        0x159 => s.sse_float_arith(ArithOpType::Mul),
+        0x15a => s.sse_f32_f64_conversion(),
         0x15b => s.cvtdq2ps(),
+        0x15c => s.sse_float_arith(ArithOpType::Sub),
+        0x15e => s.sse_float_arith(ArithOpType::Div),
         0x160 => s.punpcklbw(),
         0x16e => s.mov_sse_6e(),
         0x173 => s.packed_shift_imm(),
@@ -1872,8 +1882,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 self.output_rsh(dest, rhs);
             }
             ArithOperation::RightShiftArithmetic => {
-                // TODO flags, using IntToFloat to cheat
-                self.output(flags(ArithOpType::IntToFloat, dest.op, rhs, size));
+                // TODO flags, using ToFloat to cheat
+                self.output(flags(ArithOpType::ToFloat, dest.op, rhs, size));
                 let sign_bit = 1 << (size.bits() - 1);
                 let is_positive = ctx.eq_const(
                     ctx.and_const(dest.op, sign_bit),
@@ -2152,6 +2162,83 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         Ok(())
     }
 
+    fn sse_f32_f64_conversion(&mut self) -> Result<(), Failed> {
+        let (src_size, amt) = if self.has_prefix(0xf2) {
+            (MemAccessSize::Mem64, 1)
+        } else if self.has_prefix(0x66) {
+            (MemAccessSize::Mem64, 2)
+        } else if self.has_prefix(0xf3) {
+            (MemAccessSize::Mem32, 1)
+        } else {
+            (MemAccessSize::Mem32, 2)
+        };
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let ctx = self.ctx;
+        let zero = ctx.const_0();
+        if src_size == MemAccessSize::Mem32 {
+            for i in (0..amt).rev() {
+                let dest1 = dest.dest_operand_xmm(i * 2);
+                let dest2 = dest.dest_operand_xmm(i * 2 + 1);
+                let val = self.rm_to_operand_xmm(&rm, i);
+                let arith = ctx.float_arithmetic(ArithOpType::ToDouble, val, zero, src_size);
+                let op = ctx.rsh_const(arith, 0x20);
+                self.output(Operation::Move(dest2, op, None));
+                let op = ctx.and_const(arith, 0xffff_ffff);
+                self.output(Operation::Move(dest1, op, None));
+            }
+        } else {
+            for i in 0..amt {
+                let dest = dest.dest_operand_xmm(i);
+                let val = self.rm_to_operand_xmm_64(&rm, i);
+                let arith = ctx.float_arithmetic(ArithOpType::ToDouble, val, zero, src_size);
+                self.output(Operation::Move(dest, arith, None));
+            }
+            for i in amt..4 {
+                let dest = dest.dest_operand_xmm(i);
+                self.output(Operation::Move(dest, zero, None));
+            }
+        }
+        Ok(())
+    }
+
+    fn sse_float_arith(&mut self, ty: ArithOpType) -> Result<(), Failed> {
+        let (size, amt) = if self.has_prefix(0xf2) {
+            (MemAccessSize::Mem64, 1)
+        } else if self.has_prefix(0x66) {
+            (MemAccessSize::Mem64, 2)
+        } else if self.has_prefix(0xf3) {
+            (MemAccessSize::Mem32, 1)
+        } else {
+            (MemAccessSize::Mem32, 4)
+        };
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let ctx = self.ctx;
+        if size == MemAccessSize::Mem32 {
+            for i in 0..amt {
+                let dest = self.r_to_dest_and_operand_xmm(dest, i);
+                let rhs = self.rm_to_operand_xmm(&rm, i);
+                let op = make_float_operation(self.ctx, dest.dest, ty, dest.op, rhs, size);
+                self.output(op);
+            }
+        } else {
+            for i in 0..amt {
+                let dest1 = self.r_to_dest_and_operand_xmm(dest, i * 2);
+                let dest2 = self.r_to_dest_and_operand_xmm(dest, i * 2 + 1);
+                let dest_op = ctx.or(
+                    dest1.op,
+                    ctx.lsh_const(dest2.op, 0x20),
+                );
+                let rhs = self.rm_to_operand_xmm_64(&rm, i);
+                let arith = ctx.float_arithmetic(ty, dest_op, rhs, size);
+                let op = ctx.and_const(arith, 0xffff_ffff);
+                self.output(Operation::Move(dest1.dest, op, None));
+                let op = ctx.rsh_const(arith, 0x20);
+                self.output(Operation::Move(dest2.dest, op, None));
+            }
+        }
+        Ok(())
+    }
+
     fn xorps(&mut self) -> Result<(), Failed> {
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
         for i in 0..4 {
@@ -2168,12 +2255,16 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
         let rm = self.rm_to_operand(&rm);
-        self.output_arith(
+        self.output(Operation::Move(
             r.dest_operand_xmm(0),
-            ArithOpType::FloatToInt,
-            rm,
-            self.ctx.const_0(),
-        );
+            self.ctx.float_arithmetic(
+                ArithOpType::ToFloat,
+                rm,
+                self.ctx.const_0(),
+                MemAccessSize::Mem32
+            ),
+            None,
+        ));
         Ok(())
     }
 
@@ -2188,7 +2279,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             // High one first to account for rm == r
             for i in (0..2).rev() {
                 let result_f64 = ctx.arithmetic(
-                    ArithOpType::IntToDouble,
+                    ArithOpType::ToDouble,
                     self.rm_to_operand_xmm(&rm, i),
                     zero,
                 );
@@ -2200,12 +2291,16 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         } else if self.has_prefix(0xf2) {
             // 2 f64 to 2 i32
             for i in 0..2 {
-                self.output_arith(
+                self.output(Operation::Move(
                     r.dest_operand_xmm(i),
-                    ArithOpType::DoubleToInt,
-                    self.rm_to_operand_xmm_64(&rm, i),
-                    zero,
-                );
+                    ctx.float_arithmetic(
+                        ArithOpType::ToInt,
+                        self.rm_to_operand_xmm_64(&rm, i),
+                        zero,
+                        MemAccessSize::Mem64
+                    ),
+                    None,
+                ));
             }
             for i in 2..4 {
                 self.output(mov(r.dest_operand_xmm(i), zero));
@@ -2222,12 +2317,16 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             return Err(self.unknown_opcode());
         }
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
-        self.output_arith(
+        self.output(Operation::Move(
             r.dest_operand(),
-            ArithOpType::FloatToInt,
-            self.rm_to_operand_xmm(&rm, 0),
-            self.ctx.const_0(),
-        );
+            self.ctx.float_arithmetic(
+                ArithOpType::ToInt,
+                self.rm_to_operand_xmm(&rm, 0),
+                self.ctx.const_0(),
+                MemAccessSize::Mem32
+            ),
+            None,
+        ));
         Ok(())
     }
 
@@ -2236,7 +2335,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         for i in 0..4 {
             self.output_arith(
                 r.dest_operand_xmm(i),
-                ArithOpType::IntToFloat,
+                ArithOpType::ToFloat,
                 self.rm_to_operand_xmm(&rm, i),
                 self.ctx.const_0(),
             );
@@ -2696,7 +2795,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         } else {
             (st0, rm)
         };
-        let op = make_f32_operation(self.ctx, dest, op_ty, lhs, rhs);
+        let op = make_float_operation(self.ctx, dest, op_ty, lhs, rhs, MemAccessSize::Mem32);
         self.output(op);
         Ok(())
     }
@@ -3231,14 +3330,15 @@ enum ArithOperation {
     RightShiftArithmetic,
 }
 
-fn make_f32_operation<'e>(
+fn make_float_operation<'e>(
     ctx: OperandCtx<'e>,
     dest: DestOperand<'e>,
     ty: ArithOpType,
     left: Operand<'e>,
     right: Operand<'e>,
+    size: MemAccessSize,
 ) -> Operation<'e> {
-    let op = ctx.f32_arithmetic(ty, left, right);
+    let op = ctx.float_arithmetic(ty, left, right, size);
     Operation::Move(dest, op, None)
 }
 
