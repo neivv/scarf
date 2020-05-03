@@ -4638,3 +4638,23 @@ fn masked_sign_extend() {
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
 }
+
+#[test]
+fn gt_masked_mem() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt(
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem8(ctx.register(0)),
+                ctx.constant(0xc),
+            ),
+            0xff,
+        ),
+        ctx.mem8(ctx.register(0)),
+    );
+    let eq1 = ctx.gt(
+        ctx.constant(0xc),
+        ctx.mem8(ctx.register(0)),
+    );
+    assert_eq!(op1, eq1);
+}

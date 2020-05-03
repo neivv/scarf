@@ -50,8 +50,16 @@ pub fn simplify_arith<'e>(
             if let Some(new) = simplify_gt_lhs_sub(left, right) {
                 left = new;
             } else {
-                let (left_inner, mask) = Operand::and_masked(left);
-                let (right_inner, mask2) = Operand::and_masked(right);
+                let (left_inner, mask) = match Operand::and_masked(left) {
+                    (inner, x) if x == !0u64 =>
+                        (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
+                    x => x,
+                };
+                let (right_inner, mask2) = match Operand::and_masked(right) {
+                    (inner, x) if x == !0u64 =>
+                        (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
+                    x => x,
+                };
                 // Can simplify x - y > x to y > x if mask starts from bit 0
                 let mask_is_continuous_from_0 = mask.wrapping_add(1) & mask == 0;
                 if mask == mask2 && mask_is_continuous_from_0 {
