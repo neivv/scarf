@@ -61,8 +61,8 @@ pub fn simplify_arith<'e>(
                     x => x,
                 };
                 // Can simplify x - y > x to y > x if mask starts from bit 0
-                let mask_is_continuous_from_0 = mask.wrapping_add(1) & mask == 0;
-                if mask == mask2 && mask_is_continuous_from_0 {
+                let mask_is_continuous_from_0 = mask2.wrapping_add(1) & mask2 == 0;
+                if mask & mask2 == mask2 && mask_is_continuous_from_0 {
                     if let Some(new) = simplify_gt_lhs_sub(left_inner, right_inner) {
                         left = simplify_and_const(new, mask, ctx, swzb_ctx);
                     }

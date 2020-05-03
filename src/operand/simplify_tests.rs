@@ -4658,3 +4658,23 @@ fn gt_masked_mem() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn gt_masked_mem2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt(
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem8(ctx.register(0)),
+                ctx.constant(0xc),
+            ),
+            0xffff,
+        ),
+        ctx.mem8(ctx.register(0)),
+    );
+    let eq1 = ctx.gt(
+        ctx.constant(0xc),
+        ctx.mem8(ctx.register(0)),
+    );
+    assert_eq!(op1, eq1);
+}
