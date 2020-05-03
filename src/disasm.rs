@@ -1715,12 +1715,15 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     fn do_arith_operation(
         &mut self,
         arith: ArithOperation,
-        lhs: &ModRm_Rm,
+        lhs: &mut ModRm_Rm,
         rhs: Operand<'e>,
     ) {
         use self::operation_helpers::*;
-        let dest = self.rm_to_dest_and_operand(lhs);
+        // Operation size must be correct, but the lhs operand size may be
+        // extended to 64 after size has been taken.
         let size = lhs.size.to_mem_access_size();
+        self.skip_unnecessary_32bit_operand_masking(lhs, arith);
+        let dest = self.rm_to_dest_and_operand(lhs);
         let ctx = self.ctx;
         let normal_flags = match arith {
             ArithOperation::Add => Some(ArithOpType::Add),
@@ -1934,8 +1937,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let imm = self.read_variable_size_32(1, op_size)?;
         let val = self.ctx.constant(imm);
         let mut rm = ModRm_Rm::reg_variable_size(0, op_size);
-        self.skip_unnecessary_32bit_operand_masking(&mut rm, arith);
-        self.do_arith_operation(arith, &rm, val);
+        self.do_arith_operation(arith, &mut rm, val);
         Ok(())
     }
 
@@ -1948,13 +1950,12 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         };
         let (mut rm, r) = self.parse_modrm(op_size)?;
         let mut r = r.to_rm();
-        self.skip_unnecessary_32bit_operand_masking(&mut r, arith);
-        self.skip_unnecessary_32bit_operand_masking(&mut rm, arith);
         let rm_left = self.read_u8(0)? & 0x3 < 2;
         let (left, right) = match rm_left {
-            true => (&rm, &r),
-            false => (&r, &rm),
+            true => (&mut rm, &mut r),
+            false => (&mut r, &mut rm),
         };
+        self.skip_unnecessary_32bit_operand_masking(right, arith);
         let right = self.rm_to_operand(right);
         self.do_arith_operation(arith, left, right);
         Ok(())
@@ -2942,7 +2943,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, _) = self.parse_modrm(op_size)?;
+        let (mut rm, _) = self.parse_modrm(op_size)?;
         let shift_count = match self.read_u8(0)? & 2 {
             0 => self.ctx.const_1(),
             _ => self.reg_variable_size(Register(1), operand::MemAccessSize::Mem8).clone(),
@@ -2955,7 +2956,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             7 => ArithOperation::RightShiftArithmetic,
             _ => return Err(self.unknown_opcode()),
         };
-        self.do_arith_operation(arith, &rm, shift_count);
+        self.do_arith_operation(arith, &mut rm, shift_count);
         Ok(())
     }
 
@@ -3107,8 +3108,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             _ => self.mem16_32(),
         };
         let (mut rm, _, imm) = self.parse_modrm_imm(op_size, imm_size)?;
-        self.skip_unnecessary_32bit_operand_masking(&mut rm, arith);
-        self.do_arith_operation(arith, &rm, imm);
+        self.do_arith_operation(arith, &mut rm, imm);
         Ok(())
     }
 

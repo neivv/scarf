@@ -380,3 +380,20 @@ fn overflow_flag() {
          (ctx.register(7), ctx.constant(0x0)),
     ]);
 }
+
+#[test]
+fn sign_flag_u32() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x31, 0xd2, // xor edx, edx
+        0xb9, 0x00, 0x00, 0x00, 0x80, // mov ecx, 8000_0000
+        0x01, 0xc8, // add eax, ecx
+        0x0f, 0x98, 0xc2, // sets dl
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0x8000_0000)),
+         (ctx.register(1), ctx.constant(0x8000_0000)),
+         (ctx.register(2), ctx.constant(1)),
+    ]);
+}
