@@ -337,3 +337,46 @@ fn sse_f32_f64_arith() {
          (ctx.register(3), ctx.constant(0x40490000)),
     ]);
 }
+
+#[test]
+fn overflow_flag() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x31, 0xc9, // xor ecx, ecx
+        0x31, 0xd2, // xor edx, edx
+        0x31, 0xdb, // xor ebx, ebx
+        0xb1, 0x80, // mov cl, 80
+        0x28, 0xc8, // sub al, cl
+        0x0f, 0x90, 0xc2, // seto dl (0 - -80 = overflow)
+        0x31, 0xc0, // xor eax, eax
+        0x00, 0xc8, // add al, cl
+        0x0f, 0x90, 0xc3, // seto bl (0 + -80 = no overflow)
+        0xb1, 0x80, // mov cl, 0
+        0x28, 0xc8, // sub al, cl
+        0x0f, 0x90, 0xc6, // seto dh (0 - 0 = no overflow)
+        0x00, 0xc8, // add al, cl
+        0x0f, 0x90, 0xc7, // seto bh (0 + 0 = no overflow)
+        0x31, 0xc0, // xor eax, eax
+        0x89, 0xd6, // mov esi, edx (0x00_01)
+        0x89, 0xdf, // mov edi, ebx (0x00_00)
+
+        0x31, 0xd2, // xor edx, edx
+        0x31, 0xdb, // xor ebx, ebx
+        0xb1, 0x80, // mov cl, 80
+        0xb0, 0xff, // mov al, ff
+        0x28, 0xc8, // sub al, cl
+        0x0f, 0x90, 0xc2, // seto dl (-1 - -80 = no overflow)
+        0xb0, 0xff, // mov al, ff
+        0x00, 0xc8, // add al, cl
+        0x0f, 0x90, 0xc3, // seto bl (-1 + -80 = overflow)
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0x7f)),
+         (ctx.register(1), ctx.constant(0x80)),
+         (ctx.register(2), ctx.constant(0x0)),
+         (ctx.register(3), ctx.constant(0x1)),
+         (ctx.register(6), ctx.constant(0x1)),
+         (ctx.register(7), ctx.constant(0x0)),
+    ]);
+}

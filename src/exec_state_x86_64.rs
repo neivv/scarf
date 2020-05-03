@@ -509,21 +509,37 @@ impl<'e> ExecutionState<'e> {
         size: MemAccessSize,
     ) {
         use crate::operand::ArithOpType::*;
-        let resolved_left = arith.left;
-
         let ctx = self.ctx;
         let result = ctx.arithmetic(arith.ty, arith.left, arith.right);
         match arith.ty {
-            Add => {
-                let overflow = ctx.gt_signed(resolved_left, result, size);
-                let carry = ctx.gt(resolved_left, result);
-                self.state[FLAGS_INDEX + Flag::Carry as usize] = carry;
-                self.state[FLAGS_INDEX + Flag::Overflow as usize] = overflow;
-                self.result_flags(result, size);
-            }
-            Sub => {
-                let overflow = ctx.gt_signed(resolved_left, result, size);
-                let carry = ctx.gt(result, resolved_left);
+            Add | Sub => {
+                let sign_bit = match size {
+                    MemAccessSize::Mem8 => 0x80u64,
+                    MemAccessSize::Mem16 => 0x8000,
+                    MemAccessSize::Mem32 => 0x8000_0000,
+                    MemAccessSize::Mem64 => 0x8000_0000_0000_0000,
+                };
+                let mask = (sign_bit << 1).wrapping_sub(1);
+                let left = ctx.and_const(arith.left, mask);
+                let right = ctx.and_const(arith.right, mask);
+                let result = ctx.and_const(result, mask);
+                let carry;
+                let overflow;
+                if arith.ty == Add {
+                    carry = ctx.gt(left, result);
+                    // (right sge 0) == (left sgt result)
+                    overflow = ctx.eq(
+                        ctx.gt_const_left(sign_bit, right),
+                        ctx.gt_signed(left, result, size),
+                    );
+                } else {
+                    carry = ctx.gt(result, left);
+                    // (right sge 0) == (result sgt left)
+                    overflow = ctx.eq(
+                        ctx.gt_const_left(sign_bit, right),
+                        ctx.gt_signed(result, left, size),
+                    );
+                }
                 self.state[FLAGS_INDEX + Flag::Carry as usize] = carry;
                 self.state[FLAGS_INDEX + Flag::Overflow as usize] = overflow;
                 self.result_flags(result, size);
