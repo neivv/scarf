@@ -47,7 +47,7 @@ pub fn simplify_arith<'e>(
                 return ctx.const_0();
             }
             // x - y > x == y > x
-            if let Some(new) = simplify_gt_lhs_sub(left, right) {
+            if let Some(new) = simplify_gt_lhs_sub(ctx, left, right) {
                 left = new;
             } else {
                 let (left_inner, mask) = match Operand::and_masked(left) {
@@ -63,7 +63,7 @@ pub fn simplify_arith<'e>(
                 // Can simplify x - y > x to y > x if mask starts from bit 0
                 let mask_is_continuous_from_0 = mask2.wrapping_add(1) & mask2 == 0;
                 if mask & mask2 == mask2 && mask_is_continuous_from_0 {
-                    if let Some(new) = simplify_gt_lhs_sub(left_inner, right_inner) {
+                    if let Some(new) = simplify_gt_lhs_sub(ctx, left_inner, right_inner) {
                         left = simplify_and_const(new, mask, ctx, swzb_ctx);
                     }
                 }
@@ -77,6 +77,10 @@ pub fn simplify_arith<'e>(
                 (Some(c), None) => {
                     if c == 0 {
                         return ctx.const_0();
+                    }
+                    if c == 1 {
+                        // 1 > x if x == 0
+                        return ctx.eq_const(right, 0);
                     }
                     // max > x if x != max
                     let relbit_mask = right.relevant_bits_mask();
@@ -339,27 +343,75 @@ pub fn simplify_sign_extend<'e>(
     }
 }
 
-fn simplify_gt_lhs_sub<'e>(left: Operand<'e>, right: Operand<'e>) -> Option<Operand<'e>> {
-    // TODO collect_add_ops would be more complete
+fn simplify_gt_lhs_sub<'e>(
+    ctx: OperandCtx<'e>,
+    left: Operand<'e>,
+    right: Operand<'e>,
+) -> Option<Operand<'e>> {
+    // Does x - y > x == y > x simplification
+    // Returns `y` if it works.
     if let OperandType::Arithmetic(arith) = left.ty() {
-        if arith.ty == ArithOpType::Sub {
-            if arith.left == right {
-                return Some(arith.right)
-            }
-        } else if arith.ty == ArithOpType::Add {
-            // (x - y) + c > x + c
-            // (Should just use collect_add_ops)
-            if let Some(c) = arith.right.if_constant() {
-                if let Some((x, y)) = arith.left.if_arithmetic_sub() {
-                    if let Some((x2, c2)) = right.if_arithmetic_add() {
-                        if let Some(c2) = c2.if_constant() {
-                            if x == x2 && c == c2 {
-                                return Some(y);
-                            }
-                        }
-                    }
+        if arith.ty == ArithOpType::Sub || arith.ty == ArithOpType::Add {
+            let mut left_ops = Vec::new();
+            let mut right_ops = Vec::new();
+            let left_const = collect_add_ops(left, &mut left_ops, !0u64, false);
+            let right_const = collect_add_ops(right, &mut right_ops, !0u64, false);
+            // x + 5 > x + 9 => (x + 9) - 4 > x + 9
+            // so
+            // x + c1 > x + c2 => (x + c2) - (c2 - c1) > x + c2
+            let constant = right_const.wrapping_sub(left_const);
+            for &right_op in &right_ops {
+                if let Some(idx) = left_ops.iter().position(|&x| x == right_op) {
+                    left_ops.swap_remove(idx);
+                } else {
+                    return None;
                 }
             }
+            // The ops are stored as `-y`, so toggle all signs in order to return `+y`
+            //
+            // Additionally, if right side is only a constant, the canonicalize
+            // to minimal negations, unless we got rid of the constant on left
+            let got_rid_of_constant = constant == 0 && left_const != 0;
+            if right_ops.is_empty() && !got_rid_of_constant {
+                // This logic could probably be better
+                let was_already_canonical = if constant != left_const {
+                    // Prefer smaller constants
+                    (left_const as i64).checked_abs().map(|x| x as u64).unwrap_or(left_const)
+                        < (constant as i64).checked_abs().map(|x| x as u64).unwrap_or(constant)
+                } else {
+                    let negation_count = left_ops.iter().filter(|x| x.1 == true).count();
+                    if negation_count * 2 < left_ops.len() {
+                        // Less than half were negated
+                        true
+                    } else if negation_count * 2 == left_ops.len() {
+                        // Exactly half were negated, have canonical form have first
+                        // operand by Ord be positive
+                        let first_was_positive = left_ops.iter().min()
+                            .map(|x| x.1 == false)
+                            .unwrap_or(false);
+                        first_was_positive
+                    } else {
+                        false
+                    }
+                };
+                if was_already_canonical {
+                    return None;
+                }
+            }
+            for op in &mut left_ops {
+                op.1 = !op.1;
+            }
+            if left_ops.is_empty() {
+                return Some(ctx.constant(constant));
+            }
+            if constant != 0 {
+                if constant > 0x8000_0000_0000_0000 {
+                    left_ops.push((ctx.constant(0u64.wrapping_sub(constant)), true));
+                } else {
+                    left_ops.push((ctx.constant(constant), false));
+                }
+            }
+            return Some(add_sub_ops_to_tree(&mut left_ops, ctx));
         }
     }
     None
@@ -1852,6 +1904,7 @@ fn simplify_or_merge_child_ands<'e>(
 // Converts
 // (c > x) | (c == x) to (c + 1 > x),
 // (x > c) | (x == c) to (x > c + 1).
+// (x == 0) | (x == 1) to (2 > x)
 // Cannot do for values that can overflow, so just limit it to constants for now.
 // (Well, could do (c + 1 > x) | (c == max_value), but that isn't really simpler)
 fn simplify_or_merge_comparisions<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCtx<'e>) {
@@ -1918,6 +1971,12 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCt
                             }
                             _ => (),
                         }
+                    }
+                    if c.min(c2) == 0 && c.max(c2) == 1 && x == x2 &&
+                        ty == MatchType::Equal && ty2 == MatchType::Equal
+                    {
+                        new = Some(ctx.gt_const_left(2, x));
+                        remove = true;
                     }
                 }
                 if remove {

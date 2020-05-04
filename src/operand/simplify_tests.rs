@@ -4680,6 +4680,97 @@ fn gt_masked_mem2() {
 }
 
 #[test]
+fn gt_x_const() {
+    // x + 5 > x + 9
+    // (x + 9) - 4 > x + 9
+    // 4 > x + 9 (-6 >= x >= -9)
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt(
+        ctx.add(
+            ctx.register(0),
+            ctx.constant(5),
+        ),
+        ctx.add(
+            ctx.register(0),
+            ctx.constant(9),
+        ),
+    );
+    let eq1 = ctx.gt(
+        ctx.constant(4),
+        ctx.add(
+            ctx.register(0),
+            ctx.constant(9),
+        ),
+    );
+    assert_eq!(op1, eq1);
+
+    // x + 2 > x + 3
+    // (x + 3) - 1 > x + 3
+    // 1 > x + 3 (x == -3)
+    let op1 = ctx.gt(
+        ctx.add(
+            ctx.register(0),
+            ctx.constant(2),
+        ),
+        ctx.add(
+            ctx.register(0),
+            ctx.constant(3),
+        ),
+    );
+    let eq1 = ctx.eq(
+        ctx.constant(-3i64 as u64),
+        ctx.register(0),
+    );
+    assert_eq!(op1, eq1);
+
+    // x + 2 > 7
+    // 7 - (5 - x) > 7
+    // 5 - x > 7
+    let op1 = ctx.gt(
+        ctx.sub(
+            ctx.constant(5),
+            ctx.register(0),
+        ),
+        ctx.constant(7),
+    );
+    let eq1 = ctx.gt(
+        ctx.add_const(
+            ctx.register(0),
+            2,
+        ),
+        ctx.constant(7),
+    );
+    assert_eq!(op1, eq1);
+
+    let op1 = ctx.gt(
+        ctx.sub(
+            ctx.sub(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.constant(5),
+        ),
+        ctx.constant(0x7fff_ffff),
+    );
+    let eq1 = ctx.gt(
+        ctx.add(
+            ctx.sub(
+                ctx.register(1),
+                ctx.register(0),
+            ),
+            ctx.constant(0x8000_0004),
+        ),
+        ctx.constant(0x7fff_ffff),
+    );
+    assert_eq!(op1, eq1);
+    // Op1 is better form than eq1
+    assert!(
+        op1.if_arithmetic_gt().unwrap().0.iter().any(|x| x.if_constant() == Some(5)),
+        "Bad canonicalization: {}", op1,
+    );
+}
+
+#[test]
 fn eq_1bit() {
     let ctx = &OperandContext::new();
     let op1 = ctx.neq_const(
@@ -4704,6 +4795,55 @@ fn eq_1bit() {
             ctx.register(6),
             ctx.register(1),
         ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn x_is_0_or_1() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.eq_const(
+            ctx.register(2),
+            0,
+        ),
+        ctx.eq_const(
+            ctx.register(2),
+            1,
+        ),
+    );
+    let eq1 = ctx.gt(
+        ctx.constant(2),
+        ctx.register(2),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_gt_const_left() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt(
+        ctx.sub(
+            ctx.register(2),
+            ctx.constant(5),
+        ),
+        ctx.register(2),
+    );
+    let eq1 = ctx.gt(
+        ctx.constant(5),
+        ctx.register(2),
+    );
+    assert_eq!(op1, eq1);
+    let op1 = ctx.gt(
+        ctx.sub(
+            ctx.register(2),
+            ctx.constant(0xc000_0000_0000_0000),
+        ),
+        ctx.register(2),
+    );
+    let eq1 = ctx.gt(
+        ctx.constant(0xc000_0000_0000_0000),
+        ctx.register(2),
     );
     assert_eq!(op1, eq1);
 }

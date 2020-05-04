@@ -464,7 +464,7 @@ fn carry_flag_check<'e>(
             if let Some(op) = op.decide_with_lhs(ctx, r) {
                 Some(op)
             } else {
-                Some((r.clone(), l.clone()))
+                None
             }
         }
         Comparision::LessThan => {
@@ -472,11 +472,51 @@ fn carry_flag_check<'e>(
             if let Some(op) = op.decide_with_lhs(ctx, l) {
                 Some(op)
             } else {
-                Some((l.clone(), r.clone()))
+                None
             }
         }
         _ => None,
     }
+}
+
+#[test]
+fn carry_check_test() {
+    let ctx = &crate::OperandContext::new();
+    // a - b > a is normal carry check
+    let result = carry_flag_check(
+        ctx,
+        Comparision::GreaterThan,
+        ctx.sub(
+            ctx.register(0),
+            ctx.register(1),
+        ),
+        ctx.register(0),
+    );
+    assert_eq!(result, Some((ctx.register(0), ctx.register(1))));
+    // b - a > a
+    // => a - a - a + b > a
+    // => a - (a + a - b) > a
+    // would be valid but not done?
+    let result = carry_flag_check(
+        ctx,
+        Comparision::GreaterThan,
+        ctx.sub(
+            ctx.register(1),
+            ctx.register(0),
+        ),
+        ctx.register(0),
+    );
+    assert_eq!(result, None);
+    // b > a is would also be valid as
+    // a - a + b > a
+    // a - (a + b) > a
+    let result = carry_flag_check(
+        ctx,
+        Comparision::GreaterThan,
+        ctx.register(1),
+        ctx.register(0),
+    );
+    assert_eq!(result, None);
 }
 
 /// Left, right, size
@@ -504,7 +544,7 @@ fn extract_mask_single<'e>(op: Operand<'e>) -> (Operand<'e>, MemAccessSize) {
 /// Check either
 ///
 /// #1
-/// `(x - y) sgt x`
+/// `(x - y) sgt x` (TODO This is wrong, it is only overflow if y is positive)
 ///
 /// or
 ///
@@ -608,7 +648,7 @@ fn signed_less_check<'e>(
 ) -> Option<(Operand<'e>, Operand<'e>)> {
     match comp {
         Comparision::SignedLessThan => Some((l, r)),
-        Comparision::SignedGreaterOrEqual => Some((r, l)),
+        Comparision::SignedGreaterThan => Some((r, l)),
         _ => None,
     }
 }
@@ -620,7 +660,7 @@ fn unsigned_less_check<'e>(
 ) -> Option<(Operand<'e>, Operand<'e>)> {
     match comp {
         Comparision::LessThan => Some((l, r)),
-        Comparision::GreaterOrEqual => Some((r, l)),
+        Comparision::GreaterThan => Some((r, l)),
         _ => None,
     }
 }
