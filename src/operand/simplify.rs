@@ -957,11 +957,7 @@ pub fn simplify_eq<'e>(
                     // Check for (x == 0) == 0
                     let either_const = Operand::either(left, right, |x| x.if_constant());
                     if let Some((0, other)) = either_const {
-                        let is_compare = match other.ty() {
-                            OperandType::Arithmetic(arith) => arith.is_compare_op(),
-                            _ => false,
-                        };
-                        if is_compare {
+                        if other.relevant_bits().end == 1 {
                             return other.clone();
                         }
                     }
@@ -1142,14 +1138,9 @@ fn simplify_eq_2_ops<'e>(
 
     if let Some((c, other)) = Operand::either(left, right, |x| x.if_constant()) {
         if c == 1 {
-            // Simplify compare == 1 to compare
-            match other.ty() {
-                OperandType::Arithmetic(arith) => {
-                    if arith.is_compare_op() {
-                        return other.clone();
-                    }
-                }
-                _ => (),
+            // Simplify x == 1 to x if x is just the lowest bit
+            if other.relevant_bits().end == 1 {
+                return other;
             }
         }
     }

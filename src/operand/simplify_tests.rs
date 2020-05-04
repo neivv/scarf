@@ -4678,3 +4678,32 @@ fn gt_masked_mem2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn eq_1bit() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.neq_const(
+        ctx.or(
+            ctx.eq(
+                ctx.register(3),
+                ctx.register(2),
+            ),
+            ctx.eq(
+                ctx.register(6),
+                ctx.register(1),
+            ),
+        ),
+        0,
+    );
+    let eq1 = ctx.or(
+        ctx.eq(
+            ctx.register(3),
+            ctx.register(2),
+        ),
+        ctx.eq(
+            ctx.register(6),
+            ctx.register(1),
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
