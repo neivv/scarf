@@ -1196,6 +1196,9 @@ fn simplify_eq_2_ops<'e>(
             }
         }
     }
+    if let Some(result) = simplify_eq_2op_check_signed_less(ctx, left, right) {
+        return result;
+    }
     // Try to prove (x & mask) == ((x + c) & mask) true/false.
     // If c & mask == 0, it's true if c & mask2 == 0, otherwise unknown
     //    mask2 is mask, where 0-bits whose next bit is 1 are switched to 1.
@@ -1248,6 +1251,90 @@ fn simplify_eq_2_ops<'e>(
         right,
     };
     ctx.intern(OperandType::Arithmetic(arith))
+}
+
+// Check for sign(x - y) == overflow(x - y) => (y sgt x) == 0
+fn simplify_eq_2op_check_signed_less<'e>(
+    ctx: OperandCtx<'e>,
+    left: Operand<'e>,
+    right: Operand<'e>,
+) -> Option<Operand<'e>> {
+    let ((cmp_l, cmp_r, sign_bit, size), other) = Operand::either(left, right, |op| {
+        // Sign: (((x - y) & sign_bit) == 0) == 0
+        let (sub, sign) = op.if_arithmetic_eq()
+            .filter(|(_, r)| r.if_constant() == Some(0))
+            .and_then(|(l, _)| l.if_arithmetic_eq())
+            .filter(|(_, r)| r.if_constant() == Some(0))
+            .and_then(|(l, _)| l.if_arithmetic_and())?;
+        let sign_bit = sign.if_constant()?;
+        let size = match sign_bit {
+            0x80 => MemAccessSize::Mem8,
+            0x8000 => MemAccessSize::Mem16,
+            0x8000_0000 => MemAccessSize::Mem32,
+            0x8000_0000_0000_0000 => MemAccessSize::Mem64,
+            _ => return None,
+        };
+        let (l, r) = sub.if_arithmetic_sub()?;
+        Some((l, r, sign_bit, size))
+    })?;
+    let mask = (sign_bit << 1).wrapping_sub(1);
+    // Overflow: (sign_bit > y) == ((x - y) sgt x)
+    let other = other.if_arithmetic_eq()
+        .and_then(|(l, r)| {
+            Operand::either(l, r, |op| {
+                op.if_arithmetic_gt()
+                    .filter(|(l, _)| l.if_constant() == Some(sign_bit))
+                    .filter(|&(_, r)| r == cmp_r)
+                    .map(|_| ())
+            })
+            .map(|((), other)| other)
+        })
+        .or_else(|| {
+            // Also accept just `(x - y) sgt x` if y is known to be positive and
+            // `((x - y) sgt x) == 0` if negative
+            match cmp_r.if_constant() {
+                Some(s) if s < sign_bit => Some(other),
+                Some(_) => {
+                    let (l, r) = other.if_arithmetic_eq()?;
+                    if r.if_constant() == Some(0) {
+                        Some(l)
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }
+        })?;
+
+    // Since `a sgt b` is `((a + sign_bit) & mask) > ((b + sign_bit) & mask)`
+    // `(x - y) sgt x` will have been simplified to `(y & mask) > ((x + sign_bit) & mask)`
+    let (l, r) = other.if_arithmetic_gt()?;
+    let (l, l_mask) = Operand::and_masked(l);
+    let (r, r_mask) = Operand::and_masked(r);
+    if l_mask != mask {
+        if l_mask != !0u64 || l.relevant_bits().end > size.bits() as u8 {
+            return None;
+        }
+    }
+    let (r, rc) = r.if_arithmetic_add()?;
+    let rc = rc.if_constant()?;
+    let offset = rc.wrapping_sub(sign_bit) & mask;
+    let l_ok = match l.if_constant() {
+        Some(a) => match cmp_r.if_constant() {
+            Some(b) => a.wrapping_sub(offset) == b,
+            None => false,
+        },
+        None => offset == 0 && l == cmp_r,
+    };
+    if !l_ok || r_mask != mask || r != cmp_l {
+        return None;
+    }
+    let (cmp_l, cmp_r) = if offset == 0 {
+        (cmp_l, cmp_r)
+    } else {
+        (ctx.add_const(cmp_l, offset), ctx.add_const(cmp_r, offset))
+    };
+    Some(ctx.eq_const(ctx.gt_signed(cmp_r, cmp_l, size), 0))
 }
 
 fn simplify_eq_masked_add<'e>(operand: Operand<'e>) -> Option<(u64, Operand<'e>)> {
