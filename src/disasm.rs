@@ -504,6 +504,7 @@ fn instruction_operations32_main(
             s.output(neg_sign_extend_op);
             Ok(())
         },
+        0x9f => s.lahf(),
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
         0xa4 | 0xa5 | 0xaa | 0xab => {
@@ -553,6 +554,7 @@ fn instruction_operations32_main(
         0x110 | 0x111| 0x113 | 0x128 | 0x129 | 0x12b | 0x16f | 0x17e | 0x17f => s.sse_move(),
         0x12a => s.sse_int_to_float(),
         0x12c | 0x12d => s.cvttss2si(),
+        0x12e => s.sse_compare(),
         // rdtsc
         0x131 => {
             s.output(mov_to_reg(0, s.ctx.new_undef()));
@@ -798,6 +800,7 @@ fn instruction_operations64_main(
             }
             Ok(())
         },
+        0x9f => s.lahf(),
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
         0xa4 | 0xa5 | 0xaa | 0xab => {
@@ -845,6 +848,7 @@ fn instruction_operations64_main(
         0x110 | 0x111| 0x113 | 0x128 | 0x129 | 0x12b | 0x16f | 0x17e | 0x17f => s.sse_move(),
         0x12a => s.sse_int_to_float(),
         0x12c | 0x12d => s.cvttss2si(),
+        0x12e => s.sse_compare(),
         // rdtsc
         0x131 => {
             s.output(mov_to_reg(0, s.ctx.new_undef()));
@@ -1676,6 +1680,14 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         Ok(())
     }
 
+    fn lahf(&mut self) -> Result<(), Failed> {
+        // TODO implement
+        self.output(Operation::Move(
+            DestOperand::Register8High(Register(0)), self.ctx.new_undef(), None
+        ));
+        Ok(())
+    }
+
     fn move_mem_eax(&mut self) -> Result<(), Failed> {
         use self::operation_helpers::*;
         let op_size = match self.read_u8(0)? & 0x1 {
@@ -2247,6 +2259,24 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             let rhs = self.rm_to_operand_xmm(&rm, i);
             self.output_xor(dest, rhs);
         }
+        Ok(())
+    }
+
+    fn sse_compare(&mut self) -> Result<(), Failed> {
+        // TODO
+        let ctx = self.ctx;
+        let zero = ctx.const_0();
+        self.output(Operation::Move(
+            DestOperand::Flag(Flag::Zero), ctx.and_const(ctx.new_undef(), 1), None,
+        ));
+        self.output(Operation::Move(
+            DestOperand::Flag(Flag::Carry), ctx.and_const(ctx.new_undef(), 1), None,
+        ));
+        self.output(Operation::Move(
+            DestOperand::Flag(Flag::Parity), ctx.and_const(ctx.new_undef(), 1), None,
+        ));
+        self.output(Operation::Move(DestOperand::Flag(Flag::Overflow), zero, None));
+        self.output(Operation::Move(DestOperand::Flag(Flag::Sign), zero, None));
         Ok(())
     }
 
