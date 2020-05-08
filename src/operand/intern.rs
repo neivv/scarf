@@ -49,10 +49,12 @@ impl<'e> Interner<'e> {
                 RawEntryMut::Vacant(e) => {
                     let relevant_bits = ty.calculate_relevant_bits();
                     let min_zero_bit_simplify_size = ty.min_zero_bit_simplify_size();
+                    let flags = ty.flags();
                     let base = OperandBase {
                         ty,
                         min_zero_bit_simplify_size,
                         relevant_bits,
+                        flags,
                     };
                     let operand: Operand<'static> =
                         Operand(mem::transmute(self.arena.alloc(base)), PhantomData);
@@ -187,10 +189,12 @@ impl UndefInterner {
     pub fn push<'e>(&'e self, ty: OperandType<'e>) -> Operand<'e> {
         let relevant_bits = ty.calculate_relevant_bits();
         let min_zero_bit_simplify_size = ty.min_zero_bit_simplify_size();
+        let flags = ty.flags();
         let base: OperandBase<'static> = OperandBase {
             ty: unsafe { mem::transmute(ty) },
             min_zero_bit_simplify_size,
             relevant_bits,
+            flags,
         };
         let mut chunks = self.chunks.borrow_mut();
         loop {

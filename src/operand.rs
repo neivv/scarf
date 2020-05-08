@@ -38,7 +38,11 @@ struct OperandBase<'e> {
     min_zero_bit_simplify_size: u8,
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     relevant_bits: Range<u8>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
+    flags: u8,
 }
+
+const FLAG_CONTAINS_UNDEFINED: u8 = 0x1;
 
 impl<'e> Hash for OperandHashByAddress<'e> {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -65,6 +69,7 @@ impl<'e> Ord for Operand<'e> {
                 ref ty,
                 min_zero_bit_simplify_size: _,
                 relevant_bits: _,
+                flags: _,
             } = *self.0;
             ty.cmp(&other.0.ty)
         }
@@ -1140,6 +1145,20 @@ impl<'e> OperandType<'e> {
         }
     }
 
+    fn flags(&self) -> u8 {
+        use self::OperandType::*;
+        // Only flag at the moment is FLAG_CONTAINS_UNDEFINED
+        match *self {
+            Memory(ref mem) => mem.address.0.flags,
+            SignExtend(val, _, _) => val.0.flags,
+            Arithmetic(ref arith) | ArithmeticFloat(ref arith, _) => {
+                arith.left.0.flags | arith.right.0.flags
+            }
+            Xmm(..) | Flag(..) | Fpu(..) | Register(..) | Constant(..) | Custom(..) => 0,
+            Undefined(..) => FLAG_CONTAINS_UNDEFINED,
+        }
+    }
+
     /// Returns whether the operand is 8, 16, 32, or 64 bits.
     /// Relevant with signed multiplication, usually operands can be considered
     /// zero-extended u32.
@@ -1268,11 +1287,17 @@ impl<'e> Operand<'e> {
         })
     }
 
+    /// Returns true if self.ty() == OperandType::Undefined
     pub fn is_undefined(self) -> bool {
         match self.ty() {
             OperandType::Undefined(_) => true,
             _ => false,
         }
+    }
+
+    /// Returns true if self or any child operand is Undefined
+    pub fn contains_undefined(self) -> bool {
+        self.0.flags & FLAG_CONTAINS_UNDEFINED != 0
     }
 
     pub fn iter(self) -> Iter<'e> {

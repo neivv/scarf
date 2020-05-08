@@ -993,7 +993,7 @@ pub fn merge_states<'a: 'r, 'r>(
     }
     fn check_memory_eq<'e>(a: &Memory<'e>, b: &Memory<'e>) -> bool {
         a.map.iter().all(|(&key, val)| {
-            match contains_undefined(key.0) {
+            match key.0.contains_undefined() {
                 true => true,
                 false => match b.get(key.0) {
                     Some(b_val) => check_eq(*val, b_val),
@@ -1082,10 +1082,6 @@ pub fn merge_states<'a: 'r, 'r>(
     } else {
         None
     }
-}
-
-fn contains_undefined(oper: Operand<'_>) -> bool {
-    oper.iter().any(|x| x.is_undefined())
 }
 
 #[test]
