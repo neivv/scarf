@@ -8,6 +8,7 @@ use crate::vec_drop_iter::VecDropIter;
 use super::{
     ArithOperand, ArithOpType, MemAccessSize, Operand, OperandType, OperandCtx,
 };
+use super::slice_stack::{SizeLimitReached, Slice};
 
 #[derive(Default)]
 pub struct SimplifyWithZeroBits {
@@ -1506,9 +1507,18 @@ pub fn simplify_and_const<'e>(
     if let Some(result) = quick_and_simplify(left, right, ctx) {
         return result;
     }
-    let mut ops = vec![];
-    collect_and_ops(left, &mut ops, 30, ctx, swzb_ctx);
-    simplify_and_main(&mut ops, right, ctx, swzb_ctx)
+    ctx.simplify_temp_stack().alloc(|slice| {
+        collect_and_ops(left, slice, 30, ctx, swzb_ctx)
+            .and_then(|()| simplify_and_main(slice, right, ctx, swzb_ctx))
+            .unwrap_or_else(|_| {
+                let arith = ArithOperand {
+                    ty: ArithOpType::And,
+                    left,
+                    right: ctx.constant(right),
+                };
+                ctx.intern(OperandType::Arithmetic(arith))
+            })
+    })
 }
 
 pub fn simplify_and<'e>(
@@ -1525,33 +1535,39 @@ pub fn simplify_and<'e>(
         return simplify_and_const(other, c, ctx, swzb_ctx);
     }
 
-    let mut ops = vec![];
-    collect_and_ops(left, &mut ops, 30, ctx, swzb_ctx);
-    collect_and_ops(right, &mut ops, 30, ctx, swzb_ctx);
-    if ops.len() > 30 {
-        // This is likely some hash function being unrolled, give up
-        let arith = ArithOperand {
-            ty: ArithOpType::And,
-            left,
-            right,
-        };
-        return ctx.intern(OperandType::Arithmetic(arith));
-    }
-
-    simplify_and_main(&mut ops, !0u64, ctx, swzb_ctx)
+    ctx.simplify_temp_stack().alloc(|slice| {
+        collect_and_ops(left, slice, 30, ctx, swzb_ctx)
+            .and_then(|()| collect_and_ops(right, slice, 30, ctx, swzb_ctx))
+            .and_then(|()| {
+                if slice.len() > 30 {
+                    // This is likely some hash function being unrolled, give up
+                    Err(SizeLimitReached)
+                } else {
+                    simplify_and_main(slice, !0u64, ctx, swzb_ctx)
+                }
+            })
+            .unwrap_or_else(|_| {
+                let arith = ArithOperand {
+                    ty: ArithOpType::And,
+                    left,
+                    right,
+                };
+                return ctx.intern(OperandType::Arithmetic(arith));
+            })
+    })
 }
 
 fn simplify_and_main<'e>(
-    ops: &mut Vec<Operand<'e>>,
+    ops: &mut Slice<'e>,
     mut const_remain: u64,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
-) -> Operand<'e> {
+) -> Result<Operand<'e>, SizeLimitReached> {
     // Keep second mask in form 00000011111 (All High bits 0, all low bits 1),
     // as that allows simplifying add/sub/mul a bit more
     let mut low_const_remain = !0u64;
     loop {
-        for op in &mut *ops {
+        for op in ops.iter() {
             let relevant_bits = op.relevant_bits();
             if relevant_bits.start == 0 {
                 let shift = (64 - relevant_bits.end) & 63;
@@ -1566,7 +1582,7 @@ fn simplify_and_main<'e>(
             .fold(const_remain, |sum, x| sum & x);
         ops.retain(|x| x.if_constant().is_none());
         if ops.is_empty() || const_remain == 0 {
-            return ctx.constant(const_remain);
+            return Ok(ctx.constant(const_remain));
         }
         let crem_high_zeros = const_remain.leading_zeros();
         low_const_remain = low_const_remain << crem_high_zeros >> crem_high_zeros;
@@ -1589,7 +1605,7 @@ fn simplify_and_main<'e>(
 
         let mut ops_changed = false;
         if low_const_remain != !0 && low_const_remain != const_remain {
-            vec_filter_map(ops, |op| {
+            slice_filter_map(ops, |op| {
                 let new = simplify_with_and_mask(op, low_const_remain, ctx, swzb_ctx);
                 if let Some(c) = new.if_constant() {
                     if c & const_remain != const_remain {
@@ -1606,7 +1622,7 @@ fn simplify_and_main<'e>(
             });
         }
         if const_remain != !0 {
-            vec_filter_map(ops, |op| {
+            slice_filter_map(ops, |op| {
                 let new = simplify_with_and_mask(op, const_remain, ctx, swzb_ctx);
                 if let Some(c) = new.if_constant() {
                     if c & const_remain != const_remain {
@@ -1626,7 +1642,7 @@ fn simplify_and_main<'e>(
             break;
         }
         for bits in zero_bit_ranges(const_remain) {
-            vec_filter_map(ops, |op| {
+            slice_filter_map(ops, |op| {
                 simplify_with_zero_bits(op, &bits, ctx, swzb_ctx)
                     .and_then(|x| match x.if_constant() {
                         Some(0) => None,
@@ -1638,7 +1654,7 @@ fn simplify_and_main<'e>(
             // (simplify_with_zero_bits is defined to return None instead of Some(const(0)),
             // and obviously constant & 0 == 0)
             if ops.is_empty() {
-                return ctx.const_0();
+                return Ok(ctx.const_0());
             }
         }
         // Simplify (x | y) & mask to (x | (y & mask)) if mask is useless to x
@@ -1677,32 +1693,41 @@ fn simplify_and_main<'e>(
             const_remain = u64::max_value();
         }
 
-        let mut new_ops = vec![];
-        for i in 0..ops.len() {
+        let mut i = 0;
+        let mut end = ops.len();
+        while i < end {
             if let Some((l, r)) = ops[i].if_arithmetic_and() {
-                collect_and_ops(l, &mut new_ops, usize::max_value(), ctx, swzb_ctx);
-                collect_and_ops(r, &mut new_ops, usize::max_value(), ctx, swzb_ctx);
+                ops.swap_remove(i);
+                end -= 1;
+                collect_and_ops(l, ops, usize::max_value(), ctx, swzb_ctx)?;
+                if let Some(c) = r.if_constant() {
+                    const_remain &= c;
+                } else {
+                    collect_and_ops(r, ops, usize::max_value(), ctx, swzb_ctx)?;
+                }
+                ops_changed = true;
             } else if let Some(c) = ops[i].if_constant() {
+                ops.swap_remove(i);
+                end -= 1;
                 if c & const_remain != const_remain {
                     ops_changed = true;
                     const_remain &= c;
                 }
+            } else {
+                i += 1;
             }
         }
 
-        for op in &mut *ops {
+        for op in ops.iter() {
             let mask = op.relevant_bits_mask();
             if mask & const_remain != const_remain {
                 ops_changed = true;
                 const_remain &= mask;
             }
         }
-        ops.retain(|x| x.if_constant().is_none());
-        if new_ops.is_empty() && !ops_changed {
+        if !ops_changed {
             break;
         }
-        ops.retain(|x| x.if_arithmetic_and().is_none());
-        ops.extend(new_ops);
     }
     simplify_and_merge_child_ors(ops, ctx);
 
@@ -1711,7 +1736,7 @@ fn simplify_and_main<'e>(
         let neq_compare_count = ops.iter().filter(|&&x| is_neq_compare(x)).count();
         if neq_compare_count >= 2 {
             let mut neq_ops = Vec::with_capacity(neq_compare_count);
-            for &mut op in &mut *ops {
+            for &mut op in ops.iter_mut() {
                 if is_neq_compare(op) {
                     if let Some((l, _)) = op.if_arithmetic_eq() {
                         neq_ops.push(l);
@@ -1720,8 +1745,8 @@ fn simplify_and_main<'e>(
             }
             let or = simplify_or_ops(neq_ops, ctx, swzb_ctx);
             let not = simplify_eq(or, ctx.const_0(), ctx);
-            ops.retain(|&x| !is_neq_compare(x));
-            insert_sorted(ops, not);
+            ops.retain(|x| !is_neq_compare(x));
+            ops.push(not)?;
         }
     }
 
@@ -1735,8 +1760,8 @@ fn simplify_and_main<'e>(
         const_remain & relevant_bits
     };
     match ops.len() {
-        0 => return ctx.constant(final_const_remain),
-        1 if final_const_remain == 0 => return ops.remove(0),
+        0 => return Ok(ctx.constant(final_const_remain)),
+        1 if final_const_remain == 0 => return Ok(ops[0]),
         _ => (),
     };
     heapsort::sort(ops);
@@ -1761,7 +1786,7 @@ fn simplify_and_main<'e>(
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
-    tree
+    Ok(tree)
 }
 
 fn is_neq_compare(op: Operand<'_>) -> bool {
@@ -1774,16 +1799,9 @@ fn is_neq_compare(op: Operand<'_>) -> bool {
     }
 }
 
-fn insert_sorted<'e>(ops: &mut Vec<Operand<'e>>, new: Operand<'e>) {
-    let insert_pos = match ops.binary_search(&new) {
-        Ok(i) | Err(i) => i,
-    };
-    ops.insert(insert_pos, new);
-}
-
 /// Transform (x | y | ...) & x => x
-fn simplify_and_remove_unnecessary_ors(
-    ops: &mut Vec<Operand<'_>>,
+fn simplify_and_remove_unnecessary_ors<'e>(
+    ops: &mut Slice<'e>,
     const_remain: u64,
 ) {
     fn contains_or<'e>(op: Operand<'e>, check: Operand<'e>) -> bool {
@@ -1838,7 +1856,7 @@ fn simplify_and_remove_unnecessary_ors(
     }
 }
 
-fn simplify_and_merge_child_ors<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCtx<'e>) {
+fn simplify_and_merge_child_ors<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
     fn or_const<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
         match op.ty() {
             OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Or => {
@@ -1848,28 +1866,30 @@ fn simplify_and_merge_child_ors<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCtx<
         }
     }
 
-    let mut iter = VecDropIter::new(ops);
-    while let Some(mut op) = iter.next() {
+    let mut i = 0;
+    while i < ops.len() {
+        let op = ops[i];
         let mut new = None;
-        if let Some((mut constant, val)) = or_const(*op) {
-            let mut second = iter.duplicate();
-            while let Some(other_op) = second.next_removable() {
-                let mut remove = false;
-                if let Some((other_constant, other_val)) = or_const(*other_op) {
+        let mut changed = false;
+        if let Some((mut constant, val)) = or_const(op) {
+            for j in ((i + 1)..ops.len()).rev() {
+                let second = ops[j];
+                if let Some((other_constant, other_val)) = or_const(second) {
                     if other_val == val {
+                        ops.swap_remove(j);
                         constant &= other_constant;
-                        remove = true;
+                        changed = true;
                     }
                 }
-                if remove {
-                    other_op.remove();
-                }
             }
-            new = Some(ctx.or_const(val, constant));
+            if changed {
+                new = Some(ctx.or_const(val, constant));
+            }
         }
         if let Some(new) = new {
-            *op = new;
+            ops[i] = new;
         }
+        i += 1;
     }
 }
 
@@ -2159,18 +2179,44 @@ fn collect_arith_ops<'e>(
     }
 }
 
+fn collect_arith_ops2<'e>(
+    s: Operand<'e>,
+    ops: &mut Slice<'e>,
+    arith_type: ArithOpType,
+    limit: usize,
+    mut ctx_swzb: Option<(OperandCtx<'e>, &mut SimplifyWithZeroBits)>,
+) -> Result<(), SizeLimitReached> {
+    if ops.len() >= limit {
+        if ops.len() == limit {
+            ops.push(s)?;
+            #[cfg(feature = "fuzz")]
+            tls_simplification_incomplete();
+        }
+        return Ok(());
+    }
+    match s.ty() {
+        OperandType::Arithmetic(arith) if arith.ty == arith_type => {
+            let ctx_swzb_ = ctx_swzb.as_mut().map(|x| (x.0, &mut *x.1));
+            collect_arith_ops2(arith.left, ops, arith_type, limit, ctx_swzb_)?;
+            collect_arith_ops2(arith.right, ops, arith_type, limit, ctx_swzb)?;
+        }
+        _ => ops.push(s)?,
+    }
+    Ok(())
+}
+
 fn collect_mul_ops<'e>(s: Operand<'e>, ops: &mut Vec<Operand<'e>>) {
     collect_arith_ops(s, ops, ArithOpType::Mul, usize::max_value(), None);
 }
 
 fn collect_and_ops<'e>(
     s: Operand<'e>,
-    ops: &mut Vec<Operand<'e>>,
+    ops: &mut Slice<'e>,
     limit: usize,
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
-) {
-    collect_arith_ops(s, ops, ArithOpType::And, limit, Some((ctx, swzb)));
+) -> Result<(), SizeLimitReached> {
+    collect_arith_ops2(s, ops, ArithOpType::And, limit, Some((ctx, swzb)))
 }
 
 fn collect_or_ops<'e>(
@@ -2868,6 +2914,20 @@ fn simplify_shift_is_too_long_xor(ops: &[Operand<'_>]) -> bool {
         }
     }
     sum > LIMIT
+}
+
+fn slice_filter_map<'e, F>(slice: &mut Slice<'e>, mut fun: F)
+where F: FnMut(Operand<'e>) -> Option<Operand<'e>>,
+{
+    let mut out_pos = 0;
+    for in_pos in 0..slice.len() {
+        let val = slice[in_pos];
+        if let Some(new) = fun(val) {
+            slice[out_pos] = new;
+            out_pos += 1;
+        }
+    }
+    slice.shrink(out_pos);
 }
 
 fn vec_filter_map<T, F: FnMut(T) -> Option<T>>(vec: &mut Vec<T>, mut fun: F) {

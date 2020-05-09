@@ -1,5 +1,6 @@
 mod intern;
 mod simplify;
+mod slice_stack;
 #[cfg(test)]
 mod simplify_tests;
 
@@ -20,6 +21,8 @@ use std::ptr;
 use serde::{Deserialize, Serialize};
 
 use crate::bit_misc::{bits_overlap};
+
+use self::slice_stack::SliceStack;
 
 #[derive(Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize), serde(transparent))]
@@ -263,6 +266,7 @@ pub struct OperandContext<'e> {
     interner: intern::Interner<'e>,
     undef_interner: intern::UndefInterner,
     invariant_lifetime: PhantomData<&'e mut &'e ()>,
+    simplify_temp_stack: SliceStack<'static>, // Static since this would need may_dangle
 }
 
 /// Convenience alias for `OperandContext` reference that avoids having to
@@ -413,6 +417,7 @@ impl<'e> OperandContext<'e> {
             interner: intern::Interner::new(),
             undef_interner: intern::UndefInterner::new(),
             invariant_lifetime: PhantomData,
+            simplify_temp_stack: SliceStack::new(),
         };
         let common_operands = &mut result.common_operands;
         // Accessing interner here would force the invariant lifetime 'e to this stack frame.
@@ -981,6 +986,10 @@ impl<'e> OperandContext<'e> {
     /// Gets amount of operands interned. Intented for debug / diagnostic info.
     pub fn interned_count(&self) -> usize {
         self.interner.interned_count() + self.next_undefined.get() as usize
+    }
+
+    pub(crate) fn simplify_temp_stack(&'e self) -> &'e SliceStack<'e> {
+        unsafe { std::mem::transmute(&self.simplify_temp_stack) }
     }
 }
 
