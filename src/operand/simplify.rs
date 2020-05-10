@@ -7,7 +7,10 @@ use crate::heapsort;
 use super::{
     ArithOperand, ArithOpType, MemAccessSize, Operand, OperandType, OperandCtx,
 };
-use super::slice_stack::{SizeLimitReached, Slice};
+use super::slice_stack::{self, SizeLimitReached};
+
+type Slice<'e> = slice_stack::Slice<'e, Operand<'e>>;
+type AddSlice<'e> = slice_stack::Slice<'e, (Operand<'e>, bool)>;
 
 #[derive(Default)]
 pub struct SimplifyWithZeroBits {
@@ -352,66 +355,73 @@ fn simplify_gt_lhs_sub<'e>(
     // Returns `y` if it works.
     if let OperandType::Arithmetic(arith) = left.ty() {
         if arith.ty == ArithOpType::Sub || arith.ty == ArithOpType::Add {
-            let mut left_ops = Vec::new();
-            let mut right_ops = Vec::new();
-            let left_const = collect_add_ops(left, &mut left_ops, !0u64, false);
-            let right_const = collect_add_ops(right, &mut right_ops, !0u64, false);
-            // x + 5 > x + 9 => (x + 9) - 4 > x + 9
-            // so
-            // x + c1 > x + c2 => (x + c2) - (c2 - c1) > x + c2
-            let constant = right_const.wrapping_sub(left_const);
-            for &right_op in &right_ops {
-                if let Some(idx) = left_ops.iter().position(|&x| x == right_op) {
-                    left_ops.swap_remove(idx);
-                } else {
-                    return None;
-                }
-            }
-            // The ops are stored as `-y`, so toggle all signs in order to return `+y`
-            //
-            // Additionally, if right side is only a constant, the canonicalize
-            // to minimal negations, unless we got rid of the constant on left
-            let got_rid_of_constant = constant == 0 && left_const != 0;
-            if right_ops.is_empty() && !got_rid_of_constant {
-                // This logic could probably be better
-                let was_already_canonical = if constant != left_const {
-                    // Prefer smaller constants
-                    (left_const as i64).checked_abs().map(|x| x as u64).unwrap_or(left_const)
-                        < (constant as i64).checked_abs().map(|x| x as u64).unwrap_or(constant)
-                } else {
-                    let negation_count = left_ops.iter().filter(|x| x.1 == true).count();
-                    if negation_count * 2 < left_ops.len() {
-                        // Less than half were negated
-                        true
-                    } else if negation_count * 2 == left_ops.len() {
-                        // Exactly half were negated, have canonical form have first
-                        // operand by Ord be positive
-                        let first_was_positive = left_ops.iter().min()
-                            .map(|x| x.1 == false)
-                            .unwrap_or(false);
-                        first_was_positive
-                    } else {
-                        false
+            return ctx.simplify_temp_stack().alloc(|right_ops| {
+                // right_ops won't be modified after collecting, so allocate it first
+                let right_const = collect_add_ops(right, right_ops, !0u64, false).ok()?;
+                ctx.simplify_temp_stack().alloc(|left_ops| {
+                    let left_const = collect_add_ops(left, left_ops, !0u64, false).ok()?;
+                    // x + 5 > x + 9 => (x + 9) - 4 > x + 9
+                    // so
+                    // x + c1 > x + c2 => (x + c2) - (c2 - c1) > x + c2
+                    let constant = right_const.wrapping_sub(left_const);
+                    for &right_op in right_ops.iter() {
+                        if let Some(idx) = left_ops.iter().position(|&x| x == right_op) {
+                            left_ops.swap_remove(idx);
+                        } else {
+                            return None;
+                        }
                     }
-                };
-                if was_already_canonical {
-                    return None;
-                }
-            }
-            for op in &mut left_ops {
-                op.1 = !op.1;
-            }
-            if left_ops.is_empty() {
-                return Some(ctx.constant(constant));
-            }
-            if constant != 0 {
-                if constant > 0x8000_0000_0000_0000 {
-                    left_ops.push((ctx.constant(0u64.wrapping_sub(constant)), true));
-                } else {
-                    left_ops.push((ctx.constant(constant), false));
-                }
-            }
-            return Some(add_sub_ops_to_tree(&mut left_ops, ctx));
+                    // The ops are stored as `-y`, so toggle all signs in order to return `+y`
+                    //
+                    // Additionally, if right side is only a constant, the canonicalize
+                    // to minimal negations, unless we got rid of the constant on left
+                    let got_rid_of_constant = constant == 0 && left_const != 0;
+                    if right_ops.is_empty() && !got_rid_of_constant {
+                        // This logic could probably be better
+                        let was_already_canonical = if constant != left_const {
+                            // Prefer smaller constants
+                            let left_abs = (left_const as i64)
+                                .checked_abs().map(|x| x as u64).unwrap_or(left_const);
+                            let constant_abs = (constant as i64)
+                                .checked_abs().map(|x| x as u64).unwrap_or(constant);
+                            left_abs < constant_abs
+                        } else {
+                            let negation_count = left_ops.iter().filter(|x| x.1 == true).count();
+                            if negation_count * 2 < left_ops.len() {
+                                // Less than half were negated
+                                true
+                            } else if negation_count * 2 == left_ops.len() {
+                                // Exactly half were negated, have canonical form have first
+                                // operand by Ord be positive
+                                let first_was_positive = left_ops.iter().min()
+                                    .map(|x| x.1 == false)
+                                    .unwrap_or(false);
+                                first_was_positive
+                            } else {
+                                false
+                            }
+                        };
+                        if was_already_canonical {
+                            return None;
+                        }
+                    }
+                    for op in left_ops.iter_mut() {
+                        op.1 = !op.1;
+                    }
+                    if left_ops.is_empty() {
+                        return Some(ctx.constant(constant));
+                    }
+                    if constant != 0 {
+                        if constant > 0x8000_0000_0000_0000 {
+                            left_ops.push((ctx.constant(0u64.wrapping_sub(constant)), true))
+                                .ok()?;
+                        } else {
+                            left_ops.push((ctx.constant(constant), false)).ok()?;
+                        }
+                    }
+                    Some(add_sub_ops_to_tree(left_ops, ctx))
+                })
+            })
         }
     }
     None
@@ -856,7 +866,7 @@ pub fn simplify_rsh<'e>(
     }
 }
 
-fn simplify_add_merge_masked_reverting<'e>(ops: &mut Vec<(Operand<'e>, bool)>) -> u64 {
+fn simplify_add_merge_masked_reverting<'e>(ops: &mut AddSlice<'e>) -> u64 {
     // Shouldn't need as complex and_const as other places use
     fn and_const<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
         match op.ty() {
@@ -928,7 +938,7 @@ fn simplify_add_merge_masked_reverting<'e>(ops: &mut Vec<(Operand<'e>, bool)>) -
 /// (bool + u8) + bool = 0..10
 ///
 /// First return value is relbit mask for positive terms, second is for negative terms.
-fn relevant_bits_for_eq<'e>(ops: &Vec<(Operand<'e>, bool)>) -> (u64, u64) {
+fn relevant_bits_for_eq<'e>(ops: &[(Operand<'e>, bool)]) -> (u64, u64) {
     let mut sizes = ops.iter().map(|x| (x.1, x.0.relevant_bits())).collect::<Vec<_>>();
     heapsort::sort_by(&mut sizes, |(a_neg, a_bits), (b_neg, b_bits)| {
         (a_neg, a_bits.end) < (b_neg, b_bits.end)
@@ -989,7 +999,25 @@ pub fn simplify_eq<'e>(
     } else {
         u64::max_value() >> shared_mask.leading_zeros()
     };
-    let mut ops = simplify_add_sub_ops(left, right, true, add_sub_mask, ctx);
+    ctx.simplify_temp_stack().alloc(|ops| {
+        simplify_add_sub_ops(ops, left, right, true, add_sub_mask, ctx)?;
+        Ok(simplify_eq_ops(ops, add_sub_mask, ctx))
+    }).unwrap_or_else(|SizeLimitReached| {
+        let arith = ArithOperand {
+            ty: ArithOpType::Equal,
+            left,
+            right,
+        };
+        let ty = OperandType::Arithmetic(arith);
+        ctx.intern(ty)
+    })
+}
+
+fn simplify_eq_ops<'e>(
+    ops: &mut AddSlice<'e>,
+    add_sub_mask: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
     if ops.is_empty() {
         return ctx.const_1();
     }
@@ -1000,9 +1028,9 @@ pub fn simplify_eq<'e>(
     //
     // Sorting without the mask, hopefully is valid way to keep
     // ordering stable.
-    heapsort::sort_by(&mut ops, |a, b| Operand::and_masked(a.0) < Operand::and_masked(b.0));
+    heapsort::sort_by(ops, |a, b| Operand::and_masked(a.0) < Operand::and_masked(b.0));
     if ops[ops.len() - 1].1 == true {
-        for op in &mut ops {
+        for op in ops.iter_mut() {
             op.1 = !op.1;
         }
     }
@@ -2099,30 +2127,29 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
 }
 
 /// Does not collect constants into ops, but returns them added together instead.
-#[must_use]
 fn collect_add_ops<'e>(
     s: Operand<'e>,
-    ops: &mut Vec<(Operand<'e>, bool)>,
+    ops: &mut AddSlice<'e>,
     out_mask: u64,
     negate: bool,
-) -> u64 {
+) -> Result<u64, SizeLimitReached> {
     fn recurse<'e>(
         s: Operand<'e>,
-        ops: &mut Vec<(Operand<'e>, bool)>,
+        ops: &mut AddSlice<'e>,
         out_mask: u64,
         negate: bool,
-    ) -> u64 {
+    ) -> Result<u64, SizeLimitReached> {
         match s.ty() {
             OperandType::Arithmetic(arith) if {
                 arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
             } => {
-                let const1 = recurse(arith.left, ops, out_mask, negate);
+                let const1 = recurse(arith.left, ops, out_mask, negate)?;
                 let negate_right = match arith.ty {
                     ArithOpType::Add => negate,
                     _ => !negate,
                 };
-                let const2 = recurse(arith.right, ops, out_mask, negate_right);
-                const1.wrapping_add(const2)
+                let const2 = recurse(arith.right, ops, out_mask, negate_right)?;
+                Ok(const1.wrapping_add(const2))
             }
             _ => {
                 if let Some((l, r)) = s.if_arithmetic_and() {
@@ -2134,13 +2161,13 @@ fn collect_add_ops<'e>(
                 }
                 if let Some(c) = s.if_constant() {
                     if negate {
-                        0u64.wrapping_sub(c)
+                        Ok(0u64.wrapping_sub(c))
                     } else {
-                        c
+                        Ok(c)
                     }
                 } else {
-                    ops.push((s, negate));
-                    0
+                    ops.push((s, negate))?;
+                    Ok(0)
                 }
             }
         }
@@ -2362,11 +2389,20 @@ pub fn simplify_add_const<'e>(
         return ctx.intern(OperandType::Arithmetic(arith));
     }
 
-    let mut ops = Vec::new();
-    let const1 = collect_add_ops(left, &mut ops, u64::max_value(), false);
-    let const_sum = const1.wrapping_add(right);
-    simplify_collected_add_sub_ops(&mut ops, ctx, const_sum);
-    add_sub_ops_to_tree(&mut ops, ctx)
+    ctx.simplify_temp_stack()
+        .alloc(|ops| {
+            let const1 = collect_add_ops(left, ops, u64::max_value(), false)?;
+            let const_sum = const1.wrapping_add(right);
+            simplify_collected_add_sub_ops(ops, ctx, const_sum)?;
+            Ok(add_sub_ops_to_tree(ops, ctx))
+        }).unwrap_or_else(|SizeLimitReached| {
+            let arith = ArithOperand {
+                ty: ArithOpType::Add,
+                left: left,
+                right: ctx.constant(right),
+            };
+            return ctx.intern(OperandType::Arithmetic(arith));
+        })
 }
 
 pub fn simplify_sub_const<'e>(
@@ -2415,11 +2451,20 @@ pub fn simplify_sub_const<'e>(
         return ctx.intern(OperandType::Arithmetic(arith));
     }
 
-    let mut ops = Vec::new();
-    let const1 = collect_add_ops(left, &mut ops, u64::max_value(), false);
-    let const_sum = const1.wrapping_sub(right);
-    simplify_collected_add_sub_ops(&mut ops, ctx, const_sum);
-    add_sub_ops_to_tree(&mut ops, ctx)
+    ctx.simplify_temp_stack()
+        .alloc(|ops| {
+            let const1 = collect_add_ops(left, ops, u64::max_value(), false)?;
+            let const_sum = const1.wrapping_sub(right);
+            simplify_collected_add_sub_ops(ops, ctx, const_sum)?;
+            Ok(add_sub_ops_to_tree(ops, ctx))
+        }).unwrap_or_else(|SizeLimitReached| {
+            let arith = ArithOperand {
+                ty: ArithOpType::Add,
+                left: left,
+                right: ctx.constant(right),
+            };
+            return ctx.intern(OperandType::Arithmetic(arith));
+        })
 }
 
 pub fn simplify_add_sub<'e>(
@@ -2440,12 +2485,21 @@ pub fn simplify_add_sub<'e>(
             return simplify_add_const(left, c, ctx);
         }
     }
-    let mut ops = simplify_add_sub_ops(left, right, is_sub, u64::max_value(), ctx);
-    add_sub_ops_to_tree(&mut ops, ctx)
+    ctx.simplify_temp_stack().alloc(|ops| {
+        simplify_add_sub_ops(ops, left, right, is_sub, u64::max_value(), ctx)?;
+        Ok(add_sub_ops_to_tree(ops, ctx))
+    }).unwrap_or_else(|SizeLimitReached| {
+        let arith = ArithOperand {
+            ty: if is_sub { ArithOpType::Sub } else { ArithOpType::Add },
+            left: left,
+            right: right,
+        };
+        return ctx.intern(OperandType::Arithmetic(arith));
+    })
 }
 
 fn add_sub_ops_to_tree<'e>(
-    ops: &mut Vec<(Operand<'e>, bool)>,
+    ops: &mut AddSlice<'e>,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     use self::ArithOpType::*;
@@ -2702,45 +2756,46 @@ fn simplify_mul_try_mul_constants<'e>(
 }
 
 fn simplify_add_sub_ops<'e>(
+    ops: &mut AddSlice<'e>,
     left: Operand<'e>,
     right: Operand<'e>,
     is_sub: bool,
     mask: u64,
     ctx: OperandCtx<'e>,
-) -> Vec<(Operand<'e>, bool)> {
-    let mut ops = Vec::new();
-    let const1 = collect_add_ops(left, &mut ops, mask, false);
-    let const2 = collect_add_ops(right, &mut ops, mask, is_sub);
+) -> Result<(), SizeLimitReached> {
+    let const1 = collect_add_ops(left, ops, mask, false)?;
+    let const2 = collect_add_ops(right, ops, mask, is_sub)?;
     let const_sum = const1.wrapping_add(const2);
-    simplify_collected_add_sub_ops(&mut ops, ctx, const_sum);
-    ops
+    simplify_collected_add_sub_ops(ops, ctx, const_sum)?;
+    Ok(())
 }
 
 fn simplify_collected_add_sub_ops<'e>(
-    ops: &mut Vec<(Operand<'e>, bool)>,
+    ops: &mut AddSlice<'e>,
     ctx: OperandCtx<'e>,
     const_sum: u64,
-) {
+) -> Result<(), SizeLimitReached> {
     heapsort::sort(ops);
     simplify_add_merge_muls(ops, ctx);
     let new_consts = simplify_add_merge_masked_reverting(ops);
     let const_sum = const_sum.wrapping_add(new_consts);
     if ops.is_empty() {
         if const_sum != 0 {
-            ops.push((ctx.constant(const_sum), false));
+            ops.push((ctx.constant(const_sum), false))?;
         }
-        return;
+        return Ok(());
     }
 
     // NOTE add_sub_ops_to_tree assumes that if there's a constant it is last,
     // so don't move this without changing it.
     if const_sum != 0 {
         if const_sum > 0x8000_0000_0000_0000 {
-            ops.push((ctx.constant(0u64.wrapping_sub(const_sum)), true));
+            ops.push((ctx.constant(0u64.wrapping_sub(const_sum)), true))?;
         } else {
-            ops.push((ctx.constant(const_sum), false));
+            ops.push((ctx.constant(const_sum), false))?;
         }
     }
+    Ok(())
 }
 
 pub fn simplify_or<'e>(
@@ -3486,7 +3541,7 @@ fn simplify_with_one_bits<'e>(
 
 /// Merges things like [2 * b, a, c, b, c] to [a, 3 * b, 2 * c]
 fn simplify_add_merge_muls<'e>(
-    ops: &mut Vec<(Operand<'e>, bool)>,
+    ops: &mut AddSlice<'e>,
     ctx: OperandCtx<'e>,
 ) {
     fn count_equivalent_opers<'e>(ops: &[(Operand<'e>, bool)], equiv: Operand<'e>) -> Option<u64> {

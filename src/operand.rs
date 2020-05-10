@@ -266,7 +266,7 @@ pub struct OperandContext<'e> {
     interner: intern::Interner<'e>,
     undef_interner: intern::UndefInterner,
     invariant_lifetime: PhantomData<&'e mut &'e ()>,
-    simplify_temp_stack: SliceStack<'static>, // Static since this would need may_dangle
+    simplify_temp_stack: SliceStack,
 }
 
 /// Convenience alias for `OperandContext` reference that avoids having to
@@ -988,8 +988,8 @@ impl<'e> OperandContext<'e> {
         self.interner.interned_count() + self.next_undefined.get() as usize
     }
 
-    pub(crate) fn simplify_temp_stack(&'e self) -> &'e SliceStack<'e> {
-        unsafe { std::mem::transmute(&self.simplify_temp_stack) }
+    pub(crate) fn simplify_temp_stack(&'e self) -> &'e SliceStack {
+        &self.simplify_temp_stack
     }
 }
 
