@@ -26,6 +26,11 @@ fn hash_func64_1() {
     test64(0);
 }
 
+#[test]
+fn slow4() {
+    test(3);
+}
+
 struct DummyAnalyzer;
 impl<'e> analysis::Analyzer<'e> for DummyAnalyzer {
     type State = analysis::DefaultState;

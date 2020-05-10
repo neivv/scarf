@@ -1346,55 +1346,23 @@ impl<'e> Operand<'e> {
         oper: Operand<'e>,
         ctx: OperandCtx<'e>,
     ) -> Option<(Operand<'e>, u64)> {
-        // TODO: Investigate if this should be in `recurse`
-        if let Some(c) = oper.if_constant() {
-            return Some((ctx.const_0(), c));
-        }
-
-        fn recurse<'e>(oper: Operand<'e>) -> Option<u64> {
-            // ehhh
-            match *oper.ty() {
-                OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Add => {
-                    if let Some(c) = arith.left.if_constant() {
-                        Some(recurse(arith.right).unwrap_or(0).wrapping_add(c))
-                    } else if let Some(c) = arith.right.if_constant() {
-                        Some(recurse(arith.left).unwrap_or(0).wrapping_add(c))
-                    } else {
-                        if let Some(c) = recurse(arith.left) {
-                            Some(recurse(arith.right).unwrap_or(0).wrapping_add(c))
-                        } else if let Some(c) = recurse(arith.right) {
-                            Some(recurse(arith.left).unwrap_or(0).wrapping_add(c))
-                        } else {
-                            None
-                        }
-                    }
-
+        match *oper.ty() {
+            OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Add => {
+                if let Some(c) = arith.right.if_constant() {
+                    return Some((arith.left, c));
                 }
-                OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
-                    if let Some(c) = arith.left.if_constant() {
-                        Some(c.wrapping_sub(recurse(arith.right).unwrap_or(0)))
-                    } else if let Some(c) = arith.right.if_constant() {
-                        Some(recurse(arith.left).unwrap_or(0).wrapping_sub(c))
-                    } else {
-                        if let Some(c) = recurse(arith.left) {
-                            Some(c.wrapping_sub(recurse(arith.right).unwrap_or(0)))
-                        } else if let Some(c) = recurse(arith.right) {
-                            Some(recurse(arith.left).unwrap_or(0).wrapping_sub(c))
-                        } else {
-                            None
-                        }
-                    }
-
-                }
-                _ => None,
             }
+            OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Sub => {
+                if let Some(c) = arith.right.if_constant() {
+                    return Some((arith.left, 0u64.wrapping_sub(c)));
+                }
+            }
+            OperandType::Constant(c) => {
+                return Some((ctx.const_0(), c));
+            }
+            _ => (),
         }
-        if let Some(offset) = recurse(oper) {
-            let base = ctx.sub_const(oper, offset);
-            Some((base, offset))
-        } else {
-            None
-        }
+        None
     }
 
     /// Returns `Some(c)` if `self.ty` is `OperandType::Constant(c)`
