@@ -13,7 +13,6 @@ pub mod exec_state_x86_64;
 mod heapsort;
 mod light_byteorder;
 pub mod operand;
-mod vec_drop_iter;
 
 pub use crate::analysis::{Analyzer};
 pub use crate::disasm::{DestOperand, Operation, operation_helpers};

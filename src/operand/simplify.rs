@@ -3,7 +3,6 @@ use std::ops::Range;
 
 use crate::bit_misc::{bits_overlap, one_bit_ranges, zero_bit_ranges};
 use crate::heapsort;
-use crate::vec_drop_iter::VecDropIter;
 
 use super::{
     ArithOperand, ArithOpType, MemAccessSize, Operand, OperandType, OperandCtx,
@@ -419,26 +418,26 @@ fn simplify_gt_lhs_sub<'e>(
 }
 
 fn simplify_xor_ops<'e>(
-    ops: &mut Vec<Operand<'e>>,
+    ops: &mut Slice<'e>,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
-) -> Operand<'e> {
+) -> Result<Operand<'e>, SizeLimitReached> {
     let mut const_val = 0;
     loop {
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum ^ x);
         ops.retain(|x| x.if_constant().is_none());
-        heapsort::sort(&mut *ops);
+        heapsort::sort(ops);
         simplify_xor_remove_reverting(ops);
         simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
         simplify_or_merge_child_ands(ops, ctx, swzb_ctx, true);
         if ops.is_empty() {
-            return ctx.constant(const_val);
+            return Ok(ctx.constant(const_val));
         }
 
         let mut ops_changed = false;
         for i in 0..ops.len() {
-            let op = &ops[i];
+            let op = ops[i];
             // Convert c1 ^ (y | z) to c1 ^ z ^ y if y & z == 0
             if let Some((l, r)) = op.if_arithmetic_or() {
                 let l_bits = match l.if_constant() {
@@ -452,12 +451,10 @@ fn simplify_xor_ops<'e>(
                 if l_bits & r_bits == 0 {
                     if let Some(c) = r.if_constant() {
                         const_val ^= c;
-                        ops[i] = l.clone();
-                    } else {
-                        let l = l.clone();
-                        let r = r.clone();
                         ops[i] = l;
-                        ops.push(r);
+                    } else {
+                        ops[i] = l;
+                        ops.push(r)?;
                     }
                     ops_changed = true;
                 }
@@ -471,24 +468,27 @@ fn simplify_xor_ops<'e>(
                 ops_changed = true;
             }
         }
-        let mut new_ops = vec![];
-        for i in 0..ops.len() {
+        let mut i = 0;
+        let mut end = ops.len();
+        while i < end {
             if let Some((l, r)) = ops[i].if_arithmetic(ArithOpType::Xor) {
-                collect_xor_ops(l, &mut new_ops, usize::max_value(), ctx, swzb_ctx);
-                collect_xor_ops(r, &mut new_ops, usize::max_value(), ctx, swzb_ctx);
+                ops_changed = true;
+                ops.swap_remove(i);
+                end -= 1;
+                collect_xor_ops(l, ops, usize::max_value(), ctx, swzb_ctx)?;
+                collect_xor_ops(r, ops, usize::max_value(), ctx, swzb_ctx)?;
             }
+            i += 1;
         }
-        if new_ops.is_empty() && !ops_changed {
-            heapsort::sort(&mut *ops);
+        if !ops_changed {
+            heapsort::sort(ops);
             break;
         }
-        ops.retain(|x| x.if_arithmetic(ArithOpType::Xor).is_none());
-        ops.extend(new_ops);
     }
 
     match ops.len() {
-        0 => return ctx.constant(const_val),
-        1 if const_val == 0 => return ops.remove(0),
+        0 => return Ok(ctx.constant(const_val)),
+        1 if const_val == 0 => return Ok(ops[0]),
         _ => (),
     };
     let mut tree = ops.pop()
@@ -510,11 +510,11 @@ fn simplify_xor_ops<'e>(
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
-    tree
+    Ok(tree)
 }
 
 /// Assumes that `ops` is sorted.
-fn simplify_xor_remove_reverting<'e>(ops: &mut Vec<Operand<'e>>) {
+fn simplify_xor_remove_reverting<'e>(ops: &mut Slice<'e>) {
     let mut first_same = ops.len() as isize - 1;
     let mut pos = first_same - 1;
     while pos >= 0 {
@@ -593,17 +593,20 @@ pub fn simplify_lsh<'e>(
                 }
                 ArithOpType::Xor => {
                     // Try to simplify any parts of the xor separately
-                    let mut ops = vec![];
-                    collect_xor_ops(left, &mut ops, 16, ctx, swzb_ctx);
-                    if simplify_shift_is_too_long_xor(&ops) {
-                        // Give up on dumb long xors
-                        default()
-                    } else {
-                        for op in &mut ops {
-                            *op = simplify_lsh(*op, right, ctx, swzb_ctx);
-                        }
-                        simplify_xor_ops(&mut ops, ctx, swzb_ctx)
-                    }
+                    ctx.simplify_temp_stack()
+                        .alloc(|slice| {
+                            collect_xor_ops(left, slice, 16, ctx, swzb_ctx).ok()?;
+                            if simplify_shift_is_too_long_xor(slice) {
+                                // Give up on dumb long xors
+                                None
+                            } else {
+                                for op in slice.iter_mut() {
+                                    *op = simplify_lsh(*op, right, ctx, swzb_ctx);
+                                }
+                                simplify_xor_ops(slice, ctx, swzb_ctx).ok()
+                            }
+                        })
+                        .unwrap_or_else(|| default())
                 }
                 ArithOpType::Mul => {
                     if constant < 0x10 {
@@ -736,17 +739,20 @@ pub fn simplify_rsh<'e>(
                 }
                 ArithOpType::Xor => {
                     // Try to simplify any parts of the xor separately
-                    let mut ops = vec![];
-                    collect_xor_ops(left, &mut ops, 16, ctx, swzb_ctx);
-                    if simplify_shift_is_too_long_xor(&ops) {
-                        // Give up on dumb long xors
-                        default()
-                    } else {
-                        for op in &mut ops {
-                            *op = simplify_rsh(*op, right, ctx, swzb_ctx);
-                        }
-                        simplify_xor_ops(&mut ops, ctx, swzb_ctx)
-                    }
+                    ctx.simplify_temp_stack()
+                        .alloc(|slice| {
+                            collect_xor_ops(left, slice, 16, ctx, swzb_ctx).ok()?;
+                            if simplify_shift_is_too_long_xor(slice) {
+                                // Give up on dumb long xors
+                                None
+                            } else {
+                                for op in slice.iter_mut() {
+                                    *op = simplify_rsh(*op, right, ctx, swzb_ctx);
+                                }
+                                simplify_xor_ops(slice, ctx, swzb_ctx).ok()
+                            }
+                        })
+                        .unwrap_or_else(|| default())
                 }
                 ArithOpType::Lsh => {
                     if let Some(lsh_const) = arith.right.if_constant() {
@@ -1538,14 +1544,7 @@ pub fn simplify_and<'e>(
     ctx.simplify_temp_stack().alloc(|slice| {
         collect_and_ops(left, slice, 30, ctx, swzb_ctx)
             .and_then(|()| collect_and_ops(right, slice, 30, ctx, swzb_ctx))
-            .and_then(|()| {
-                if slice.len() > 30 {
-                    // This is likely some hash function being unrolled, give up
-                    Err(SizeLimitReached)
-                } else {
-                    simplify_and_main(slice, !0u64, ctx, swzb_ctx)
-                }
-            })
+            .and_then(|()| simplify_and_main(slice, !0u64, ctx, swzb_ctx))
             .unwrap_or_else(|_| {
                 let arith = ArithOperand {
                     ty: ArithOpType::And,
@@ -1735,18 +1734,21 @@ fn simplify_and_main<'e>(
     if ops.len() >= 2 {
         let neq_compare_count = ops.iter().filter(|&&x| is_neq_compare(x)).count();
         if neq_compare_count >= 2 {
-            let mut neq_ops = Vec::with_capacity(neq_compare_count);
-            for &mut op in ops.iter_mut() {
-                if is_neq_compare(op) {
-                    if let Some((l, _)) = op.if_arithmetic_eq() {
-                        neq_ops.push(l);
+            let not: Result<_, SizeLimitReached> = ctx.simplify_temp_stack().alloc(|slice| {
+                for &op in ops.iter() {
+                    if is_neq_compare(op) {
+                        if let Some((l, _)) = op.if_arithmetic_eq() {
+                            slice.push(l)?;
+                        }
                     }
                 }
+                let or = simplify_or_ops(slice, ctx, swzb_ctx)?;
+                Ok(simplify_eq(or, ctx.const_0(), ctx))
+            });
+            if let Ok(not) = not {
+                ops.retain(|x| !is_neq_compare(x));
+                ops.push(not)?;
             }
-            let or = simplify_or_ops(neq_ops, ctx, swzb_ctx);
-            let not = simplify_eq(or, ctx.const_0(), ctx);
-            ops.retain(|x| !is_neq_compare(x));
-            ops.push(not)?;
         }
     }
 
@@ -1899,7 +1901,7 @@ fn simplify_and_merge_child_ors<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
 // Technically valid for any non-overlapping x and y, but limit transformation
 // to cases where x and y are xors.
 fn simplify_or_merge_xors<'e>(
-    ops: &mut Vec<Operand<'e>>,
+    ops: &mut Slice<'e>,
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) {
@@ -1910,25 +1912,28 @@ fn simplify_or_merge_xors<'e>(
         }
     }
 
-    let mut iter = VecDropIter::new(ops);
-    while let Some(mut op) = iter.next() {
-        let mut new = None;
-        if is_xor(*op) {
-            let mut second = iter.duplicate();
+    let mut i = 0;
+    while i < ops.len() {
+        let op = ops[i];
+        if is_xor(op) {
+            let mut j = i + 1;
+            let mut new = op;
             let bits = op.relevant_bits();
-            while let Some(other_op) = second.next_removable() {
-                if is_xor(*other_op) {
+            while j < ops.len() {
+                let other_op = ops[i];
+                if is_xor(other_op) {
                     let other_bits = other_op.relevant_bits();
                     if !bits_overlap(&bits, &other_bits) {
-                        new = Some(simplify_xor(*op, *other_op, ctx, swzb));
-                        other_op.remove();
+                        new = simplify_xor(new, other_op, ctx, swzb);
+                        ops.swap_remove(j);
+                        continue; // Without incrementing j
                     }
                 }
+                j += 1;
             }
+            ops[i] = new;
         }
-        if let Some(new) = new {
-            *op = new;
-        }
+        i += 1;
     }
 }
 
@@ -1937,7 +1942,7 @@ fn simplify_or_merge_xors<'e>(
 ///
 /// Also used by xors with only_nonoverlapping true
 fn simplify_or_merge_child_ands<'e>(
-    ops: &mut Vec<Operand<'e>>,
+    ops: &mut Slice<'e>,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
     only_nonoverlapping: bool,
@@ -1975,15 +1980,14 @@ fn simplify_or_merge_child_ands<'e>(
         return;
     }
 
-    let mut iter = VecDropIter::new(ops);
-    while let Some(mut op) = iter.next() {
-        let mut new = None;
-        if let Some((mut constant, val)) = and_const(*op) {
-            let mut second = iter.duplicate();
-            let mut new_val = val.clone();
-            while let Some(other_op) = second.next_removable() {
-                let mut remove = false;
-                if let Some((other_constant, other_val)) = and_const(*other_op) {
+    let mut i = 0;
+    while i < ops.len() {
+        if let Some((mut constant, val)) = and_const(ops[i]) {
+            let mut new_val = val;
+            let mut j = i + 1;
+            let mut changed = false;
+            while j < ops.len() {
+                if let Some((other_constant, other_val)) = and_const(ops[j]) {
                     let result = if only_nonoverlapping && other_constant & constant != 0 {
                         None
                     } else {
@@ -1992,18 +1996,18 @@ fn simplify_or_merge_child_ands<'e>(
                     if let Some(merged) = result {
                         constant |= other_constant;
                         new_val = merged;
-                        remove = true;
+                        ops.swap_remove(j);
+                        changed = true;
+                        continue; // Without incrementing j
                     }
                 }
-                if remove {
-                    other_op.remove();
-                }
+                j += 1;
             }
-            new = Some(simplify_and_const(new_val, constant, ctx, swzb_ctx));
+            if changed {
+                ops[i] = simplify_and_const(new_val, constant, ctx, swzb_ctx);
+            }
         }
-        if let Some(new) = new {
-            *op = new;
-        }
+        i += 1;
     }
 }
 
@@ -2014,7 +2018,7 @@ fn simplify_or_merge_child_ands<'e>(
 // (x == 0) | (x == 1) to (2 > x)
 // Cannot do for values that can overflow, so just limit it to constants for now.
 // (Well, could do (c + 1 > x) | (c == max_value), but that isn't really simpler)
-fn simplify_or_merge_comparisions<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCtx<'e>) {
+fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
     #[derive(Eq, PartialEq, Copy, Clone)]
     enum MatchType {
         ConstantGreater,
@@ -2048,14 +2052,12 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCt
         None
     }
 
-    let mut iter = VecDropIter::new(ops);
-    while let Some(mut op) = iter.next() {
-        let mut new = None;
-        if let Some((c, x, ty)) = check_match(*op) {
-            let mut second = iter.duplicate();
-            while let Some(other_op) = second.next_removable() {
-                let mut remove = false;
-                if let Some((c2, x2, ty2)) = check_match(*other_op) {
+    let mut i = 0;
+    'outer: while i < ops.len() {
+        if let Some((c, x, ty)) = check_match(ops[i]) {
+            let mut j = i + 1;
+            while j < ops.len() {
+                if let Some((c2, x2, ty2)) = check_match(ops[j]) {
                     if c == c2 && x == x2 {
                         match (ty, ty2) {
                             (MatchType::ConstantGreater, MatchType::Equal) |
@@ -2064,16 +2066,18 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCt
                                 // min/max edge cases can be handled by gt simplification,
                                 // don't do them here.
                                 if let Some(new_c) = c.checked_add(1) {
-                                    new = Some(ctx.gt_const_left(new_c, x));
-                                    remove = true;
+                                    ops[i] = ctx.gt_const_left(new_c, x);
+                                    ops.swap_remove(j);
+                                    continue 'outer;
                                 }
                             }
                             (MatchType::ConstantLess, MatchType::Equal) |
                                 (MatchType::Equal, MatchType::ConstantLess) =>
                             {
                                 if let Some(new_c) = c.checked_sub(1) {
-                                    new = Some(ctx.gt_const(x, new_c));
-                                    remove = true;
+                                    ops[i] = ctx.gt_const(x, new_c);
+                                    ops.swap_remove(j);
+                                    continue 'outer;
                                 }
                             }
                             _ => (),
@@ -2082,19 +2086,15 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCt
                     if c.min(c2) == 0 && c.max(c2) == 1 && x == x2 &&
                         ty == MatchType::Equal && ty2 == MatchType::Equal
                     {
-                        new = Some(ctx.gt_const_left(2, x));
-                        remove = true;
+                        ops[i] = ctx.gt_const_left(2, x);
+                        ops.swap_remove(j);
+                        continue 'outer;
                     }
                 }
-                if remove {
-                    other_op.remove();
-                    break;
-                }
+                j += 1;
             }
         }
-        if let Some(new) = new {
-            *op = new;
-        }
+        i += 1;
     }
 }
 
@@ -2150,36 +2150,9 @@ fn collect_add_ops<'e>(
 
 /// Unwraps a tree chaining arith operation to vector of the operands.
 ///
-/// Simplifies operands in process.
-///
 /// If the limit is set, caller should verify that it was not hit (ops.len() > limit),
-/// as not all ops will end up being collected (TODO Probs should return result)
+/// as not all ops will end up being collected.
 fn collect_arith_ops<'e>(
-    s: Operand<'e>,
-    ops: &mut Vec<Operand<'e>>,
-    arith_type: ArithOpType,
-    limit: usize,
-    mut ctx_swzb: Option<(OperandCtx<'e>, &mut SimplifyWithZeroBits)>,
-) {
-    if ops.len() >= limit {
-        if ops.len() == limit {
-            ops.push(s.clone());
-            #[cfg(feature = "fuzz")]
-            tls_simplification_incomplete();
-        }
-        return;
-    }
-    match s.ty() {
-        OperandType::Arithmetic(arith) if arith.ty == arith_type => {
-            let ctx_swzb_ = ctx_swzb.as_mut().map(|x| (x.0, &mut *x.1));
-            collect_arith_ops(arith.left, ops, arith_type, limit, ctx_swzb_);
-            collect_arith_ops(arith.right, ops, arith_type, limit, ctx_swzb);
-        }
-        _ => ops.push(s),
-    }
-}
-
-fn collect_arith_ops2<'e>(
     s: Operand<'e>,
     ops: &mut Slice<'e>,
     arith_type: ArithOpType,
@@ -2192,21 +2165,21 @@ fn collect_arith_ops2<'e>(
             #[cfg(feature = "fuzz")]
             tls_simplification_incomplete();
         }
-        return Ok(());
+        return Err(SizeLimitReached);
     }
     match s.ty() {
         OperandType::Arithmetic(arith) if arith.ty == arith_type => {
             let ctx_swzb_ = ctx_swzb.as_mut().map(|x| (x.0, &mut *x.1));
-            collect_arith_ops2(arith.left, ops, arith_type, limit, ctx_swzb_)?;
-            collect_arith_ops2(arith.right, ops, arith_type, limit, ctx_swzb)?;
+            collect_arith_ops(arith.left, ops, arith_type, limit, ctx_swzb_)?;
+            collect_arith_ops(arith.right, ops, arith_type, limit, ctx_swzb)?;
         }
         _ => ops.push(s)?,
     }
     Ok(())
 }
 
-fn collect_mul_ops<'e>(s: Operand<'e>, ops: &mut Vec<Operand<'e>>) {
-    collect_arith_ops(s, ops, ArithOpType::Mul, usize::max_value(), None);
+fn collect_mul_ops<'e>(s: Operand<'e>, ops: &mut Slice<'e>) -> Result<(), SizeLimitReached> {
+    collect_arith_ops(s, ops, ArithOpType::Mul, usize::max_value(), None)
 }
 
 fn collect_and_ops<'e>(
@@ -2216,26 +2189,26 @@ fn collect_and_ops<'e>(
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Result<(), SizeLimitReached> {
-    collect_arith_ops2(s, ops, ArithOpType::And, limit, Some((ctx, swzb)))
+    collect_arith_ops(s, ops, ArithOpType::And, limit, Some((ctx, swzb)))
 }
 
 fn collect_or_ops<'e>(
     s: Operand<'e>,
-    ops: &mut Vec<Operand<'e>>,
+    ops: &mut Slice<'e>,
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
-) {
-    collect_arith_ops(s, ops, ArithOpType::Or, usize::max_value(), Some((ctx, swzb)));
+) -> Result<(), SizeLimitReached> {
+    collect_arith_ops(s, ops, ArithOpType::Or, usize::max_value(), Some((ctx, swzb)))
 }
 
 fn collect_xor_ops<'e>(
     s: Operand<'e>,
-    ops: &mut Vec<Operand<'e>>,
+    ops: &mut Slice<'e>,
     limit: usize,
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
-) {
-    collect_arith_ops(s, ops, ArithOpType::Xor, limit, Some((ctx, swzb)));
+) -> Result<(), SizeLimitReached> {
+    collect_arith_ops(s, ops, ArithOpType::Xor, limit, Some((ctx, swzb)))
 }
 
 /// Return (offset, len, value_offset)
@@ -2321,32 +2294,25 @@ fn try_merge_memory<'e>(
 /// Simplify or: merge memory
 /// Converts (Mem32[x] >> 8) | (Mem32[x + 4] << 18) to Mem32[x + 1]
 /// Also used for xor since x ^ y == x | y if x and y do not overlap at all.
-fn simplify_or_merge_mem<'e>(ops: &mut Vec<Operand<'e>>, ctx: OperandCtx<'e>) {
-    let mut iter = VecDropIter::new(ops);
-    while let Some(mut op) = iter.next() {
-        let mut new = None;
-        if let Some((val, shift)) = is_offset_mem(*op, ctx) {
-            let mut second = iter.duplicate();
-            while let Some(other_op) = second.next_removable() {
-                let mut remove = false;
-                if let Some((other_val, other_shift)) = is_offset_mem(*other_op, ctx) {
+fn simplify_or_merge_mem<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
+    let mut i = 0;
+    'outer: while i < ops.len() {
+        if let Some((val, shift)) = is_offset_mem(ops[i], ctx) {
+            let mut j = i + 1;
+            while j < ops.len() {
+                if let Some((other_val, other_shift)) = is_offset_mem(ops[j], ctx) {
                     if val == other_val {
-                        let result = try_merge_memory(val, other_shift, shift, ctx);
-                        if let Some(merged) = result {
-                            new = Some(merged);
-                            remove = true;
+                        if let Some(merged) = try_merge_memory(val, other_shift, shift, ctx) {
+                            ops[i] = merged;
+                            ops.swap_remove(j);
+                            continue 'outer;
                         }
                     }
                 }
-                if remove {
-                    other_op.remove();
-                    break;
-                }
+                j += 1;
             }
         }
-        if let Some(new) = new {
-            *op = new;
-        }
+        i += 1;
     }
 }
 
@@ -2555,26 +2521,42 @@ pub fn simplify_mul<'e>(
         if let Some((l, r)) = check_quick_arith_simplify(left, right) {
             let arith = ArithOperand {
                 ty: ArithOpType::Mul,
-                left: l.clone(),
-                right: r.clone(),
+                left: l,
+                right: r,
             };
             return ctx.intern(OperandType::Arithmetic(arith));
         }
     }
 
-    let mut ops = vec![];
-    collect_mul_ops(left, &mut ops);
-    collect_mul_ops(right, &mut ops);
+    ctx.simplify_temp_stack().alloc(|slice| {
+        collect_mul_ops(left, slice)
+            .and_then(|()| collect_mul_ops(right, slice))
+            .and_then(|()| simplify_mul_ops(ctx, slice))
+            .unwrap_or_else(|_| {
+                let arith = ArithOperand {
+                    ty: ArithOpType::Mul,
+                    left: left,
+                    right: right,
+                };
+                ctx.intern(OperandType::Arithmetic(arith))
+            })
+    })
+}
+
+fn simplify_mul_ops<'e>(
+    ctx: OperandCtx<'e>,
+    ops: &mut Slice<'e>,
+) -> Result<Operand<'e>, SizeLimitReached> {
     let mut const_product = ops.iter().flat_map(|x| x.if_constant())
         .fold(1u64, |product, x| product.wrapping_mul(x));
     if const_product == 0 {
-        return ctx.const_0();
+        return Ok(ctx.const_0());
     }
     ops.retain(|x| x.if_constant().is_none());
     if ops.is_empty() {
-        return ctx.constant(const_product);
+        return Ok(ctx.constant(const_product));
     }
-    heapsort::sort(&mut ops);
+    heapsort::sort(ops);
     if const_product != 1 {
         let mut changed;
         // Apply constant c * (x + y) => (c * x + c * y) as much as possible.
@@ -2585,14 +2567,14 @@ pub fn simplify_mul<'e>(
                 if simplify_mul_should_apply_constant(ops[i]) {
                     let new = simplify_mul_apply_constant(ops[i], const_product, ctx);
                     ops.swap_remove(i);
-                    collect_mul_ops(new, &mut ops);
+                    collect_mul_ops(new, ops)?;
                     changed = true;
                     break;
                 }
                 let new = simplify_mul_try_mul_constants(ops[i], const_product, ctx);
                 if let Some(new) = new {
                     ops.swap_remove(i);
-                    collect_mul_ops(new, &mut ops);
+                    collect_mul_ops(new, ops)?;
                     changed = true;
                     break;
                 }
@@ -2601,9 +2583,9 @@ pub fn simplify_mul<'e>(
                 const_product = ops.iter().flat_map(|x| x.if_constant())
                     .fold(1u64, |product, x| product.wrapping_mul(x));
                 ops.retain(|x| x.if_constant().is_none());
-                heapsort::sort(&mut ops);
+                heapsort::sort(ops);
                 if const_product == 0 {
-                    return ctx.const_0();
+                    return Ok(ctx.const_0());
                 } else if const_product == 1 {
                     break;
                 }
@@ -2616,8 +2598,8 @@ pub fn simplify_mul<'e>(
         }
     }
     match ops.len() {
-        0 => return ctx.constant(const_product),
-        1 if const_product == 1 => return ops.remove(0),
+        0 => return Ok(ctx.constant(const_product)),
+        1 if const_product == 1 => return Ok(ops[0]),
         _ => (),
     };
     let mut tree = ops.pop()
@@ -2639,7 +2621,7 @@ pub fn simplify_mul<'e>(
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
-    tree
+    Ok(tree)
 }
 
 // For converting c * (x + y) to (c * x + c * y)
@@ -2790,31 +2772,39 @@ pub fn simplify_or<'e>(
         return ctx.intern(OperandType::Arithmetic(arith));
     }
 
-    let mut ops = vec![];
-    collect_or_ops(left, &mut ops, ctx, swzb);
-    collect_or_ops(right, &mut ops, ctx, swzb);
-    simplify_or_ops(ops, ctx, swzb)
+    ctx.simplify_temp_stack().alloc(|ops| {
+        collect_or_ops(left, ops, ctx, swzb)
+            .and_then(|()| collect_or_ops(right, ops, ctx, swzb))
+            .and_then(|()| simplify_or_ops(ops, ctx, swzb))
+            .unwrap_or_else(|_| {
+                let arith = ArithOperand {
+                    ty: ArithOpType::Or,
+                    left,
+                    right,
+                };
+                ctx.intern(OperandType::Arithmetic(arith))
+            })
+    })
 }
 
 fn simplify_or_ops<'e>(
-    mut ops: Vec<Operand<'e>>,
+    ops: &mut Slice<'e>,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
-) -> Operand<'e> {
-    let ops = &mut ops;
+) -> Result<Operand<'e>, SizeLimitReached> {
     let mut const_val = 0;
     loop {
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum | x);
         ops.retain(|x| x.if_constant().is_none());
         if ops.is_empty() || const_val == u64::max_value() {
-            return ctx.constant(const_val);
+            return Ok(ctx.constant(const_val));
         }
         heapsort::sort(ops);
         ops.dedup();
         let mut const_val_changed = false;
         if const_val != 0 {
-            vec_filter_map(ops, |op| {
+            slice_filter_map(ops, |op| {
                 let new = simplify_with_and_mask(op, !const_val, ctx, swzb_ctx);
                 if let Some(c) = new.if_constant() {
                     if c | const_val != const_val {
@@ -2828,37 +2818,47 @@ fn simplify_or_ops<'e>(
             });
         }
         for bits in one_bit_ranges(const_val) {
-            vec_filter_map(ops, |op| simplify_with_one_bits(op, &bits, ctx));
+            slice_filter_map(ops, |op| simplify_with_one_bits(op, &bits, ctx));
         }
         simplify_or_merge_child_ands(ops, ctx, swzb_ctx, false);
         simplify_or_merge_xors(ops, ctx, swzb_ctx);
         simplify_or_merge_mem(ops, ctx);
         simplify_or_merge_comparisions(ops, ctx);
 
-        let mut new_ops = vec![];
-        for i in 0..ops.len() {
+        let mut i = 0;
+        let mut end = ops.len();
+        let mut ops_changed = false;
+        while i < end {
             if let Some((l, r)) = ops[i].if_arithmetic_or() {
-                collect_or_ops(l, &mut new_ops, ctx, swzb_ctx);
-                collect_or_ops(r, &mut new_ops, ctx, swzb_ctx);
+                ops_changed = true;
+                ops.swap_remove(i);
+                end -= 1;
+                collect_or_ops(l, ops, ctx, swzb_ctx)?;
+                if let Some(c) = r.if_constant() {
+                    const_val |= c;
+                } else {
+                    collect_or_ops(r, ops, ctx, swzb_ctx)?;
+                }
             } else if let Some(c) = ops[i].if_constant() {
+                ops.swap_remove(i);
+                end -= 1;
                 if c | const_val != const_val {
                     const_val |= c;
-                    const_val_changed = true;
+                    ops_changed = true;
                 }
+            } else {
+                i += 1;
             }
         }
-        ops.retain(|x| x.if_constant().is_none());
-        if new_ops.is_empty() && !const_val_changed {
+        if !ops_changed {
             break;
         }
-        ops.retain(|x| x.if_arithmetic_or().is_none());
-        ops.extend(new_ops);
     }
     heapsort::sort(ops);
     ops.dedup();
     match ops.len() {
-        0 => return ctx.constant(const_val),
-        1 if const_val == 0 => return ops.remove(0),
+        0 => return Ok(ctx.constant(const_val)),
+        1 if const_val == 0 => return Ok(ops[0]),
         _ => (),
     };
     let mut tree = ops.pop()
@@ -2879,7 +2879,7 @@ fn simplify_or_ops<'e>(
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
-    tree
+    Ok(tree)
 }
 
 /// Counts xor ops, descending into x & c masks, as
@@ -2928,15 +2928,6 @@ where F: FnMut(Operand<'e>) -> Option<Operand<'e>>,
         }
     }
     slice.shrink(out_pos);
-}
-
-fn vec_filter_map<T, F: FnMut(T) -> Option<T>>(vec: &mut Vec<T>, mut fun: F) {
-    for _ in 0..vec.len() {
-        let val = vec.pop().unwrap();
-        if let Some(new) = fun(val) {
-            vec.insert(0, new);
-        }
-    }
 }
 
 fn should_stop_with_and_mask(swzb_ctx: &mut SimplifyWithZeroBits) -> bool {
@@ -3606,22 +3597,23 @@ pub fn simplify_xor<'e>(
         };
         return ctx.intern(OperandType::Arithmetic(arith));
     }
-    let mut ops = vec![];
-    collect_xor_ops(left, &mut ops, 30, ctx, swzb);
-    collect_xor_ops(right, &mut ops, 30, ctx, swzb);
-    if ops.len() > 30 {
-        // This is likely some hash function being unrolled, give up
-        // Also set swzb to stop everything
-        swzb.simplify_count = u8::max_value();
-        swzb.with_and_mask_count = u8::max_value();
-        let arith = ArithOperand {
-            ty: ArithOpType::Xor,
-            left: left.clone(),
-            right: right.clone(),
-        };
-        return ctx.intern(OperandType::Arithmetic(arith));
-    }
-    simplify_xor_ops(&mut ops, ctx, swzb)
+    ctx.simplify_temp_stack().alloc(|ops| {
+        collect_xor_ops(left, ops, 30, ctx, swzb)
+            .and_then(|()| collect_xor_ops(right, ops, 30, ctx, swzb))
+            .and_then(|()| simplify_xor_ops(ops, ctx, swzb))
+            .unwrap_or_else(|_| {
+                // This is likely some hash function being unrolled, give up
+                // Also set swzb to stop everything
+                swzb.simplify_count = u8::max_value();
+                swzb.with_and_mask_count = u8::max_value();
+                let arith = ArithOperand {
+                    ty: ArithOpType::Xor,
+                    left,
+                    right,
+                };
+                return ctx.intern(OperandType::Arithmetic(arith));
+            })
+    })
 }
 
 fn simplify_xor_try_extract_constant<'e>(
