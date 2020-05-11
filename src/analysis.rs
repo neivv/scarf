@@ -920,11 +920,6 @@ fn clone_state<A: Clone, B: Clone>(val: &(A, B)) -> Box<(A, B)> {
     alloc.init(val.clone())
 }
 
-#[inline(never)]
-unsafe fn x<X: Clone>(out: *mut X, val: &X) {
-    *out = val.clone();
-}
-
 struct RunHookAnalyzer<'e, F, Exec: ExecutionState<'e>, S: AnalysisState> {
     phantom: std::marker::PhantomData<(&'e (), *const Exec, *const S)>,
     hook: F,
