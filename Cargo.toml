@@ -16,6 +16,7 @@ required-features = ["binaries"]
 arrayvec = "0.5"
 array-init = "0.1.1"
 byteorder = "1.1.0"
+copyless = "0.1"
 fxhash = "0.2"
 hashbrown = { version = "0.7", default-features = false }
 lde = { git = "https://github.com/CasualX/lde" }

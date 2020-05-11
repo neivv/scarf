@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
 
+use copyless::BoxHelper;
 use quick_error::quick_error;
 
 use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
@@ -521,11 +522,11 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     ) {
         let current_instruction_end = self.current_instruction_end();
         let inner = &mut *self.inner;
-        let mut state = inner.state.clone();
+        let mut state = clone_state(&inner.state);
         let ctx = inner.analysis.operand_ctx;
+        let binary = inner.analysis.binary;
         state.0.apply_call(current_instruction_end);
-        let mut analysis =
-            FuncAnalysis::custom_state(inner.analysis.binary, ctx, entry, state.0, state.1);
+        let mut analysis = FuncAnalysis::custom_state_boxed(binary, ctx, entry, state);
         analysis.analyze(analyzer);
     }
 
@@ -542,11 +543,11 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     ) {
         let current_instruction_end = self.current_instruction_end();
         let inner = &mut *self.inner;
-        let mut state = inner.state.clone();
+        let mut state = clone_state(&inner.state);
         let ctx = inner.analysis.operand_ctx;
+        let binary = inner.analysis.binary;
         state.0.apply_call(current_instruction_end);
-        let mut analysis =
-            FuncAnalysis::custom_state(inner.analysis.binary, ctx, entry, state.0, state.1);
+        let mut analysis = FuncAnalysis::custom_state_boxed(binary, ctx, entry, state);
         let mut analyzer = CollectReturnsAnalyzer::new(analyzer);
         analysis.analyze(&mut analyzer);
         if let Some(state) = analyzer.state {
@@ -621,9 +622,11 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
             errors: Vec::new(),
             cfg: Cfg::new(),
             unchecked_branches: {
+                let user_state = DefaultState::default();
                 let init_state = Exec::initial_state(operand_ctx, binary);
+                let state = Box::alloc().init((init_state, user_state));
                 let mut map = BTreeMap::new();
-                map.insert(start_address, Box::new((init_state, DefaultState::default())));
+                map.insert(start_address, state);
                 map
             },
             operand_ctx,
@@ -642,7 +645,9 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
             cfg: Cfg::new(),
             unchecked_branches: {
                 let mut map = BTreeMap::new();
-                map.insert(start_address, Box::new((state, DefaultState::default())));
+                let user_state = DefaultState::default();
+                let state = Box::alloc().init((state, user_state));
+                map.insert(start_address, state);
                 map
             },
             operand_ctx,
@@ -658,13 +663,23 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         exec_state: Exec,
         analysis_state: State,
     ) -> FuncAnalysis<'a, Exec, State> {
+        let boxed = Box::alloc().init((exec_state, analysis_state));
+        FuncAnalysis::custom_state_boxed(binary, operand_ctx, start_address, boxed)
+    }
+
+    fn custom_state_boxed(
+        binary: &'a BinaryFile<Exec::VirtualAddress>,
+        operand_ctx: OperandCtx<'a>,
+        start_address: Exec::VirtualAddress,
+        state: Box<(Exec, State)>,
+    ) -> FuncAnalysis<'a, Exec, State> {
         FuncAnalysis {
             binary,
             errors: Vec::new(),
             cfg: Cfg::new(),
             unchecked_branches: {
                 let mut map = BTreeMap::new();
-                map.insert(start_address, Box::new((exec_state, analysis_state)));
+                map.insert(start_address, state);
                 map
             },
             operand_ctx,
@@ -897,11 +912,17 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 /// generic instantations to save some binary size.
 /// And avoids having the parent function having to allocate ~300 extra stack bytes just
 /// for this clone (Though LLVM could likely reuse the space?)
-///
-/// Using Box<MaybeUninit> would likely even avoid the single
-/// stack allocation but it being unsafe is a shame.
 fn clone_state<A: Clone, B: Clone>(val: &(A, B)) -> Box<(A, B)> {
-    Box::new(val.clone())
+    // This actually still has a memcpy of exec state,
+    // from constructing the tuple :(
+    // Would probably need Box<MaybeUninit<T>> and a clone_to(&self, *mut T) func.
+    let alloc = Box::alloc();
+    alloc.init(val.clone())
+}
+
+#[inline(never)]
+unsafe fn x<X: Clone>(out: *mut X, val: &X) {
+    *out = val.clone();
 }
 
 struct RunHookAnalyzer<'e, F, Exec: ExecutionState<'e>, S: AnalysisState> {
@@ -993,9 +1014,10 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
                     }
                 }
                 None => {
-                    self.state = Some(Box::new(
-                        (control.exec_state().clone(), control.user_state().clone())
-                    ));
+                    let alloc = Box::alloc();
+                    let user = control.user_state().clone();
+                    let exec = control.exec_state().clone();
+                    self.state = Some(alloc.init((exec, user)));
                 }
             }
         }

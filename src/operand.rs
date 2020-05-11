@@ -17,6 +17,8 @@ use std::marker::PhantomData;
 use std::ops::Range;
 use std::ptr;
 
+use copyless::BoxHelper;
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -410,7 +412,7 @@ pub fn check_tls_simplification_incomplete() -> bool {
 impl<'e> OperandContext<'e> {
     pub fn new() -> OperandContext<'e> {
         use std::ptr::null_mut;
-        let common_operands = Box::new([OperandSelfRef(null_mut()); 0x41 + 0x10 + 0x6]);
+        let common_operands = Box::alloc().init([OperandSelfRef(null_mut()); 0x41 + 0x10 + 0x6]);
         let mut result: OperandContext<'e> = OperandContext {
             next_undefined: Cell::new(0),
             common_operands,
