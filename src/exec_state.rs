@@ -9,7 +9,7 @@ use fxhash::FxBuildHasher;
 use crate::analysis;
 use crate::disasm::{self, DestOperand, Instruction, Operation};
 use crate::operand::{
-    ArithOpType, Operand, OperandType, OperandCtx, OperandHashByAddress,
+    ArithOpType, Operand, OperandType, OperandCtx, OperandHashByAddress, MemAccessSize,
 };
 
 /// A trait that does (most of) arch-specific state handling.
@@ -41,6 +41,8 @@ pub trait ExecutionState<'e> : Clone + 'e {
     fn ctx(&self) -> OperandCtx<'e>;
     fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e>;
     fn resolve_apply_constraints(&mut self, operand: Operand<'e>) -> Operand<'e>;
+    /// Reads memory for which the `address` is a resolved `Operand`.
+    fn read_memory(&mut self, address: Operand<'e>, size: MemAccessSize) -> Operand<'e>;
     fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>>;
     fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>>;
     fn initial_state(

@@ -184,7 +184,7 @@ impl<'a, 'e> Destination<'a, 'e> {
                     if offset_8 != 0 {
                         let size_bits = size.bits() as u64;
                         let low_base = ctx.add_const(base, offset_rest);
-                        let low_old = state.read_memory(low_base, MemAccessSize::Mem64)
+                        let low_old = state.read_memory_impl(low_base, MemAccessSize::Mem64)
                             .unwrap_or_else(|| ctx.mem64(low_base));
 
                         let mask_low = offset_8 * 8;
@@ -211,7 +211,7 @@ impl<'a, 'e> Destination<'a, 'e> {
                                 base,
                                 offset_rest.wrapping_add(8),
                             );
-                            let high_old = state.read_memory(high_base, MemAccessSize::Mem64)
+                            let high_old = state.read_memory_impl(high_base, MemAccessSize::Mem64)
                                 .unwrap_or_else(|| ctx.mem64(high_base));
                             let mask = !0u64 >> (0x40 - (mask_low + size_bits - 0x40));
                             let high_value = ctx.or(
@@ -235,7 +235,7 @@ impl<'a, 'e> Destination<'a, 'e> {
                 let value = match size {
                     MemAccessSize::Mem64 => value,
                     _ => {
-                        let old = state.read_memory(addr, MemAccessSize::Mem64)
+                        let old = state.read_memory_impl(addr, MemAccessSize::Mem64)
                             .unwrap_or_else(|| ctx.mem64(addr));
                         let new_mask = match size {
                             MemAccessSize::Mem8 => 0xff,
@@ -307,6 +307,11 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         } else {
             val
         }
+    }
+
+    fn read_memory(&mut self, address: Operand<'e>, size: MemAccessSize) -> Operand<'e> {
+        self.read_memory_impl(address, size)
+            .unwrap_or_else(|| self.ctx.mem_variable_rc(size, address))
     }
 
     fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>> {
@@ -656,7 +661,7 @@ impl<'e> ExecutionState<'e> {
     fn resolve_mem(&mut self, mem: &MemAccess<'e>) -> Option<Operand<'e>> {
         let address = self.resolve(mem.address);
 
-        self.read_memory(address, mem.size)
+        self.read_memory_impl(address, mem.size)
             .or_else(|| {
                 // Just copy the input value if address didn't change
                 if address == mem.address {
@@ -670,7 +675,7 @@ impl<'e> ExecutionState<'e> {
     /// Resolves memory operand for which the address is already resolved.
     ///
     /// Returns `None` if the memory at `address` hasn't changed.
-    fn read_memory(
+    fn read_memory_impl(
         &mut self,
         address: Operand<'e>,
         size: MemAccessSize,
