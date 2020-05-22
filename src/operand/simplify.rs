@@ -2273,6 +2273,17 @@ fn is_offset_mem<'e>(
             }
             None
         }
+        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
+            if arith.right.if_constant().is_some() {
+                return is_offset_mem(arith.left, ctx)
+                    .map(|(x, (off, _, val_off))| {
+                        let len_bits = op.relevant_bits().end;
+                        let len = len_bits.wrapping_add(7) / 8;
+                        (x, (off, len as u32, val_off))
+                    })
+            }
+            None
+        }
         OperandType::Memory(ref mem) => {
             let len = match mem.size {
                 MemAccessSize::Mem64 => 8,
@@ -2281,9 +2292,11 @@ fn is_offset_mem<'e>(
                 MemAccessSize::Mem8 => 1,
             };
 
-            Some(Operand::const_offset(mem.address, ctx)
-                .map(|(val, off)| (val, (off, len, 0)))
-                .unwrap_or_else(|| (mem.address, (0, len, 0))))
+            Some(
+                Operand::const_offset(mem.address, ctx)
+                    .map(|(val, off)| (val, (off, len, 0)))
+                    .unwrap_or_else(|| (mem.address, (0, len, 0)))
+            )
         }
         _ => None,
     }

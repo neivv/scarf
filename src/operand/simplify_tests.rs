@@ -4905,3 +4905,20 @@ fn gt_signed2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn merge_mem_or() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.mem32(ctx.constant(0x1230)),
+            0xff_ffff,
+        ),
+        ctx.lsh_const(
+            ctx.mem8(ctx.constant(0x1233)),
+            0x18,
+        ),
+    );
+    let eq1 = ctx.mem32(ctx.constant(0x1230));
+    assert_eq!(op1, eq1);
+}
