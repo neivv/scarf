@@ -564,6 +564,33 @@ fn movd_to_reg() {
     ]);
 }
 
+#[test]
+fn move_mem_in_parts() {
+    let ctx = &OperandContext::new();
+    // Issue was that eax was being assigned esi,
+    // and esi was zeroed afterwards, but the small stores
+    // kept assuming that unmodified value of `Mem32[eax]` == `Mem32[0]`
+    test_inline(&[
+        0x89, 0xf0, // mov eax, esi
+        0x31, 0xf6, // xor esi, esi
+        0x31, 0xc9, // xor ecx, ecx
+        0x88, 0x08, // mov [eax], cl
+        0x66, 0x8b, 0x0d, 0x30, 0x12, 0x00, 0x00, // mov cx, [1230]
+        0x66, 0x89, 0x08, // mov [eax], cx
+        0x8a, 0x0d, 0x32, 0x12, 0x00, 0x00, // mov cl, [1232]
+        0x88, 0x48, 0x02, // mov [eax + 2], cl
+        0x8a, 0x0d, 0x33, 0x12, 0x00, 0x00, // mov cl, [1233]
+        0x88, 0x48, 0x03, // mov [eax + 3], cl
+        0x31, 0xc9, // xor ecx, ecx
+        0x8b, 0x00, // mov eax, [eax]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.mem32(ctx.constant(0x1230))),
+         (ctx.register(1), ctx.constant(0)),
+         (ctx.register(6), ctx.constant(0)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }

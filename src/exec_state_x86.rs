@@ -356,12 +356,8 @@ impl<'a, 'e> Destination<'a, 'e> {
                     if offset_4 != 0 {
                         let size_bits = size.bits();
                         let low_base = ctx.add_const(base, offset_rest);
-                        let low_old = state.resolve_mem(
-                            &MemAccess {
-                                address: low_base.clone(),
-                                size: MemAccessSize::Mem32,
-                            },
-                        ).unwrap_or_else(|| ctx.mem32(low_base));
+                        let low_old = state.read_memory(low_base, MemAccessSize::Mem32)
+                            .unwrap_or_else(|| ctx.mem32(low_base));
 
                         let mask_low = offset_4 * 8;
                         let mask_high = (mask_low + size_bits).min(0x20);
@@ -387,12 +383,8 @@ impl<'a, 'e> Destination<'a, 'e> {
                                 base,
                                 offset_rest.wrapping_add(4) & 0xffff_ffff,
                             );
-                            let high_old = state.resolve_mem(
-                                &MemAccess {
-                                    address: high_base.clone(),
-                                    size: MemAccessSize::Mem32,
-                                },
-                            ).unwrap_or_else(|| ctx.mem32(high_base));
+                            let high_old = state.read_memory(high_base, MemAccessSize::Mem32)
+                                .unwrap_or_else(|| ctx.mem32(high_base));
 
                             let mask = !0u32 >> (0x20 - (mask_low + size_bits - 0x20));
                             let high_value = ctx.or(
@@ -416,12 +408,8 @@ impl<'a, 'e> Destination<'a, 'e> {
                 let value = if size == MemAccessSize::Mem32 {
                     value
                 } else {
-                    let old = state.resolve_mem(
-                        &MemAccess {
-                            address: addr.clone(),
-                            size: MemAccessSize::Mem32,
-                        },
-                    ).unwrap_or_else(|| ctx.mem32(addr));
+                    let old = state.read_memory(addr, MemAccessSize::Mem32)
+                        .unwrap_or_else(|| ctx.mem32(addr));
                     let new_mask = match size {
                         MemAccessSize::Mem8 => 0xff,
                         MemAccessSize::Mem16 => 0xffff,
@@ -718,31 +706,43 @@ impl<'e> ExecutionState<'e> {
     ///
     /// Empirical tests seem to imply that happens about 15~20% of time
     fn resolve_mem(&mut self, mem: &MemAccess<'e>) -> Option<Operand<'e>> {
-        let ctx = self.ctx;
         let address = self.resolve(mem.address);
-        if MemAccessSize::Mem64 == mem.size {
+        self.read_memory(address, mem.size)
+            .or_else(|| {
+                // Just copy the input value if address didn't change
+                if address == mem.address {
+                    None
+                } else {
+                    Some(self.ctx.mem_variable_rc(mem.size, address))
+                }
+            })
+    }
+
+    /// Resolves memory operand for which the address is already resolved.
+    ///
+    /// Returns `None` if the memory at `address` hasn't changed.
+    fn read_memory(
+        &mut self,
+        address: Operand<'e>,
+        size: MemAccessSize,
+    ) -> Option<Operand<'e>> {
+        let ctx = self.ctx;
+        if size == MemAccessSize::Mem64 {
             // Split into 2 32-bit resolves
-            let low_mem = MemAccess {
-                address: mem.address,
-                size: MemAccessSize::Mem32,
-            };
-            let high_mem = MemAccess {
-                address: ctx.add_const(mem.address, 4),
-                size: MemAccessSize::Mem32,
-            };
-            let low = self.resolve_mem(&low_mem);
-            let high = self.resolve_mem(&high_mem);
+            let low = self.read_memory(address, MemAccessSize::Mem32);
+            let high_address = ctx.add_const(address, 4);
+            let high = self.read_memory(high_address, MemAccessSize::Mem32);
             if low.is_none() && high.is_none() {
                 return None;
             }
             let low = low
-                .unwrap_or_else(|| ctx.mem32(low_mem.address));
+                .unwrap_or_else(|| ctx.mem32(address));
             let high = high
-                .unwrap_or_else(|| ctx.mem32(high_mem.address));
+                .unwrap_or_else(|| ctx.mem32(high_address));
             return Some(ctx.or(low, high));
         }
 
-        let mask = match mem.size {
+        let mask = match size {
             MemAccessSize::Mem8 => 0xffu32,
             MemAccessSize::Mem16 => 0xffff,
             MemAccessSize::Mem32 => 0,
@@ -750,7 +750,7 @@ impl<'e> ExecutionState<'e> {
         };
         // Use 4-aligned addresses if there's a const offset
         if let Some((base, offset)) = Operand::const_offset(address, ctx) {
-            let size_bytes = mem.size.bits() / 8;
+            let size_bytes = size.bits() / 8;
             let offset = offset as u32;
             let offset_4 = offset & 3;
             let offset_rest = sext32_64(offset & !3);
@@ -795,7 +795,7 @@ impl<'e> ExecutionState<'e> {
                 } else {
                     low
                 };
-                let masked = if mem.size != MemAccessSize::Mem32 {
+                let masked = if size != MemAccessSize::Mem32 {
                     ctx.and_const(combined, mask as u64)
                 } else {
                     combined
@@ -811,15 +811,7 @@ impl<'e> ExecutionState<'e> {
                     operand
                 }
             })
-            .or_else(|| self.resolve_binary_constant_mem(address, mem.size))
-            .or_else(|| {
-                // Just copy the input value if address didn't change
-                if address == mem.address {
-                    None
-                } else {
-                    Some(ctx.mem_variable_rc(mem.size, address))
-                }
-            })
+            .or_else(|| self.resolve_binary_constant_mem(address, size))
     }
 
     fn resolve_binary_constant_mem(
