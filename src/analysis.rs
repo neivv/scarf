@@ -504,6 +504,10 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         self.inner.state.0.resolve_apply_constraints(val)
     }
 
+    pub fn read_memory(&mut self, address: Operand<'e>, size: MemAccessSize) -> Operand<'e> {
+        self.inner.state.0.read_memory(address, size)
+    }
+
     pub fn unresolve(&mut self, val: Operand<'e>) -> Option<Operand<'e>> {
         self.inner.state.0.unresolve(val)
     }
