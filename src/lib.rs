@@ -177,6 +177,8 @@ impl std::fmt::Display for OutOfBounds {
     }
 }
 
+impl std::error::Error for OutOfBounds { }
+
 impl From<light_byteorder::UnexpectedEof> for OutOfBounds {
     fn from(_: light_byteorder::UnexpectedEof) -> OutOfBounds {
         OutOfBounds
