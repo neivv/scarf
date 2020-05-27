@@ -230,13 +230,16 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
 
     /// Range is relative from base
     pub fn slice_from(&self, range: std::ops::Range<u32>) -> Result<&[u8], OutOfBounds> {
-        self.section_by_addr(self.base + range.start)
+        self.slice_from_address(self.base + range.start, range.end - range.start)
+    }
+
+    pub fn slice_from_address(&self, start: Va, len: u32) -> Result<&[u8], OutOfBounds> {
+        self.section_by_addr(start)
             .and_then(|s| {
-                let section_relative =
-                    (self.base + range.start).as_u64() - s.virtual_address.as_u64();
+                let section_relative = start.as_u64() - s.virtual_address.as_u64();
                 s.data.get(
                     section_relative as usize ..
-                    (section_relative + (range.end - range.start) as u64) as usize,
+                    (section_relative + len as u64) as usize,
                 )
             })
             .ok_or_else(|| OutOfBounds)
