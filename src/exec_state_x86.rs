@@ -1,4 +1,5 @@
 use std::fmt;
+use std::rc::Rc;
 
 use crate::analysis;
 use crate::disasm::{Disassembler32, DestOperand, Operation};
@@ -989,6 +990,9 @@ pub fn merge_states<'a: 'r, 'r>(
         a == b || a.is_undefined()
     }
     fn check_memory_eq<'e>(a: &Memory<'e>, b: &Memory<'e>) -> bool {
+        if Rc::ptr_eq(&a.map.map, &b.map.map) {
+            return true;
+        }
         a.map.map.iter().all(|(&key, val)| {
             match key.0.contains_undefined() {
                 true => true,
@@ -1059,7 +1063,7 @@ pub fn merge_states<'a: 'r, 'r>(
                 }
             }
         }
-        Some(ExecutionState {
+        let result = Some(ExecutionState {
             state,
             cached_low_registers,
             memory: old.memory.merge(&new.memory, ctx),
@@ -1075,7 +1079,8 @@ pub fn merge_states<'a: 'r, 'r>(
             pending_flags: None,
             ctx,
             binary: old.binary,
-        })
+        });
+        result
     } else {
         None
     }

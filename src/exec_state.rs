@@ -489,7 +489,20 @@ pub struct Memory<'e> {
 
 #[derive(Clone)]
 pub(crate) struct MemoryMap<'e> {
-    pub(crate) map: HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>,
+    /// Mutable map, cloned lazily on mutation if Rc is shared.
+    /// Two memory cannot have ptr-equal `map` with different `immutable`
+    ///
+    /// It seems that this allow avoiding roughly 10% of memory merge calls, but also
+    /// likely saves large amounts of time at exec state merges, for which about 90%
+    /// won't result in changed state. (Doesn't mean that 90% of exec state merges can fast
+    /// path ptr-eq compare this map though)
+    ///
+    /// Also if the additional indirection seems to ever hurt reads/writes, could have some
+    /// temp struct that contains a direct (mutable) reference to the inner value that then
+    /// can be used to read/write a lot at once.
+    /// But I would believe that the instruction decoding/etc overhead is a lot greater
+    /// than memory access during analysis.
+    pub(crate) map: Rc<HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>>,
     /// Optimization for cases where memory gets large.
     /// The existing mapping can be moved to Rc, where cloning it is effectively free.
     immutable: Option<Rc<MemoryMap<'e>>>,
@@ -506,7 +519,7 @@ impl<'e> Memory<'e> {
     pub fn new() -> Memory<'e> {
         Memory {
             map: MemoryMap {
-                map: HashMap::with_hasher(Default::default()),
+                map: Rc::new(HashMap::with_hasher(Default::default())),
                 immutable: None,
             },
             cached_addr: None,
@@ -556,7 +569,7 @@ impl<'e> MemoryMap<'e> {
     }
 
     pub fn set(&mut self, address: Operand<'e>, value: Operand<'e>) {
-        self.map.insert(OperandHashByAddress(address), value);
+        Rc::make_mut(&mut self.map).insert(OperandHashByAddress(address), value);
     }
 
     pub fn len(&self) -> usize {
@@ -617,7 +630,10 @@ impl<'e> MemoryMap<'e> {
 
     pub fn maybe_convert_immutable(&mut self) {
         if self.map.len() >= 64 {
-            let map = mem::replace(&mut self.map, HashMap::with_hasher(Default::default()));
+            let map = mem::replace(
+                &mut self.map,
+                Rc::new(HashMap::with_hasher(Default::default())),
+            );
             let old_immutable = self.immutable.take();
             self.immutable = Some(Rc::new(MemoryMap {
                 map,
@@ -628,7 +644,7 @@ impl<'e> MemoryMap<'e> {
 
     /// Does a value -> key lookup (Finds an address containing value)
     pub fn reverse_lookup(&self, value: Operand<'e>) -> Option<Operand<'e>> {
-        for (&key, &val) in &self.map {
+        for (&key, &val) in self.map.iter() {
             if value == val {
                 return Some(key.0);
             }
@@ -643,6 +659,9 @@ impl<'e> MemoryMap<'e> {
     pub fn merge(&self, new: &MemoryMap<'e>, ctx: OperandCtx<'e>) -> MemoryMap<'e> {
         let a = self;
         let b = new;
+        if Rc::ptr_eq(&a.map, &b.map) {
+            return a.clone();
+        }
         if a.len() == 0 {
             return b.clone();
         }
@@ -654,7 +673,7 @@ impl<'e> MemoryMap<'e> {
             b.immutable.as_ref().map(|x| &**x as *const MemoryMap);
         if imm_eq {
             // Allows just checking a.map.iter() instead of a.iter()
-            for (&key, &a_val) in &a.map {
+            for (&key, &a_val) in a.map.iter() {
                 if let Some((b_val, is_imm)) = b.get_with_immutable_info(key.0) {
                     match a_val == b_val {
                         true => {
@@ -671,7 +690,7 @@ impl<'e> MemoryMap<'e> {
                 }
             }
             MemoryMap {
-                map: result,
+                map: Rc::new(result),
                 immutable: a.immutable.clone(),
             }
         } else {
@@ -730,7 +749,7 @@ impl<'e> MemoryMap<'e> {
                 }
             }
             MemoryMap {
-                map: result,
+                map: Rc::new(result),
                 immutable: a.immutable.clone(),
             }
         }
