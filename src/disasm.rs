@@ -616,6 +616,7 @@ fn instruction_operations32_main(
         0x1c0 | 0x1c1 => s.xadd(),
         0x1c8 | 0x1c9 | 0x1ca | 0x1cb | 0x1cc | 0x1cd | 0x1ce | 0x1cf => s.bswap(),
         0x1d3 => s.packed_shift_right(),
+        0x1d5 => s.pmullw(),
         0x1d6 => s.mov_sse_d6(),
         0x1e6 => s.sse_int_double_conversion(),
         0x1ef => {
@@ -919,6 +920,7 @@ fn instruction_operations64_main(
         0x1c0 | 0x1c1 => s.xadd(),
         0x1c8 | 0x1c9 | 0x1ca | 0x1cb | 0x1cc | 0x1cd | 0x1ce | 0x1cf => s.bswap(),
         0x1d3 => s.packed_shift_right(),
+        0x1d5 => s.pmullw(),
         0x1d6 => s.mov_sse_d6(),
         0x1e6 => s.sse_int_double_conversion(),
         0x1ef => {
@@ -2276,6 +2278,45 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             let dest = self.r_to_dest_and_operand_xmm(dest, i);
             let rhs = self.rm_to_operand_xmm(&rm, i);
             self.output_xor(dest, rhs);
+        }
+        Ok(())
+    }
+
+    fn pmullw(&mut self) -> Result<(), Failed> {
+        if !self.has_prefix(0x66) {
+            return Err(self.unknown_opcode());
+        }
+        // Mul 16-bit packed
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let ctx = self.ctx;
+        for i in 0..4 {
+            let dest = self.r_to_dest_and_operand_xmm(dest, i);
+            let rhs = self.rm_to_operand_xmm(&rm, i);
+            let low_word = ctx.and_const(
+                ctx.mul(
+                    dest.op,
+                    rhs,
+                ),
+                0xffff,
+            );
+            let high_word = ctx.and_const(
+                ctx.mul(
+                    ctx.rsh_const(dest.op, 0x10),
+                    ctx.rsh_const(rhs, 0x10),
+                ),
+                0xffff,
+            );
+            self.output(Operation::Move(
+                dest.dest,
+                ctx.or(
+                    low_word,
+                    ctx.lsh_const(
+                        high_word,
+                        0x10,
+                    ),
+                ),
+                None,
+            ));
         }
         Ok(())
     }
