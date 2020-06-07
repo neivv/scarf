@@ -618,6 +618,15 @@ fn instruction_operations32_main(
         0x1d3 => s.packed_shift_right(),
         0x1d6 => s.mov_sse_d6(),
         0x1e6 => s.sse_int_double_conversion(),
+        0x1ef => {
+            if s.has_prefix(0x66) {
+                // pxor
+                s.xorps()
+            } else {
+                // MMX xor
+                Err(s.unknown_opcode())
+            }
+        }
         0x1f3 => s.packed_shift_left(),
         _ => Err(s.unknown_opcode()),
     }
@@ -912,6 +921,15 @@ fn instruction_operations64_main(
         0x1d3 => s.packed_shift_right(),
         0x1d6 => s.mov_sse_d6(),
         0x1e6 => s.sse_int_double_conversion(),
+        0x1ef => {
+            if s.has_prefix(0x66) {
+                // pxor
+                s.xorps()
+            } else {
+                // MMX xor
+                Err(s.unknown_opcode())
+            }
+        }
         0x1f3 => s.packed_shift_left(),
         _ => Err(s.unknown_opcode()),
     }
