@@ -260,7 +260,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     type Disassembler = Disassembler64<'e>;
 
     fn maybe_convert_memory_immutable(&mut self) {
-        self.memory.maybe_convert_immutable();
+        self.memory.map.maybe_convert_immutable();
     }
 
     fn add_resolved_constraint(&mut self, constraint: Constraint<'e>) {
@@ -926,10 +926,10 @@ pub fn merge_states<'a: 'r, 'r>(
         a == b || a.is_undefined()
     }
     fn check_memory_eq<'e>(a: &Memory<'e>, b: &Memory<'e>) -> bool {
-        a.map.iter().all(|(&key, val)| {
+        a.map.map.iter().all(|(&key, val)| {
             match key.0.contains_undefined() {
                 true => true,
-                false => match b.get(key.0) {
+                false => match b.map.get(key.0) {
                     Some(b_val) => check_eq(*val, b_val),
                     None => true,
                 },

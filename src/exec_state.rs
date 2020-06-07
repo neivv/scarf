@@ -481,27 +481,74 @@ pub trait Disassembler<'e> {
 /// to be word-sized, and any misaligned accesses become bitwise and-or combinations.
 #[derive(Clone)]
 pub struct Memory<'e> {
+    pub(crate) map: MemoryMap<'e>,
+    /// Caches value of last read/write
+    cached_addr: Option<Operand<'e>>,
+    cached_value: Option<Operand<'e>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MemoryMap<'e> {
     pub(crate) map: HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>,
     /// Optimization for cases where memory gets large.
     /// The existing mapping can be moved to Rc, where cloning it is effectively free.
-    immutable: Option<Rc<Memory<'e>>>,
+    immutable: Option<Rc<MemoryMap<'e>>>,
 }
 
 struct MemoryIterUntilImm<'a, 'e> {
     iter: hash_map::Iter<'a, OperandHashByAddress<'e>, Operand<'e>>,
-    immutable: &'a Option<Rc<Memory<'e>>>,
-    limit: Option<&'a Memory<'e>>,
+    immutable: &'a Option<Rc<MemoryMap<'e>>>,
+    limit: Option<&'a MemoryMap<'e>>,
     in_immutable: bool,
 }
 
 impl<'e> Memory<'e> {
     pub fn new() -> Memory<'e> {
         Memory {
-            map: HashMap::with_hasher(Default::default()),
-            immutable: None,
+            map: MemoryMap {
+                map: HashMap::with_hasher(Default::default()),
+                immutable: None,
+            },
+            cached_addr: None,
+            cached_value: None,
         }
     }
 
+    pub fn get(&mut self, address: Operand<'e>) -> Option<Operand<'e>> {
+        if Some(address) == self.cached_addr {
+            return self.cached_value;
+        }
+        let result = self.map.get(address);
+        self.cached_addr = Some(address);
+        self.cached_value = result;
+        result
+    }
+
+    pub fn set(&mut self, address: Operand<'e>, value: Operand<'e>) {
+        self.map.set(address, value);
+        self.cached_addr = Some(address);
+        self.cached_value = Some(value);
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Does a value -> key lookup (Finds an address containing value)
+    pub fn reverse_lookup(&self, value: Operand<'e>) -> Option<Operand<'e>> {
+        self.map.reverse_lookup(value)
+    }
+
+    pub fn merge(&self, new: &Memory<'e>, ctx: OperandCtx<'e>) -> Memory<'e> {
+        Memory {
+            map: self.map.merge(&new.map, ctx),
+            cached_addr: None,
+            cached_value: None,
+        }
+    }
+}
+
+impl<'e> MemoryMap<'e> {
     pub fn get(&self, address: Operand<'e>) -> Option<Operand<'e>> {
         let op = self.map.get(&OperandHashByAddress(address)).cloned()
             .or_else(|| self.immutable.as_ref().and_then(|x| x.get(address)));
@@ -530,7 +577,10 @@ impl<'e> Memory<'e> {
 
     /// Iterates until the immutable block.
     /// Only ref-equality is considered, not deep-eq.
-    fn iter_until_immutable<'a>(&'a self, limit: Option<&'a Memory<'e>>) -> MemoryIterUntilImm<'a, 'e> {
+    fn iter_until_immutable<'a>(
+        &'a self,
+        limit: Option<&'a MemoryMap<'e>>,
+    ) -> MemoryIterUntilImm<'a, 'e> {
         MemoryIterUntilImm {
             iter: self.map.iter(),
             immutable: &self.immutable,
@@ -539,12 +589,12 @@ impl<'e> Memory<'e> {
         }
     }
 
-    fn common_immutable<'a>(&'a self, other: &'a Memory<'e>) -> Option<&'a Memory<'e>> {
+    fn common_immutable<'a>(&'a self, other: &'a MemoryMap<'e>) -> Option<&'a MemoryMap<'e>> {
         self.immutable.as_ref().and_then(|i| {
-            let a = &**i as *const Memory;
+            let a = &**i as *const MemoryMap;
             let mut pos = Some(other);
             while let Some(o) = pos {
-                if o as *const Memory == a {
+                if o as *const MemoryMap == a {
                     return pos;
                 }
                 pos = o.immutable.as_ref().map(|x| &**x);
@@ -553,8 +603,8 @@ impl<'e> Memory<'e> {
         })
     }
 
-    fn has_before_immutable(&self, address: Operand<'e>, immutable: &Memory<'e>) -> bool {
-        if self as *const Memory == immutable as *const Memory {
+    fn has_before_immutable(&self, address: Operand<'e>, immutable: &MemoryMap<'e>) -> bool {
+        if self as *const MemoryMap == immutable as *const MemoryMap {
             false
         } else if self.map.contains_key(&OperandHashByAddress(address)) {
             true
@@ -569,7 +619,7 @@ impl<'e> Memory<'e> {
         if self.map.len() >= 64 {
             let map = mem::replace(&mut self.map, HashMap::with_hasher(Default::default()));
             let old_immutable = self.immutable.take();
-            self.immutable = Some(Rc::new(Memory {
+            self.immutable = Some(Rc::new(MemoryMap {
                 map,
                 immutable: old_immutable,
             }));
@@ -590,7 +640,7 @@ impl<'e> Memory<'e> {
         }
     }
 
-    pub fn merge(&self, new: &Memory<'e>, ctx: OperandCtx<'e>) -> Memory<'e> {
+    pub fn merge(&self, new: &MemoryMap<'e>, ctx: OperandCtx<'e>) -> MemoryMap<'e> {
         let a = self;
         let b = new;
         if a.len() == 0 {
@@ -600,8 +650,8 @@ impl<'e> Memory<'e> {
             return a.clone();
         }
         let mut result = HashMap::with_hasher(Default::default());
-        let imm_eq = a.immutable.as_ref().map(|x| &**x as *const Memory) ==
-            b.immutable.as_ref().map(|x| &**x as *const Memory);
+        let imm_eq = a.immutable.as_ref().map(|x| &**x as *const MemoryMap) ==
+            b.immutable.as_ref().map(|x| &**x as *const MemoryMap);
         if imm_eq {
             // Allows just checking a.map.iter() instead of a.iter()
             for (&key, &a_val) in &a.map {
@@ -620,7 +670,7 @@ impl<'e> Memory<'e> {
                     }
                 }
             }
-            Memory {
+            MemoryMap {
                 map: result,
                 immutable: a.immutable.clone(),
             }
@@ -679,7 +729,7 @@ impl<'e> Memory<'e> {
                     }
                 }
             }
-            Memory {
+            MemoryMap {
                 map: result,
                 immutable: a.immutable.clone(),
             }
@@ -694,8 +744,8 @@ impl<'a, 'e> Iterator for MemoryIterUntilImm<'a, 'e> {
         match self.iter.next() {
             Some(s) => Some((s.0, s.1, self.in_immutable)),
             None => {
-                let at_limit = self.immutable.as_ref().map(|x| &**x as *const Memory) ==
-                    self.limit.map(|x| x as *const Memory);
+                let at_limit = self.immutable.as_ref().map(|x| &**x as *const MemoryMap) ==
+                    self.limit.map(|x| x as *const MemoryMap);
                 if at_limit {
                     return None;
                 }
