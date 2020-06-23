@@ -284,24 +284,15 @@ struct RegisterCache<'e> {
     register8_high: [Option<Operand<'e>>; 4],
     register16: [Option<Operand<'e>>; 16],
     register32: [Option<Operand<'e>>; 16],
-    // Caches registers "reg + x" where x can be in range -0x20..=0xdf
-    // for registers other than rsp/rbp, and in range
-    // -0x220..=0xdf for those two.
-    // As such, it takes 0x100 * 6 + 0x300 * 2 = 3072 words of memory for 32-bit, and
-    // 0x100 * 14 + 0x300 * 2 = 5120 words for 64-bit.
-    offset_cache: Vec<Option<Operand<'e>>>,
     ctx: OperandCtx<'e>,
 }
 
 impl<'e> RegisterCache<'e> {
     fn new(ctx: OperandCtx<'e>, is_64: bool) -> RegisterCache<'e> {
-        let mut offset_cache = Vec::new();
-        // Optimization trick: resize_with using constant None is more likely to optimize
-        // to memset than usual resize which likely optimizes to a one-at-time loop.
         if is_64 {
-            offset_cache.resize_with(14 * 0x100 + 0x300 * 2, || None);
+            ctx.resize_offset_cache(16);
         } else {
-            offset_cache.resize_with(6 * 0x100 + 0x300 * 2, || None);
+            ctx.resize_offset_cache(8);
         }
         RegisterCache {
             ctx,
@@ -309,7 +300,6 @@ impl<'e> RegisterCache<'e> {
             register8_high: [None; 4],
             register16: [None; 16],
             register32: [None; 16],
-            offset_cache,
         }
     }
 
@@ -345,37 +335,7 @@ impl<'e> RegisterCache<'e> {
     }
 
     fn register_offset_const(&mut self, register: u8, offset: i32) -> Operand<'e> {
-        let ctx = self.ctx;
-        if offset < 0xe0 {
-            if register == 4 || register == 5 {
-                // rsp/rbp
-                if offset >= -0x220 {
-                    let index = (register - 4) as usize * 0x300 + (offset + 0x220) as usize;
-                    if let Some(maybe_cached) = self.offset_cache.get_mut(index) {
-                        return *maybe_cached.get_or_insert_with(|| {
-                            ctx.add_const(ctx.register(register), offset as i64 as u64)
-                        });
-                    }
-                }
-            } else {
-                if offset >= -0x20 {
-                    // 0, 1, 2, 3, 6, 7, ...
-                    let l1_index = if register < 4 {
-                        register as usize
-                    } else {
-                        register as usize - 2
-                    };
-                    let index = 0x600 + l1_index * 0x100 + (offset + 0x20) as usize;
-                    if let Some(maybe_cached) = self.offset_cache.get_mut(index) {
-                        return *maybe_cached.get_or_insert_with(|| {
-                            ctx.add_const(ctx.register(register), offset as i64 as u64)
-                        });
-                    }
-                }
-            }
-        }
-        // Uncached default
-        ctx.add_const(ctx.register(register), offset as i64 as u64)
+        self.ctx.register_offset_const(register, offset)
     }
 }
 
