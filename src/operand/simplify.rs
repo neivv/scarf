@@ -1633,6 +1633,17 @@ fn simplify_and_main<'e>(
         let mut ops_changed = false;
         if low_const_remain != !0 && low_const_remain != const_remain {
             slice_filter_map(ops, |op| {
+                let benefits_from_low_mask = match *op.ty() {
+                    OperandType::Arithmetic(ref arith) => match arith.ty {
+                        ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => true,
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if !benefits_from_low_mask {
+                    return Some(op);
+                }
+
                 let new = simplify_with_and_mask(op, low_const_remain, ctx, swzb_ctx);
                 if let Some(c) = new.if_constant() {
                     if c & const_remain != const_remain {
@@ -2349,6 +2360,18 @@ fn simplify_or_merge_mem<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
     }
 }
 
+// Only x + y + c, x - y + c, and x * y + c have a chance of
+// being simplified at all in simplify_collected_add_sub_ops
+fn can_quick_simplify_add_sub(left: Operand<'_>) -> bool {
+    match left.ty() {
+        OperandType::Arithmetic(ref arith) => match arith.ty {
+            ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => false,
+            _ => true,
+        }
+        _ => true,
+    }
+}
+
 pub fn simplify_add_const<'e>(
     mut left: Operand<'e>,
     mut right: u64,
@@ -2373,12 +2396,13 @@ pub fn simplify_add_const<'e>(
                 }
             }
         }
+        OperandType::Constant(c) => return ctx.constant(c.wrapping_add(right)),
         _ => (),
     }
     if right == 0 {
         return left;
     }
-    if can_quick_simplify_type(left.ty()) {
+    if can_quick_simplify_add_sub(left) {
         let arith = if right > 0x8000_0000_0000_0000 {
             ArithOperand {
                 ty: ArithOpType::Sub,
@@ -2435,12 +2459,13 @@ pub fn simplify_sub_const<'e>(
                 }
             }
         }
+        OperandType::Constant(c) => return ctx.constant(c.wrapping_sub(right)),
         _ => (),
     }
     if right == 0 {
         return left;
     }
-    if can_quick_simplify_type(left.ty()) {
+    if can_quick_simplify_add_sub(left) {
         let arith = if right > 0x8000_0000_0000_0000 {
             ArithOperand {
                 ty: ArithOpType::Add,
