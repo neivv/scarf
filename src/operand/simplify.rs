@@ -485,8 +485,8 @@ fn simplify_xor_ops<'e>(
                 ops_changed = true;
                 ops.swap_remove(i);
                 end -= 1;
-                collect_xor_ops(l, ops, usize::max_value(), ctx, swzb_ctx)?;
-                collect_xor_ops(r, ops, usize::max_value(), ctx, swzb_ctx)?;
+                collect_xor_ops(l, ops, usize::max_value())?;
+                collect_xor_ops(r, ops, usize::max_value())?;
             }
             i += 1;
         }
@@ -605,7 +605,7 @@ pub fn simplify_lsh<'e>(
                     // Try to simplify any parts of the xor separately
                     ctx.simplify_temp_stack()
                         .alloc(|slice| {
-                            collect_xor_ops(left, slice, 16, ctx, swzb_ctx).ok()?;
+                            collect_xor_ops(left, slice, 16).ok()?;
                             if simplify_shift_is_too_long_xor(slice) {
                                 // Give up on dumb long xors
                                 None
@@ -751,7 +751,7 @@ pub fn simplify_rsh<'e>(
                     // Try to simplify any parts of the xor separately
                     ctx.simplify_temp_stack()
                         .alloc(|slice| {
-                            collect_xor_ops(left, slice, 16, ctx, swzb_ctx).ok()?;
+                            collect_xor_ops(left, slice, 16).ok()?;
                             if simplify_shift_is_too_long_xor(slice) {
                                 // Give up on dumb long xors
                                 None
@@ -1542,7 +1542,7 @@ pub fn simplify_and_const<'e>(
         return result;
     }
     ctx.simplify_temp_stack().alloc(|slice| {
-        collect_and_ops(left, slice, 30, ctx, swzb_ctx)
+        collect_and_ops(left, slice, 30)
             .and_then(|()| simplify_and_main(slice, right, ctx, swzb_ctx))
             .unwrap_or_else(|_| {
                 let arith = ArithOperand {
@@ -1570,8 +1570,8 @@ pub fn simplify_and<'e>(
     }
 
     ctx.simplify_temp_stack().alloc(|slice| {
-        collect_and_ops(left, slice, 30, ctx, swzb_ctx)
-            .and_then(|()| collect_and_ops(right, slice, 30, ctx, swzb_ctx))
+        collect_and_ops(left, slice, 30)
+            .and_then(|()| collect_and_ops(right, slice, 30))
             .and_then(|()| simplify_and_main(slice, !0u64, ctx, swzb_ctx))
             .unwrap_or_else(|_| {
                 let arith = ArithOperand {
@@ -1726,11 +1726,11 @@ fn simplify_and_main<'e>(
             if let Some((l, r)) = ops[i].if_arithmetic_and() {
                 ops.swap_remove(i);
                 end -= 1;
-                collect_and_ops(l, ops, usize::max_value(), ctx, swzb_ctx)?;
+                collect_and_ops(l, ops, usize::max_value())?;
                 if let Some(c) = r.if_constant() {
                     const_remain &= c;
                 } else {
-                    collect_and_ops(r, ops, usize::max_value(), ctx, swzb_ctx)?;
+                    collect_and_ops(r, ops, usize::max_value())?;
                 }
                 ops_changed = true;
             } else if let Some(c) = ops[i].if_constant() {
@@ -1792,10 +1792,11 @@ fn simplify_and_main<'e>(
     match ops.len() {
         0 => return Ok(ctx.constant(final_const_remain)),
         1 if final_const_remain == 0 => return Ok(ops[0]),
-        _ => (),
+        _ => {
+            heapsort::sort(ops);
+            ops.dedup();
+        }
     };
-    heapsort::sort(ops);
-    ops.dedup();
     simplify_and_remove_unnecessary_ors(ops, const_remain);
     let mut tree = ops.pop()
         .unwrap_or_else(|| ctx.const_0());
@@ -2184,7 +2185,6 @@ fn collect_arith_ops<'e>(
     ops: &mut Slice<'e>,
     arith_type: ArithOpType,
     limit: usize,
-    mut ctx_swzb: Option<(OperandCtx<'e>, &mut SimplifyWithZeroBits)>,
 ) -> Result<(), SizeLimitReached> {
     if ops.len() >= limit {
         if ops.len() == limit {
@@ -2196,9 +2196,8 @@ fn collect_arith_ops<'e>(
     }
     match s.ty() {
         OperandType::Arithmetic(arith) if arith.ty == arith_type => {
-            let ctx_swzb_ = ctx_swzb.as_mut().map(|x| (x.0, &mut *x.1));
-            collect_arith_ops(arith.left, ops, arith_type, limit, ctx_swzb_)?;
-            collect_arith_ops(arith.right, ops, arith_type, limit, ctx_swzb)?;
+            collect_arith_ops(arith.left, ops, arith_type, limit)?;
+            collect_arith_ops(arith.right, ops, arith_type, limit)?;
         }
         _ => ops.push(s)?,
     }
@@ -2206,36 +2205,30 @@ fn collect_arith_ops<'e>(
 }
 
 fn collect_mul_ops<'e>(s: Operand<'e>, ops: &mut Slice<'e>) -> Result<(), SizeLimitReached> {
-    collect_arith_ops(s, ops, ArithOpType::Mul, usize::max_value(), None)
+    collect_arith_ops(s, ops, ArithOpType::Mul, usize::max_value())
 }
 
 fn collect_and_ops<'e>(
     s: Operand<'e>,
     ops: &mut Slice<'e>,
     limit: usize,
-    ctx: OperandCtx<'e>,
-    swzb: &mut SimplifyWithZeroBits,
 ) -> Result<(), SizeLimitReached> {
-    collect_arith_ops(s, ops, ArithOpType::And, limit, Some((ctx, swzb)))
+    collect_arith_ops(s, ops, ArithOpType::And, limit)
 }
 
 fn collect_or_ops<'e>(
     s: Operand<'e>,
     ops: &mut Slice<'e>,
-    ctx: OperandCtx<'e>,
-    swzb: &mut SimplifyWithZeroBits,
 ) -> Result<(), SizeLimitReached> {
-    collect_arith_ops(s, ops, ArithOpType::Or, usize::max_value(), Some((ctx, swzb)))
+    collect_arith_ops(s, ops, ArithOpType::Or, usize::max_value())
 }
 
 fn collect_xor_ops<'e>(
     s: Operand<'e>,
     ops: &mut Slice<'e>,
     limit: usize,
-    ctx: OperandCtx<'e>,
-    swzb: &mut SimplifyWithZeroBits,
 ) -> Result<(), SizeLimitReached> {
-    collect_arith_ops(s, ops, ArithOpType::Xor, limit, Some((ctx, swzb)))
+    collect_arith_ops(s, ops, ArithOpType::Xor, limit)
 }
 
 /// Return (offset, len, value_offset)
@@ -2841,8 +2834,8 @@ pub fn simplify_or<'e>(
     }
 
     ctx.simplify_temp_stack().alloc(|ops| {
-        collect_or_ops(left, ops, ctx, swzb)
-            .and_then(|()| collect_or_ops(right, ops, ctx, swzb))
+        collect_or_ops(left, ops)
+            .and_then(|()| collect_or_ops(right, ops))
             .and_then(|()| simplify_or_ops(ops, ctx, swzb))
             .unwrap_or_else(|_| {
                 let arith = ArithOperand {
@@ -2901,11 +2894,11 @@ fn simplify_or_ops<'e>(
                 ops_changed = true;
                 ops.swap_remove(i);
                 end -= 1;
-                collect_or_ops(l, ops, ctx, swzb_ctx)?;
+                collect_or_ops(l, ops)?;
                 if let Some(c) = r.if_constant() {
                     const_val |= c;
                 } else {
-                    collect_or_ops(r, ops, ctx, swzb_ctx)?;
+                    collect_or_ops(r, ops)?;
                 }
             } else if let Some(c) = ops[i].if_constant() {
                 ops.swap_remove(i);
@@ -3042,6 +3035,10 @@ fn simplify_with_and_mask_inner<'e>(
                             return arith.left;
                         } else if c & self_mask == 0 {
                             return ctx.const_0();
+                        } else if c & mask == c {
+                            // Mask is superset of the already existing mask,
+                            // so it won't simplify anything further
+                            return op;
                         }
                     }
                     let simplified_left =
@@ -3212,6 +3209,15 @@ fn simplify_with_and_mask_inner<'e>(
     }
 }
 
+/// If `a` is subset of or equal to `b`
+fn range_is_subset(a: &Range<u8>, b: &Range<u8>) -> bool {
+    a.start >= b.start && a.end <= b.end
+}
+
+fn ranges_overlap(a: &Range<u8>, b: &Range<u8>) -> bool {
+    a.start < b.end && a.end > b.start
+}
+
 /// Simplifies `op` when the bits in the range `bits` are guaranteed to be zero.
 /// Returning `None` is considered same as `Some(constval(0))` (The value gets optimized out in
 /// bitwise and).
@@ -3228,11 +3234,11 @@ fn simplify_with_zero_bits<'e>(
     }
     let relevant_bits = op.relevant_bits();
     // Check if we're setting all nonzero bits to zero
-    if relevant_bits.start >= bits.start && relevant_bits.end <= bits.end {
+    if range_is_subset(&relevant_bits, bits) {
         return None;
     }
     // Check if we're zeroing bits that were already zero
-    if relevant_bits.start >= bits.end || relevant_bits.end <= bits.start {
+    if !ranges_overlap(&relevant_bits, bits) {
         return Some(op);
     }
 
@@ -3274,6 +3280,16 @@ fn simplify_with_zero_bits<'e>(
             let right = arith.right;
             match arith.ty {
                 ArithOpType::And => {
+                    // If zeroing bits that either of the operands has already zeroed,
+                    // the other operand has to have also been simplified to take those
+                    // zero bits into account => can't simplify further.
+                    if !ranges_overlap(bits, &left.relevant_bits()) {
+                        return Some(op);
+                    }
+                    if !ranges_overlap(bits, &right.relevant_bits()) {
+                        return Some(op);
+                    }
+
                     let simplified_left = simplify_with_zero_bits(left, bits, ctx, swzb);
                     if should_stop(swzb) {
                         return Some(op);
@@ -3666,8 +3682,8 @@ pub fn simplify_xor<'e>(
         return ctx.intern(OperandType::Arithmetic(arith));
     }
     ctx.simplify_temp_stack().alloc(|ops| {
-        collect_xor_ops(left, ops, 30, ctx, swzb)
-            .and_then(|()| collect_xor_ops(right, ops, 30, ctx, swzb))
+        collect_xor_ops(left, ops, 30)
+            .and_then(|()| collect_xor_ops(right, ops, 30))
             .and_then(|()| simplify_xor_ops(ops, ctx, swzb))
             .unwrap_or_else(|_| {
                 // This is likely some hash function being unrolled, give up
