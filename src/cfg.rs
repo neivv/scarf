@@ -38,6 +38,16 @@ impl<'e, S: CfgState> Cfg<'e, S> {
         }
     }
 
+    pub fn get_link(&self, address: S::VirtualAddress) -> Option<NodeLink<S::VirtualAddress>> {
+        match self.nodes.binary_search_by_key(&address, |x| x.0) {
+            Ok(idx) => Some(NodeLink {
+                address,
+                index: idx as u32,
+            }),
+            _ => None,
+        }
+    }
+
     /// Gets mutable access to state - which is fine as none of the
     /// CFG functionality uses it for anything; it's purely user data.
     ///
@@ -327,6 +337,28 @@ impl<'e, S: CfgState> Cfg<'e, S> {
         }
         result.sort();
         result.dedup();
+        result
+    }
+
+    /// Retreives a structure which can be used to lookup what nodes branch to current
+    /// node.
+    pub fn predecessors(&mut self) -> Predecessors {
+        self.calculate_node_indices();
+        let mut result = Predecessors {
+            lookup: vec![(!0, !0); self.nodes.len()],
+            long_lists: Vec::new(),
+        };
+        for (idx, node) in self.nodes.iter().enumerate().map(|x| (x.0 as u32, &(x.1).1)) {
+            match node.out_edges {
+                CfgOutEdges::None => (),
+                CfgOutEdges::Single(ref link) => result.add_predecessors(idx, &[*link]),
+                CfgOutEdges::Branch(ref default, ref cond) => {
+                    result.add_predecessors(idx, &[*default, cond.node])
+                }
+                CfgOutEdges::Switch(ref links, _) => result.add_predecessors(idx, &links),
+            }
+        }
+
         result
     }
 
@@ -666,7 +698,7 @@ pub struct OutEdgeCondition<'e, Va: VirtualAddress> {
     pub condition: Operand<'e>,
 }
 
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone, Copy, Eq)]
 /// The address is considered a stable link to a node, while index is invalid if the parent
 /// graph's node_indices_dirty is true.
 pub struct NodeLink<Va: VirtualAddress> {
@@ -733,6 +765,152 @@ impl<Va: VirtualAddress> NodeLink<Va> {
         } else {
             Some(self.index())
         }
+    }
+}
+
+pub struct Predecessors {
+    // Node index to predecessors.
+    //   No predecessors => (!0, !0),
+    //   1 => (idx, !0),
+    //   2 => (idx, idx),
+    //   3+ => (!0, idx to long_lists)
+    lookup: Vec<(u32, u32)>,
+    // Storage when there are more than 2 predecessors.
+    // First idx is current sublist length, followed by length of predecessors,
+    // followed by !0 to signify end of list or another index to next sublist.
+    long_lists: Vec<u32>,
+}
+
+impl Predecessors {
+    fn add_predecessors<Va: VirtualAddress>(
+        &mut self,
+        predecessor: u32,
+        successors: &[NodeLink<Va>],
+    ) {
+        for succ in successors {
+            let entry = &mut self.lookup[succ.index as usize];
+            if entry.1 == u32::max_value() {
+                // 0 or 1 entries, can just add to the current list
+                if entry.0 == u32::max_value() {
+                    entry.0 = predecessor;
+                } else {
+                    entry.1 = predecessor;
+                }
+            } else if entry.0 != u32::max_value() {
+                // 2 entries, relocating to long_lists
+                let long_list_idx = self.long_lists.len() as u32;
+                self.long_lists.extend([
+                    3,
+                    entry.0,
+                    entry.1,
+                    predecessor,
+                    !0,
+                ].iter().copied());
+                entry.0 = u32::max_value();
+                entry.1 = long_list_idx;
+            } else {
+                // Already a long list
+                // First seek to last sublist index
+                let mut tail_index = entry.1 as usize;
+                let mut next_location;
+                loop {
+                    let sublist_len = self.long_lists[tail_index];
+                    next_location = tail_index + sublist_len as usize + 1;
+                    let next = self.long_lists[next_location];
+                    if next == u32::max_value() {
+                        break;
+                    }
+                    tail_index = next as usize;
+                }
+                if next_location == self.long_lists.len() - 1 {
+                    // Can just expand the list in place
+                    self.long_lists[tail_index] += 1;
+                    self.long_lists[next_location] = predecessor;
+                    self.long_lists.push(u32::max_value());
+                } else {
+                    // Start a new sublist
+                    let new_sublist_idx = self.long_lists.len();
+                    self.long_lists[next_location] = new_sublist_idx as u32;
+                    self.long_lists.extend([
+                        1,
+                        predecessor,
+                        !0,
+                    ].iter().copied());
+                }
+            }
+
+        }
+    }
+
+    /// Iterates through predecessors of a single node.
+    /// `cfg` must be the same Cfg that was used to create this struct.
+    pub fn predecessors<'a, 'e, S: CfgState>(
+        &'a self,
+        cfg: &'a Cfg<'e, S>,
+        link: &NodeLink<S::VirtualAddress>,
+    ) -> NodePredecessors<'a, 'e, S> {
+        let index = link.index as usize;
+        let predecessors = self.lookup[index];
+        let mode = if predecessors.0 == u32::max_value() && predecessors.1 != u32::max_value() {
+            PredecessorIterMode::Long(predecessors.1, 0)
+        } else {
+            PredecessorIterMode::Short(predecessors.0, predecessors.1)
+        };
+
+        NodePredecessors {
+            cfg,
+            parent: self,
+            mode,
+        }
+    }
+}
+
+pub struct NodePredecessors<'a, 'e, S: CfgState> {
+    cfg: &'a Cfg<'e, S>,
+    parent: &'a Predecessors,
+    mode: PredecessorIterMode,
+}
+
+#[derive(Copy, Clone)]
+enum PredecessorIterMode {
+    Long(u32, u32),
+    Short(u32, u32),
+}
+
+impl<'a, 'e, S: CfgState> Iterator for NodePredecessors<'a, 'e, S> {
+    type Item = NodeLink<S::VirtualAddress>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let next_index = match self.mode {
+            PredecessorIterMode::Short(ref mut a, ref mut b) => {
+                if *a == u32::max_value() {
+                    return None;
+                }
+                let next_index = *a;
+                *a = *b;
+                *b = u32::max_value();
+                next_index
+            }
+            PredecessorIterMode::Long(ref mut sublist_index, ref mut pos) => {
+                if *sublist_index == u32::max_value() {
+                    return None;
+                }
+                let sublist_len = self.parent.long_lists[*sublist_index as usize] as usize;
+                if *pos as usize == sublist_len {
+                    *sublist_index =
+                        self.parent.long_lists[*sublist_index as usize + sublist_len + 1];
+                }
+                if *sublist_index == u32::max_value() {
+                    return None;
+                }
+                *pos += 1;
+                self.parent.long_lists[*sublist_index as usize + *pos as usize]
+            }
+        };
+        let address = self.cfg.nodes[next_index as usize].0;
+        Some(NodeLink {
+            address,
+            index: next_index,
+        })
     }
 }
 
