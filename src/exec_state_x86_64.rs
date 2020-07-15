@@ -12,13 +12,13 @@ use crate::operand::{
 };
 use crate::{BinaryFile, VirtualAddress64};
 
-const XMM_REGISTER_INDEX: usize = 0x10;
-const FLAGS_INDEX: usize = XMM_REGISTER_INDEX + 0x10 * 4;
+const FLAGS_INDEX: usize = 0x10;
 const STATE_OPERANDS: usize = FLAGS_INDEX + 6;
 
 pub struct ExecutionState<'e> {
     // 16 registers, 10 xmm registers with 4 parts each, 6 flags
-    state: [Operand<'e>; 0x10 + 0x10 * 4 + 0x6],
+    state: [Operand<'e>; 0x10 + 0x6],
+    xmm: Rc<[Operand<'e>; 0x10 * 4]>,
     cached_low_registers: CachedLowRegisters<'e>,
     memory: Memory<'e>,
     unresolved_constraint: Option<Constraint<'e>>,
@@ -39,6 +39,7 @@ impl<'e> Clone for ExecutionState<'e> {
             // or branching code generally avoids temporaries.
             memory: self.memory.clone(),
             cached_low_registers: self.cached_low_registers.clone(),
+            xmm: self.xmm.clone(),
             state: self.state,
             resolved_constraint: self.resolved_constraint,
             unresolved_constraint: self.unresolved_constraint,
@@ -395,10 +396,12 @@ impl<'e> ExecutionState<'e> {
     ) -> ExecutionState<'b> {
         let dummy = ctx.const_0();
         let mut state = [dummy; STATE_OPERANDS];
+        let mut xmm = Rc::new([dummy; 0x10 * 4]);
+        let xmm_mut = Rc::make_mut(&mut xmm);
         for i in 0..16 {
             state[i] = ctx.register(i as u8);
             for j in 0..4 {
-                state[XMM_REGISTER_INDEX + i * 4 + j] = ctx.xmm(i as u8, j as u8);
+                xmm_mut[i * 4 + j] = ctx.xmm(i as u8, j as u8);
             }
         }
         for i in 0..5 {
@@ -408,6 +411,7 @@ impl<'e> ExecutionState<'e> {
         state[FLAGS_INDEX + 5] = ctx.const_0();
         ExecutionState {
             state,
+            xmm,
             cached_low_registers: CachedLowRegisters::new(),
             memory: Memory::new(),
             unresolved_constraint: None,
@@ -646,9 +650,8 @@ impl<'e> ExecutionState<'e> {
             }
             DestOperand::Fpu(_) => Destination::Nop,
             DestOperand::Xmm(reg, word) => {
-                Destination::Oper(&mut self.state[
-                    XMM_REGISTER_INDEX + (reg & 0xf) as usize * 4 + (word & 3) as usize
-                ])
+                let xmm = Rc::make_mut(&mut self.xmm);
+                Destination::Oper(&mut xmm[(reg & 0xf) as usize * 4 + (word & 3) as usize])
             }
             DestOperand::Flag(flag) => {
                 self.update_flags();
@@ -866,7 +869,7 @@ impl<'e> ExecutionState<'e> {
                 self.state[(reg.0 & 0xf) as usize]
             }
             OperandType::Xmm(reg, word) => {
-                self.state[XMM_REGISTER_INDEX + (reg & 0xf) as usize * 4 + (word & 3) as usize]
+                self.xmm[(reg & 0xf) as usize * 4 + (word & 3) as usize]
             }
             OperandType::Fpu(_) => value,
             OperandType::Flag(flag) => {
@@ -986,10 +989,16 @@ pub fn merge_states<'a: 'r, 'r>(
     } else {
         None
     };
+    let xmm_eq = {
+        Rc::ptr_eq(&old.xmm, &new.xmm) ||
+        old.xmm.iter().zip(new.xmm.iter())
+            .all(|(&a, &b)| check_eq(a, b))
+    };
     let changed =
         old.state.iter().zip(new.state.iter())
             .any(|(&a, &b)| !check_eq(a, b)) ||
         !check_memory_eq(&old.memory, &new.memory) ||
+        !xmm_eq ||
         merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) || (
             old.resolved_constraint.is_some() &&
             old.resolved_constraint != new.resolved_constraint
@@ -1007,8 +1016,18 @@ pub fn merge_states<'a: 'r, 'r>(
                 }
             }
         }
+        let mut xmm = old.xmm.clone();
+        if !xmm_eq {
+            let state = Rc::make_mut(&mut xmm);
+            let old_xmm = &*old.xmm;
+            let new_xmm = &*new.xmm;
+            for i in 0..state.len() {
+                state[i] = merge(ctx, old_xmm[i], new_xmm[i]);
+            }
+        }
         Some(ExecutionState {
             state,
+            xmm,
             cached_low_registers,
             memory: old.memory.merge(&new.memory, ctx),
             unresolved_constraint: merged_ljec.unwrap_or_else(|| {

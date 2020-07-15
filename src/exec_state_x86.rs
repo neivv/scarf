@@ -159,14 +159,15 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     }
 }
 
-const FPU_REGISTER_INDEX: usize = 8;
+const FPU_REGISTER_INDEX: usize = 0;
 const XMM_REGISTER_INDEX: usize = FPU_REGISTER_INDEX + 8;
-const FLAGS_INDEX: usize = XMM_REGISTER_INDEX + 8 * 4;
+const FLAGS_INDEX: usize = 8;
 const STATE_OPERANDS: usize = FLAGS_INDEX + 6;
 
 pub struct ExecutionState<'e> {
     // 8 registers, 8 fpu registers, 8 xmm registers with 4 parts each, 6 flags
-    state: [Operand<'e>; 0x8 + 0x8 * 4 + 0x8 + 0x6],
+    state: [Operand<'e>; 0x8 + 0x6],
+    xmm_fpu: Rc<[Operand<'e>; 0x8 + 0x8 * 4]>,
     cached_low_registers: CachedLowRegisters<'e>,
     memory: Memory<'e>,
     resolved_constraint: Option<Constraint<'e>>,
@@ -185,6 +186,7 @@ impl<'e> Clone for ExecutionState<'e> {
             // or branching code generally avoids temporaries.
             memory: self.memory.clone(),
             cached_low_registers: self.cached_low_registers.clone(),
+            xmm_fpu: self.xmm_fpu.clone(),
             state: self.state,
             resolved_constraint: self.resolved_constraint,
             unresolved_constraint: self.unresolved_constraint,
@@ -445,11 +447,15 @@ impl<'e> ExecutionState<'e> {
     ) -> ExecutionState<'b> {
         let dummy = ctx.const_0();
         let mut state = [dummy; STATE_OPERANDS];
+        // This could be even cached in ctx?
+        // Though it doesn't have arch-specific structures currently..
+        let mut xmm_fpu = Rc::new([dummy; 8 * 4 + 8]);
+        let xmm_fpu_mut = Rc::make_mut(&mut xmm_fpu);
         for i in 0..8 {
             state[i] = ctx.register(i as u8);
-            state[FPU_REGISTER_INDEX + i] = ctx.register_fpu(i as u8);
+            xmm_fpu_mut[FPU_REGISTER_INDEX + i] = ctx.register_fpu(i as u8);
             for j in 0..4 {
-                state[XMM_REGISTER_INDEX + i * 4 + j] = ctx.xmm(i as u8, j as u8);
+                xmm_fpu_mut[XMM_REGISTER_INDEX + i * 4 + j] = ctx.xmm(i as u8, j as u8);
             }
         }
         for i in 0..5 {
@@ -459,6 +465,7 @@ impl<'e> ExecutionState<'e> {
         state[FLAGS_INDEX + 5] = ctx.const_0();
         ExecutionState {
             state,
+            xmm_fpu,
             cached_low_registers: CachedLowRegisters::new(),
             memory: Memory::new(),
             resolved_constraint: None,
@@ -529,12 +536,13 @@ impl<'e> ExecutionState<'e> {
             Operation::Return(_) => {
             }
             Operation::Special(ref code) => {
+                let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
                 if code == &[0xd9, 0xf6] {
                     // fdecstp
-                    (&mut self.state[FPU_REGISTER_INDEX..][..8]).rotate_left(1);
+                    (&mut xmm_fpu[FPU_REGISTER_INDEX..][..8]).rotate_left(1);
                 } else if code == &[0xd9, 0xf7] {
                     // fincstp
-                    (&mut self.state[FPU_REGISTER_INDEX..][..8]).rotate_right(1);
+                    (&mut xmm_fpu[FPU_REGISTER_INDEX..][..8]).rotate_right(1);
                 }
             }
             Operation::SetFlags(ref arith, size) => {
@@ -693,10 +701,12 @@ impl<'e> ExecutionState<'e> {
                 Destination::Register8Low(&mut self.state[reg.0 as usize & 7])
             }
             DestOperand::Fpu(id) => {
-                Destination::Oper(&mut self.state[FPU_REGISTER_INDEX + (id & 7) as usize])
+                let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
+                Destination::Oper(&mut xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize])
             }
             DestOperand::Xmm(reg, word) => {
-                Destination::Oper(&mut self.state[
+                let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
+                Destination::Oper(&mut xmm_fpu[
                     XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize
                 ])
             }
@@ -920,10 +930,12 @@ impl<'e> ExecutionState<'e> {
                 self.state[reg.0 as usize & 7]
             }
             OperandType::Xmm(reg, word) => {
-                self.state[XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize]
+                self.xmm_fpu[
+                    XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize
+                ]
             }
             OperandType::Fpu(id) => {
-                self.state[FPU_REGISTER_INDEX + (id & 7) as usize]
+                self.xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize]
             }
             OperandType::Flag(flag) => {
                 self.update_flags();
@@ -1049,10 +1061,16 @@ pub fn merge_states<'a: 'r, 'r>(
     } else {
         None
     };
+    let xmm_fpu_eq = {
+        Rc::ptr_eq(&old.xmm_fpu, &new.xmm_fpu) ||
+        old.xmm_fpu.iter().zip(new.xmm_fpu.iter())
+            .all(|(&a, &b)| check_eq(a, b))
+    };
     let changed =
         old.state.iter().zip(new.state.iter())
             .any(|(&a, &b)| !check_eq(a, b)) ||
         !check_memory_eq(&old.memory, &new.memory) ||
+        !xmm_fpu_eq ||
         merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) || (
             old.resolved_constraint.is_some() &&
             old.resolved_constraint != new.resolved_constraint
@@ -1070,8 +1088,18 @@ pub fn merge_states<'a: 'r, 'r>(
                 }
             }
         }
+        let mut xmm_fpu = old.xmm_fpu.clone();
+        if !xmm_fpu_eq {
+            let state = Rc::make_mut(&mut xmm_fpu);
+            let old_xmm_fpu = &*old.xmm_fpu;
+            let new_xmm_fpu = &*new.xmm_fpu;
+            for i in 0..state.len() {
+                state[i] = merge(ctx, old_xmm_fpu[i], new_xmm_fpu[i]);
+            }
+        }
         let result = Some(ExecutionState {
             state,
+            xmm_fpu,
             cached_low_registers,
             memory: old.memory.merge(&new.memory, ctx),
             unresolved_constraint: merged_ljec.unwrap_or_else(|| {
