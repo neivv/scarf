@@ -9,7 +9,8 @@ use fxhash::FxBuildHasher;
 use crate::analysis;
 use crate::disasm::{self, DestOperand, Instruction, Operation};
 use crate::operand::{
-    ArithOpType, Operand, OperandType, OperandCtx, OperandHashByAddress, MemAccessSize,
+    ArithOpType, ArithOperand, Operand, OperandType, OperandCtx, OperandHashByAddress,
+    MemAccessSize,
 };
 
 /// A trait that does (most of) arch-specific state handling.
@@ -38,6 +39,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     fn update(&mut self, operation: &Operation<'e>);
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
     fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
+    fn set_flags_resolved(&mut self, arith: &ArithOperand<'e>, size: MemAccessSize);
     fn ctx(&self) -> OperandCtx<'e>;
     fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e>;
     fn resolve_apply_constraints(&mut self, operand: Operand<'e>) -> Operand<'e>;

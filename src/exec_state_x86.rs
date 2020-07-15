@@ -42,6 +42,13 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         dest.set(value, ctx);
     }
 
+    fn set_flags_resolved(&mut self, arith: &ArithOperand<'e>, size: MemAccessSize) {
+        self.pending_flags = Some((*arith, size));
+        // Could try to do smarter invalidation, but since in practice unresolved
+        // constraints always are bunch of flags, invalidate it completely.
+        self.unresolved_constraint = None;
+    }
+
     fn ctx(&self) -> OperandCtx<'e> {
         self.ctx
     }
