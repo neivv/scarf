@@ -4907,6 +4907,33 @@ fn gt_signed2() {
 }
 
 #[test]
+fn gt_signed3() {
+    // Equivalent expressions
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt(
+        ctx.constant(0x8000_0050),
+        ctx.and_const(
+            ctx.sub(
+                ctx.constant(0x4e),
+                ctx.register(0),
+            ),
+            0xffff_ffff,
+        ),
+    );
+    let eq1 = ctx.gt(
+        ctx.constant(0x8000_0050),
+        ctx.and_const(
+            ctx.add(
+                ctx.constant(0x8000_0001),
+                ctx.register(0),
+            ),
+            0xffff_ffff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
 fn merge_mem_or() {
     let ctx = &OperandContext::new();
     let op1 = ctx.or(
@@ -4921,4 +4948,34 @@ fn merge_mem_or() {
     );
     let eq1 = ctx.mem32(ctx.constant(0x1230));
     assert_eq!(op1, eq1);
+}
+
+#[test]
+fn gt_neq() {
+    let ctx = &OperandContext::new();
+    // not(20 > x) => x > 1f
+    let op1 = ctx.eq_const(
+        ctx.gt_const_left(
+            0x20,
+            ctx.register(1),
+        ),
+        0,
+    );
+    let eq1 = ctx.gt_const(
+        ctx.register(1),
+        0x1f,
+    );
+    let op2 = ctx.eq_const(
+        ctx.gt_const(
+            ctx.register(1),
+            0x20,
+        ),
+        0,
+    );
+    let eq2 = ctx.gt_const_left(
+        0x21,
+        ctx.register(1),
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
 }

@@ -46,6 +46,7 @@ pub fn simplify_arith<'e>(
         ArithOpType::Equal => simplify_eq(left, right, ctx),
         ArithOpType::GreaterThan => {
             let mut left = left;
+            let mut right = right;
             if left == right {
                 return ctx.const_0();
             }
@@ -68,6 +69,18 @@ pub fn simplify_arith<'e>(
                 if mask & mask2 == mask2 && mask_is_continuous_from_0 {
                     if let Some(new) = simplify_gt_lhs_sub(ctx, left_inner, right_inner) {
                         left = simplify_and_const(new, mask, ctx, swzb_ctx);
+                    }
+                }
+            }
+            // c1 > (c2 - x) to c1 > (x + (c1 - c2 - 1))
+            // Not exactly sure why this works.. Would be good to prove..
+            if let Some(c1) = left.if_constant() {
+                let (right_inner, mask) = Operand::and_masked(right);
+                if let Some((l, r)) = right_inner.if_arithmetic_sub() {
+                    if let Some(c2) = l.if_constant() {
+                        if c1 > c2 {
+                            right = ctx.and_const(ctx.add_const(r, c1 - c2 - 1), mask);
+                        }
                     }
                 }
             }
@@ -1049,12 +1062,36 @@ fn simplify_eq_ops<'e>(
                         }
                     }
                 }
+                let swzb_ctx = &mut SimplifyWithZeroBits::default();
+                // Simplify (c > x) == 0 to x > (c - 1)
+                // Wouldn't be valid for (0 > x) but it should never be created.
+                // Same for (x > c) == 0 to c + 1 > x
+                if let Some((l, r)) = ops[0].0.if_arithmetic_gt() {
+                    if let Some(c) = l.if_constant() {
+                        return simplify_arith(
+                            r,
+                            ctx.constant(c.wrapping_sub(1)),
+                            ArithOpType::GreaterThan,
+                            ctx,
+                            swzb_ctx,
+                        );
+                    }
+                    if let Some(c) = r.if_constant() {
+                        return simplify_arith(
+                            ctx.constant(c.wrapping_add(1)),
+                            l,
+                            ArithOpType::GreaterThan,
+                            ctx,
+                            swzb_ctx,
+                        );
+                    }
+                }
+
                 // Simplify (x << c2) == 0 to x if c2 cannot shift any bits out
                 // Or ((x << c2) & c3) == 0 to (x & (c3 >> c2)) == 0
                 // Or ((x >> c2) & c3) == 0 to (x & (c3 << c2)) == 0
                 let (masked, mask) = Operand::and_masked(ops[0].0);
                 let mask = mask & add_sub_mask;
-                let swzb_ctx = &mut SimplifyWithZeroBits::default();
                 match masked.ty() {
                     OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Lsh => {
                         if let Some(c2) = arith.right.if_constant() {
@@ -1314,6 +1351,7 @@ fn simplify_eq_2op_check_signed_less<'e>(
     })?;
     let mask = (sign_bit << 1).wrapping_sub(1);
     // Overflow: (sign_bit > y) == ((x - y) sgt x)
+    // Extract `(x - y) sgt x` part first.
     let other = other.if_arithmetic_eq()
         .and_then(|(l, r)| {
             Operand::either(l, r, |op| {
@@ -1768,6 +1806,7 @@ fn simplify_and_main<'e>(
         }
     }
     simplify_and_merge_child_ors(ops, ctx);
+    simplify_and_merge_gt_const(ops, ctx);
 
     // Replace not(x) & not(y) with not(x | y)
     if ops.len() >= 2 {
@@ -1926,6 +1965,151 @@ fn simplify_and_merge_child_ors<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
             }
             if changed {
                 new = Some(ctx.or_const(val, constant));
+            }
+        }
+        if let Some(new) = new {
+            ops[i] = new;
+        }
+        i += 1;
+    }
+}
+
+// Merges (x > c) & ((x == c + 1) == 0) to x > (c + 1)
+// Or alternatively (x > c) & ((x == c2) == 0) to x > c
+// if c2 < c
+fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
+    #[derive(Copy, Clone)]
+    enum Variant {
+        GtLeft,
+        GtRight,
+        Neq,
+    }
+
+    fn check<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>, Variant)> {
+        match op.ty() {
+            OperandType::Arithmetic(arith) if arith.ty == ArithOpType::GreaterThan => {
+                arith.left.if_constant().map(|c| (c, arith.right, Variant::GtLeft))
+                    .or_else(|| {
+                        arith.right.if_constant().map(|c| (c, arith.left, Variant::GtRight))
+                    })
+            }
+            OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Equal => {
+                Operand::either(arith.left, arith.right, |x| x.if_constant().filter(|&c| c == 0))
+                    .and_then(|(_, other)| other.if_arithmetic_eq())
+                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
+                    .map(|(c, other)| (c, other, Variant::Neq))
+            }
+            _ => None,
+        }
+    }
+
+    if !ops.iter().any(|x| x.if_arithmetic_gt().is_some()) {
+        return;
+    }
+
+    let mut i = 0;
+    while i < ops.len() {
+        let op = ops[i];
+        let mut new = None;
+        let mut changed = false;
+        if let Some((mut constant, val, mut variant)) = check(op) {
+            for j in ((i + 1)..ops.len()).rev() {
+                let second = ops[j];
+                if let Some((other_constant, other_val, other_variant)) = check(second) {
+                    if val == other_val {
+                        match (variant, other_variant) {
+                            // (c > x) & (c2 > x) allows removing the one with greater c
+                            (Variant::GtLeft, Variant::GtLeft) => {
+                                if other_constant >= constant {
+                                    ops.swap_remove(j);
+                                } else {
+                                    ops.swap_remove(j);
+                                    constant = other_constant;
+                                    changed = true;
+                                }
+                            }
+                            // Same as above, but remove smaller c
+                            (Variant::GtRight, Variant::GtRight) => {
+                                if other_constant <= constant {
+                                    ops.swap_remove(j);
+                                } else {
+                                    ops.swap_remove(j);
+                                    constant = other_constant;
+                                    changed = true;
+                                }
+                            }
+                            // Could simplify this if it were x != 0 & x != 1,
+                            // but not doing it right now
+                            (Variant::Neq, Variant::Neq) => {
+                            }
+                            // (c > x) & (x > c2) is 0 if c >= c2
+                            (Variant::GtLeft, Variant::GtRight) => {
+                                if constant >= other_constant {
+                                    ops.clear();
+                                    return;
+                                }
+                            }
+                            (Variant::GtRight, Variant::GtLeft) => {
+                                if constant <= other_constant {
+                                    ops.clear();
+                                    return;
+                                }
+                            }
+                            // (c > x) & (x != c2) is c > x if c2 >= c,
+                            // or (c - 1) > x if c2 == c - 1
+                            (Variant::GtLeft, Variant::Neq) => {
+                                if other_constant >= constant {
+                                    ops.swap_remove(j);
+                                } else if other_constant == constant - 1 {
+                                    ops.swap_remove(j);
+                                    constant = constant - 1;
+                                    changed = true;
+                                }
+                            }
+                            // Same as above, just swapped c and c2
+                            (Variant::Neq, Variant::GtLeft) => {
+                                if constant >= other_constant {
+                                    variant = Variant::GtLeft;
+                                    constant = other_constant;
+                                    ops.swap_remove(j);
+                                    changed = true;
+                                } else if constant == other_constant - 1 {
+                                    variant = Variant::GtLeft;
+                                    ops.swap_remove(j);
+                                    changed = true;
+                                }
+                            }
+                            (Variant::GtRight, Variant::Neq) => {
+                                if other_constant <= constant {
+                                    ops.swap_remove(j);
+                                } else if other_constant == constant + 1 {
+                                    ops.swap_remove(j);
+                                    constant = constant + 1;
+                                    changed = true;
+                                }
+                            }
+                            (Variant::Neq, Variant::GtRight) => {
+                                if constant <= other_constant {
+                                    variant = Variant::GtRight;
+                                    constant = other_constant;
+                                    ops.swap_remove(j);
+                                    changed = true;
+                                } else if constant == other_constant + 1 {
+                                    variant = Variant::GtRight;
+                                    ops.swap_remove(j);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if changed {
+                new = Some(match variant {
+                    Variant::GtLeft => ctx.gt_const_left(constant, val),
+                    Variant::GtRight => ctx.gt_const(val, constant),
+                    Variant::Neq => ctx.neq_const(val, constant),
+                });
             }
         }
         if let Some(new) = new {

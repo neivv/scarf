@@ -153,6 +153,10 @@ impl<'e, T: Copy> Slice<'e, T> {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.shrink(0);
+    }
+
     pub fn shrink(&mut self, new_len: usize) {
         assert!(new_len <= self.len());
         let slice = mem::replace(&mut self.slice, &mut []);
