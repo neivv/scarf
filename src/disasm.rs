@@ -2072,12 +2072,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             self.output_and_const(r, size);
         } else {
             let rm_oper = self.rm_to_operand(&rm);
-            if rm.is_memory() {
-                self.output(mov(r.dest_operand(), rm_oper));
-            } else {
-                self.output(mov(r.dest_operand(), self.ctx.const_0()));
-                self.output(mov(r.dest_operand(), rm_oper));
-            }
+            self.output(mov(r.dest_operand(), rm_oper));
         }
         Ok(())
     }
