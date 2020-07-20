@@ -2025,7 +2025,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     fn movsx(&mut self, op_size: MemAccessSize) -> Result<(), Failed> {
         let dest_size = self.mem16_32();
         let (mut rm, r) = self.parse_modrm(dest_size)?;
-        if op_size == MemAccessSize::Mem8 && rm.index_mul == 255 && rm.base > 4 {
+        let reg8_high = op_size == MemAccessSize::Mem8 &&
+            !rm.is_memory() &&
+            rm.base >= 4 &&
+            self.rex_prefix() == 0;
+        if reg8_high {
             rm.base -= 4;
             rm.size = RegisterSize::High8;
         } else {
@@ -2049,7 +2053,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             _ => MemAccessSize::Mem16,
         };
         let (mut rm, r) = self.parse_modrm(self.mem16_32())?;
-        if op_size == MemAccessSize::Mem8 && rm.index_mul == 255 && rm.base > 4 {
+        let reg8_high = op_size == MemAccessSize::Mem8 &&
+            !rm.is_memory() &&
+            rm.base >= 4 &&
+            self.rex_prefix() == 0;
+        if reg8_high {
             rm.base -= 4;
             rm.size = RegisterSize::High8;
         } else {

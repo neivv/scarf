@@ -577,6 +577,30 @@ fn move_mem_in_parts() {
     ]);
 }
 
+#[test]
+fn movzx_movsx_high_reg2() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x41, 0xb9, 0xf0, 0x90, 0x00, 0x00, // mov r9d, 90f0
+        0x41, 0xbc, 0x80, 0x90, 0x00, 0x00, // mov r12d, 9080
+        0x41, 0x0f, 0xb6, 0xc1, // movzx eax, r9b
+        0x41, 0x0f, 0xb6, 0xcc, // movzx ecx, r12b
+        0x41, 0x0f, 0xbe, 0xd1, // movsx edx, r9b
+        0x41, 0x0f, 0xbe, 0xdc, // movsx ebx, r12b
+        0x4d, 0x0f, 0xbe, 0xc9, // movsx r9, r9b
+        0x4d, 0x0f, 0xb6, 0xd4, // movzx r10, r12b
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0xf0)),
+         (ctx.register(1), ctx.constant(0x80)),
+         (ctx.register(2), ctx.constant(0xffff_fff0)),
+         (ctx.register(3), ctx.constant(0xffff_ff80)),
+         (ctx.register(9), ctx.constant(0xffff_ffff_ffff_fff0)),
+         (ctx.register(10), ctx.constant(0x80)),
+         (ctx.register(12), ctx.constant(0x9080)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }

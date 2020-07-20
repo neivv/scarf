@@ -397,3 +397,21 @@ fn sign_flag_u32() {
          (ctx.register(2), ctx.constant(1)),
     ]);
 }
+
+#[test]
+fn movzx_movsx_high_reg() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xbb, 0xf0, 0xe0, 0xd0, 0xc0, // mov ebx, c0d0e0f0
+        0x0f, 0xb6, 0xc3, // movzx eax, bl
+        0x0f, 0xb6, 0xcf, // movzx ecx, bh
+        0x0f, 0xbe, 0xd3, // movsx edx, bl
+        0x0f, 0xbe, 0xdf, // movsx ebx, bh
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0xf0)),
+         (ctx.register(1), ctx.constant(0xe0)),
+         (ctx.register(2), ctx.constant(0xffff_fff0)),
+         (ctx.register(3), ctx.constant(0xffff_ffe0)),
+    ]);
+}
