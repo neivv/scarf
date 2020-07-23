@@ -776,7 +776,7 @@ pub struct Predecessors {
     //   3+ => (!0, idx to long_lists)
     lookup: Vec<(u32, u32)>,
     // Storage when there are more than 2 predecessors.
-    // First idx is current sublist length, followed by length of predecessors,
+    // First idx is current sublist length, followed by predecessors of that length,
     // followed by !0 to signify end of list or another index to next sublist.
     long_lists: Vec<u32>,
 }
@@ -898,6 +898,7 @@ impl<'a, 'e, S: CfgState> Iterator for NodePredecessors<'a, 'e, S> {
                 if *pos as usize == sublist_len {
                     *sublist_index =
                         self.parent.long_lists[*sublist_index as usize + sublist_len + 1];
+                    *pos = 0;
                 }
                 if *sublist_index == u32::max_value() {
                     return None;
