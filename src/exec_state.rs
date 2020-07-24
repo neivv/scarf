@@ -728,7 +728,11 @@ impl<'e> MemoryMap<'e> {
             // result, but if it has ones that should become undefined, the undefined has to be
             // inserted to the result instead.
             let common = a.common_immutable(b);
-            for (&key, &b_val, _is_imm) in b.iter_until_immutable(common) {
+            for (&key, &b_val, b_is_imm) in b.iter_until_immutable(common) {
+                if b_is_imm && b.get(key.0) != Some(b_val) {
+                    // Wasn't newest value
+                    continue;
+                }
                 if let Some((a_val, is_imm)) = a.get_with_immutable_info(key.0) {
                     match a_val == b_val {
                         true => {
@@ -747,7 +751,11 @@ impl<'e> MemoryMap<'e> {
             // The result contains now anything that was in b's unique branch of the memory.
             //
             // Repeat for a's unique branch.
-            for (&key, &a_val, _is_imm) in a.iter_until_immutable(common) {
+            for (&key, &a_val, a_is_imm) in a.iter_until_immutable(common) {
+                if a_is_imm && a.get(key.0) != Some(a_val) {
+                    // Wasn't newest value
+                    continue;
+                }
                 if !a_val.is_undefined() {
                     if let Some(b_val) = b.get(key.0) {
                         if a_val != b_val {
@@ -773,21 +781,35 @@ impl<'e> MemoryMap<'e> {
             return false;
         }
         let common = a.common_immutable(b);
-        for (&key, &a_val, _) in a.iter_until_immutable(common) {
+        for (&key, &a_val, is_imm) in a.iter_until_immutable(common) {
             if !key.0.contains_undefined() && !a_val.is_undefined() {
                 if b.get(key.0) != Some(a_val) {
-                    return true;
+                    let was_newest_value = if !is_imm {
+                        true
+                    } else {
+                        a.get(key.0) == Some(a_val)
+                    };
+                    if was_newest_value {
+                        return true;
+                    }
                 }
             }
         }
-        for (&key, &b_val, _) in b.iter_until_immutable(common) {
+        for (&key, &b_val, is_imm) in b.iter_until_immutable(common) {
             if !key.0.contains_undefined() {
                 let different = match a.get(key.0) {
                     Some(a_val) => !a_val.is_undefined() && a_val != b_val,
                     None => true,
                 };
                 if different {
-                    return true;
+                    let was_newest_value = if !is_imm {
+                        true
+                    } else {
+                        b.get(key.0) == Some(b_val)
+                    };
+                    if was_newest_value {
+                        return true;
+                    }
                 }
             }
         }
@@ -917,4 +939,54 @@ fn merge_immutable_memory() {
     assert!(new.get(ctx.constant(4)).unwrap().is_undefined());
     assert!(new.get(ctx.constant(8)).unwrap().is_undefined());
     assert_eq!(new.get(ctx.constant(12)).unwrap(), ctx.constant(8));
+}
+
+#[test]
+fn merge_memory_undef() {
+    let ctx = &crate::operand::OperandContext::new();
+    let mut a = Memory::new();
+    let mut b = Memory::new();
+    let addr = ctx.sub_const(ctx.new_undef(), 8);
+    a.set(addr, ctx.mem32(ctx.constant(4)));
+    b.set(addr, ctx.mem32(ctx.constant(4)));
+    a.map.convert_immutable();
+    let mut new = a.merge(&b, ctx);
+    assert_eq!(new.get(addr).unwrap(), ctx.mem32(ctx.constant(4)));
+}
+
+#[test]
+fn merge_memory_equal() {
+    // a has [addr] = 4 in top level, but 8 in immutable
+    // b has [addr] = 4 in immutable
+    let ctx = &crate::operand::OperandContext::new();
+    let mut a = Memory::new();
+    let mut b = Memory::new();
+    let addr = ctx.sub_const(ctx.register(4), 8);
+    let addr2 = ctx.sub_const(ctx.register(4), 0xc);
+    a.set(addr, ctx.constant(8));
+    a.set(addr2, ctx.constant(0));
+    b.set(addr, ctx.constant(4));
+    a.map.convert_immutable();
+    b.map.convert_immutable();
+    a.set(addr, ctx.constant(4));
+    a.set(addr2, ctx.constant(1));
+    let mut new = a.merge(&b, ctx);
+    assert_eq!(new.get(addr).unwrap(), ctx.constant(4));
+    assert!(new.get(addr2).unwrap().is_undefined());
+}
+
+#[test]
+fn equal_memory_no_need_to_merge() {
+    // a has [addr] = 4 in top level, but 8 in immutable
+    // b has [addr] = 4 in immutable
+    let ctx = &crate::operand::OperandContext::new();
+    let mut a = Memory::new();
+    let mut b = Memory::new();
+    let addr = ctx.sub_const(ctx.register(4), 8);
+    a.set(addr, ctx.constant(8));
+    b.set(addr, ctx.constant(4));
+    a.map.convert_immutable();
+    b.map.convert_immutable();
+    a.set(addr, ctx.constant(4));
+    assert!(!a.map.has_merge_changed(&b.map));
 }
