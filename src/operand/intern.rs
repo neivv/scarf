@@ -180,22 +180,14 @@ impl Hasher for DummyHasher {
 }
 
 impl UndefInterner {
-    pub fn new() -> UndefInterner{
+    pub(crate) fn new() -> UndefInterner{
         UndefInterner {
             chunks: RefCell::new(Vec::new()),
         }
     }
 
-    pub fn push<'e>(&'e self, ty: OperandType<'e>) -> Operand<'e> {
-        let relevant_bits = ty.calculate_relevant_bits();
-        let min_zero_bit_simplify_size = ty.min_zero_bit_simplify_size();
-        let flags = ty.flags();
-        let base: OperandBase<'static> = OperandBase {
-            ty: unsafe { mem::transmute(ty) },
-            min_zero_bit_simplify_size,
-            relevant_bits,
-            flags,
-        };
+    pub(crate) fn push<'e>(&'e self, base: OperandBase<'e>) -> Operand<'e> {
+        let base: OperandBase<'static> = unsafe { mem::transmute(base) };
         let mut chunks = self.chunks.borrow_mut();
         loop {
             if let Some(chunk) = chunks.last_mut() {

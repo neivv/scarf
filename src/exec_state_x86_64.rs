@@ -261,8 +261,8 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     type VirtualAddress = VirtualAddress64;
     type Disassembler = Disassembler64<'e>;
 
-    fn maybe_convert_memory_immutable(&mut self) {
-        self.memory.map.maybe_convert_immutable();
+    fn maybe_convert_memory_immutable(&mut self, limit: usize) {
+        self.memory.map.maybe_convert_immutable(limit);
     }
 
     fn add_resolved_constraint(&mut self, constraint: Constraint<'e>) {
@@ -936,20 +936,6 @@ pub fn merge_states<'a: 'r, 'r>(
     fn check_eq<'e>(a: Operand<'e>, b: Operand<'e>) -> bool {
         a == b || a.is_undefined()
     }
-    fn check_memory_eq<'e>(a: &Memory<'e>, b: &Memory<'e>) -> bool {
-        if Rc::ptr_eq(&a.map.map, &b.map.map) {
-            return true;
-        }
-        a.map.map.iter().all(|(&key, val)| {
-            match key.0.contains_undefined() {
-                true => true,
-                false => match b.map.get(key.0) {
-                    Some(b_val) => check_eq(*val, b_val),
-                    None => true,
-                },
-            }
-        })
-    }
 
     let ctx = old.ctx;
     fn merge<'e>(ctx: OperandCtx<'e>, a: Operand<'e>, b: Operand<'e>) -> Operand<'e> {
@@ -997,7 +983,7 @@ pub fn merge_states<'a: 'r, 'r>(
     let changed =
         old.state.iter().zip(new.state.iter())
             .any(|(&a, &b)| !check_eq(a, b)) ||
-        !check_memory_eq(&old.memory, &new.memory) ||
+        !old.memory.map.has_merge_changed(&new.memory.map) ||
         !xmm_eq ||
         merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) || (
             old.resolved_constraint.is_some() &&

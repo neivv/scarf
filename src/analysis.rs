@@ -1140,11 +1140,11 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
             })
     }
 
-    state.0.maybe_convert_memory_immutable();
     let address = instruction.address();
     let instruction_len = instruction.len();
     match state.0.resolve_apply_constraints(condition).if_constant() {
         Some(0) => {
+            state.0.maybe_convert_memory_immutable(64);
             let address = address + instruction_len;
             *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
             analysis.add_unchecked_branch(address, state);
@@ -1160,6 +1160,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                 let code_offset = code_section.virtual_address;
                 let code_len = code_section.data.len() as u32;
                 let limits = state.0.value_limits(index);
+                state.0.maybe_convert_memory_immutable(16);
                 let case_iter =
                     switch_cases(ctx, binary, mem_size, switch_table_addr, limits, base_addr);
                 for case in case_iter {
@@ -1178,6 +1179,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                     *cfg_out_edge = CfgOutEdges::Switch(cases, index);
                 }
             } else {
+                state.0.maybe_convert_memory_immutable(64);
                 let dest = try_add_branch(analysis, state, to, address);
                 *cfg_out_edge = CfgOutEdges::Single(
                     dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
@@ -1185,6 +1187,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
             }
         }
         None => {
+            state.0.maybe_convert_memory_immutable(16);
             let no_jump_addr = address + instruction_len;
             let mut jump_state = clone_state(&state);
             jump_state.0.assume_jump_flag(condition, true);

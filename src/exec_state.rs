@@ -27,7 +27,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// immutable hashmap to keep clones not getting out of hand. This function is used to
     /// tell memory that it may be cloned soon, so the latest changes may be made
     /// immutable-shared if necessary.
-    fn maybe_convert_memory_immutable(&mut self);
+    fn maybe_convert_memory_immutable(&mut self, limit: usize);
     /// Adds an additonal assumption that can't be represented by setting registers/etc.
     /// Resolved constraints are useful limiting possible values a variable can have
     /// (`value_limits`)
@@ -618,30 +618,22 @@ impl<'e> MemoryMap<'e> {
         })
     }
 
-    fn has_before_immutable(&self, address: Operand<'e>, immutable: &MemoryMap<'e>) -> bool {
-        if self as *const MemoryMap == immutable as *const MemoryMap {
-            false
-        } else if self.map.contains_key(&OperandHashByAddress(address)) {
-            true
-        } else {
-            self.immutable.as_ref()
-                .map(|x| x.has_before_immutable(address, immutable))
-                .unwrap_or(false)
+    pub fn maybe_convert_immutable(&mut self, limit: usize) {
+        if self.map.len() >= limit {
+            self.convert_immutable();
         }
     }
 
-    pub fn maybe_convert_immutable(&mut self) {
-        if self.map.len() >= 64 {
-            let map = mem::replace(
-                &mut self.map,
-                Rc::new(HashMap::with_hasher(Default::default())),
-            );
-            let old_immutable = self.immutable.take();
-            self.immutable = Some(Rc::new(MemoryMap {
-                map,
-                immutable: old_immutable,
-            }));
-        }
+    fn convert_immutable(&mut self) {
+        let map = mem::replace(
+            &mut self.map,
+            Rc::new(HashMap::with_hasher(Default::default())),
+        );
+        let old_immutable = self.immutable.take();
+        self.immutable = Some(Rc::new(MemoryMap {
+            map,
+            immutable: old_immutable,
+        }));
     }
 
     /// Does a value -> key lookup (Finds an address containing value)
@@ -664,31 +656,67 @@ impl<'e> MemoryMap<'e> {
         if Rc::ptr_eq(&a.map, &b.map) {
             return a.clone();
         }
-        if a.len() == 0 {
-            return b.clone();
+        let mut result = HashMap::with_capacity_and_hasher(
+            a.map.len().max(b.map.len()),
+            Default::default(),
+        );
+        let a_empty = a.len() == 0;
+        let b_empty = b.len() == 0;
+        if (a_empty || b_empty) && a.immutable.is_none() && b.immutable.is_none() {
+            let other = if a_empty { b } else { a };
+            for (&key, &val) in other.map.iter() {
+                if val.is_undefined() {
+                    result.insert(key, val);
+                } else {
+                    result.insert(key, ctx.new_undef());
+                }
+            }
+            return MemoryMap {
+                map: Rc::new(result),
+                immutable: a.immutable.clone(),
+            };
         }
-        if b.len() == 0 {
-            return a.clone();
-        }
-        let mut result = HashMap::with_hasher(Default::default());
         let imm_eq = a.immutable.as_ref().map(|x| &**x as *const MemoryMap) ==
             b.immutable.as_ref().map(|x| &**x as *const MemoryMap);
-        if imm_eq {
+        let result = if imm_eq {
             // Allows just checking a.map.iter() instead of a.iter()
             for (&key, &a_val) in a.map.iter() {
-                if let Some((b_val, is_imm)) = b.get_with_immutable_info(key.0) {
-                    match a_val == b_val {
-                        true => {
-                            if !is_imm {
-                                result.insert(key, a_val);
+                if a_val.is_undefined() {
+                    result.insert(key, a_val);
+                } else {
+                    if let Some((b_val, is_imm)) = b.get_with_immutable_info(key.0) {
+                        match a_val == b_val {
+                            true => {
+                                if !is_imm {
+                                    result.insert(key, a_val);
+                                }
                             }
-                        }
-                        false => {
-                            if is_imm {
+                            false => {
                                 result.insert(key, ctx.new_undef());
                             }
                         }
+                    } else {
+                        result.insert(key, ctx.new_undef());
                     }
+                }
+            }
+            'b_loop: for (&key, &b_val) in b.map.iter() {
+                // This seems to be slightly faster than using entry()...
+                // Maybe it's just something with different inlining decisions
+                // that won't actually always be better, but it seems consistent
+                // enough that I'm leaving this as is.
+                if !result.contains_key(&key) {
+                    let val = if b_val.is_undefined() {
+                        b_val
+                    } else {
+                        if let Some((a_val, is_imm)) = a.get_with_immutable_info(key.0) {
+                            if is_imm && a_val == b_val {
+                                continue 'b_loop;
+                            }
+                        }
+                        ctx.new_undef()
+                    };
+                    result.insert(key, val);
                 }
             }
             MemoryMap {
@@ -696,9 +724,6 @@ impl<'e> MemoryMap<'e> {
                 immutable: a.immutable.clone(),
             }
         } else {
-            // Not inserting undefined addresses here, as missing entry is effectively undefined.
-            // Should be fine?
-            //
             // a's immutable map is used as base, so one which exist there don't get inserted to
             // result, but if it has ones that should become undefined, the undefined has to be
             // inserted to the result instead.
@@ -712,41 +737,24 @@ impl<'e> MemoryMap<'e> {
                             }
                         }
                         false => {
-                            if is_imm {
-                                result.insert(key, ctx.new_undef());
-                            }
+                            result.insert(key, ctx.new_undef());
                         }
                     }
+                } else {
+                    result.insert(key, ctx.new_undef());
                 }
             }
-            // The result contains now anything that was in b's unique branch of the memory and
-            // matched something in a.
-            // However, it is possible that for address A, the common branch contains X and b's
-            // unique branch has nothing, in which case b's value for A is X.
-            // if a's unique branch has something for A, then A's value may be X (if the values
-            // are equal), or undefined.
+            // The result contains now anything that was in b's unique branch of the memory.
             //
-            // Only checking both unique branches instead of walking through the common branch
-            // ends up being faster in cases where the memory grows large.
-            //
-            // If there is no common branch, we don't have to do anything else.
-            if let Some(common) = common {
-                for (&key, &a_val, is_imm) in a.iter_until_immutable(Some(common)) {
-                    if !b.has_before_immutable(key.0, common) {
-                        if let Some(b_val) = common.get(key.0) {
-                            match a_val == b_val {
-                                true => {
-                                    if !is_imm {
-                                        result.insert(key, a_val);
-                                    }
-                                }
-                                false => {
-                                    if is_imm {
-                                        result.insert(key, ctx.new_undef());
-                                    }
-                                }
-                            }
+            // Repeat for a's unique branch.
+            for (&key, &a_val, _is_imm) in a.iter_until_immutable(common) {
+                if !a_val.is_undefined() {
+                    if let Some(b_val) = b.get(key.0) {
+                        if a_val != b_val {
+                            result.insert(key, ctx.new_undef());
                         }
+                    } else {
+                        result.insert(key, ctx.new_undef());
                     }
                 }
             }
@@ -754,7 +762,36 @@ impl<'e> MemoryMap<'e> {
                 map: Rc::new(result),
                 immutable: a.immutable.clone(),
             }
+        };
+        result
+    }
+
+    /// Check if there are any not equal fields that aren't undefined in `self`
+    pub fn has_merge_changed(&self, b: &MemoryMap<'e>) -> bool {
+        let a = self;
+        if Rc::ptr_eq(&a.map, &b.map) {
+            return false;
         }
+        let common = a.common_immutable(b);
+        for (&key, &a_val, _) in a.iter_until_immutable(common) {
+            if !key.0.contains_undefined() && !a_val.is_undefined() {
+                if b.get(key.0) != Some(a_val) {
+                    return true;
+                }
+            }
+        }
+        for (&key, &b_val, _) in b.iter_until_immutable(common) {
+            if !key.0.contains_undefined() {
+                let different = match a.get(key.0) {
+                    Some(a_val) => !a_val.is_undefined() && a_val != b_val,
+                    None => true,
+                };
+                if different {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
@@ -863,4 +900,21 @@ fn apply_constraint_or() {
     let applied = Constraint(constraint).apply_to(ctx, val);
     let eq = ctx.constant(1);
     assert_eq!(applied, eq);
+}
+
+#[test]
+fn merge_immutable_memory() {
+    let ctx = &crate::operand::OperandContext::new();
+    let mut a = Memory::new();
+    let mut b = Memory::new();
+    a.set(ctx.constant(4), ctx.constant(8));
+    a.set(ctx.constant(12), ctx.constant(8));
+    b.set(ctx.constant(8), ctx.constant(15));
+    b.set(ctx.constant(12), ctx.constant(8));
+    a.map.convert_immutable();
+    b.map.convert_immutable();
+    let mut new = a.merge(&b, ctx);
+    assert!(new.get(ctx.constant(4)).unwrap().is_undefined());
+    assert!(new.get(ctx.constant(8)).unwrap().is_undefined());
+    assert_eq!(new.get(ctx.constant(12)).unwrap(), ctx.constant(8));
 }

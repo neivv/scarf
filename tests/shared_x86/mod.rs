@@ -415,3 +415,27 @@ fn movzx_movsx_high_reg() {
          (ctx.register(3), ctx.constant(0xffff_ffe0)),
     ]);
 }
+
+#[test]
+fn merge_mem_to_undef() {
+    let ctx = &OperandContext::new();
+    // eax should be [esp], but ecx is undefined
+    test_inline(&[
+        0x8b, 0x44, 0xe4, 0x04, // mov eax, [esp + 4]
+        0x89, 0x4c, 0xe4, 0x04, // mov [esp + 4], ecx
+        0x85, 0xc0, // test eax, eax
+        0x74, 0x06, // je end
+        0x89, 0x54, 0xe4, 0x04, // mov [esp + 4], edx
+        0xeb, 0x00, // jmp end
+        // end:
+        0x8b, 0x4c, 0xe4, 0x04, // mov ecx, [esp + 4]
+        0x31, 0xd2, // xor edx, edx
+        0x39, 0xc8, // cmp eax, ecx
+        0x0f, 0x94, 0xc2, // sete dl
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.mem32(ctx.add_const(ctx.register(4), 4))),
+         (ctx.register(1), ctx.new_undef()),
+         (ctx.register(2), ctx.new_undef()),
+    ]);
+}

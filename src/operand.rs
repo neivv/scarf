@@ -33,11 +33,11 @@ pub struct Operand<'e>(&'e OperandBase<'e>, PhantomData<&'e mut &'e ()>);
 /// Wrapper around `Operand` which implements `Hash` on the interned address.
 /// Separate struct since hashing by address gives hashes that aren't stable
 /// across executions or even separate `OperandContext`s.
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct OperandHashByAddress<'e>(pub Operand<'e>);
 
 #[cfg_attr(feature = "serde", derive(Serialize))]
-struct OperandBase<'e> {
+pub(crate) struct OperandBase<'e> {
     ty: OperandType<'e>,
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     min_zero_bit_simplify_size: u8,
@@ -530,7 +530,12 @@ impl<'e> OperandContext<'e> {
     pub fn new_undef(&'e self) -> Operand<'e> {
         let id = self.next_undefined.get();
         self.next_undefined.set(id + 1);
-        self.undef_interner.push(OperandType::Undefined(UndefinedId(id)))
+        self.undef_interner.push(OperandBase {
+            ty: OperandType::Undefined(UndefinedId(id)),
+            min_zero_bit_simplify_size: 0,
+            relevant_bits: 0..64,
+            flags: FLAG_CONTAINS_UNDEFINED,
+        })
     }
 
     pub fn flag_z(&'e self) -> Operand<'e> {
