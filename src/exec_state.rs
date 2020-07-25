@@ -571,7 +571,22 @@ impl<'e> MemoryMap<'e> {
     }
 
     pub fn set(&mut self, address: Operand<'e>, value: Operand<'e>) {
-        Rc::make_mut(&mut self.map).insert(OperandHashByAddress(address), value);
+        let key = address.hash_by_address();
+        // Don't insert a duplicate entry to mutable map if the immutable map already
+        // has the correct key.
+        //
+        // Maybe avoiding making map mutable in the case where it doesn't contain
+        // key and immutable has already correct value would be worth it?
+        // It would avoid Rc::make_mut, but I feel that most of the time some other
+        // instruction would require mutating th Rc immediately afterwards anyway.
+        let map = Rc::make_mut(&mut self.map);
+        if let Some(ref imm) = self.immutable {
+            if imm.get(address) == Some(value) {
+                map.remove(&key);
+                return;
+            }
+        }
+        map.insert(key, value);
     }
 
     pub fn len(&self) -> usize {
