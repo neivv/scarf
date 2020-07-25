@@ -2565,7 +2565,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let r = r.to_rm();
         let byte = self.read_u8(0)?;
         let (src, dest) = match byte {
-            0x10 | 0x28 | 0x7e | 0x13 => (&rm, &r),
+            0x10 | 0x28 | 0x6f | 0x7e | 0x13 => (&rm, &r),
             _ => (&r, &rm),
         };
         let len = match byte {

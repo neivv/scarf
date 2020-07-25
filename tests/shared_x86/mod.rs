@@ -439,3 +439,26 @@ fn merge_mem_to_undef() {
          (ctx.register(2), ctx.new_undef()),
     ]);
 }
+
+#[test]
+fn movdqa() {
+    let ctx = &OperandContext::new();
+    // eax should be [esp], but ecx is undefined
+    test_inline(&[
+        0xc7, 0x44, 0xe4, 0x00, 0x01, 0x00, 0x00, 0x00, // mov [esp], 1
+        0xc7, 0x44, 0xe4, 0x08, 0x02, 0x00, 0x00, 0x00, // mov [esp + 8], 2
+        0xc7, 0x44, 0xe4, 0x04, 0x03, 0x00, 0x00, 0x00, // mov [esp + 4], 3
+        0x66, 0x0f, 0x6f, 0x2c, 0xe4, // mov xmm5, [esp]
+        0x66, 0x0f, 0x7f, 0x6c, 0xe4, 0x10, // mov [esp + 1], xmm5
+        0x8b, 0x44, 0xe4, 0x10, // mov eax, [esp + 10]
+        0x8b, 0x4c, 0xe4, 0x14, // mov ecx, [esp + 14]
+        0x8b, 0x54, 0xe4, 0x18, // mov edx, [esp + 18]
+        0x8b, 0x5c, 0xe4, 0x1c, // mov ebx, [esp + 1c]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(1)),
+         (ctx.register(1), ctx.constant(3)),
+         (ctx.register(2), ctx.constant(2)),
+         (ctx.register(3), ctx.mem32(ctx.add_const(ctx.register(4), 0xc))),
+    ]);
+}
