@@ -696,12 +696,14 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         while let Some((addr, mut branch_state)) = self.pop_next_branch() {
             match self.cfg.get_state(addr) {
                 Some(state) => {
+                    state.data.0.maybe_convert_memory_immutable(16);
                     let merged = Exec::merge_states(
                         &mut state.data.0,
                         &mut branch_state.0,
                     );
                     match merged {
-                        Some(s) => {
+                        Some(mut s) => {
+                            s.maybe_convert_memory_immutable(16);
                             let mut user_state = state.data.1.clone();
                             user_state.merge(branch_state.1);
                             return Some((addr, Box::new((s, user_state))));
@@ -1142,9 +1144,9 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
 
     let address = instruction.address();
     let instruction_len = instruction.len();
+    state.0.maybe_convert_memory_immutable(16);
     match state.0.resolve_apply_constraints(condition).if_constant() {
         Some(0) => {
-            state.0.maybe_convert_memory_immutable(64);
             let address = address + instruction_len;
             *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
             analysis.add_unchecked_branch(address, state);
@@ -1160,7 +1162,6 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                 let code_offset = code_section.virtual_address;
                 let code_len = code_section.data.len() as u32;
                 let limits = state.0.value_limits(index);
-                state.0.maybe_convert_memory_immutable(16);
                 let case_iter =
                     switch_cases(ctx, binary, mem_size, switch_table_addr, limits, base_addr);
                 for case in case_iter {
@@ -1179,7 +1180,6 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                     *cfg_out_edge = CfgOutEdges::Switch(cases, index);
                 }
             } else {
-                state.0.maybe_convert_memory_immutable(64);
                 let dest = try_add_branch(analysis, state, to, address);
                 *cfg_out_edge = CfgOutEdges::Single(
                     dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
@@ -1187,7 +1187,6 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
             }
         }
         None => {
-            state.0.maybe_convert_memory_immutable(16);
             let no_jump_addr = address + instruction_len;
             let mut jump_state = clone_state(&state);
             jump_state.0.assume_jump_flag(condition, true);
