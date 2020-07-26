@@ -441,6 +441,50 @@ pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     binary: &'a BinaryFile<Exec::VirtualAddress>,
     cfg: Cfg<'a, Exec, State>,
     unchecked_branches: BTreeMap<Exec::VirtualAddress, Box<(Exec, State)>>,
+    // Branches which are before current address.
+    // The goal is to reduce amount of work when a switch jumps backwards
+    // at end of the case, doing all unchecked_branches before promoting
+    // more_unchecked_branches to new unchecked_branches.
+    // Though this means that some other function layouts end
+    // up doing more work. Not sure if there's a good solution.
+    //
+    // This current solution is a major (I saw over 50% less work) improvement over
+    // the previous solution which always just picked branch with lowest address as next.
+    // Another thing I tried is to enable this only when a function contained a switch
+    // jump; result was slightly worse than now. (In other words, this is a major
+    // improvement for functions with switches, minor for others)
+    //
+    // E.g. this is good for functions looking like
+    //
+    //  switch:
+    //      jmp [switch_table + case * 4]
+    //  case0:
+    //      xx
+    //      jmp switch
+    //  case1:
+    //      xx
+    //      je case1_b:
+    //      yy
+    //  case1_b:
+    //      jmp switch
+    //  etc..
+    // Avoiding reanalyzing from start of the switch after every time a jump reaches it
+    //
+    // But this is worse for a function looking like
+    //
+    //  loop1:
+    //      xx
+    //      dec eax
+    //      jne loop1
+    //      mov eax, 6
+    //      (lot of code)
+    //  loop2:
+    //      xx
+    //      dec eax
+    //      jne loop2
+    // as it'll run to the end once, then starts from loop1 again
+    more_unchecked_branches: BTreeMap<Exec::VirtualAddress, Box<(Exec, State)>>,
+    current_branch: Exec::VirtualAddress,
     operand_ctx: OperandCtx<'a>,
     /// (Func, arg1, arg2)
     pub errors: Vec<(Exec::VirtualAddress, Error)>,
@@ -634,6 +678,8 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
                 map.insert(start_address, state);
                 map
             },
+            more_unchecked_branches: BTreeMap::new(),
+            current_branch: start_address,
             operand_ctx,
             merge_state_cache: MergeStateCache::new(),
         }
@@ -656,6 +702,8 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
                 map.insert(start_address, state);
                 map
             },
+            more_unchecked_branches: BTreeMap::new(),
+            current_branch: start_address,
             operand_ctx,
             merge_state_cache: MergeStateCache::new(),
         }
@@ -689,6 +737,8 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                 map.insert(start_address, state);
                 map
             },
+            more_unchecked_branches: BTreeMap::new(),
+            current_branch: start_address,
             operand_ctx,
             merge_state_cache: MergeStateCache::new(),
         }
@@ -728,6 +778,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
         while let Some((addr, state)) = self.pop_next_branch_merge_with_cfg() {
             if let Ok(()) = self.disasm_set_pos(&mut disasm, addr) {
+                self.current_branch = addr;
                 let end = self.analyze_branch(analyzer, &mut disasm, addr, state);
                 if end == Some(End::Function) {
                     break;
@@ -854,8 +905,12 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         mut state: Box<(Exec, State)>,
     ) {
         use std::collections::btree_map::Entry;
+        let queue = match addr < self.current_branch {
+            true => &mut self.more_unchecked_branches,
+            false => &mut self.unchecked_branches,
+        };
 
-        match self.unchecked_branches.entry(addr) {
+        match queue.entry(addr) {
             Entry::Vacant(e) => {
                 e.insert(state);
             }
@@ -874,6 +929,9 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     fn pop_next_branch(&mut self) ->
         Option<(Exec::VirtualAddress, Box<(Exec, State)>)>
     {
+        if self.unchecked_branches.is_empty() {
+            std::mem::swap(&mut self.unchecked_branches, &mut self.more_unchecked_branches);
+        }
         let addr = self.unchecked_branches.keys().next().cloned()?;
         let state = self.unchecked_branches.remove(&addr).unwrap();
         Some((addr, state))
