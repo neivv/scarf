@@ -666,6 +666,12 @@ impl<'e> MemoryMap<'e> {
     }
 
     pub fn merge(&self, new: &MemoryMap<'e>, ctx: OperandCtx<'e>) -> MemoryMap<'e> {
+        // Merging memory is defined as:
+        // If new & old values match, then the value is kept
+        // Otherwise:
+        //   If the address contains undefined, then it *may* be forgotten entirely
+        //   If old is undefined, keep old value
+        //   If old isn't undefined, generate a new value
         let a = self;
         let b = new;
         if Rc::ptr_eq(&a.map, &b.map) {
@@ -756,28 +762,41 @@ impl<'e> MemoryMap<'e> {
                             }
                         }
                         false => {
-                            result.insert(key, ctx.new_undef());
+                            if !a_val.is_undefined() {
+                                result.insert(key, ctx.new_undef());
+                            }
                         }
                     }
                 } else {
-                    result.insert(key, ctx.new_undef());
+                    if !key.0.contains_undefined() {
+                        result.insert(key, ctx.new_undef());
+                    }
                 }
             }
             // The result contains now anything that was in b's unique branch of the memory.
             //
             // Repeat for a's unique branch.
             for (&key, &a_val, a_is_imm) in a.iter_until_immutable(common) {
-                if a_is_imm && a.get(key.0) != Some(a_val) {
-                    // Wasn't newest value
-                    continue;
-                }
-                if !a_val.is_undefined() {
-                    if let Some(b_val) = b.get(key.0) {
-                        if a_val != b_val {
-                            result.insert(key, ctx.new_undef());
+                if !result.contains_key(&key) {
+                    if !a_val.is_undefined() {
+                        if a_is_imm && a.get(key.0) != Some(a_val) {
+                            // Wasn't newest value
+                            continue;
+                        }
+                        let needs_undef = if let Some(b_val) = b.get(key.0) {
+                            a_val != b_val
+                        } else {
+                            true
+                        };
+                        if needs_undef {
+                            // If the key with undefined was in imm, override its value,
+                            // but otherwise just don't bother adding it back.
+                            if !key.0.contains_undefined() || !a_is_imm {
+                                result.insert(key, ctx.new_undef());
+                            }
                         }
                     } else {
-                        result.insert(key, ctx.new_undef());
+                        result.insert(key, a_val);
                     }
                 }
             }
@@ -797,15 +816,17 @@ impl<'e> MemoryMap<'e> {
         }
         let common = a.common_immutable(b);
         for (&key, &a_val, is_imm) in a.iter_until_immutable(common) {
-            if !key.0.contains_undefined() && !a_val.is_undefined() {
-                if b.get(key.0) != Some(a_val) {
-                    let was_newest_value = if !is_imm {
-                        true
-                    } else {
-                        a.get(key.0) == Some(a_val)
-                    };
-                    if was_newest_value {
-                        return true;
+            if !key.0.contains_undefined() {
+                if !a_val.is_undefined() {
+                    if b.get(key.0) != Some(a_val) {
+                        let was_newest_value = if !is_imm {
+                            true
+                        } else {
+                            a.get(key.0) == Some(a_val)
+                        };
+                        if was_newest_value {
+                            return true;
+                        }
                     }
                 }
             }
@@ -1004,4 +1025,22 @@ fn equal_memory_no_need_to_merge() {
     b.map.convert_immutable();
     a.set(addr, ctx.constant(4));
     assert!(!a.map.has_merge_changed(&b.map));
+}
+
+#[test]
+fn merge_memory_undef2() {
+    let ctx = &crate::operand::OperandContext::new();
+    let mut a = Memory::new();
+    let addr = ctx.sub_const(ctx.register(5), 8);
+    let addr2 = ctx.sub_const(ctx.register(5), 16);
+    a.set(addr, ctx.mem32(ctx.constant(4)));
+    a.map.convert_immutable();
+    let mut b = a.clone();
+    b.set(addr, ctx.mem32(ctx.constant(9)));
+    b.map.convert_immutable();
+    a.set(addr, ctx.new_undef());
+    a.set(addr2, ctx.new_undef());
+    let mut new = a.merge(&b, ctx);
+    assert!(new.get(addr).unwrap().is_undefined());
+    assert!(new.get(addr2).unwrap().is_undefined());
 }
