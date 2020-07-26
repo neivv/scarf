@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::analysis;
 use crate::disasm::{Disassembler64, DestOperand, Operation};
-use crate::exec_state::{Constraint, Memory};
+use crate::exec_state::{Constraint, Memory, MergeStateCache};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{
@@ -331,8 +331,12 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         self.unresolve_memory(val)
     }
 
-    fn merge_states(old: &mut Self, new: &mut Self) -> Option<Self> {
-        merge_states(old, new)
+    fn merge_states(
+        old: &mut Self,
+        new: &mut Self,
+        cache: &mut MergeStateCache<'e>,
+    ) -> Option<Self> {
+        merge_states(old, new, cache)
     }
 
     fn apply_call(&mut self, ret: VirtualAddress64) {
@@ -929,6 +933,7 @@ impl<'e> ExecutionState<'e> {
 pub fn merge_states<'a: 'r, 'r>(
     old: &'r mut ExecutionState<'a>,
     new: &'r mut ExecutionState<'a>,
+    cache: &'r mut MergeStateCache<'a>,
 ) -> Option<ExecutionState<'a>> {
     old.update_flags();
     new.update_flags();
@@ -980,10 +985,23 @@ pub fn merge_states<'a: 'r, 'r>(
         old.xmm.iter().zip(new.xmm.iter())
             .all(|(&a, &b)| check_eq(a, b))
     };
-    let changed =
-        old.state.iter().zip(new.state.iter())
-            .any(|(&a, &b)| !check_eq(a, b)) ||
-        !old.memory.map.has_merge_changed(&new.memory.map) ||
+    let changed = (
+            old.state.iter().zip(new.state.iter())
+                .any(|(&a, &b)| !check_eq(a, b))
+        ) || (
+            if Rc::ptr_eq(&old.memory.map.map, &new.memory.map.map) {
+                false
+            } else {
+                match cache.get_compare_result(&old.memory, &new.memory) {
+                    Some(s) => s,
+                    None => {
+                        let result = old.memory.map.has_merge_changed(&new.memory.map);
+                        cache.set_compare_result(&old.memory, &new.memory, result);
+                        result
+                    }
+                }
+            }
+        ) ||
         !xmm_eq ||
         merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) || (
             old.resolved_constraint.is_some() &&
@@ -1011,11 +1029,19 @@ pub fn merge_states<'a: 'r, 'r>(
                 state[i] = merge(ctx, old_xmm[i], new_xmm[i]);
             }
         }
+        let memory = match cache.get_merge_result(&old.memory, &new.memory) {
+            Some(s) => s,
+            None => {
+                let result = old.memory.merge(&new.memory, ctx);
+                cache.set_merge_result(&old.memory, &new.memory, &result);
+                result
+            }
+        };
         Some(ExecutionState {
             state,
             xmm,
             cached_low_registers,
-            memory: old.memory.merge(&new.memory, ctx),
+            memory,
             unresolved_constraint: merged_ljec.unwrap_or_else(|| {
                 // They were same, just use one from old
                 old.unresolved_constraint.clone()

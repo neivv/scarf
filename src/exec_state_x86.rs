@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::analysis;
 use crate::disasm::{Disassembler32, DestOperand, Operation};
-use crate::exec_state::{Constraint, Memory};
+use crate::exec_state::{Constraint, Memory, MergeStateCache};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::{ReadLittleEndian};
 use crate::operand::{
@@ -86,8 +86,12 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         self.unresolve_memory(val)
     }
 
-    fn merge_states(old: &mut Self, new: &mut Self) -> Option<Self> {
-        merge_states(old, new)
+    fn merge_states(
+        old: &mut Self,
+        new: &mut Self,
+        cache: &mut MergeStateCache<'e>,
+    ) -> Option<Self> {
+        merge_states(old, new, cache)
     }
 
     fn apply_call(&mut self, ret: VirtualAddress) {
@@ -1001,6 +1005,7 @@ impl<'e> ExecutionState<'e> {
 pub fn merge_states<'a: 'r, 'r>(
     old: &'r mut ExecutionState<'a>,
     new: &'r mut ExecutionState<'a>,
+    cache: &'r mut MergeStateCache<'a>,
 ) -> Option<ExecutionState<'a>> {
     old.update_flags();
     new.update_flags();
@@ -1052,10 +1057,23 @@ pub fn merge_states<'a: 'r, 'r>(
         old.xmm_fpu.iter().zip(new.xmm_fpu.iter())
             .all(|(&a, &b)| check_eq(a, b))
     };
-    let changed =
-        old.state.iter().zip(new.state.iter())
-            .any(|(&a, &b)| !check_eq(a, b)) ||
-        old.memory.map.has_merge_changed(&new.memory.map) ||
+    let changed = (
+            old.state.iter().zip(new.state.iter())
+                .any(|(&a, &b)| !check_eq(a, b))
+        ) || (
+            if Rc::ptr_eq(&old.memory.map.map, &new.memory.map.map) {
+                false
+            } else {
+                match cache.get_compare_result(&old.memory, &new.memory) {
+                    Some(s) => s,
+                    None => {
+                        let result = old.memory.map.has_merge_changed(&new.memory.map);
+                        cache.set_compare_result(&old.memory, &new.memory, result);
+                        result
+                    }
+                }
+            }
+        ) ||
         !xmm_fpu_eq ||
         merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) || (
             old.resolved_constraint.is_some() &&
@@ -1083,11 +1101,19 @@ pub fn merge_states<'a: 'r, 'r>(
                 state[i] = merge(ctx, old_xmm_fpu[i], new_xmm_fpu[i]);
             }
         }
+        let memory = match cache.get_merge_result(&old.memory, &new.memory) {
+            Some(s) => s,
+            None => {
+                let result = old.memory.merge(&new.memory, ctx);
+                cache.set_merge_result(&old.memory, &new.memory, &result);
+                result
+            }
+        };
         let result = Some(ExecutionState {
             state,
             xmm_fpu,
             cached_low_registers,
-            memory: old.memory.merge(&new.memory, ctx),
+            memory,
             unresolved_constraint: merged_ljec.unwrap_or_else(|| {
                 // They were same, just use one from old
                 old.unresolved_constraint.clone()
@@ -1119,7 +1145,7 @@ fn merge_state_constraints_eq() {
     state_a.assume_jump_flag(sign_eq_overflow_flag, true);
     state_b.move_to(&DestOperand::from_oper(ctx.flag_o()), ctx.constant(1));
     state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
-    let merged = merge_states(&mut state_b, &mut state_a).unwrap();
+    let merged = merge_states(&mut state_b, &mut state_a, &mut MergeStateCache::new()).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 }
@@ -1135,17 +1161,17 @@ fn merge_state_constraints_or() {
     );
     state_a.assume_jump_flag(sign_or_overflow_flag, true);
     state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
-    let merged = merge_states(&mut state_b, &mut state_a).unwrap();
+    let merged = merge_states(&mut state_b, &mut state_a, &mut MergeStateCache::new()).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
     // Should also happen other way, though then state_a must have something that is converted
     // to undef.
-    let merged = merge_states(&mut state_a, &mut state_b).unwrap();
+    let merged = merge_states(&mut state_a, &mut state_b, &mut MergeStateCache::new()).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 
     state_a.move_to(&DestOperand::from_oper(ctx.flag_c()), ctx.constant(1));
-    let merged = merge_states(&mut state_a, &mut state_b).unwrap();
+    let merged = merge_states(&mut state_a, &mut state_b, &mut MergeStateCache::new()).unwrap();
     assert!(merged.unresolved_constraint.is_some());
     assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
 }

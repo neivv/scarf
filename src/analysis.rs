@@ -6,7 +6,7 @@ use quick_error::quick_error;
 
 use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
 use crate::disasm::{self, Operation};
-use crate::exec_state::{self, Disassembler, ExecutionState};
+use crate::exec_state::{self, Disassembler, ExecutionState, MergeStateCache};
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{MemAccessSize, Operand, OperandCtx};
@@ -444,6 +444,7 @@ pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     operand_ctx: OperandCtx<'a>,
     /// (Func, arg1, arg2)
     pub errors: Vec<(Exec::VirtualAddress, Error)>,
+    merge_state_cache: MergeStateCache<'a>,
 }
 
 pub struct Control<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> {
@@ -634,6 +635,7 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
                 map
             },
             operand_ctx,
+            merge_state_cache: MergeStateCache::new(),
         }
     }
 
@@ -655,6 +657,7 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
                 map
             },
             operand_ctx,
+            merge_state_cache: MergeStateCache::new(),
         }
     }
 }
@@ -687,6 +690,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                 map
             },
             operand_ctx,
+            merge_state_cache: MergeStateCache::new(),
         }
     }
 
@@ -700,6 +704,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                     let merged = Exec::merge_states(
                         &mut state.data.0,
                         &mut branch_state.0,
+                        &mut self.merge_state_cache,
                     );
                     match merged {
                         Some(mut s) => {
@@ -856,7 +861,9 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             }
             Entry::Occupied(mut e) => {
                 let val = e.get_mut();
-                if let Some(new) = Exec::merge_states(&mut val.0, &mut state.0) {
+                let result =
+                    Exec::merge_states(&mut val.0, &mut state.0, &mut self.merge_state_cache);
+                if let Some(new) = result {
                     val.0 = new;
                     val.1.merge(state.1);
                 }
@@ -1008,7 +1015,11 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
             match self.state {
                 Some(ref mut state) => {
                     let new = control.exec_state();
-                    let new_exec = Self::Exec::merge_states(&mut state.0, new);
+                    let new_exec = Self::Exec::merge_states(
+                        &mut state.0,
+                        new,
+                        &mut MergeStateCache::new(),
+                    );
                     if let Some(new_exec) = new_exec {
                         state.0 = new_exec;
                         state.1.merge(control.user_state().clone());

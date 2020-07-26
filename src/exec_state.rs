@@ -51,7 +51,11 @@ pub trait ExecutionState<'e> : Clone + 'e {
         operand_ctx: OperandCtx<'e>,
         binary: &'e crate::BinaryFile<Self::VirtualAddress>,
     ) -> Self;
-    fn merge_states(old: &mut Self, new: &mut Self) -> Option<Self>;
+    fn merge_states(
+        old: &mut Self,
+        new: &mut Self,
+        cache: &mut MergeStateCache<'e>,
+    ) -> Option<Self>;
 
     /// Updates states as if the call instruction was executed (Push return address to stack)
     ///
@@ -504,11 +508,13 @@ pub(crate) struct MemoryMap<'e> {
     /// can be used to read/write a lot at once.
     /// But I would believe that the instruction decoding/etc overhead is a lot greater
     /// than memory access during analysis.
-    pub(crate) map: Rc<HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>>,
+    pub(crate) map: Rc<MemoryMapTopLevel<'e>>,
     /// Optimization for cases where memory gets large.
     /// The existing mapping can be moved to Rc, where cloning it is effectively free.
     immutable: Option<Rc<MemoryMap<'e>>>,
 }
+
+type MemoryMapTopLevel<'e> = HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>;
 
 struct MemoryIterUntilImm<'a, 'e> {
     iter: hash_map::Iter<'a, OperandHashByAddress<'e>, Operand<'e>>,
@@ -875,6 +881,80 @@ impl<'a, 'e> Iterator for MemoryIterUntilImm<'a, 'e> {
                 }
             }
         }
+    }
+}
+
+/// A cache which allows skipping some repeated work during merges.
+///
+/// For now, it caches last memory-changed result and
+/// memory-merge results. Merge result caching is especially useful, as the
+/// results will share their Rc pointer values, allowing deep comparisions
+/// between them skipped - and even more merge caching.
+///
+/// This should be useful any time a branch has two destinations which aren't
+/// reached from anywhere else, as analysis will store equal state to them
+/// first time it reaches them, and then merge them again with same inputs.
+/// Without this cache the merge would end up giving equal memory maps
+/// which weren't stored in a same Rc, which would be unfortunate.
+///
+/// Large switches will obviously benefit even more from this.
+pub struct MergeStateCache<'e> {
+    last_compare: Option<MemoryOpCached<'e, bool>>,
+    last_merge: Option<MemoryOpCached<'e, MemoryMap<'e>>>,
+}
+
+struct MemoryOpCached<'e, T> {
+    // NOTE: This relies on MemoryMapTopLevel being always associated with same
+    // immutable pointer.
+    old: Rc<MemoryMapTopLevel<'e>>,
+    new: Rc<MemoryMapTopLevel<'e>>,
+    result: T,
+}
+
+impl<'e> MergeStateCache<'e> {
+    pub fn new() -> MergeStateCache<'e> {
+        MergeStateCache {
+            last_compare: None,
+            last_merge: None,
+        }
+    }
+
+    pub fn get_compare_result(&self, old: &Memory<'e>, new: &Memory<'e>) -> Option<bool> {
+        let cached = self.last_compare.as_ref()?;
+        if Rc::ptr_eq(&cached.old, &old.map.map) && Rc::ptr_eq(&cached.new, &new.map.map) {
+            Some(cached.result)
+        } else {
+            None
+        }
+    }
+
+    pub fn set_compare_result(&mut self, old: &Memory<'e>, new: &Memory<'e>, result: bool) {
+        self.last_compare = Some(MemoryOpCached {
+            old: old.map.map.clone(),
+            new: new.map.map.clone(),
+            result,
+        })
+    }
+
+    pub fn get_merge_result(&self, old: &Memory<'e>, new: &Memory<'e>) -> Option<Memory<'e>> {
+        let cached = self.last_merge.as_ref()?;
+        if Rc::ptr_eq(&cached.old, &old.map.map) && Rc::ptr_eq(&cached.new, &new.map.map) {
+            Some(Memory {
+                map: cached.result.clone(),
+                cached_addr: None,
+                cached_value: None,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn set_merge_result(&mut self, old: &Memory<'e>, new: &Memory<'e>, result: &Memory<'e>) {
+        self.last_merge = Some(MemoryOpCached {
+            old: old.map.map.clone(),
+            new: new.map.map.clone(),
+            result: result.map.clone(),
+        })
     }
 }
 
