@@ -4979,3 +4979,44 @@ fn gt_neq() {
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
 }
+
+#[test]
+fn lsh_or_lsh_rsh() {
+    let ctx = &OperandContext::new();
+    // ((Mem8 << 8) | (Mem16 << 10)) >> 8 to Mem8 | (Mem16 << 8)
+    // ((x << 8) | (y << 10)) >> 8 in general isn't so simple as the
+    // lsh may be useful for cutting out high bits
+    let op1 = ctx.rsh_const(
+        ctx.or(
+            ctx.or(
+                ctx.lsh_const(
+                    ctx.mem8(ctx.register(1)),
+                    8,
+                ),
+                ctx.lsh_const(
+                    ctx.mem16(ctx.register(2)),
+                    0x10,
+                ),
+            ),
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(3)),
+                0x18,
+            ),
+        ),
+        8,
+    );
+    let eq1 = ctx.or(
+        ctx.or(
+            ctx.mem8(ctx.register(1)),
+            ctx.lsh_const(
+                ctx.mem16(ctx.register(2)),
+                0x8,
+            ),
+        ),
+        ctx.lsh_const(
+            ctx.mem8(ctx.register(3)),
+            0x10,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}

@@ -760,6 +760,23 @@ pub fn simplify_rsh<'e>(
                     };
                     ctx.intern(OperandType::Arithmetic(arith))
                 }
+                ArithOpType::Or => {
+                    // Try to simplify any parts of the or separately
+                    ctx.simplify_temp_stack()
+                        .alloc(|slice| {
+                            collect_arith_ops(left, slice, ArithOpType::Or, 8).ok()?;
+                            if simplify_shift_is_too_long_xor(slice) {
+                                // Give up on dumb long ors
+                                None
+                            } else {
+                                for op in slice.iter_mut() {
+                                    *op = simplify_rsh(*op, right, ctx, swzb_ctx);
+                                }
+                                simplify_or_ops(slice, ctx, swzb_ctx).ok()
+                            }
+                        })
+                        .unwrap_or_else(|| default())
+                }
                 ArithOpType::Xor => {
                     // Try to simplify any parts of the xor separately
                     ctx.simplify_temp_stack()
