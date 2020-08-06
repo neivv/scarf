@@ -5135,3 +5135,30 @@ fn remove_and_from_gt() {
     assert_eq!(op5, eq5);
     assert_ne!(op6, ne6);
 }
+
+#[test]
+fn gt_or_eq_sub_const() {
+    // (6 > (x - 3)) | (x == 9) => 7 > (x - 3)
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.gt_const_left(
+            6,
+            ctx.sub_const(
+                ctx.register(5),
+                3,
+            ),
+        ),
+        ctx.eq_const(
+            ctx.register(5),
+            9,
+        ),
+    );
+    let eq1 = ctx.gt_const_left(
+        7,
+        ctx.sub_const(
+            ctx.register(5),
+            3,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}

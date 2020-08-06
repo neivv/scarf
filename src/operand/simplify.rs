@@ -2175,6 +2175,7 @@ fn simplify_or_merge_child_ands<'e>(
 // Simplify or: merge comparisions
 // Converts
 // (c > x) | (c == x) to (c + 1 > x),
+//      More general: (c1 > x - c2) | (c1 + c2) == x to (c1 + 1 > x - c2)
 // (x > c) | (x == c) to (x > c + 1).
 // (x == 0) | (x == 1) to (2 > x)
 // Cannot do for values that can overflow, so just limit it to constants for now.
@@ -2219,30 +2220,45 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
             let mut j = i + 1;
             while j < ops.len() {
                 if let Some((c2, x2, ty2)) = check_match(ops[j]) {
-                    if c == c2 && x == x2 {
-                        match (ty, ty2) {
-                            (MatchType::ConstantGreater, MatchType::Equal) |
-                                (MatchType::Equal, MatchType::ConstantGreater) =>
-                            {
+                    match (ty, ty2) {
+                        (MatchType::ConstantGreater, MatchType::Equal) |
+                            (MatchType::Equal, MatchType::ConstantGreater) =>
+                        {
+                            // (c1 > y - c2) | (c1 + c2) == y to (c1 + 1 > y - c2)
+                            let (gt, c1, eq, eq_c) = match ty == MatchType::ConstantGreater {
+                                true => (x, c, x2, c2),
+                                false => (x2, c2, x, c),
+                            };
+                            let (y, c2) = gt.if_arithmetic_sub()
+                                .and_then(|(l, r)| {
+                                    Some((l, r.if_constant()?))
+                                })
+                                .unwrap_or_else(|| (gt, 0));
+                            let constants_match = c1.checked_add(c2)
+                                .filter(|&c| c == eq_c)
+                                .is_some();
+                            if y == eq && constants_match {
                                 // min/max edge cases can be handled by gt simplification,
                                 // don't do them here.
-                                if let Some(new_c) = c.checked_add(1) {
-                                    ops[i] = ctx.gt_const_left(new_c, x);
+                                if let Some(new_c) = c1.checked_add(1) {
+                                    ops[i] = ctx.gt_const_left(new_c, gt);
                                     ops.swap_remove(j);
                                     continue 'outer;
                                 }
                             }
-                            (MatchType::ConstantLess, MatchType::Equal) |
-                                (MatchType::Equal, MatchType::ConstantLess) =>
-                            {
+                        }
+                        (MatchType::ConstantLess, MatchType::Equal) |
+                            (MatchType::Equal, MatchType::ConstantLess) =>
+                        {
+                            if c == c2 && x == x2 {
                                 if let Some(new_c) = c.checked_sub(1) {
                                     ops[i] = ctx.gt_const(x, new_c);
                                     ops.swap_remove(j);
                                     continue 'outer;
                                 }
                             }
-                            _ => (),
                         }
+                        _ => (),
                     }
                     if c.min(c2) == 0 && c.max(c2) == 1 && x == x2 &&
                         ty == MatchType::Equal && ty2 == MatchType::Equal
