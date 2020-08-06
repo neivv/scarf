@@ -5020,3 +5020,118 @@ fn lsh_or_lsh_rsh() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn remove_and_from_gt() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt_const_left(
+        60,
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.mem16(ctx.register(6)),
+                8,
+            ),
+            0xffff_ffff,
+        ),
+    );
+    let eq1 = ctx.gt_const_left(
+        60,
+        ctx.sub_const(
+            ctx.mem16(ctx.register(6)),
+            8,
+        ),
+    );
+    let op2 = ctx.gt_const_left(
+        600,
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.mem32(ctx.register(6)),
+                0x800000,
+            ),
+            0xf_ffff_ffff,
+        ),
+    );
+    let eq2 = ctx.gt_const_left(
+        600,
+        ctx.sub_const(
+            ctx.mem32(ctx.register(6)),
+            0x800000,
+        ),
+    );
+    let op3 = ctx.gt_const_left(
+        600,
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.mem32(ctx.register(6)),
+                0x800000,
+            ),
+            0xffff_ffff,
+        ),
+    );
+    let eq3 = ctx.gt_const_left(
+        600,
+        ctx.sub_const(
+            ctx.mem32(ctx.register(6)),
+            0x800000,
+        ),
+    );
+    // For u32 = 0, op4 => 0xd000_0000 > 0xc000_0000,
+    // but unmasked ne4 => 0xd000_0000 > 0xffff_ffff_c000_0000
+    let op4 = ctx.gt_const_left(
+        0xd000_0000,
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.mem32(ctx.register(6)),
+                0x4000_0000,
+            ),
+            0xffff_ffff,
+        ),
+    );
+    let ne4 = ctx.gt_const_left(
+        0xd000_0000,
+        ctx.sub_const(
+            ctx.mem32(ctx.register(6)),
+            0x4000_0000,
+        ),
+    );
+    let op5 = ctx.gt(
+        ctx.mem16(ctx.register(4)),
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem16(ctx.register(6)),
+                ctx.mem16(ctx.register(1)),
+            ),
+            0xffff_ffff,
+        ),
+    );
+    let eq5 = ctx.gt(
+        ctx.mem16(ctx.register(4)),
+        ctx.sub(
+            ctx.mem16(ctx.register(6)),
+            ctx.mem16(ctx.register(1)),
+        ),
+    );
+    let op6 = ctx.gt(
+        ctx.mem16(ctx.register(4)),
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem16(ctx.register(6)),
+                ctx.mem32(ctx.register(1)),
+            ),
+            0xffff_ffff,
+        ),
+    );
+    let ne6 = ctx.gt(
+        ctx.mem16(ctx.register(4)),
+        ctx.sub(
+            ctx.mem16(ctx.register(6)),
+            ctx.mem32(ctx.register(1)),
+        ),
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+    assert_eq!(op3, eq3);
+    assert_ne!(op4, ne4);
+    assert_eq!(op5, eq5);
+    assert_ne!(op6, ne6);
+}

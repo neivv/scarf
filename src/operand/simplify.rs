@@ -3902,6 +3902,31 @@ pub fn simplify_gt<'e>(
     if left == right {
         return ctx.const_0();
     }
+    // Remove mask in a > ((x - b) & mask)
+    // if x <= mask && a + b <= mask
+    if let Some((right_inner, mask_op)) = right.if_arithmetic_and() {
+        if let Some(mask) = mask_op.if_constant() {
+            if let Some((x, b)) = right_inner.if_arithmetic_sub() {
+                let mask_is_continuous_from_0 = mask.wrapping_add(1) & mask == 0;
+                if mask_is_continuous_from_0 {
+                    let a_val = match left.if_constant() {
+                        Some(c) => c,
+                        None => left.relevant_bits_mask(),
+                    };
+                    let b_val = match b.if_constant() {
+                        Some(c) => c,
+                        None => b.relevant_bits_mask(),
+                    };
+                    let ok = a_val.checked_add(b_val).filter(|&c| c <= mask).is_some() &&
+                        x.relevant_bits().end <= mask_op.relevant_bits().end;
+                    if ok {
+                        right = right_inner;
+                    }
+                }
+            }
+        }
+    }
+
     // x - y > x == y > x
     if let Some(new) = simplify_gt_lhs_sub(ctx, left, right) {
         left = new;
