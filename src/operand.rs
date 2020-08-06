@@ -736,7 +736,8 @@ impl<'e> OperandContext<'e> {
     ///
     /// The returned value is simplified.
     pub fn gt(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        self.arithmetic(ArithOpType::GreaterThan, left, right)
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_gt(left, right, self, &mut simplify)
     }
 
     /// Returns `Operand` for signed `left > right`.

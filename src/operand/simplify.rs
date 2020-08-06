@@ -44,85 +44,7 @@ pub fn simplify_arith<'e>(
         ArithOpType::Lsh => simplify_lsh(left, right, ctx, swzb_ctx),
         ArithOpType::Rsh => simplify_rsh(left, right, ctx, swzb_ctx),
         ArithOpType::Equal => simplify_eq(left, right, ctx),
-        ArithOpType::GreaterThan => {
-            let mut left = left;
-            let mut right = right;
-            if left == right {
-                return ctx.const_0();
-            }
-            // x - y > x == y > x
-            if let Some(new) = simplify_gt_lhs_sub(ctx, left, right) {
-                left = new;
-            } else {
-                let (left_inner, mask) = match Operand::and_masked(left) {
-                    (inner, x) if x == !0u64 =>
-                        (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
-                    x => x,
-                };
-                let (right_inner, mask2) = match Operand::and_masked(right) {
-                    (inner, x) if x == !0u64 =>
-                        (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
-                    x => x,
-                };
-                // Can simplify x - y > x to y > x if mask starts from bit 0
-                let mask_is_continuous_from_0 = mask2.wrapping_add(1) & mask2 == 0;
-                if mask & mask2 == mask2 && mask_is_continuous_from_0 {
-                    if let Some(new) = simplify_gt_lhs_sub(ctx, left_inner, right_inner) {
-                        left = simplify_and_const(new, mask, ctx, swzb_ctx);
-                    }
-                }
-            }
-            // c1 > (c2 - x) to c1 > (x + (c1 - c2 - 1))
-            // Not exactly sure why this works.. Would be good to prove..
-            if let Some(c1) = left.if_constant() {
-                let (right_inner, mask) = Operand::and_masked(right);
-                if let Some((l, r)) = right_inner.if_arithmetic_sub() {
-                    if let Some(c2) = l.if_constant() {
-                        if c1 > c2 {
-                            right = ctx.and_const(ctx.add_const(r, c1 - c2 - 1), mask);
-                        }
-                    }
-                }
-            }
-
-            match (left.if_constant(), right.if_constant()) {
-                (Some(a), Some(b)) => match a > b {
-                    true => return ctx.const_1(),
-                    false => return ctx.const_0(),
-                },
-                (Some(c), None) => {
-                    if c == 0 {
-                        return ctx.const_0();
-                    }
-                    if c == 1 {
-                        // 1 > x if x == 0
-                        return ctx.eq_const(right, 0);
-                    }
-                    // max > x if x != max
-                    let relbit_mask = right.relevant_bits_mask();
-                    if c == relbit_mask {
-                        return ctx.neq(left, right);
-                    }
-                }
-                (None, Some(c)) => {
-                    // x > 0 if x != 0
-                    if c == 0 {
-                        return ctx.neq(left, right);
-                    }
-                    let relbit_mask = left.relevant_bits_mask();
-                    if c == relbit_mask {
-                        return ctx.const_0();
-                    }
-                }
-                _ => (),
-            }
-            let arith = ArithOperand {
-                ty: ArithOpType::GreaterThan,
-                left,
-                right,
-            };
-            ctx.intern(OperandType::Arithmetic(arith))
-        }
+        ArithOpType::GreaterThan => simplify_gt(left, right, ctx, swzb_ctx),
         ArithOpType::Div | ArithOpType::Modulo => {
             if let Some(r) = right.if_constant() {
                 if r == 0 {
@@ -1085,19 +1007,17 @@ fn simplify_eq_ops<'e>(
                 // Same for (x > c) == 0 to c + 1 > x
                 if let Some((l, r)) = ops[0].0.if_arithmetic_gt() {
                     if let Some(c) = l.if_constant() {
-                        return simplify_arith(
+                        return simplify_gt(
                             r,
                             ctx.constant(c.wrapping_sub(1)),
-                            ArithOpType::GreaterThan,
                             ctx,
                             swzb_ctx,
                         );
                     }
                     if let Some(c) = r.if_constant() {
-                        return simplify_arith(
+                        return simplify_gt(
                             ctx.constant(c.wrapping_add(1)),
                             l,
-                            ArithOpType::GreaterThan,
                             ctx,
                             swzb_ctx,
                         );
@@ -3969,4 +3889,89 @@ fn simplify_xor_try_extract_constant<'e>(
     let (new, c) = recurse(l, ctx)?;
     let new = simplify_and(new, r, ctx, swzb);
     Some((new, c & and_mask))
+}
+
+pub fn simplify_gt<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Operand<'e> {
+    let mut left = left;
+    let mut right = right;
+    if left == right {
+        return ctx.const_0();
+    }
+    // x - y > x == y > x
+    if let Some(new) = simplify_gt_lhs_sub(ctx, left, right) {
+        left = new;
+    } else {
+        let (left_inner, mask) = match Operand::and_masked(left) {
+            (inner, x) if x == !0u64 =>
+                (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
+            x => x,
+        };
+        let (right_inner, mask2) = match Operand::and_masked(right) {
+            (inner, x) if x == !0u64 =>
+                (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
+            x => x,
+        };
+        // Can simplify x - y > x to y > x if mask starts from bit 0
+        let mask_is_continuous_from_0 = mask2.wrapping_add(1) & mask2 == 0;
+        if mask & mask2 == mask2 && mask_is_continuous_from_0 {
+            if let Some(new) = simplify_gt_lhs_sub(ctx, left_inner, right_inner) {
+                left = simplify_and_const(new, mask, ctx, swzb_ctx);
+            }
+        }
+    }
+    // c1 > (c2 - x) to c1 > (x + (c1 - c2 - 1))
+    // Not exactly sure why this works.. Would be good to prove..
+    if let Some(c1) = left.if_constant() {
+        let (right_inner, mask) = Operand::and_masked(right);
+        if let Some((l, r)) = right_inner.if_arithmetic_sub() {
+            if let Some(c2) = l.if_constant() {
+                if c1 > c2 {
+                    right = ctx.and_const(ctx.add_const(r, c1 - c2 - 1), mask);
+                }
+            }
+        }
+    }
+
+    match (left.if_constant(), right.if_constant()) {
+        (Some(a), Some(b)) => match a > b {
+            true => return ctx.const_1(),
+            false => return ctx.const_0(),
+        },
+        (Some(c), None) => {
+            if c == 0 {
+                return ctx.const_0();
+            }
+            if c == 1 {
+                // 1 > x if x == 0
+                return ctx.eq_const(right, 0);
+            }
+            // max > x if x != max
+            let relbit_mask = right.relevant_bits_mask();
+            if c == relbit_mask {
+                return ctx.neq(left, right);
+            }
+        }
+        (None, Some(c)) => {
+            // x > 0 if x != 0
+            if c == 0 {
+                return ctx.neq(left, right);
+            }
+            let relbit_mask = left.relevant_bits_mask();
+            if c == relbit_mask {
+                return ctx.const_0();
+            }
+        }
+        _ => (),
+    }
+    let arith = ArithOperand {
+        ty: ArithOpType::GreaterThan,
+        left,
+        right,
+    };
+    ctx.intern(OperandType::Arithmetic(arith))
 }
