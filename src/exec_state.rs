@@ -425,15 +425,32 @@ pub(crate) fn value_limits_recurse<'e>(constraint: Operand<'e>, value: Operand<'
                 ArithOpType::GreaterThan => {
                     // 0 > x and x > u64_max should get simplified to 0
                     if let Some(c) = arith.left.if_constant() {
-                        if is_subset(value, arith.right) {
+                        let (right, offset) = arith.right.if_arithmetic_sub()
+                            .and_then(|(l, r)| Some((l, r.if_constant()?)))
+                            .unwrap_or_else(|| (arith.right, 0));
+                        if is_subset(value, right) {
                             debug_assert!(c != 0);
-                            return (0, c.wrapping_sub(1));
+                            let low = offset;
+                            if let Some(high) = c.wrapping_sub(1).checked_add(offset) {
+                                return (low, high);
+                            }
                         }
                     }
                     if let Some(c) = arith.right.if_constant() {
                         if is_subset(value, arith.left) {
                             debug_assert!(c != u64::max_value());
                             return (c.wrapping_add(1), u64::max_value());
+                        }
+                    }
+                }
+                ArithOpType::Sub => {
+                    if let Some(low) = arith.right.if_constant() {
+                        let (low_inner, high_inner) =
+                            value_limits_recurse(constraint, arith.left);
+                        if let Some(low) = low_inner.checked_add(low) {
+                            if let Some(high) = high_inner.checked_add(low) {
+                                return (low, high);
+                            }
                         }
                     }
                 }
@@ -1123,4 +1140,19 @@ fn merge_memory_undef2() {
     let mut new = a.merge(&b, ctx);
     assert!(new.get(addr).unwrap().is_undefined());
     assert!(new.get(addr2).unwrap().is_undefined());
+}
+
+#[test]
+fn value_limits_gt_range() {
+    let ctx = &crate::operand::OperandContext::new();
+    let constraint = ctx.gt_const_left(
+        6,
+        ctx.sub_const(
+            ctx.register(0),
+            2,
+        ),
+    );
+    let (low, high) = value_limits_recurse(constraint, ctx.register(0));
+    assert_eq!(low, 2);
+    assert_eq!(high, 7);
 }
