@@ -260,6 +260,7 @@ impl<'a, 'e> Destination<'a, 'e> {
 impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     type VirtualAddress = VirtualAddress64;
     type Disassembler = Disassembler64<'e>;
+    const WORD_SIZE: MemAccessSize = MemAccessSize::Mem64;
 
     fn maybe_convert_memory_immutable(&mut self, limit: usize) {
         self.memory.map.maybe_convert_immutable(limit);

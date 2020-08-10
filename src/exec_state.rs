@@ -22,6 +22,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     // but I didn't want an additional trait to sit between user-defined AnalysisState and
     // ExecutionState, so ExecutionState shall contain this detail as well.
     type Disassembler: Disassembler<'e, VirtualAddress = Self::VirtualAddress>;
+    const WORD_SIZE: MemAccessSize;
 
     /// Bit of abstraction leak, but the memory structure is implemented as an partially
     /// immutable hashmap to keep clones not getting out of hand. This function is used to

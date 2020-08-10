@@ -15,6 +15,7 @@ use crate::{BinaryFile, VirtualAddress};
 impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     type VirtualAddress = VirtualAddress;
     type Disassembler = Disassembler32<'e>;
+    const WORD_SIZE: MemAccessSize = MemAccessSize::Mem32;
 
     fn maybe_convert_memory_immutable(&mut self, limit: usize) {
         self.memory.map.maybe_convert_immutable(limit);
