@@ -579,6 +579,7 @@ fn instruction_operations32_main(
         0x15b => s.cvtdq2ps(),
         0x15c => s.sse_float_arith(ArithOpType::Sub),
         0x15e => s.sse_float_arith(ArithOpType::Div),
+        0x15f => s.sse_float_max(),
         0x160 => s.punpcklbw(),
         0x16e => s.mov_sse_6e(),
         0x173 => s.packed_shift_imm(),
@@ -884,6 +885,7 @@ fn instruction_operations64_main(
         0x15b => s.cvtdq2ps(),
         0x15c => s.sse_float_arith(ArithOpType::Sub),
         0x15e => s.sse_float_arith(ArithOpType::Div),
+        0x15f => s.sse_float_max(),
         0x160 => s.punpcklbw(),
         0x16e => s.mov_sse_6e(),
         0x173 => s.packed_shift_imm(),
@@ -2252,6 +2254,45 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             for i in amt..4 {
                 let dest = dest.dest_operand_xmm(i);
                 self.output(Operation::Move(dest, zero, None));
+            }
+        }
+        Ok(())
+    }
+
+    fn sse_float_max(&mut self) -> Result<(), Failed> {
+        let (size, amt) = if self.has_prefix(0xf2) {
+            (MemAccessSize::Mem64, 1)
+        } else if self.has_prefix(0x66) {
+            (MemAccessSize::Mem64, 2)
+        } else if self.has_prefix(0xf3) {
+            (MemAccessSize::Mem32, 1)
+        } else {
+            (MemAccessSize::Mem32, 4)
+        };
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let ctx = self.ctx;
+        if size == MemAccessSize::Mem32 {
+            for i in 0..amt {
+                let dest = self.r_to_dest_and_operand_xmm(dest, i);
+                let rhs = self.rm_to_operand_xmm(&rm, i);
+                let cmp = ctx.float_arithmetic(ArithOpType::GreaterThan, rhs, dest.op, size);
+                let op = Operation::Move(dest.dest, rhs, Some(cmp));
+                self.output(op);
+            }
+        } else {
+            for i in 0..amt {
+                let dest1 = self.r_to_dest_and_operand_xmm(dest, i * 2);
+                let dest2 = self.r_to_dest_and_operand_xmm(dest, i * 2 + 1);
+                let rhs1 = self.rm_to_operand_xmm(&rm, i * 2);
+                let rhs2 = self.rm_to_operand_xmm(&rm, i * 2 + 1);
+                let dest_op = ctx.or(
+                    dest1.op,
+                    ctx.lsh_const(dest2.op, 0x20),
+                );
+                let rhs = self.rm_to_operand_xmm_64(&rm, i);
+                let cmp = ctx.float_arithmetic(ArithOpType::GreaterThan, rhs, dest_op, size);
+                self.output(Operation::Move(dest1.dest, rhs1, Some(cmp)));
+                self.output(Operation::Move(dest2.dest, rhs2, Some(cmp)));
             }
         }
         Ok(())
