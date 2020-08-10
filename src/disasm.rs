@@ -2123,14 +2123,16 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     ]));
                 }
             },
-            6 => {
+            // Div, idiv
+            6 | 7 => {
                 // edx = edx:eax % rm, eax = edx:eax / rm
                 let eax = self.reg_variable_size(Register(0), op_size);
                 let edx = self.reg_variable_size(Register(2), op_size);
                 let div;
                 let modulo;
-                if op_size == MemAccessSize::Mem64 {
+                if op_size == MemAccessSize::Mem64 || variant == 7 {
                     // Difficult to do unless rdx is known to be 0
+                    // Also idiv is not done
                     div = self.ctx.new_undef();
                     modulo = self.ctx.new_undef();
                 } else {
