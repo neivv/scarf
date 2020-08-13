@@ -2902,7 +2902,7 @@ fn simplify_rotate_mask() {
         ),
         ctx.constant(0xffff_ffff),
     );
-    let subst = ctx.substitute(op1, ctx.register(0), ctx.mem32(ctx.constant(0x1234)));
+    let subst = ctx.substitute(op1, ctx.register(0), ctx.mem32(ctx.constant(0x1234)), 100);
     let with_mem = ctx.and(
         ctx.or(
             ctx.rsh(

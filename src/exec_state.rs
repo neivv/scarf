@@ -12,6 +12,7 @@ use crate::operand::{
     ArithOpType, ArithOperand, Operand, OperandType, OperandCtx, OperandHashByAddress,
     MemAccessSize,
 };
+use crate::operand::slice_stack::Slice;
 
 /// A trait that does (most of) arch-specific state handling.
 ///
@@ -153,7 +154,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
 
     /// Returns smallest and largest (inclusive) value a *resolved* operand can have
     /// (Mainly meant to use extra constraint information)
-    fn value_limits(&self, _value: Operand<'e>) -> (u64, u64) {
+    fn value_limits(&mut self, _value: Operand<'e>) -> (u64, u64) {
         (0, u64::max_value())
     }
 
@@ -361,7 +362,7 @@ fn apply_constraint_split<'e>(
     constraint: Operand<'e>,
     val: Operand<'e>,
     with: bool,
-) -> Operand<'e>{
+) -> Operand<'e> {
     match constraint.ty() {
         OperandType::Arithmetic(arith) if {
             arith.ty == ArithOpType::And &&
@@ -392,7 +393,7 @@ fn apply_constraint_split<'e>(
                 }
             }
             let subst_val = ctx.constant(if with { 1 } else { 0 });
-            ctx.substitute(val, constraint, subst_val)
+            ctx.substitute(val, constraint, subst_val, 6)
         }
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Equal => {
             let (l, r) = (arith.left, arith.right);
@@ -403,12 +404,12 @@ fn apply_constraint_split<'e>(
                 apply_constraint_split(ctx, other, val, !with)
             } else {
                 let subst_val = ctx.constant(if with { 1 } else { 0 });
-                ctx.substitute(val, constraint, subst_val)
+                ctx.substitute(val, constraint, subst_val, 6)
             }
         }
         _ => {
             let subst_val = ctx.constant(if with { 1 } else { 0 });
-            ctx.substitute(val, constraint, subst_val)
+            ctx.substitute(val, constraint, subst_val, 6)
         }
     }
 }
@@ -576,6 +577,100 @@ impl<'e> Memory<'e> {
     /// Does a value -> key lookup (Finds an address containing value)
     pub fn reverse_lookup(&self, value: Operand<'e>) -> Option<Operand<'e>> {
         self.map.reverse_lookup(value)
+    }
+
+    /// Does a reverse lookup on last accessed memory address.
+    ///
+    /// Could probably cache like 4 previous accesses for slightly better results.
+    pub(crate) fn fast_reverse_lookup(
+        &self,
+        ctx: OperandCtx<'e>,
+        value: Operand<'e>,
+        exec_state_mask: u64,
+    ) -> Option<(Operand<'e>, MemAccessSize)> {
+        fn check_or_part<'e>(
+            this: &Memory<'e>,
+            ctx: OperandCtx<'e>,
+            part: Operand<'e>,
+            value: Operand<'e>,
+        ) -> Option<(Operand<'e>, MemAccessSize)> {
+            static BYTES_TO_MEM_SIZE: [MemAccessSize; 8] = [
+                MemAccessSize::Mem8, MemAccessSize::Mem16,
+                MemAccessSize::Mem32, MemAccessSize::Mem32,
+                MemAccessSize::Mem64, MemAccessSize::Mem64,
+                MemAccessSize::Mem64, MemAccessSize::Mem64,
+            ];
+            if part == value {
+                let size_bytes = part.relevant_bits().end.wrapping_sub(1) / 8;
+                let mem_size = BYTES_TO_MEM_SIZE[(size_bytes & 7) as usize];
+                Some((this.cached_addr?, mem_size))
+            } else if let Some((l, r)) = part.if_arithmetic(ArithOpType::Lsh) {
+                let offset = r.if_constant()?;
+                let inner = check_or_part(this, ctx, l, value)?;
+                let bytes = (offset as u8) >> 3 << 3;
+                Some((ctx.add_const(inner.0, bytes as u64), inner.1))
+            } else if let Some((l, r)) = part.if_arithmetic(ArithOpType::Or) {
+                if l.relevant_bits().end < r.relevant_bits().start ||
+                    r.relevant_bits().end < l.relevant_bits().start
+                {
+                    return None;
+                }
+                check_or_part(this, ctx, l, value)
+                    .or_else(|| check_or_part(this, ctx, r, value))
+            } else if let Some((l, r)) = part.if_arithmetic(ArithOpType::And) {
+                let result = check_or_part(this, ctx, l, value)?;
+                let mask = r.if_constant()?;
+                let masked_size = if mask < 0x100 {
+                    MemAccessSize::Mem8
+                } else if mask < 0x1_0000 {
+                    MemAccessSize::Mem16
+                } else if mask < 0x1_0000_0000 {
+                    MemAccessSize::Mem32
+                } else {
+                    MemAccessSize::Mem64
+                };
+                Some((result.0, masked_size))
+            } else {
+                None
+            }
+        }
+
+        let (value, mask) = Operand::and_masked(value);
+        let cached = if exec_state_mask != u64::max_value() {
+            ctx.and_const(self.cached_value?, exec_state_mask)
+        } else {
+            self.cached_value?
+        };
+        let (cached, _) = Operand::and_masked(cached);
+        let result = if value == cached {
+            Some((self.cached_addr?, MemAccessSize::Mem64))
+        } else if let Some((l, r)) = cached.if_arithmetic_or() {
+            if l.relevant_bits().end < r.relevant_bits().start ||
+                r.relevant_bits().end < l.relevant_bits().start
+            {
+                return None;
+            }
+            check_or_part(self, ctx, l, value)
+                .or_else(|| check_or_part(self, ctx, r, value))
+        } else {
+            None
+        };
+        result.map(|(op, size)| {
+            let masked_size = if mask < 0x100 {
+                MemAccessSize::Mem8
+            } else if mask < 0x1_0000 {
+                MemAccessSize::Mem16
+            } else if mask < 0x1_0000_0000 {
+                MemAccessSize::Mem32
+            } else {
+                MemAccessSize::Mem64
+            };
+            if size.bits() > masked_size.bits() {
+                (op, masked_size)
+            } else {
+                (op, size)
+            }
+        })
     }
 
     pub fn merge(&self, new: &Memory<'e>, ctx: OperandCtx<'e>) -> Memory<'e> {
@@ -900,6 +995,50 @@ impl<'a, 'e> Iterator for MemoryIterUntilImm<'a, 'e> {
             }
         }
     }
+}
+
+pub fn merge_constraint<'e>(
+    ctx: OperandCtx<'e>,
+    old: Option<Constraint<'e>>,
+    new: Option<Constraint<'e>>,
+) -> Option<Constraint<'e>> {
+    if old == new {
+        return old;
+    }
+    let old = old?;
+    let new = new?;
+    let res = ctx.simplify_temp_stack().alloc(|mut old_parts| {
+        collect_and_ops(old.0, &mut old_parts)?;
+        ctx.simplify_temp_stack().alloc(|mut new_parts| {
+            collect_and_ops(new.0, &mut new_parts)?;
+            old_parts.retain(|old_val| {
+                new_parts.iter().any(|&x| x == old_val)
+            });
+            join_ands(ctx, old_parts)
+        })
+    }).map(Constraint);
+    res
+}
+
+fn join_ands<'e>(ctx: OperandCtx<'e>, parts: &[Operand<'e>]) -> Option<Operand<'e>> {
+    let mut op = *parts.get(0)?;
+    for &next in parts.iter().skip(1) {
+        op = ctx.and(op, next);
+    }
+    Some(op)
+}
+
+fn collect_and_ops<'e>(
+    s: Operand<'e>,
+    ops: &mut Slice<'e, Operand<'e>>,
+) -> Option<()> {
+    if let Some((l, r)) = s.if_arithmetic_and() {
+        collect_and_ops(l, ops)?;
+        collect_and_ops(r, ops)?;
+    } else {
+        ops.push(s).ok()?;
+    }
+    Some(()).filter(|()| ops.len() <= 8)
 }
 
 /// A cache which allows skipping some repeated work during merges.

@@ -1,6 +1,6 @@
 mod intern;
 mod simplify;
-mod slice_stack;
+pub(crate) mod slice_stack;
 #[cfg(test)]
 mod simplify_tests;
 
@@ -921,22 +921,30 @@ impl<'e> OperandContext<'e> {
         simplify::simplify_sign_extend(val, from, to, self)
     }
 
-    pub fn transform<F>(&'e self, oper: Operand<'e>, mut f: F) -> Operand<'e>
+    pub fn transform<F>(&'e self, oper: Operand<'e>, depth_limit: usize, mut f: F) -> Operand<'e>
     where F: FnMut(Operand<'e>) -> Option<Operand<'e>>
     {
-        self.transform_internal(oper, &mut f)
+        self.transform_internal(oper, depth_limit, &mut f)
     }
 
-    fn transform_internal<F>(&'e self, oper: Operand<'e>, f: &mut F) -> Operand<'e>
+    fn transform_internal<F>(
+        &'e self,
+        oper: Operand<'e>,
+        depth_limit: usize,
+        f: &mut F,
+    ) -> Operand<'e>
     where F: FnMut(Operand<'e>) -> Option<Operand<'e>>
     {
+        if depth_limit == 0 {
+            return oper;
+        }
         if let Some(val) = f(oper) {
             return val;
         }
         match *oper.ty() {
             OperandType::Arithmetic(ref arith) => {
-                let left = self.transform_internal(arith.left, f);
-                let right = self.transform_internal(arith.right, f);
+                let left = self.transform_internal(arith.left, depth_limit - 1, f);
+                let right = self.transform_internal(arith.right, depth_limit - 1, f);
                 if left == arith.left && right == arith.right {
                     oper
                 } else {
@@ -944,7 +952,7 @@ impl<'e> OperandContext<'e> {
                 }
             },
             OperandType::Memory(ref m) => {
-                let address = self.transform_internal(m.address, f);
+                let address = self.transform_internal(m.address, depth_limit - 1, f);
                 if address == m.address {
                     oper
                 } else {
@@ -952,7 +960,7 @@ impl<'e> OperandContext<'e> {
                 }
             }
             OperandType::SignExtend(val, from, to) => {
-                let new_val = self.transform_internal(val, f);
+                let new_val = self.transform_internal(val, depth_limit - 1, f);
                 if val == new_val {
                     oper
                 } else {
@@ -968,12 +976,13 @@ impl<'e> OperandContext<'e> {
         oper: Operand<'e>,
         val: Operand<'e>,
         with: Operand<'e>,
+        depth_limit: usize,
     ) -> Operand<'e> {
         if let Some(mem) = val.if_memory() {
             // Transform also Mem16[mem.addr] to with & 0xffff if val is Mem32, etc.
             // I guess recursing inside mem.addr doesn't make sense here,
             // but didn't give it too much thought.
-            self.transform(oper, |old| {
+            self.transform(oper, depth_limit, |old| {
                 old.if_memory()
                     .filter(|old| old.address == mem.address)
                     .filter(|old| old.size.bits() <= mem.size.bits())
@@ -992,7 +1001,7 @@ impl<'e> OperandContext<'e> {
                     })
             })
         } else {
-            self.transform(oper, |old| match old == val {
+            self.transform(oper, depth_limit, |old| match old == val {
                 true => Some(with),
                 false => None,
             })

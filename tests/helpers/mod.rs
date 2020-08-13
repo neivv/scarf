@@ -9,14 +9,7 @@ pub fn raw_bin(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, scarf::Er
     let mut buf = vec![];
     file.read_to_end(&mut buf)?;
     Ok(scarf::raw_bin(VirtualAddress(0x00400000), vec![BinarySection {
-        name: {
-            // ugh
-            let mut x = [0; 8];
-            for (out, &val) in x.iter_mut().zip(b".text\0\0\0".iter()) {
-                *out = val;
-            }
-            x
-        },
+        name: *b".text\0\0\0",
         virtual_address: VirtualAddress(0x401000),
         virtual_size: buf.len() as u32,
         data: buf,
@@ -29,14 +22,7 @@ pub fn raw_bin_64(filename: &OsStr) -> Result<BinaryFile<VirtualAddress64>, scar
     let mut buf = vec![];
     file.read_to_end(&mut buf)?;
     Ok(scarf::raw_bin(VirtualAddress64(0x00400000), vec![BinarySection {
-        name: {
-            // ugh
-            let mut x = [0; 8];
-            for (out, &val) in x.iter_mut().zip(b".text\0\0\0".iter()) {
-                *out = val;
-            }
-            x
-        },
+        name: *b".text\0\0\0",
         virtual_address: VirtualAddress64(0x401000),
         virtual_size: buf.len() as u32,
         data: buf,

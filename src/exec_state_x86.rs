@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::analysis;
 use crate::disasm::{Disassembler32, DestOperand, Operation};
-use crate::exec_state::{Constraint, Memory, MergeStateCache};
+use crate::exec_state::{self, Constraint, Memory, MergeStateCache};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::{ReadLittleEndian};
 use crate::operand::{
@@ -23,6 +23,30 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
 
     fn add_resolved_constraint(&mut self, constraint: Constraint<'e>) {
         self.resolved_constraint = Some(constraint);
+        let ctx = self.ctx();
+        if let OperandType::Arithmetic(ref arith) = *constraint.0.ty() {
+            if arith.left.if_constant().is_some() {
+                if let Some((addr, mut size)) =
+                    self.memory.fast_reverse_lookup(ctx, arith.right, 0xffff_ffff)
+                {
+                    if size == MemAccessSize::Mem64 {
+                        size = MemAccessSize::Mem32;
+                    }
+                    let val = ctx.mem_variable_rc(size, addr);
+                    self.add_memory_constraint(ctx.arithmetic(arith.ty, arith.left, val));
+                }
+            } else if arith.left.if_constant().is_some() {
+                if let Some((addr, mut size)) =
+                    self.memory.fast_reverse_lookup(ctx, arith.left, 0xffff_ffff)
+                {
+                    if size == MemAccessSize::Mem64 {
+                        size = MemAccessSize::Mem32;
+                    }
+                    let val = ctx.mem_variable_rc(size, addr);
+                    self.add_memory_constraint(ctx.arithmetic(arith.ty, val, arith.right));
+                }
+            }
+        }
     }
 
     fn add_unresolved_constraint(&mut self, constraint: Constraint<'e>) {
@@ -155,12 +179,29 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         crate::analysis::find_relocs_x86(file)
     }
 
-    fn value_limits(&self, value: Operand<'e>) -> (u64, u64) {
-        if let Some(ref constraint) = self.resolved_constraint {
-            crate::exec_state::value_limits_recurse(constraint.0, value)
-        } else {
-            (0, u64::max_value())
+    fn value_limits(&mut self, mut value: Operand<'e>) -> (u64, u64) {
+        if value.relevant_bits().end > 32 {
+            value = self.ctx.and_const(value, 0xffff_ffff);
         }
+        let mut result = (0, u64::max_value());
+        if let Some(constraint) = self.resolved_constraint {
+            let new = crate::exec_state::value_limits_recurse(constraint.0, value);
+            result.0 = result.0.max(new.0);
+            result.1 = result.1.min(new.1);
+        }
+        if let Some(constraint) = self.memory_constraint {
+            let ctx = self.ctx();
+            let transformed = ctx.transform(constraint.0, 8, |op| match *op.ty() {
+                OperandType::Memory(ref mem) => {
+                    Some(ctx.and_const(self.read_memory(mem.address, mem.size), 0xffff_ffff))
+                }
+                _ => None,
+            });
+            let new = crate::exec_state::value_limits_recurse(transformed, value);
+            result.0 = result.0.max(new.0);
+            result.1 = result.1.min(new.1);
+        }
+        result
     }
 }
 
@@ -177,6 +218,7 @@ pub struct ExecutionState<'e> {
     memory: Memory<'e>,
     resolved_constraint: Option<Constraint<'e>>,
     unresolved_constraint: Option<Constraint<'e>>,
+    memory_constraint: Option<Constraint<'e>>,
     ctx: OperandCtx<'e>,
     binary: Option<&'e BinaryFile<VirtualAddress>>,
     pending_flags: Option<(ArithOperand<'e>, MemAccessSize)>,
@@ -195,6 +237,7 @@ impl<'e> Clone for ExecutionState<'e> {
             state: self.state,
             resolved_constraint: self.resolved_constraint,
             unresolved_constraint: self.unresolved_constraint,
+            memory_constraint: self.memory_constraint,
             ctx: self.ctx,
             binary: self.binary,
             pending_flags: self.pending_flags,
@@ -475,6 +518,7 @@ impl<'e> ExecutionState<'e> {
             memory: Memory::new(),
             resolved_constraint: None,
             unresolved_constraint: None,
+            memory_constraint: None,
             ctx,
             binary: None,
             pending_flags: None,
@@ -526,6 +570,7 @@ impl<'e> ExecutionState<'e> {
                         self.resolved_constraint = None
                     }
                 }
+                self.memory_constraint = None;
                 static UNDEF_REGISTERS: &[u8] = &[0, 1, 2, 4];
                 for &i in UNDEF_REGISTERS.iter() {
                     self.state[i as usize] = ctx.new_undef();
@@ -673,12 +718,13 @@ impl<'e> ExecutionState<'e> {
             Some(ref s) => s.invalidate_dest_operand(ctx, dest),
             None => None,
         };
-        if let Some(ref mut s) = self.resolved_constraint {
-            if let DestOperand::Memory(_) = dest {
+        if let DestOperand::Memory(_) = dest {
+            if let Some(ref mut s) = self.resolved_constraint {
                 if s.invalidate_memory(ctx) == crate::exec_state::ConstraintFullyInvalid::Yes {
                     self.resolved_constraint = None;
                 }
             }
+            self.memory_constraint = None;
         }
         self.get_dest(dest, false)
     }
@@ -999,6 +1045,15 @@ impl<'e> ExecutionState<'e> {
     pub fn replace_memory(&mut self, new: Memory<'e>) {
         self.memory = new;
     }
+
+    fn add_memory_constraint(&mut self, constraint: Operand<'e>) {
+        if let Some(old) = self.memory_constraint {
+            let ctx = self.ctx();
+            self.memory_constraint = Some(Constraint(ctx.and(old.0, constraint)));
+        } else {
+            self.memory_constraint = Some(Constraint(constraint));
+        }
+    }
 }
 
 /// If `old` and `new` have different fields, and the old field is not undefined,
@@ -1017,7 +1072,7 @@ pub fn merge_states<'a: 'r, 'r>(
 
     let ctx = old.ctx;
     fn merge<'e>(ctx: OperandCtx<'e>, a: Operand<'e>, b: Operand<'e>) -> Operand<'e> {
-        match a == b {
+        match a == b || a.is_undefined() {
             true => a,
             false => ctx.new_undef(),
         }
@@ -1058,6 +1113,10 @@ pub fn merge_states<'a: 'r, 'r>(
         old.xmm_fpu.iter().zip(new.xmm_fpu.iter())
             .all(|(&a, &b)| check_eq(a, b))
     };
+    let resolved_constraint =
+        exec_state::merge_constraint(ctx, old.resolved_constraint, new.resolved_constraint);
+    let memory_constraint =
+        exec_state::merge_constraint(ctx, old.memory_constraint, new.memory_constraint);
     let changed = (
             old.state.iter().zip(new.state.iter())
                 .any(|(&a, &b)| !check_eq(a, b))
@@ -1076,10 +1135,9 @@ pub fn merge_states<'a: 'r, 'r>(
             }
         ) ||
         !xmm_fpu_eq ||
-        merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) || (
-            old.resolved_constraint.is_some() &&
-            old.resolved_constraint != new.resolved_constraint
-        );
+        merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) ||
+        resolved_constraint != old.resolved_constraint ||
+        memory_constraint != old.memory_constraint;
     if changed {
         let state = array_init::array_init(|i| merge(ctx, old.state[i], new.state[i]));
         let mut cached_low_registers = CachedLowRegisters::new();
@@ -1119,11 +1177,8 @@ pub fn merge_states<'a: 'r, 'r>(
                 // They were same, just use one from old
                 old.unresolved_constraint.clone()
             }),
-            resolved_constraint: if old.resolved_constraint == new.resolved_constraint {
-                old.resolved_constraint.clone()
-            } else {
-                None
-            },
+            resolved_constraint,
+            memory_constraint,
             pending_flags: None,
             ctx,
             binary: old.binary,

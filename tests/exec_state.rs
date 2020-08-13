@@ -591,6 +591,18 @@ fn move_mem_in_parts() {
     ]);
 }
 
+#[test]
+fn test_switch_cases_in_memory() {
+    let ctx = &OperandContext::new();
+    // 2 cases to ok, 3rd fake
+    // rcx is undef if the cases are run
+    test(4, &[
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.new_undef()),
+         (ctx.register(2), ctx.constant(0)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
@@ -674,6 +686,6 @@ fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
 fn test<'b>(idx: usize, changes: &[(Operand<'b>, Operand<'b>)]) {
     let binary = helpers::raw_bin(OsStr::new("test_inputs/exec_state.bin")).unwrap();
     let offset = (&binary.code_section().data[idx * 4..]).read_u32::<LittleEndian>().unwrap();
-    let func = binary.code_section().virtual_address + offset;
+    let func = VirtualAddress(offset);
     test_inner(&binary, func, changes);
 }

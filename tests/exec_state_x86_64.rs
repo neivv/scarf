@@ -4,6 +4,10 @@ extern crate scarf;
 #[allow(dead_code)] mod helpers;
 mod shared_x86;
 
+use std::ffi::OsStr;
+
+use byteorder::{ReadBytesExt, LittleEndian};
+
 use scarf::{
     BinaryFile, BinarySection, DestOperand, Operand, Operation, OperandContext, VirtualAddress64,
 };
@@ -601,6 +605,18 @@ fn movzx_movsx_high_reg2() {
     ]);
 }
 
+#[test]
+fn test_switch_cases_in_memory() {
+    let ctx = &OperandContext::new();
+    // 2 cases to ok, 3rd fake
+    // rcx is undef if the cases are run
+    test(0, &[
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.new_undef()),
+         (ctx.register(2), ctx.constant(0)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
@@ -675,4 +691,11 @@ fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
         data: code.into(),
     }]);
     test_inner(&binary, binary.code_section().virtual_address, changes);
+}
+
+fn test<'b>(idx: usize, changes: &[(Operand<'b>, Operand<'b>)]) {
+    let binary = helpers::raw_bin_64(OsStr::new("test_inputs/exec_state_x86_64.bin")).unwrap();
+    let offset = (&binary.code_section().data[idx * 4..]).read_u64::<LittleEndian>().unwrap();
+    let func = VirtualAddress64(offset);
+    test_inner(&binary, func, changes);
 }
