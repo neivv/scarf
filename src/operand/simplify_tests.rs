@@ -5162,3 +5162,26 @@ fn gt_or_eq_sub_const() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn lsh_to_mul_when_sensible() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.lsh_const(
+        ctx.add_const(
+            ctx.mul_const(
+                ctx.mem32(ctx.register(0)),
+                0x3,
+            ),
+            0x1234,
+        ),
+        4,
+    );
+    let eq1 = ctx.add_const(
+        ctx.mul_const(
+            ctx.mem32(ctx.register(0)),
+            0x30,
+        ),
+        0x12340,
+    );
+    assert_eq!(op1, eq1);
+}
