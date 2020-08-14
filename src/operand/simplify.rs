@@ -774,6 +774,14 @@ pub fn simplify_rsh<'e>(
                         default()
                     }
                 }
+                ArithOpType::Add => {
+                    if let Some(add_const) = arith.right.if_constant() {
+                        let left = ctx.rsh_const(arith.left, constant);
+                        simplify_add_const(left, add_const >> constant, ctx)
+                    } else {
+                        default()
+                    }
+                }
                 _ => default(),
             }
         },
