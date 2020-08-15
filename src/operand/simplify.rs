@@ -2396,8 +2396,28 @@ fn collect_arith_ops<'e>(
     Ok(())
 }
 
-fn collect_mul_ops<'e>(s: Operand<'e>, ops: &mut Slice<'e>) -> Result<(), SizeLimitReached> {
-    collect_arith_ops(s, ops, ArithOpType::Mul, usize::max_value())
+fn collect_mul_ops<'e>(
+    ctx: OperandCtx<'e>,
+    s: Operand<'e>,
+    ops: &mut Slice<'e>,
+) -> Result<(), SizeLimitReached> {
+    match s.ty() {
+        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Mul => {
+            collect_mul_ops(ctx, arith.left, ops)?;
+            collect_mul_ops(ctx, arith.right, ops)?;
+        }
+        // Convert x << constant to x * (1 << constant) for simplifications
+        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Lsh => {
+            if let Some(c) = arith.right.if_constant() {
+                collect_mul_ops(ctx, arith.left, ops)?;
+                ops.push(ctx.constant(1u64.wrapping_shl(c as u32)))?;
+            } else {
+                ops.push(s)?;
+            }
+        }
+        _ => ops.push(s)?,
+    }
+    Ok(())
 }
 
 fn collect_and_ops<'e>(
@@ -2779,6 +2799,10 @@ pub fn simplify_mul<'e>(
 ) -> Operand<'e> {
     let const_other = Operand::either(left, right, |x| x.if_constant());
     if let Some((c, other)) = const_other {
+        // Normalize to left shift when the constant is large enough and power of two
+        if c >= 0x1000 && c.wrapping_sub(1) & c == 0 {
+            return ctx.lsh_const(other, c.trailing_zeros().into());
+        }
         match c {
             0 => return ctx.const_0(),
             1 => return other,
@@ -2795,8 +2819,8 @@ pub fn simplify_mul<'e>(
     }
 
     ctx.simplify_temp_stack().alloc(|slice| {
-        collect_mul_ops(left, slice)
-            .and_then(|()| collect_mul_ops(right, slice))
+        collect_mul_ops(ctx, left, slice)
+            .and_then(|()| collect_mul_ops(ctx, right, slice))
             .and_then(|()| simplify_mul_ops(ctx, slice))
             .unwrap_or_else(|_| {
                 let arith = ArithOperand {
@@ -2833,14 +2857,14 @@ fn simplify_mul_ops<'e>(
                 if simplify_mul_should_apply_constant(ops[i]) {
                     let new = simplify_mul_apply_constant(ops[i], const_product, ctx);
                     ops.swap_remove(i);
-                    collect_mul_ops(new, ops)?;
+                    collect_mul_ops(ctx, new, ops)?;
                     changed = true;
                     break;
                 }
                 let new = simplify_mul_try_mul_constants(ops[i], const_product, ctx);
                 if let Some(new) = new {
                     ops.swap_remove(i);
-                    collect_mul_ops(new, ops)?;
+                    collect_mul_ops(ctx, new, ops)?;
                     changed = true;
                     break;
                 }
@@ -2880,6 +2904,10 @@ fn simplify_mul_ops<'e>(
     }
     // Make constant always be on right of simplified mul
     if const_product != 1 {
+        // Normalize to left shift when the constant is large enough and power of two
+        if const_product >= 0x1000 && const_product.wrapping_sub(1) & const_product == 0 {
+            return Ok(ctx.lsh_const(tree, const_product.trailing_zeros().into()));
+        }
         let arith = ArithOperand {
             ty: ArithOpType::Mul,
             left: tree,

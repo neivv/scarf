@@ -5211,3 +5211,17 @@ fn masked_sub_to_masked_add() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn mul_large_const_to_lsh() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.mul_const(
+        ctx.register(1),
+        0x2_0000,
+    );
+    let eq1 = ctx.lsh_const(
+        ctx.register(1),
+        0x11,
+    );
+    assert_eq!(op1, eq1);
+}
