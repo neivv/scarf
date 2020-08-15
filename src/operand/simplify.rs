@@ -1342,8 +1342,13 @@ fn simplify_eq_2op_check_signed_less<'e>(
             return None;
         }
     }
-    let (r, rc) = r.if_arithmetic_add()?;
-    let rc = rc.if_constant()?;
+    let (r, rc) = r.if_arithmetic_add()
+        .and_then(|(r, rc)| Some((r, rc.if_constant()?)))
+        .or_else(|| {
+            let (r, rc) = r.if_arithmetic_sub()?;
+            let rc = rc.if_constant()?;
+            Some((r, (sign_bit << 1).wrapping_sub(rc)))
+        })?;
     let offset = rc.wrapping_sub(sign_bit) & mask;
     let l_ok = match l.if_constant() {
         Some(a) => match cmp_r.if_constant() {
@@ -1801,6 +1806,29 @@ fn simplify_and_main<'e>(
         }
     };
     simplify_and_remove_unnecessary_ors(ops, const_remain);
+
+    // Normalize (x + c000) & ffff to (x - 4000) & ffff and similar.
+    if ops.len() == 1 && final_const_remain != 0 {
+        let add = relevant_bits.trailing_zeros().wrapping_add(1) as u64;
+        if final_const_remain & final_const_remain.wrapping_add(add) == 0 {
+            let op = ops[0];
+            let max = final_const_remain.wrapping_add(add);
+            if let Some((l, r)) = op.if_arithmetic_add() {
+                if let Some(c) = r.if_constant() {
+                    if c > max / 2 {
+                        ops[0] = ctx.sub_const(l, max.wrapping_sub(c));
+                    }
+                }
+            } else if let Some((l, r)) = op.if_arithmetic_sub() {
+                if let Some(c) = r.if_constant() {
+                    if c >= max / 2 {
+                        ops[0] = ctx.add_const(l, max.wrapping_sub(c));
+                    }
+                }
+            }
+        }
+    }
+
     let mut tree = ops.pop()
         .unwrap_or_else(|| ctx.const_0());
     while let Some(op) = ops.pop() {

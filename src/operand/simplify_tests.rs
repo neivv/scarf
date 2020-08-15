@@ -5185,3 +5185,29 @@ fn lsh_to_mul_when_sensible() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_sub_to_masked_add() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.mul_const(
+                ctx.mem16(ctx.register(0)),
+                0x2,
+            ),
+            0xf000,
+        ),
+        0xffff,
+    );
+    let eq1 = ctx.and_const(
+        ctx.add_const(
+            ctx.mul_const(
+                ctx.mem16(ctx.register(0)),
+                0x2,
+            ),
+            0x1000,
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}

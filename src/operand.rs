@@ -1173,6 +1173,13 @@ impl<'e> OperandType<'e> {
                     let higher_end = max(rel_left.end, rel_right.end);
                     min(rel_left.start, rel_right.start)..min(higher_end + 1, 64)
                 }
+                ArithOpType::Sub => {
+                    // Sub will not add any nonzero bits to lower end, but higher end
+                    // can be completely filled
+                    let rel_left = arith.left.relevant_bits();
+                    let rel_right = arith.right.relevant_bits();
+                    min(rel_left.start, rel_right.start)..64
+                }
                 ArithOpType::Mul => {
                     let left_bits = arith.left.relevant_bits();
                     let right_bits = arith.right.relevant_bits();
