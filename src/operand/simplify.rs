@@ -554,9 +554,10 @@ pub fn simplify_lsh<'e>(
                         .unwrap_or_else(|| default())
                 }
                 ArithOpType::Mul => {
-                    if constant < 0x10 {
+                    if constant < 0xc {
                         // Prefer (x * y * 4) over ((x * y) << 2),
                         // especially since usually there's already a constant there.
+                        // The limit of 0xc matches what simplify_mul converts to lsh
                         let multiply_constant = 1 << constant;
                         simplify_mul(left, ctx.constant(multiply_constant), ctx)
                     } else {

@@ -5330,3 +5330,18 @@ fn lsh_rsh() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn mul_lsh() {
+    // Check that simplifying this won't infloop
+    let ctx = &OperandContext::new();
+    for i in 0..64 {
+        ctx.mul_const(
+            ctx.mul(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            1 << i,
+        );
+    }
+}
