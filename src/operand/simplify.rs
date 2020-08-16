@@ -774,6 +774,19 @@ pub fn simplify_rsh<'e>(
                         default()
                     }
                 }
+                ArithOpType::Add => {
+                    // Maybe this could be loosened to only require one of the operands to
+                    // not have any bits that would be discarded?
+                    let ok = arith.left.relevant_bits().start >= constant as u8 &&
+                        arith.right.relevant_bits().start >= constant as u8;
+                    if ok {
+                        if let Some(add_const) = arith.right.if_constant() {
+                            let left = ctx.rsh_const(arith.left, constant);
+                            return simplify_add_const(left, add_const >> constant, ctx);
+                        }
+                    }
+                    default()
+                }
                 _ => default(),
             }
         },

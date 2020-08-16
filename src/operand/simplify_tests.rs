@@ -5310,3 +5310,23 @@ fn masked_low_word_of_operation() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn lsh_rsh() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.rsh_const(
+        ctx.lsh_const(
+            ctx.add_const(
+                ctx.mem32(ctx.constant(0x4242)),
+                0x1234,
+            ),
+            0x10,
+        ),
+        0x10,
+    );
+    let eq1 = ctx.add_const(
+        ctx.mem32(ctx.constant(0x4242)),
+        0x1234,
+    );
+    assert_eq!(op1, eq1);
+}
