@@ -5225,3 +5225,21 @@ fn mul_large_const_to_lsh() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn cannot_split_rsh_with_add() {
+    let ctx = &OperandContext::new();
+    // ecx = 1 => op1 == 1, ne1 == 0
+    let op1 = ctx.rsh_const(
+        ctx.add_const(
+            ctx.register(1),
+            0xffff_ffff,
+        ),
+        0x20,
+    );
+    let ne1 = ctx.rsh_const(
+        ctx.register(1),
+        0x20,
+    );
+    assert_ne!(op1, ne1);
+}
