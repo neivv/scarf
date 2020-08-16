@@ -22,8 +22,6 @@ use copyless::BoxHelper;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::bit_misc::{bits_overlap};
-
 use self::slice_stack::SliceStack;
 
 #[derive(Copy, Clone)]
@@ -833,9 +831,12 @@ impl<'e> OperandContext<'e> {
     ///
     /// The returned value is simplified.
     pub fn lsh_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        let right = self.constant(right);
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_lsh(left, right, self, &mut simplify)
+        if right >= 256 {
+            self.const_0()
+        } else {
+            let mut simplify = simplify::SimplifyWithZeroBits::default();
+            simplify::simplify_lsh_const(left, right as u8, self, &mut simplify)
+        }
     }
 
     /// Returns `Operand` for `left << right`.
@@ -1124,11 +1125,7 @@ impl<'e> OperandType<'e> {
                         let left_bits = arith.left.relevant_bits();
                         let start = min(64, left_bits.start + c as u8);
                         let end = min(64, left_bits.end + c as u8);
-                        if start <= end {
-                            start..end
-                        } else {
-                            0..0
-                        }
+                        start..end
                     } else {
                         0..64
                     }
@@ -1139,11 +1136,7 @@ impl<'e> OperandType<'e> {
                         let left_bits = arith.left.relevant_bits();
                         let start = left_bits.start.saturating_sub(c as u8);
                         let end = left_bits.end.saturating_sub(c as u8);
-                        if start <= end {
-                            start..end
-                        } else {
-                            0..0
-                        }
+                        start..end
                     } else {
                         0..64
                     }
@@ -1151,11 +1144,7 @@ impl<'e> OperandType<'e> {
                 ArithOpType::And => {
                     let rel_left = arith.left.relevant_bits();
                     let rel_right = arith.right.relevant_bits();
-                    if !bits_overlap(&rel_left, &rel_right) {
-                        0..0
-                    } else {
-                        max(rel_left.start, rel_right.start)..min(rel_left.end, rel_right.end)
-                    }
+                    max(rel_left.start, rel_right.start)..min(rel_left.end, rel_right.end)
                 }
                 ArithOpType::Or | ArithOpType::Xor => {
                     let rel_left = arith.left.relevant_bits();
@@ -1183,17 +1172,19 @@ impl<'e> OperandType<'e> {
                 ArithOpType::Mul => {
                     let left_bits = arith.left.relevant_bits();
                     let right_bits = arith.right.relevant_bits();
-                    if left_bits == (0..0) || right_bits == (0..0) {
-                        return 0..0;
+                    if let Some(c) = arith.right.if_constant() {
+                        // Use x << c bits
+                        if c.wrapping_sub(1) & c == 0 {
+                            let shift = right_bits.start;
+                            let start = min(64, left_bits.start.wrapping_add(shift));
+                            let end = min(64, left_bits.end.wrapping_add(shift));
+                            return start..end;
+                        }
                     }
                     // 64 + 64 cannot overflow
                     let low = left_bits.start.wrapping_add(right_bits.start).min(64);
                     let high = left_bits.end.wrapping_add(right_bits.end).min(64);
-                    if low >= high {
-                        0..0
-                    } else {
-                        low..high
-                    }
+                    low..high
                 }
                 ArithOpType::Modulo => {
                     let left_bits = arith.left.relevant_bits();
@@ -1589,6 +1580,18 @@ impl<'e> Operand<'e> {
     /// `OperandType::Arithmetic(ArithOpType::Or(left, right))`
     pub fn if_arithmetic_or(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Or)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Lsh(left, right))`
+    pub fn if_arithmetic_lsh(self) -> Option<(Operand<'e>, Operand<'e>)> {
+        self.if_arithmetic(ArithOpType::Lsh)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Rsh(left, right))`
+    pub fn if_arithmetic_rsh(self) -> Option<(Operand<'e>, Operand<'e>)> {
+        self.if_arithmetic(ArithOpType::Rsh)
     }
 
     /// Returns `Some((register, constant))` if operand is an and mask of register

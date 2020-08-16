@@ -485,56 +485,87 @@ pub fn simplify_lsh<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
-    let default = || {
-        let arith = ArithOperand {
-            ty: ArithOpType::Lsh,
-            left: left.clone(),
-            right: right.clone(),
-        };
-        ctx.intern(OperandType::Arithmetic(arith))
-    };
     let constant = match right.if_constant() {
         Some(s) => s,
-        None => return default(),
+        None => {
+            let arith = ArithOperand {
+                ty: ArithOpType::Lsh,
+                left: left.clone(),
+                right: right.clone(),
+            };
+            return ctx.intern(OperandType::Arithmetic(arith));
+        }
+    };
+    if constant >= 256 {
+        return ctx.const_0();
+    }
+    simplify_lsh_const(left, constant as u8, ctx, swzb_ctx)
+}
+
+pub fn simplify_lsh_const<'e>(
+    left: Operand<'e>,
+    constant: u8,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Operand<'e> {
+    let default = || {
+        // Normalize small shifts to a mul
+        if constant < 0x6 {
+            let arith = ArithOperand {
+                ty: ArithOpType::Mul,
+                left: left,
+                right: ctx.constant(1 << constant),
+            };
+            ctx.intern(OperandType::Arithmetic(arith))
+        } else {
+            let arith = ArithOperand {
+                ty: ArithOpType::Lsh,
+                left: left,
+                right: ctx.constant(constant as u64),
+            };
+            ctx.intern(OperandType::Arithmetic(arith))
+        }
     };
     if constant == 0 {
         return left.clone();
-    } else if constant >= 64 - u64::from(left.relevant_bits().start) {
+    } else if constant >= 64 - left.relevant_bits().start {
         return ctx.const_0();
     }
-    let zero_bits = (64 - constant as u8)..64;
+    let zero_bits = (64 - constant)..64;
     match simplify_with_zero_bits(left, &zero_bits, ctx, swzb_ctx) {
         None => return ctx.const_0(),
         Some(s) => {
             if s != left {
-                return simplify_lsh(s, right, ctx, swzb_ctx);
+                return simplify_lsh_const(s, constant, ctx, swzb_ctx);
             }
         }
     }
     match *left.ty() {
-        OperandType::Constant(a) => ctx.constant(a << constant as u8),
+        OperandType::Constant(a) => ctx.constant(a << constant),
         OperandType::Arithmetic(ref arith) => {
             match arith.ty {
                 ArithOpType::And => {
                     // Simplify (x & mask) << c to (x << c) & (mask << c)
+                    // (If it changes anything. Otherwise prefer keeping the shift/mul outside)
                     if let Some(c) = arith.right.if_constant() {
                         let high = 64 - zero_bits.start;
                         let low = left.relevant_bits().start;
                         let no_op_mask = !0u64 >> low << low << high >> high;
 
-                        let new = simplify_lsh(arith.left, right, ctx, swzb_ctx);
-                        if c == no_op_mask {
-                            return new;
-                        } else {
-                            return simplify_and_const(new, c << constant, ctx, swzb_ctx);
+                        let new = simplify_lsh_const(arith.left, constant, ctx, swzb_ctx);
+                        let changed = match *new.ty() {
+                            OperandType::Arithmetic(ref a) => a.left != arith.left,
+                            _ => true,
+                        };
+                        if changed {
+                            if c == no_op_mask {
+                                return new;
+                            } else {
+                                return simplify_and_const(new, c << constant, ctx, swzb_ctx);
+                            }
                         }
                     }
-                    let arith = ArithOperand {
-                        ty: ArithOpType::Lsh,
-                        left: left,
-                        right: right,
-                    };
-                    ctx.intern(OperandType::Arithmetic(arith))
+                    default()
                 }
                 ArithOpType::Xor => {
                     // Try to simplify any parts of the xor separately
@@ -546,29 +577,18 @@ pub fn simplify_lsh<'e>(
                                 None
                             } else {
                                 for op in slice.iter_mut() {
-                                    *op = simplify_lsh(*op, right, ctx, swzb_ctx);
+                                    *op = simplify_lsh_const(*op, constant, ctx, swzb_ctx);
                                 }
                                 simplify_xor_ops(slice, ctx, swzb_ctx).ok()
                             }
                         })
                         .unwrap_or_else(|| default())
                 }
-                ArithOpType::Mul => {
-                    if constant < 0xc {
-                        // Prefer (x * y * 4) over ((x * y) << 2),
-                        // especially since usually there's already a constant there.
-                        // The limit of 0xc matches what simplify_mul converts to lsh
-                        let multiply_constant = 1 << constant;
-                        simplify_mul(left, ctx.constant(multiply_constant), ctx)
-                    } else {
-                        default()
-                    }
-                }
                 ArithOpType::Lsh => {
                     if let Some(inner_const) = arith.right.if_constant() {
-                        let sum = inner_const.saturating_add(constant);
+                        let sum = (inner_const as u8).saturating_add(constant);
                         if sum < 64 {
-                            simplify_lsh(arith.left, ctx.constant(sum), ctx, swzb_ctx)
+                            simplify_lsh_const(arith.left, sum, ctx, swzb_ctx)
                         } else {
                             ctx.const_0()
                         }
@@ -596,9 +616,9 @@ pub fn simplify_lsh<'e>(
                             }
                             // (x >> rsh) << lsh, lsh > rsh
                             x => {
-                                simplify_lsh(
+                                simplify_lsh_const(
                                     arith.left,
-                                    ctx.constant(x.abs() as u64),
+                                    x.abs() as u8,
                                     ctx,
                                     swzb_ctx,
                                 )
@@ -614,9 +634,51 @@ pub fn simplify_lsh<'e>(
                         default()
                     }
                 }
+                ArithOpType::Mul => {
+                    if let Some(mul_const) = arith.right.if_constant() {
+                        let new_const = ctx.constant(mul_const.wrapping_mul(1 << constant));
+                        simplify_mul(arith.left, new_const, ctx)
+                    } else {
+                        // Try to apply lsh to one part of the mul which may simplify,
+                        // if it changes then keep it as is.
+                        fn is_simple<'e>(op: Operand<'e>) -> Option<Operand<'e>> {
+                            use super::OperandType::*;
+                            match *op.ty() {
+                                Register(..) | Fpu(..) | Xmm(..) | Custom(..) |
+                                    Undefined(..) => Some(op),
+                                _ => None,
+                            }
+                        }
+                        if let Some((simple, other)) =
+                            Operand::either(arith.left, arith.right, |x| is_simple(x))
+                        {
+                            let inner = simplify_lsh_const(other, constant, ctx, swzb_ctx);
+                            let unchanged = match *inner.ty() {
+                                OperandType::Arithmetic(ref a) => a.left == other,
+                                _ => false,
+                            };
+                            if unchanged {
+                                default()
+                            } else {
+                                simplify_mul(inner, simple, ctx)
+                            }
+                        } else {
+                            default()
+                        }
+                    }
+                }
                 ArithOpType::Add => {
                     if let Some(add_const) = arith.right.if_constant() {
-                        let left = ctx.lsh_const(arith.left, constant);
+                        let left = simplify_lsh_const(arith.left, constant, ctx, swzb_ctx);
+                        simplify_add_const(left, add_const << constant, ctx)
+                    } else {
+                        default()
+                    }
+                }
+                ArithOpType::Sub => {
+                    if let Some(sub_const) = arith.right.if_constant() {
+                        let left = simplify_lsh_const(arith.left, constant, ctx, swzb_ctx);
+                        let add_const = 0u64.wrapping_sub(sub_const);
                         simplify_add_const(left, add_const << constant, ctx)
                     } else {
                         default()
@@ -784,6 +846,18 @@ pub fn simplify_rsh<'e>(
                         if let Some(add_const) = arith.right.if_constant() {
                             let left = ctx.rsh_const(arith.left, constant);
                             return simplify_add_const(left, add_const >> constant, ctx);
+                        }
+                    }
+                    default()
+                }
+                ArithOpType::Sub => {
+                    if arith.left.relevant_bits().start >= constant as u8 {
+                        if let Some(sub_const) = arith.right.if_constant() {
+                            let add_const = 0u64.wrapping_sub(sub_const);
+                            if add_const >> constant << constant == add_const {
+                                let left = ctx.rsh_const(arith.left, constant);
+                                return simplify_add_const(left, add_const >> constant, ctx);
+                            }
                         }
                     }
                     default()
@@ -1061,6 +1135,21 @@ fn simplify_eq_ops<'e>(
                                 swzb_ctx,
                             );
                             return simplify_eq(new, ctx.const_0(), ctx);
+                        }
+                    }
+                    OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Mul => {
+                        // Lsh treatment if the multiplier constant is power of 2
+                        if let Some(c2) = arith.right.if_constant() {
+                            if c2 & c2.wrapping_sub(1) == 0 {
+                                let shift = c2.trailing_zeros();
+                                let new = simplify_and_const(
+                                    arith.left,
+                                    mask.wrapping_shr(shift),
+                                    ctx,
+                                    swzb_ctx,
+                                );
+                                return simplify_eq(new, ctx.const_0(), ctx);
+                            }
                         }
                     }
                     OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Rsh => {
@@ -2783,9 +2872,12 @@ pub fn simplify_mul<'e>(
 ) -> Operand<'e> {
     let const_other = Operand::either(left, right, |x| x.if_constant());
     if let Some((c, other)) = const_other {
-        // Normalize to left shift when the constant is large enough and power of two
-        if c >= 0x1000 && c.wrapping_sub(1) & c == 0 {
-            return ctx.lsh_const(other, c.trailing_zeros().into());
+        // Go through lsh simplification for power of two, it will still intern Mul
+        // if the shift is small enough.
+        if c.wrapping_sub(1) & c == 0 {
+            let shift = c.trailing_zeros() as u8;
+            let swzb = &mut SimplifyWithZeroBits::default();
+            return simplify_lsh_const(other, shift, ctx, swzb);
         }
         match c {
             0 => return ctx.const_0(),
@@ -2888,9 +2980,12 @@ fn simplify_mul_ops<'e>(
     }
     // Make constant always be on right of simplified mul
     if const_product != 1 {
-        // Normalize to left shift when the constant is large enough and power of two
-        if const_product >= 0x1000 && const_product.wrapping_sub(1) & const_product == 0 {
-            return Ok(ctx.lsh_const(tree, const_product.trailing_zeros().into()));
+        // Go through lsh simplification for power of two, it will still intern Mul
+        // if the shift is small enough.
+        if const_product.wrapping_sub(1) & const_product == 0 {
+            let shift = const_product.trailing_zeros() as u8;
+            let swzb = &mut SimplifyWithZeroBits::default();
+            return Ok(simplify_lsh_const(tree, shift, ctx, swzb));
         }
         let arith = ArithOperand {
             ty: ArithOpType::Mul,
@@ -3305,6 +3400,9 @@ fn simplify_with_and_mask_inner<'e>(
                 }
                 ArithOpType::Lsh => {
                     if let Some(c) = arith.right.if_constant() {
+                        if c >= 64 {
+                            panic!("BAD OP {}", op);
+                        }
                         let left = simplify_with_and_mask(arith.left, mask >> c, ctx, swzb_ctx);
                         if left == arith.left {
                             op

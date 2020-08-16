@@ -4198,6 +4198,8 @@ fn simplify_eq_consistency10() {
 #[test]
 fn simplify_eq_consistency11() {
     let ctx = &OperandContext::new();
+    // x << 1 != 0 and x & 0x7fff_ffff_ffff_fff != 0
+    // are both true iff any of the 63 lowest bits is nonzero
     let op1 = ctx.gt(
         ctx.lsh(
             ctx.sub(
@@ -5344,4 +5346,15 @@ fn mul_lsh() {
             1 << i,
         );
     }
+}
+
+#[test]
+fn invalid_lsh_bug() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.lsh(
+        ctx.mem8(ctx.register(1)),
+        ctx.constant(0xffff_ffff_ffff_ff83),
+    );
+    let eq1 = ctx.constant(0);
+    assert_eq!(op1, eq1);
 }
