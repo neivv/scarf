@@ -5243,3 +5243,70 @@ fn cannot_split_rsh_with_add() {
     );
     assert_ne!(op1, ne1);
 }
+
+#[test]
+fn masked_sub_to_masked_add2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.rsh_const(
+            ctx.sub_const(
+                ctx.mul_const(
+                    ctx.mem32(ctx.register(0)),
+                    0x2,
+                ),
+                0xf000_0000,
+            ),
+            0x10,
+        ),
+        0xffff,
+    );
+    let eq1 = ctx.and_const(
+        ctx.rsh_const(
+            ctx.add_const(
+                ctx.mul_const(
+                    ctx.mem32(ctx.register(0)),
+                    0x2,
+                ),
+                0x1000_0000,
+            ),
+            0x10,
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_low_word_of_operation() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.add_const(
+            ctx.or(
+                ctx.rsh_const(
+                    ctx.mem32(ctx.constant(0x4242)),
+                    0xb,
+                ),
+                ctx.and_const(
+                    ctx.lsh_const(
+                        ctx.mem16(ctx.constant(0x4242)),
+                        0x15,
+                    ),
+                    0xffe0_0000,
+                ),
+            ),
+            0xd124_ec43,
+        ),
+        0xffff,
+    );
+    let eq1 = ctx.and_const(
+        ctx.add_const(
+            ctx.rsh_const(
+                ctx.mem32(ctx.constant(0x4242)),
+                0xb,
+            ),
+            0xec43,
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}

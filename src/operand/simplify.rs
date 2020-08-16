@@ -1799,28 +1799,6 @@ fn simplify_and_main<'e>(
     };
     simplify_and_remove_unnecessary_ors(ops, const_remain);
 
-    // Normalize (x + c000) & ffff to (x - 4000) & ffff and similar.
-    if ops.len() == 1 && final_const_remain != 0 {
-        let add = relevant_bits.trailing_zeros().wrapping_add(1) as u64;
-        if final_const_remain & final_const_remain.wrapping_add(add) == 0 {
-            let op = ops[0];
-            let max = final_const_remain.wrapping_add(add);
-            if let Some((l, r)) = op.if_arithmetic_add() {
-                if let Some(c) = r.if_constant() {
-                    if c > max / 2 {
-                        ops[0] = ctx.sub_const(l, max.wrapping_sub(c));
-                    }
-                }
-            } else if let Some((l, r)) = op.if_arithmetic_sub() {
-                if let Some(c) = r.if_constant() {
-                    if c >= max / 2 {
-                        ops[0] = ctx.add_const(l, max.wrapping_sub(c));
-                    }
-                }
-            }
-        }
-    }
-
     let mut tree = ops.pop()
         .unwrap_or_else(|| ctx.const_0());
     while let Some(op) = ops.pop() {
@@ -3323,6 +3301,22 @@ fn simplify_with_and_mask_inner<'e>(
                         op
                     }
                 }
+                ArithOpType::Rsh => {
+                    if let Some(c) = arith.right.if_constant() {
+                        // Using mask with all bits-to-be-shifted out as 1 for better
+                        // add/sub/etc simplification.
+                        // Maybe should do that and the actual mask?
+                        let inner_mask = (mask << c) | (1u64 << c).wrapping_sub(1);
+                        let left = simplify_with_and_mask(arith.left, inner_mask, ctx, swzb_ctx);
+                        if left == arith.left {
+                            op
+                        } else {
+                            ctx.rsh(left, arith.right)
+                        }
+                    } else {
+                        op
+                    }
+                }
                 ArithOpType::Xor | ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
                     if arith.ty != ArithOpType::Xor {
                         // The mask can be applied separately to left and right if
@@ -3350,6 +3344,23 @@ fn simplify_with_and_mask_inner<'e>(
                         let ok = mask.wrapping_add(1).count_ones() <= 1;
                         if !ok {
                             return op;
+                        }
+                    }
+                    // Normalize (x + c000) & ffff to (x - 4000) & ffff and similar.
+                    if let Some(c) = arith.right.if_constant() {
+                        let c = c & mask;
+                        let max = mask.wrapping_add(1);
+                        let limit = max >> 1;
+                        if arith.ty == ArithOpType::Add {
+                            if c > limit {
+                                let new = ctx.sub_const(arith.left, max.wrapping_sub(c));
+                                return simplify_with_and_mask(new, mask, ctx, swzb_ctx);
+                            }
+                        } else if arith.ty == ArithOpType::Sub {
+                            if c >= limit {
+                                let new = ctx.add_const(arith.left, max.wrapping_sub(c));
+                                return simplify_with_and_mask(new, mask, ctx, swzb_ctx);
+                            }
                         }
                     }
                     let simplified_left =
