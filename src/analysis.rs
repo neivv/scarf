@@ -608,6 +608,10 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         self.inner.analysis.operand_ctx
     }
 
+    pub fn binary(&self) -> &'e BinaryFile<<A::Exec as ExecutionState<'e>>::VirtualAddress> {
+        self.inner.analysis.binary
+    }
+
     pub fn address(&self) -> <A::Exec as ExecutionState<'e>>::VirtualAddress {
         self.inner.address
     }
