@@ -3314,15 +3314,20 @@ fn should_stop_with_and_mask(swzb_ctx: &mut SimplifyWithZeroBits) -> bool {
     }
 }
 
-/// Convert and(x, mask) to x
 fn simplify_with_and_mask<'e>(
     op: Operand<'e>,
     mask: u64,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
-    if op.relevant_bits_mask() & mask == 0 {
+    let relevant_mask = op.relevant_bits_mask();
+    if relevant_mask & mask == 0 {
         return ctx.const_0();
+    }
+    if relevant_mask & mask == relevant_mask {
+        if op.0.flags & super::FLAG_COULD_REMOVE_CONST_AND == 0 || relevant_mask & mask != mask {
+            return op;
+        }
     }
     if should_stop_with_and_mask(swzb_ctx) {
         return op;
@@ -3342,6 +3347,7 @@ fn simplify_with_and_mask_inner<'e>(
         OperandType::Arithmetic(ref arith) => {
             match arith.ty {
                 ArithOpType::And => {
+                    let simplified_right;
                     if let Some(c) = arith.right.if_constant() {
                         let self_mask = mask & arith.left.relevant_bits_mask();
                         if c == self_mask {
@@ -3352,12 +3358,17 @@ fn simplify_with_and_mask_inner<'e>(
                             // Mask is superset of the already existing mask,
                             // so it won't simplify anything further
                             return op;
+                        } else {
+                            // This is just avoid recursing to simplify_with_and_mask
+                            // when it's already known to do this.
+                            simplified_right = ctx.constant(c & mask);
                         }
+                    } else {
+                        simplified_right =
+                            simplify_with_and_mask(arith.right, mask, ctx, swzb_ctx);
                     }
                     let simplified_left =
                         simplify_with_and_mask(arith.left, mask, ctx, swzb_ctx);
-                    let simplified_right =
-                        simplify_with_and_mask(arith.right, mask, ctx, swzb_ctx);
                     if should_stop_with_and_mask(swzb_ctx) {
                         return op;
                     }
@@ -3400,9 +3411,6 @@ fn simplify_with_and_mask_inner<'e>(
                 }
                 ArithOpType::Lsh => {
                     if let Some(c) = arith.right.if_constant() {
-                        if c >= 64 {
-                            panic!("BAD OP {}", op);
-                        }
                         let left = simplify_with_and_mask(arith.left, mask >> c, ctx, swzb_ctx);
                         if left == arith.left {
                             op
