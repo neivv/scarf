@@ -5412,3 +5412,135 @@ fn masked_xors2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_xors3() {
+    let ctx = &OperandContext::new();
+    // ((x & ff) ^ (y & ffff) ^ Mem16[z])
+    // => ((x & ff) ^ y ^ Mem16[z]) & ffff
+    // (Canonicalize to keep the and mask outside if reasonable)
+    let op1 = ctx.xor(
+        ctx.xor(
+            ctx.and_const(
+                ctx.register(0),
+                0xff,
+            ),
+            ctx.and_const(
+                ctx.register(1),
+                0xffff,
+            ),
+        ),
+        ctx.mem16(ctx.register(2)),
+    );
+    let eq1 = ctx.and_const(
+        ctx.xor(
+            ctx.xor(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xff,
+                ),
+                ctx.register(1),
+            ),
+            ctx.mem16(ctx.register(2)),
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn medium_sized_and_simplify() {
+    let ctx = &OperandContext::new();
+    let key1 = ctx.rsh_const(
+        ctx.sub_const(
+            ctx.or(
+                ctx.rsh_const(
+                    ctx.mem32(ctx.register(0)),
+                    0xb,
+                ),
+                ctx.lsh_const(
+                    ctx.mem32(ctx.register(0)),
+                    0x15,
+                ),
+            ),
+            0x20f1359f,
+        ),
+        0x10,
+    );
+    let key2 = ctx.sub(
+        ctx.mul_const(
+            ctx.mem16(ctx.register(1)),
+            2,
+        ),
+        ctx.lsh_const(
+            ctx.mem8(ctx.register(2)),
+            9,
+        ),
+    );
+    let key3 = ctx.xor(
+        ctx.mem16(ctx.register(3)),
+        ctx.mem16(ctx.register(4)),
+    );
+    let joined = ctx.and_const(
+        ctx.xor(
+            key1,
+            ctx.xor(
+                key2,
+                key3,
+            ),
+        ),
+        0xffff,
+    );
+    let key4 = ctx.and_const(
+        ctx.sub(
+            ctx.and_const(
+                ctx.xor_const(
+                    ctx.xor(
+                        ctx.mul_const(
+                            ctx.mem16(ctx.register(5)),
+                            2,
+                        ),
+                        ctx.sub_const(
+                            ctx.and_const(
+                                ctx.rsh_const(
+                                    ctx.mem32(ctx.register(6)),
+                                    0xa,
+                                ),
+                                0x3ffffe,
+                            ),
+                            0x6b3e,
+                        ),
+                    ),
+                    0x6700,
+                ),
+                0x1fffe,
+            ),
+            ctx.lsh_const(
+                ctx.mem16(ctx.register(7)),
+                9,
+            ),
+        ),
+        0xfffffffffffe,
+    );
+    let joined2 = ctx.xor(
+        joined,
+        key4,
+    );
+    let joined3 = ctx.xor_const(joined2, 0x8335);
+    let masked = ctx.and_const(joined3, 0xffff);
+    let alt_masked = ctx.xor(
+        ctx.and_const(
+            joined,
+            0xffff,
+        ),
+        ctx.xor_const(
+            ctx.and_const(
+                key4,
+                0xffff,
+            ),
+            0x8335,
+        ),
+    );
+
+    assert_eq!(masked, alt_masked);
+}

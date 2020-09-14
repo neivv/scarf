@@ -603,7 +603,6 @@ fn simplify_xor_ops<'e>(
             i += 1;
         }
         if !ops_changed {
-            heapsort::sort(ops);
             break;
         }
     }
@@ -613,6 +612,51 @@ fn simplify_xor_ops<'e>(
         1 if const_val == 0 => return Ok(ops[0]),
         _ => (),
     };
+    // Canonicalize to (x ^ y) & ffff over x ^ (y & ffff)
+    // when the outermost mask doesn't modify x
+    // Keep op with the mask to avoid reinterning it.
+    let best_mask = ops.iter()
+        .try_fold(None, |prev: Option<(u64, Operand<'e>)>, &op| {
+            if let Some(new) = op.if_arithmetic_and()
+                .and_then(|x| x.1.if_constant().map(|c| (c, x.1)))
+            {
+                if let Some(prev) = prev {
+                    if prev.0 & new.0 == new.0 {
+                        Some(Some(prev))
+                    } else if prev.0 & new.0 == prev.0 {
+                        Some(Some(new))
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(Some(new))
+                }
+            } else {
+                Some(prev)
+            }
+        })
+        .flatten()
+        .filter(|&(mask, _op)| {
+            ops.iter().all(|x| {
+                let relbits = x.relevant_bits_mask();
+                relbits & mask == relbits
+            }) && mask & const_val == const_val
+        });
+    if let Some((mask, _op)) = best_mask {
+        for i in 0..ops.len() {
+            if let Some((l, r)) = ops[i].if_arithmetic_and() {
+                if r.if_constant() == Some(mask) {
+                    if let Some((l, r)) = l.if_arithmetic(ArithOpType::Xor) {
+                        ops[i] = r;
+                        collect_xor_ops(l, ops, usize::max_value())?;
+                    } else {
+                        ops[i] = l;
+                    }
+                }
+            }
+        }
+    }
+    heapsort::sort(ops);
     let mut tree = ops.pop()
         .unwrap_or_else(|| ctx.const_0());
     while let Some(op) = ops.pop() {
@@ -629,6 +673,14 @@ fn simplify_xor_ops<'e>(
             ty: ArithOpType::Xor,
             left: tree,
             right: ctx.constant(const_val),
+        };
+        tree = ctx.intern(OperandType::Arithmetic(arith));
+    }
+    if let Some((_, op)) = best_mask {
+        let arith = ArithOperand {
+            ty: ArithOpType::And,
+            left: tree,
+            right: op,
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
@@ -1792,6 +1844,14 @@ pub fn simplify_and_const<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
+    /*
+fn inner<'e>(
+    mut left: Operand<'e>,
+    mut right: u64,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Operand<'e> {
+    */
     // Check if left is x & const
     if let Some((l, r)) = left.if_arithmetic_and() {
         if let Some(c) = r.if_constant() {
@@ -1821,6 +1881,33 @@ pub fn simplify_and_const<'e>(
                 ctx.intern(OperandType::Arithmetic(arith))
             })
     })
+    /*
+}
+    let begin = (swzb_ctx.simplify_count, swzb_ctx.with_and_mask_count, swzb_ctx.xor_recurse);
+    /// simplify_with_zero_bits can cause a lot of recursing in xor
+    /// simplification with has functions, stop simplifying if a limit
+    /// is hit.
+    let result = inner(left, right, ctx, swzb_ctx);
+    if result.if_arithmetic_and()
+        .filter(|x| x.1.if_constant() == Some(0xfffe))
+        .and_then(|x| x.0.if_arithmetic_sub())
+        .and_then(|x| {
+            let (a, b) = x.1.if_arithmetic(ArithOpType::Lsh)?;
+            b.if_constant().filter(|&c| c == 9)?;
+            a.if_mem16().filter(|x| x.if_constant() == Some(0xfb0235))?;
+            let (a, b) = x.0.if_arithmetic_and()?;
+            b.if_constant().filter(|&c| c == 0x1fffe)?;
+            let (a, b) = a.if_arithmetic(ArithOpType::Xor)?;
+            b.if_constant().filter(|&c| c == 0x6700)?;
+            Some(())
+        }).is_some()
+    {
+    let end = (swzb_ctx.simplify_count, swzb_ctx.with_and_mask_count, swzb_ctx.xor_recurse);
+        panic!("Converted {} & {:x} => {},
+            relevant {:?} min zero {} flags {:x} {:?} => {:?}", left, right, result, left.0.relevant_bits, left.0.min_zero_bit_simplify_size, left.0.flags, begin, end);
+    }
+    result
+    */
 }
 
 pub fn simplify_and<'e>(
