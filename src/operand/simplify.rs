@@ -2451,6 +2451,21 @@ fn collect_arith_ops<'e>(
     arith_type: ArithOpType,
     limit: usize,
 ) -> Result<(), SizeLimitReached> {
+    // Assuming that these operands are always in form (((x | y) | z) | w) | c
+    // So only recursing on left is enough.
+    let mut s = s;
+    for _ in ops.len()..limit {
+        match s.ty() {
+            OperandType::Arithmetic(arith) if arith.ty == arith_type => {
+                s = arith.left;
+                ops.push(arith.right)?;
+            }
+            _ => {
+                ops.push(s)?;
+                return Ok(());
+            }
+        }
+    }
     if ops.len() >= limit {
         if ops.len() == limit {
             ops.push(s)?;
@@ -2458,13 +2473,6 @@ fn collect_arith_ops<'e>(
             tls_simplification_incomplete();
         }
         return Err(SizeLimitReached);
-    }
-    match s.ty() {
-        OperandType::Arithmetic(arith) if arith.ty == arith_type => {
-            collect_arith_ops(arith.left, ops, arith_type, limit)?;
-            collect_arith_ops(arith.right, ops, arith_type, limit)?;
-        }
-        _ => ops.push(s)?,
     }
     Ok(())
 }
@@ -2477,7 +2485,7 @@ fn collect_mul_ops<'e>(
     match s.ty() {
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Mul => {
             collect_mul_ops(ctx, arith.left, ops)?;
-            collect_mul_ops(ctx, arith.right, ops)?;
+            ops.push(arith.right)?;
         }
         // Convert x << constant to x * (1 << constant) for simplifications
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Lsh => {
