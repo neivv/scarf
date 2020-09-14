@@ -3125,6 +3125,27 @@ fn simplify_collected_add_sub_ops<'e>(
     Ok(())
 }
 
+// For simplifying (x & a) | (y & a) to (x | y) & a
+// And same for xor
+fn check_shared_and_mask<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+) -> Option<(Operand<'e>, Operand<'e>, Operand<'e>)> {
+    let (a1, a2) = left.if_arithmetic_and()?;
+    let (b1, b2) = right.if_arithmetic_and()?;
+    if a2 == b2 {
+        Some((a1, b1, a2))
+    } else if a2 == b1 {
+        Some((a1, b2, a2))
+    } else if a1 == b1 {
+        Some((a2, b2, a1))
+    } else if a1 == b2 {
+        Some((a2, b2, a1))
+    } else {
+        None
+    }
+}
+
 pub fn simplify_or<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
@@ -3152,6 +3173,11 @@ pub fn simplify_or<'e>(
             right: r,
         };
         return ctx.intern(OperandType::Arithmetic(arith));
+    }
+    // Simplify (x & a) | (y & a) to (x | y) & a
+    if let Some((l, r, mask)) = check_shared_and_mask(left, right) {
+        let inner = simplify_or(l, r, ctx, swzb);
+        return simplify_and(inner, mask, ctx, swzb);
     }
 
     ctx.simplify_temp_stack().alloc(|ops| {
@@ -4045,6 +4071,11 @@ pub fn simplify_xor<'e>(
             right: r.clone(),
         };
         return ctx.intern(OperandType::Arithmetic(arith));
+    }
+    // Simplify (x & a) ^ (y & a) to (x ^ y) & a
+    if let Some((l, r, mask)) = check_shared_and_mask(left, right) {
+        let inner = simplify_xor(l, r, ctx, swzb);
+        return simplify_and(inner, mask, ctx, swzb);
     }
     ctx.simplify_temp_stack().alloc(|ops| {
         collect_xor_ops(left, ops, 30)

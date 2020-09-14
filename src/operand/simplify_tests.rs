@@ -5358,3 +5358,23 @@ fn invalid_lsh_bug() {
     let eq1 = ctx.constant(0);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_xors() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.xor(
+                ctx.register(1),
+                ctx.register(2),
+            ),
+            0xffff,
+        ),
+        ctx.and_const(
+            ctx.register(1),
+            0xffff,
+        ),
+    );
+    let eq1 = ctx.and_const(ctx.register(2), 0xffff);
+    assert_eq!(op1, eq1);
+}
