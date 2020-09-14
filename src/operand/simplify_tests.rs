@@ -5378,3 +5378,37 @@ fn masked_xors() {
     let eq1 = ctx.and_const(ctx.register(2), 0xffff);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_xors2() {
+    let ctx = &OperandContext::new();
+    // ((x ^ Mem16[y]) & ffff) ^ ((z ^ Mem16[y]) & 1ffff)
+    // => (x & ffff) ^ (z & 1ffff)
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.xor(
+                ctx.register(1),
+                ctx.mem16(ctx.register(2)),
+            ),
+            0xffff,
+        ),
+        ctx.and_const(
+            ctx.xor(
+                ctx.register(3),
+                ctx.mem16(ctx.register(2)),
+            ),
+            0x1_ffff,
+        ),
+    );
+    let eq1 = ctx.xor(
+        ctx.and_const(
+            ctx.register(1),
+            0xffff,
+        ),
+        ctx.and_const(
+            ctx.register(3),
+            0x1_ffff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}

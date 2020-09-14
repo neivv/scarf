@@ -362,6 +362,177 @@ fn simplify_gt_lhs_sub<'e>(
     None
 }
 
+/// True if all 1 bits in val are placed together (or just val is zero)
+fn is_continuous_mask(val: u64) -> bool {
+    let low = val.trailing_zeros();
+    let low_mask = 1u64.wrapping_shl(low).wrapping_sub(1);
+    (val | low_mask).wrapping_add(1) & val == 0
+}
+
+/// Iterates through parts of a arithmetic op tree where it is guaranteed
+/// that right has never subtrees, only left (E.g. for and, or, xor).
+///
+/// Order is outermost right first, then next inner right, etc.
+#[derive(Copy, Clone)]
+struct IterArithOps<'e> {
+    ty: ArithOpType,
+    next: Option<Operand<'e>>,
+    next_inner: Option<Operand<'e>>,
+}
+
+impl<'e> Iterator for IterArithOps<'e> {
+    type Item = Operand<'e>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.next?;
+        if let Some(x) = self.next_inner {
+            if let Some((inner_a, inner_b)) = x.if_arithmetic(self.ty) {
+                self.next_inner = Some(inner_a);
+                self.next = Some(inner_b);
+            } else {
+                self.next = Some(x);
+                self.next_inner = None;
+            }
+        } else {
+            self.next = None;
+        }
+        Some(next)
+    }
+}
+
+/// Also used for or.
+/// If one of the ops contains (x ^ y) & c,
+/// and some of the inner operands don't need the mask c, extract them out.
+fn simplify_xor_unpack_and_masks<'e>(
+    ops: &mut Slice<'e>,
+    ty: ArithOpType,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Result<(), SizeLimitReached> {
+    let mut i = 0;
+    let mut end = ops.len();
+    while i < end {
+        if let Some((l, r)) = ops[i].if_arithmetic_and() {
+            if let Some((inner, inner_r)) = l.if_arithmetic(ty) {
+                if let Some(mask) = r.if_constant().filter(|&c| is_continuous_mask(c)) {
+                    // Check if any should be moved out
+                    let iter = IterArithOps {
+                        ty,
+                        next_inner: Some(inner),
+                        next: Some(inner_r),
+                    };
+                    let any = iter.clone().any(|x| {
+                        let op_bits = x.relevant_bits_mask();
+                        op_bits & mask == op_bits
+                    });
+                    if any {
+                        ops.swap_remove(i);
+                        // Take ones that don't need the mask and add them to the main slice
+                        let mut any_needs_mask = false;
+                        for op in iter.clone() {
+                            let op_bits = op.relevant_bits_mask();
+                            if op_bits & mask == op_bits {
+                                ops.push(op)?;
+                            } else {
+                                any_needs_mask = true;
+                            }
+                        }
+                        if any_needs_mask {
+                        // Take ones that need the mask, add them to a new slice and rebuild
+                        // them to a xor chain which then gets masked and added as a new op
+                            let new = ctx.simplify_temp_stack()
+                                .alloc(|slice| {
+                                    for op in iter {
+                                        let op_bits = op.relevant_bits_mask();
+                                        if op_bits & mask != op_bits {
+                                            slice.push(op)?;
+                                        }
+                                    }
+                                    // These should all be sorted in the correct tree order
+                                    // already (Just reverse)
+                                    let mut tree = match slice.last() {
+                                        Some(&s) => s,
+                                        None => return Ok(None),
+                                    };
+                                    for &op in slice.iter().rev().skip(1) {
+                                        let arith = ArithOperand {
+                                            ty: ArithOpType::Xor,
+                                            left: tree,
+                                            right: op,
+                                        };
+                                        tree = ctx.intern(OperandType::Arithmetic(arith));
+                                    }
+                                    Ok(Some(tree))
+                                })?;
+                            if let Some(new) = new {
+                                let new_masked = simplify_and_const(new, mask, ctx, swzb_ctx);
+                                ops.push(new_masked)?;
+                            }
+                        }
+                        end -= 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+/// Merges (x & ff), (y & ff) to (x ^ y) & ff
+/// Also used for or
+fn simplify_xor_merge_ands_with_same_mask<'e>(
+    ops: &mut Slice<'e>,
+    is_or: bool,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) {
+    let mut i = 0;
+    while i < ops.len() {
+        if let Some((_, r)) = ops[i].if_arithmetic_and() {
+            if let Some(mask) = r.if_constant() {
+                let any_matching = (ops[(i + 1)..]).iter().any(|x| {
+                    x.if_arithmetic_and()
+                        .and_then(|x| x.1.if_constant())
+                        .filter(|&c| c == mask)
+                        .is_some()
+                });
+                if any_matching {
+                    let result = ctx.simplify_temp_stack
+                        .alloc(|slice| {
+                            for op in &ops[i..] {
+                                if let Some((l, r)) = op.if_arithmetic_and() {
+                                    if r.if_constant() == Some(mask) {
+                                        slice.push(l)?;
+                                    }
+                                }
+                            }
+                            if is_or {
+                                simplify_or_ops(slice, ctx, swzb_ctx)
+                            } else {
+                                simplify_xor_ops(slice, ctx, swzb_ctx)
+                            }
+                        });
+                    if let Ok(result) = result {
+                        let masked = ctx.and_const(result, mask);
+                        ops[i] = masked;
+                        for j in ((i + 1)..ops.len()).rev() {
+                            let matched = ops[j].if_arithmetic_and()
+                                .and_then(|x| x.1.if_constant())
+                                .filter(|&c| c == mask)
+                                .is_some();
+                            if matched {
+                                ops.swap_remove(j);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
 fn simplify_xor_ops<'e>(
     ops: &mut Slice<'e>,
     ctx: OperandCtx<'e>,
@@ -369,6 +540,7 @@ fn simplify_xor_ops<'e>(
 ) -> Result<Operand<'e>, SizeLimitReached> {
     let mut const_val = 0;
     loop {
+        simplify_xor_unpack_and_masks(ops, ArithOpType::Xor, ctx, swzb_ctx)?;
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum ^ x);
         ops.retain(|x| x.if_constant().is_none());
@@ -376,6 +548,7 @@ fn simplify_xor_ops<'e>(
         simplify_xor_remove_reverting(ops);
         simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
         simplify_or_merge_child_ands(ops, ctx, swzb_ctx, true);
+        simplify_xor_merge_ands_with_same_mask(ops, false, ctx, swzb_ctx);
         if ops.is_empty() {
             return Ok(ctx.constant(const_val));
         }
@@ -421,7 +594,11 @@ fn simplify_xor_ops<'e>(
                 ops.swap_remove(i);
                 end -= 1;
                 collect_xor_ops(l, ops, usize::max_value())?;
-                collect_xor_ops(r, ops, usize::max_value())?;
+                if let Some(c) = r.if_constant() {
+                    const_val ^= c;
+                } else {
+                    ops.push(r)?;
+                }
             }
             i += 1;
         }
@@ -3202,6 +3379,7 @@ fn simplify_or_ops<'e>(
 ) -> Result<Operand<'e>, SizeLimitReached> {
     let mut const_val = 0;
     loop {
+        simplify_xor_unpack_and_masks(ops, ArithOpType::Or, ctx, swzb_ctx)?;
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum | x);
         ops.retain(|x| x.if_constant().is_none());
@@ -3232,6 +3410,7 @@ fn simplify_or_ops<'e>(
         simplify_or_merge_xors(ops, ctx, swzb_ctx);
         simplify_or_merge_mem(ops, ctx);
         simplify_or_merge_comparisions(ops, ctx);
+        simplify_xor_merge_ands_with_same_mask(ops, true, ctx, swzb_ctx);
 
         let mut i = 0;
         let mut end = ops.len();
