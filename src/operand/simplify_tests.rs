@@ -5544,3 +5544,40 @@ fn medium_sized_and_simplify() {
 
     assert_eq!(masked, alt_masked);
 }
+
+#[test]
+fn masked_xors4() {
+    let ctx = &OperandContext::new();
+    // (((x << 2) & fffe) ^ (y & ffff) ^ Mem16[z])
+    // => ((x << 2) ^ y ^ Mem16[z]) & ffff
+    let op1 = ctx.xor(
+        ctx.xor(
+            ctx.and_const(
+                ctx.lsh_const(
+                    ctx.register(0),
+                    2,
+                ),
+                0xfffe,
+            ),
+            ctx.and_const(
+                ctx.register(1),
+                0xffff,
+            ),
+        ),
+        ctx.mem16(ctx.register(2)),
+    );
+    let eq1 = ctx.and_const(
+        ctx.xor(
+            ctx.xor(
+                ctx.lsh_const(
+                    ctx.register(0),
+                    2,
+                ),
+                ctx.register(1),
+            ),
+            ctx.mem16(ctx.register(2)),
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}

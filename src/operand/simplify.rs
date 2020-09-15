@@ -645,12 +645,14 @@ fn simplify_xor_ops<'e>(
     if let Some((mask, _op)) = best_mask {
         for i in 0..ops.len() {
             if let Some((l, r)) = ops[i].if_arithmetic_and() {
-                if r.if_constant() == Some(mask) {
-                    if let Some((l, r)) = l.if_arithmetic(ArithOpType::Xor) {
-                        ops[i] = r;
-                        collect_xor_ops(l, ops, usize::max_value())?;
-                    } else {
-                        ops[i] = l;
+                if let Some(c) = r.if_constant() {
+                    if l.relevant_bits_mask() & mask == c {
+                        if let Some((l, r)) = l.if_arithmetic(ArithOpType::Xor) {
+                            ops[i] = r;
+                            collect_xor_ops(l, ops, usize::max_value())?;
+                        } else {
+                            ops[i] = l;
+                        }
                     }
                 }
             }
@@ -3605,7 +3607,7 @@ where F: FnMut(Operand<'e>) -> Option<Operand<'e>>,
 }
 
 fn should_stop_with_and_mask(swzb_ctx: &mut SimplifyWithZeroBits) -> bool {
-    if swzb_ctx.with_and_mask_count > 80 {
+    if swzb_ctx.with_and_mask_count > 120 {
         #[cfg(feature = "fuzz")]
         tls_simplification_incomplete();
         true
@@ -3625,7 +3627,7 @@ fn simplify_with_and_mask<'e>(
         return ctx.const_0();
     }
     if relevant_mask & mask == relevant_mask {
-        if op.0.flags & super::FLAG_COULD_REMOVE_CONST_AND == 0 || relevant_mask & mask != mask {
+        if op.0.flags & super::FLAG_COULD_REMOVE_CONST_AND == 0 {
             return op;
         }
     }
