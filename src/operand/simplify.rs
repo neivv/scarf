@@ -1,6 +1,8 @@
 use std::cmp::{min, max};
 use std::ops::Range;
 
+use smallvec::SmallVec;
+
 use crate::bit_misc::{bits_overlap, one_bit_ranges, zero_bit_ranges};
 use crate::heapsort;
 
@@ -547,7 +549,7 @@ fn simplify_xor_ops<'e>(
         heapsort::sort(ops);
         simplify_xor_remove_reverting(ops);
         simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
-        simplify_or_merge_child_ands(ops, ctx, swzb_ctx, true);
+        simplify_or_merge_child_ands(ops, ctx, ArithOpType::Xor)?;
         simplify_xor_merge_ands_with_same_mask(ops, false, ctx, swzb_ctx);
         if ops.is_empty() {
             return Ok(ctx.constant(const_val));
@@ -616,26 +618,25 @@ fn simplify_xor_ops<'e>(
     // when the outermost mask doesn't modify x
     // Keep op with the mask to avoid reinterning it.
     let best_mask = ops.iter()
-        .try_fold(None, |prev: Option<(u64, Operand<'e>)>, &op| {
+        .fold(None, |prev: Option<(u64, Operand<'e>)>, &op| {
             if let Some(new) = op.if_arithmetic_and()
                 .and_then(|x| x.1.if_constant().map(|c| (c, x.1)))
             {
                 if let Some(prev) = prev {
                     if prev.0 & new.0 == new.0 {
-                        Some(Some(prev))
+                        Some(prev)
                     } else if prev.0 & new.0 == prev.0 {
-                        Some(Some(new))
+                        Some(new)
                     } else {
                         None
                     }
                 } else {
-                    Some(Some(new))
+                    Some(new)
                 }
             } else {
-                Some(prev)
+                prev
             }
         })
-        .flatten()
         .filter(|&(mask, _op)| {
             ops.iter().all(|x| {
                 let relbits = x.relevant_bits_mask();
@@ -1715,7 +1716,6 @@ fn try_merge_ands<'e>(
     a_mask: u64,
     b_mask: u64,
     ctx: OperandCtx<'e>,
-    swzb: &mut SimplifyWithZeroBits,
 ) -> Option<Operand<'e>> {
     if a == b {
         return Some(a.clone());
@@ -1737,17 +1737,23 @@ fn try_merge_ands<'e>(
     }
     match (a.ty(), b.ty()) {
         (&OperandType::Arithmetic(ref c), &OperandType::Arithmetic(ref d)) => {
-            if c.ty == ArithOpType::Xor && d.ty == ArithOpType::Xor {
-                try_merge_ands(c.left, d.left, a_mask, b_mask, ctx, swzb).and_then(|left| {
-                    try_merge_ands(c.right, d.right, a_mask, b_mask, ctx, swzb).map(|right| (left, right))
-                }).or_else(|| try_merge_ands(c.left, d.right, a_mask, b_mask, ctx, swzb).and_then(|first| {
-                    try_merge_ands(c.right, d.left, a_mask, b_mask, ctx, swzb).map(|second| (first, second))
-                })).map(|(first, second)| {
-                    simplify_xor(first, second, ctx, swzb)
-                })
-            } else {
-                None
+            if c.ty == ArithOpType::Xor && d.ty == ArithOpType::Xor && a_mask & b_mask == 0 {
+                let mut buf = SmallVec::new();
+                simplify_or_merge_ands_try_merge(
+                    &mut buf, a, b, a_mask, b_mask, ArithOpType::Xor, ctx,
+                );
+                if !buf.is_empty() {
+                    let result = ctx.simplify_temp_stack()
+                        .alloc(|slice| {
+                            for op in buf {
+                                slice.push(op)?;
+                            }
+                            simplify_xor_ops(slice, ctx, &mut SimplifyWithZeroBits::default())
+                        }).ok();
+                    return result;
+                }
             }
+            None
         }
         (&OperandType::Memory(ref a_mem), &OperandType::Memory(ref b_mem)) => {
             // Can treat Mem16[x], Mem8[x] as Mem16[x], Mem16[x]
@@ -2488,9 +2494,8 @@ fn simplify_or_merge_xors<'e>(
 fn simplify_or_merge_child_ands<'e>(
     ops: &mut Slice<'e>,
     ctx: OperandCtx<'e>,
-    swzb_ctx: &mut SimplifyWithZeroBits,
-    only_nonoverlapping: bool,
-) {
+    arith_ty: ArithOpType,
+) -> Result<(), SizeLimitReached> {
     fn and_const<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
         match op.ty() {
             OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
@@ -2521,38 +2526,117 @@ fn simplify_or_merge_child_ands<'e>(
         // ops than usual code would have.
         #[cfg(feature = "fuzz")]
         tls_simplification_incomplete();
-        return;
+        return Ok(());
     }
 
+    let only_nonoverlapping = arith_ty == ArithOpType::Xor;
     let mut i = 0;
-    while i < ops.len() {
-        if let Some((mut constant, val)) = and_const(ops[i]) {
-            let mut new_val = val;
+    'outer: while i < ops.len() {
+        if let Some((constant, val)) = and_const(ops[i]) {
             let mut j = i + 1;
-            let mut changed = false;
             while j < ops.len() {
                 if let Some((other_constant, other_val)) = and_const(ops[j]) {
-                    let result = if only_nonoverlapping && other_constant & constant != 0 {
-                        None
-                    } else {
-                        try_merge_ands(other_val, val, other_constant, constant, ctx, swzb_ctx)
-                    };
-                    if let Some(merged) = result {
-                        constant |= other_constant;
-                        new_val = merged;
-                        ops.swap_remove(j);
-                        changed = true;
-                        continue; // Without incrementing j
+                    if !only_nonoverlapping || other_constant & constant == 0 {
+                        let mut buf = SmallVec::new();
+                        simplify_or_merge_ands_try_merge(
+                            &mut buf,
+                            val,
+                            other_val,
+                            constant,
+                            other_constant,
+                            arith_ty,
+                            ctx,
+                        );
+                        if !buf.is_empty() {
+                            ops.swap_remove(j);
+                            ops.swap_remove(i);
+                            for op in buf {
+                                ops.push(op)?;
+                            }
+                            continue 'outer;
+                        }
                     }
                 }
                 j += 1;
             }
-            if changed {
-                ops[i] = simplify_and_const(new_val, constant, ctx, swzb_ctx);
-            }
         }
         i += 1;
     }
+    Ok(())
+}
+
+fn simplify_or_merge_ands_try_merge<'e>(
+    out: &mut SmallVec<[Operand<'e>; 8]>,
+    first: Operand<'e>,
+    second: Operand<'e>,
+    first_c: u64,
+    second_c: u64,
+    arith_ty: ArithOpType,
+    ctx: OperandCtx<'e>,
+) {
+    let _ = ctx.simplify_temp_stack().alloc(|slice| {
+        collect_arith_ops(first, slice, arith_ty, 16)?;
+        ctx.simplify_temp_stack().alloc(|other_slice| {
+            collect_arith_ops(second, other_slice, arith_ty, 16)?;
+            let mut i = 0;
+            'outer: while i < slice.len() {
+                let mut j = 0;
+                while j < other_slice.len() {
+                    let a = slice[i];
+                    let b = other_slice[j];
+                    if let Some(result) = try_merge_ands(a, b, first_c, second_c, ctx) {
+                        out.push(ctx.and_const(result, first_c | second_c));
+                        slice.swap_remove(i);
+                        other_slice.swap_remove(j);
+                        continue 'outer;
+                    }
+                    j += 1;
+                }
+                i += 1;
+            }
+            // Rejoin remaining operands to a new arith if any were removed.
+            // Assume that they can just be rebuilt without simplification
+            if !out.is_empty() {
+                let iter = slice.iter().rev().copied();
+                if let Some(first) = intern_arith_ops_to_tree(ctx, iter, arith_ty) {
+                    out.push(intern_and_const(ctx, first, first_c));
+                }
+                let iter = other_slice.iter().rev().copied();
+                if let Some(second) = intern_arith_ops_to_tree(ctx, iter, arith_ty) {
+                    out.push(intern_and_const(ctx, second, second_c));
+                }
+            }
+            Result::<(), SizeLimitReached>::Ok(())
+        })
+    });
+}
+
+/// Use only if the iterator produces items in sorted order.
+fn intern_arith_ops_to_tree<'e, I: Iterator<Item = Operand<'e>>>(
+    ctx: OperandCtx<'e>,
+    mut iter: I,
+    ty: ArithOpType,
+) -> Option<Operand<'e>> {
+    let mut tree = iter.next()?;
+    for op in iter {
+        let arith = ArithOperand {
+            ty,
+            left: tree,
+            right: op,
+        };
+        tree = ctx.intern(OperandType::Arithmetic(arith));
+    }
+    Some(tree)
+}
+
+/// Use only sure that the left/right won't simplify each other
+fn intern_and_const<'e>(ctx: OperandCtx<'e>, left: Operand<'e>, right: u64) -> Operand<'e> {
+    let arith = ArithOperand {
+        ty: ArithOpType::And,
+        left: left,
+        right: ctx.constant(right),
+    };
+    ctx.intern(OperandType::Arithmetic(arith))
 }
 
 // Simplify or: merge comparisions
@@ -3495,7 +3579,7 @@ fn simplify_or_ops<'e>(
         for bits in one_bit_ranges(const_val) {
             slice_filter_map(ops, |op| simplify_with_one_bits(op, &bits, ctx));
         }
-        simplify_or_merge_child_ands(ops, ctx, swzb_ctx, false);
+        simplify_or_merge_child_ands(ops, ctx, ArithOpType::Or)?;
         simplify_or_merge_xors(ops, ctx, swzb_ctx);
         simplify_or_merge_mem(ops, ctx);
         simplify_or_merge_comparisions(ops, ctx);

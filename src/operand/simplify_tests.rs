@@ -5581,3 +5581,52 @@ fn masked_xors4() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_xors5() {
+    let ctx = &OperandContext::new();
+    // ((x ^ z) & ff) ^ ((x ^ y) & ff00) ^ (w & ffff)
+    // => (z & ff) ^ (y & ff00) ^ ((x ^ w) & ffff)
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.xor(
+                ctx.register(0),
+                ctx.register(2),
+            ),
+            0xff,
+        ),
+        ctx.xor(
+            ctx.and_const(
+                ctx.xor(
+                    ctx.register(0),
+                    ctx.register(1),
+                ),
+                0xff00,
+            ),
+            ctx.and_const(
+                ctx.register(3),
+                0xffff,
+            ),
+        ),
+    );
+    let eq1 = ctx.xor(
+        ctx.and_const(
+            ctx.register(2),
+            0xff,
+        ),
+        ctx.xor(
+            ctx.and_const(
+                ctx.register(1),
+                0xff00,
+            ),
+            ctx.and_const(
+                ctx.xor(
+                    ctx.register(0),
+                    ctx.register(3),
+                ),
+                0xffff,
+            ),
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
