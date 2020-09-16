@@ -5630,3 +5630,114 @@ fn masked_xors5() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_xors6() {
+    let ctx = &OperandContext::new();
+    // (Mem8[x] - 34) & ff) ^ (Mem16[x] - 1234 & ff00)
+    // => (Mem16[x] - 1234) & ffff
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem8(ctx.register(0)),
+                ctx.constant(0x34),
+            ),
+            0xff,
+        ),
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem16(ctx.register(0)),
+                ctx.constant(0x1234),
+            ),
+            0xff00,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub(
+            ctx.mem16(ctx.register(0)),
+            ctx.constant(0x1234),
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_xors7() {
+    let ctx = &OperandContext::new();
+    // ((Mem8[x] * 2) - 34) & ff) ^ ((Mem16[x] * 2) - 1234 & ff00)
+    // => ((Mem16[x] * 2) - 1234) & ffff
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.sub(
+                ctx.mul_const(
+                    ctx.mem8(ctx.register(0)),
+                    2,
+                ),
+                ctx.constant(0x34),
+            ),
+            0xff,
+        ),
+        ctx.and_const(
+            ctx.sub(
+                ctx.mul_const(
+                    ctx.mem16(ctx.register(0)),
+                    2,
+                ),
+                ctx.constant(0x1234),
+            ),
+            0xff00,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub(
+            ctx.mul_const(
+                ctx.mem16(ctx.register(0)),
+                2,
+            ),
+            ctx.constant(0x1234),
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_xors8() {
+    let ctx = &OperandContext::new();
+    // ((Mem8[x] & 80) - 34) & ff) ^ ((Mem16[x] & 8080) - 1234 & ff00)
+    // => ((Mem16[x] & 8080) - 1234) & ffff
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.sub(
+                ctx.and_const(
+                    ctx.mem8(ctx.register(0)),
+                    0x80,
+                ),
+                ctx.constant(0x34),
+            ),
+            0xff,
+        ),
+        ctx.and_const(
+            ctx.sub(
+                ctx.and_const(
+                    ctx.mem16(ctx.register(0)),
+                    0x8080,
+                ),
+                ctx.constant(0x1234),
+            ),
+            0xff00,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub(
+            ctx.and_const(
+                ctx.mem16(ctx.register(0)),
+                0x8080,
+            ),
+            ctx.constant(0x1234),
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}

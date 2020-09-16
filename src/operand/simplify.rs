@@ -1709,7 +1709,104 @@ fn simplify_eq_masked_add<'e>(operand: Operand<'e>) -> Option<(u64, Operand<'e>)
     }
 }
 
-// Tries to merge (a & a_mask) | (b & b_mask) to (a_mask | b_mask) & result
+/// Return Some(smaller) if the the operand with smaller mask is same as the
+/// larger operand if it were masked with that small mask.
+///
+/// Aims to be cheaper subset of `smaller == ctx.and_const(larger, small_mask)` check,
+/// with the assumption that a & b are add/sub chains
+fn try_merge_ands_check_add_merge<'e>(
+    a: Operand<'e>,
+    b: Operand<'e>,
+    a_mask: u64,
+    b_mask: u64,
+) -> Option<Operand<'e>> {
+    fn is_subset<'e>(larger: Operand<'e>, smaller: Operand<'e>, smaller_mask: u64) -> bool {
+        if larger == smaller {
+            return true;
+        }
+        // The larger part must include all of smaller part as it will affect results
+        // with add/sub even if the mask would mask those bits out.
+        match (larger.ty(), smaller.ty()) {
+            (&OperandType::Arithmetic(ref a), &OperandType::Arithmetic(ref b)) => {
+                if a.ty != b.ty {
+                    return false;
+                }
+                match a.ty {
+                    ArithOpType::Mul | ArithOpType::Lsh => {
+                        a.right == b.right && is_subset(a.left, b.left, smaller_mask)
+                    }
+                    _ => false,
+                }
+            }
+            (&OperandType::Constant(a), &OperandType::Constant(b)) => {
+                a & smaller_mask == b
+            }
+            (&OperandType::Memory(ref a_mem), &OperandType::Memory(ref b_mem)) => {
+                if a_mem.address != b_mem.address {
+                    return false;
+                }
+                if a_mem.size.bits() < b_mem.size.bits() {
+                    return false;
+                }
+                // Shouldn't accept (Mem8[x] - y) & ffff as a subset
+                // of (Mem32[x] - y) & ffff_ffff for example
+                let smaller_mem_mask = 1u64
+                    .wrapping_shl(b_mem.size.bits().into())
+                    .wrapping_sub(1);
+                if smaller_mem_mask & smaller_mask != smaller_mask {
+                    return false;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    let (larger, smaller, smaller_mask) = match a_mask > b_mask {
+        true => (a, b, b_mask),
+        false => (b, a, a_mask),
+    };
+    // Would be cleaner to have these be iterators, but this is likely an one-off case so eh
+    let mut l_chain = Some(larger);
+    let mut s_chain = Some(smaller);
+    let mut current_ty = None;
+    loop {
+        let (next_l, next_s) = match (l_chain, s_chain) {
+            (Some(l), Some(s)) => (l, s),
+            (None, None) => return Some(larger),
+            _ => return None,
+        };
+        let larger_part = match *next_l.ty() {
+            OperandType::Arithmetic(ref arith) => {
+                l_chain = Some(arith.left);
+                current_ty = Some(arith.ty);
+                arith.right
+            }
+            _ => {
+                l_chain = None;
+                next_l
+            }
+        };
+        let smaller_part = match *next_s.ty() {
+            OperandType::Arithmetic(ref arith) => {
+                s_chain = Some(arith.left);
+                if current_ty != Some(arith.ty) {
+                    return None;
+                }
+                arith.right
+            }
+            _ => {
+                s_chain = None;
+                next_s
+            }
+        };
+        if !is_subset(larger_part, smaller_part, smaller_mask) {
+            return None;
+        }
+    }
+}
+
+/// Tries to merge (a & a_mask) | (b & b_mask) to (a_mask | b_mask) & result
 fn try_merge_ands<'e>(
     a: Operand<'e>,
     b: Operand<'e>,
@@ -1737,20 +1834,26 @@ fn try_merge_ands<'e>(
     }
     match (a.ty(), b.ty()) {
         (&OperandType::Arithmetic(ref c), &OperandType::Arithmetic(ref d)) => {
-            if c.ty == ArithOpType::Xor && d.ty == ArithOpType::Xor && a_mask & b_mask == 0 {
-                let mut buf = SmallVec::new();
-                simplify_or_merge_ands_try_merge(
-                    &mut buf, a, b, a_mask, b_mask, ArithOpType::Xor, ctx,
-                );
-                if !buf.is_empty() {
-                    let result = ctx.simplify_temp_stack()
-                        .alloc(|slice| {
-                            for op in buf {
-                                slice.push(op)?;
-                            }
-                            simplify_xor_ops(slice, ctx, &mut SimplifyWithZeroBits::default())
-                        }).ok();
-                    return result;
+            if c.ty == d.ty && a_mask & b_mask == 0 {
+                if c.ty == ArithOpType::Xor {
+                    let mut buf = SmallVec::new();
+                    simplify_or_merge_ands_try_merge(
+                        &mut buf, a, b, a_mask, b_mask, ArithOpType::Xor, ctx,
+                    );
+                    if !buf.is_empty() {
+                        let result = ctx.simplify_temp_stack()
+                            .alloc(|slice| {
+                                for op in buf {
+                                    slice.push(op)?;
+                                }
+                                simplify_xor_ops(slice, ctx, &mut SimplifyWithZeroBits::default())
+                            }).ok();
+                        return result;
+                    }
+                } else if matches!(c.ty, ArithOpType::Add | ArithOpType::Sub) {
+                    if let Some(result) = try_merge_ands_check_add_merge(a, b, a_mask, b_mask) {
+                        return Some(result);
+                    }
                 }
             }
             None
