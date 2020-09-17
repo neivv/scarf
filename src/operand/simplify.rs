@@ -1019,11 +1019,15 @@ pub fn simplify_rsh<'e>(
                         })
                         .unwrap_or_else(|| default())
                 }
-                ArithOpType::Lsh => {
-                    if let Some(lsh_const) = arith.right.if_constant() {
-                        if lsh_const >= 64 {
-                            return ctx.const_0();
-                        }
+                ArithOpType::Lsh | ArithOpType::Mul => {
+                    let shift_constant = if arith.ty == ArithOpType::Lsh {
+                        arith.right.if_constant().map(|x| x as u8)
+                    } else {
+                        arith.right.if_constant()
+                            .filter(|c| c.wrapping_sub(1) & c == 0)
+                            .map(|c| c.trailing_zeros() as u8)
+                    };
+                    if let Some(lsh_const) = shift_constant {
                         let diff = constant as i8 - lsh_const as i8;
                         let mask = (!0u64 << lsh_const) >> constant;
                         let val = match diff {

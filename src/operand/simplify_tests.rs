@@ -5741,3 +5741,24 @@ fn masked_xors8() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn lsh_rsh2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.rsh_const(
+        ctx.lsh_const(
+            ctx.mem32(
+                ctx.constant(0x34),
+            ),
+            0x4,
+        ),
+        0x10,
+    );
+    let eq1 = ctx.rsh_const(
+        ctx.mem32(
+            ctx.constant(0x34),
+        ),
+        0xc,
+    );
+    assert_eq!(op1, eq1);
+}
