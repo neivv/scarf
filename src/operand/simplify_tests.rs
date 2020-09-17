@@ -5762,3 +5762,67 @@ fn lsh_rsh2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_xors9() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.mem32(ctx.register(1)),
+            0xffff,
+        ),
+        ctx.mem8(ctx.register(3)),
+    );
+    let eq1 = ctx.and_const(
+        ctx.xor(
+            ctx.mem32(ctx.register(1)),
+            ctx.mem8(ctx.register(3)),
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+    let op2 = ctx.xor(
+        ctx.and_const(
+            ctx.xor(
+                ctx.mem32(ctx.register(1)),
+                ctx.constant(0x1111),
+            ),
+            0xffff,
+        ),
+        ctx.constant(0x4f4f),
+    );
+    let eq2 = ctx.and_const(
+        ctx.xor(
+            ctx.mem32(ctx.register(1)),
+            ctx.constant(0x5e5e),
+        ),
+        0xffff,
+    );
+    assert_eq!(op2, eq2);
+}
+
+#[test]
+fn masked_xors10() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.mem32(ctx.register(1)),
+                0x1234,
+            ),
+            0xffff,
+        ),
+        ctx.constant(0xe4e4),
+    );
+    let eq1 = ctx.and_const(
+        ctx.xor(
+            ctx.sub_const(
+                ctx.mem32(ctx.register(1)),
+                0x1234,
+            ),
+            ctx.constant(0xe4e4),
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}
