@@ -1959,14 +1959,6 @@ pub fn simplify_and_const<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
-    /*
-fn inner<'e>(
-    mut left: Operand<'e>,
-    mut right: u64,
-    ctx: OperandCtx<'e>,
-    swzb_ctx: &mut SimplifyWithZeroBits,
-) -> Operand<'e> {
-    */
     // Check if left is x & const
     if let Some((l, r)) = left.if_arithmetic_and() {
         if let Some(c) = r.if_constant() {
@@ -1996,33 +1988,6 @@ fn inner<'e>(
                 ctx.intern(OperandType::Arithmetic(arith))
             })
     })
-    /*
-}
-    let begin = (swzb_ctx.simplify_count, swzb_ctx.with_and_mask_count, swzb_ctx.xor_recurse);
-    /// simplify_with_zero_bits can cause a lot of recursing in xor
-    /// simplification with has functions, stop simplifying if a limit
-    /// is hit.
-    let result = inner(left, right, ctx, swzb_ctx);
-    if result.if_arithmetic_and()
-        .filter(|x| x.1.if_constant() == Some(0xfffe))
-        .and_then(|x| x.0.if_arithmetic_sub())
-        .and_then(|x| {
-            let (a, b) = x.1.if_arithmetic(ArithOpType::Lsh)?;
-            b.if_constant().filter(|&c| c == 9)?;
-            a.if_mem16().filter(|x| x.if_constant() == Some(0xfb0235))?;
-            let (a, b) = x.0.if_arithmetic_and()?;
-            b.if_constant().filter(|&c| c == 0x1fffe)?;
-            let (a, b) = a.if_arithmetic(ArithOpType::Xor)?;
-            b.if_constant().filter(|&c| c == 0x6700)?;
-            Some(())
-        }).is_some()
-    {
-    let end = (swzb_ctx.simplify_count, swzb_ctx.with_and_mask_count, swzb_ctx.xor_recurse);
-        panic!("Converted {} & {:x} => {},
-            relevant {:?} min zero {} flags {:x} {:?} => {:?}", left, right, result, left.0.relevant_bits, left.0.min_zero_bit_simplify_size, left.0.flags, begin, end);
-    }
-    result
-    */
 }
 
 pub fn simplify_and<'e>(
