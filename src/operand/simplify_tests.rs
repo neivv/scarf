@@ -5826,3 +5826,35 @@ fn masked_xors10() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn gt_and_ne() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and(
+        ctx.gt_const(
+            ctx.and_const(
+                ctx.sub_const(
+                    ctx.register(1),
+                    0xd,
+                ),
+                0xffff_ffff,
+            ),
+            0xc,
+        ),
+        ctx.neq_const(
+            ctx.register(1),
+            0x1a,
+        ),
+    );
+    let eq1 = ctx.gt_const(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.register(1),
+                0xd,
+            ),
+            0xffff_ffff,
+        ),
+        0xd,
+    );
+    assert_eq!(op1, eq1);
+}

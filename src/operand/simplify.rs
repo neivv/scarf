@@ -2379,28 +2379,145 @@ fn simplify_and_merge_child_ors<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
 // Or alternatively (x > c) & ((x == c2) == 0) to x > c
 // if c2 < c
 fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
-    #[derive(Copy, Clone)]
-    enum Variant {
-        GtLeft,
-        GtRight,
-        Neq,
-    }
-
-    fn check<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>, Variant)> {
+    // Range start, range end (inclusive), mask, compare operand, range value
+    // E.g. range value for `x in 5..=10` would be true,
+    // false for `not x in 5..=10` Caller can assume that for
+    fn check<'e>(op: Operand<'e>) -> Option<(u64, u64, u64, Operand<'e>, bool)> {
         match op.ty() {
             OperandType::Arithmetic(arith) if arith.ty == ArithOpType::GreaterThan => {
-                arith.left.if_constant().map(|c| (c, arith.right, Variant::GtLeft))
-                    .or_else(|| {
-                        arith.right.if_constant().map(|c| (c, arith.left, Variant::GtRight))
-                    })
+                if let Some(c) = arith.left.if_constant() {
+                    // c > x - c2 is a (c2 ..= c2 + c - 1) range
+                    let (mask, inner) = arith.right.if_arithmetic_and()
+                        .and_then(|(l, r)| {
+                            let mask = r.if_constant()
+                                .filter(|&c| c.wrapping_add(1) & c == 0)?;
+                            Some((mask, l))
+                        })
+                        .unwrap_or_else(|| (u64::max_value(), arith.right));
+                    let (c2, inner) = inner.if_arithmetic_sub()
+                        .and_then(|x| x.1.if_constant().map(|c2| (c2, x.0)))
+                        .unwrap_or_else(|| (0, inner));
+                    Some((c2, c2.wrapping_add(c).wrapping_sub(1), mask, inner, true))
+                } else if let Some(c) = arith.right.if_constant() {
+                    // x - c2 > c is a (c2 ..= c2 + c) false range
+                    let (mask, inner) = arith.left.if_arithmetic_and()
+                        .and_then(|(l, r)| {
+                            let mask = r.if_constant()
+                                .filter(|&c| c.wrapping_add(1) & c == 0)?;
+                            Some((mask, l))
+                        })
+                        .unwrap_or_else(|| (u64::max_value(), arith.left));
+                    let (c2, inner) = inner.if_arithmetic_sub()
+                        .and_then(|x| x.1.if_constant().map(|c2| (c2, x.0)))
+                        .unwrap_or_else(|| (0, inner));
+                    Some((c2, c2.wrapping_add(c), mask, inner, false))
+                } else {
+                    None
+                }
             }
             OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Equal => {
-                Operand::either(arith.left, arith.right, |x| x.if_constant().filter(|&c| c == 0))
-                    .and_then(|(_, other)| other.if_arithmetic_eq())
-                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
-                    .map(|(c, other)| (c, other, Variant::Neq))
+                let (c, other) = Operand::either(arith.left, arith.right, |x| x.if_constant())?;
+                if c == 0 {
+                    if let Some(mut result) = check(other) {
+                        result.4 = !result.4;
+                        return Some(result);
+                    }
+                }
+                Some((c, c, u64::max_value(), other, true))
             }
             _ => None,
+        }
+    }
+
+    fn try_merge<'e>(
+        base: &mut (u64, u64, u64, Operand<'e>, bool),
+        other: &(u64, u64, u64, Operand<'e>, bool),
+    ) -> bool {
+        // Using term "positive range" to mean `x in range` (bool == true)
+        // and negative range for `x not in range` (bool == false)
+        if base.3 != other.3 {
+            return false;
+        }
+        let mut mask = base.2;
+        if mask != other.2 {
+            // Should still be able to merge a u32 compare with u32 eq
+            // ((x - c1) & mask > c2) & (x != c1) for example,
+            // so allow reducing u64::max_value mask to a smaller mask
+            // if that one has low == high
+            let larger_masked = if base.2 < other.2 { other } else { &*base };
+            if larger_masked.0 == larger_masked.1 && larger_masked.2 == u64::max_value() {
+                mask = base.2.min(other.2);
+            } else {
+                return false;
+            }
+        }
+        if base.4 != other.4 {
+            // Positive range and negative range must be true;
+            // base = (pos - neg), true
+            let (pos, neg) = if base.4 { (&*base, other) } else { (other, &*base) };
+            if pos.0 >= neg.0 && pos.1 <= neg.1 {
+                // Negative range contains all of the positive - e.g. the result can never
+                // be true
+                *base = (0, u64::max_value(), u64::max_value(), base.3, false);
+                true
+            } else if neg.1 < pos.0 || neg.0 > pos.1 {
+                // No overlap
+                *base = *pos;
+                base.2 = mask;
+                true
+            } else if neg.0 > pos.0 && neg.1 < pos.1 {
+                // Negative range is fully inside positive, leaving positive ranges on both sides
+                // cannot merge with this representation (Could split to 2 positive ranges but eh)
+                false
+            } else if neg.0 > pos.0 {
+                // Negative range removes high part of positive
+                *base = (pos.0, neg.1.wrapping_sub(1), mask, pos.3, true);
+                true
+            } else {
+                // Negative range removes low part of positive
+                *base = (neg.0.wrapping_add(1), pos.1, mask, pos.3, true);
+                true
+            }
+        } else if base.4 == true {
+            // Two positive ranges, intersection of them
+            let low = base.0.max(other.0);
+            let high = base.1.min(other.1);
+            if low > high {
+                // Empty set
+                *base = (0, u64::max_value(), u64::max_value(), base.3, false);
+                true
+            } else {
+                base.0 = low;
+                base.1 = high;
+                base.2 = mask;
+                true
+            }
+        } else {
+            // Two negative ranges, union of them.
+            // Can't merge if they have a space inbetween them, unless they also are
+            // a not (0..=x), not (y..=max) sets, in which case it can be merged as
+            // (x + 1)..=(y - 1) positive range.
+            let low = base.0.min(other.0);
+            let other_low = base.0.max(other.0);
+            let high = base.1.max(other.1);
+            let other_high = base.1.min(other.1);
+            if other_low > other_high && other_low > other_high.wrapping_add(1) {
+                // No overlap
+                if low == 0 && high == mask {
+                    base.0 = other_high.wrapping_add(1);
+                    base.1 = other_low.wrapping_sub(1);
+                    base.2 = mask;
+                    base.4 = false;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                base.0 = low;
+                base.1 = high;
+                base.2 = mask;
+                true
+            }
         }
     }
 
@@ -2411,110 +2528,73 @@ fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
     let mut i = 0;
     while i < ops.len() {
         let op = ops[i];
-        let mut new = None;
-        let mut changed = false;
-        if let Some((mut constant, val, mut variant)) = check(op) {
+        if let Some(mut value) = check(op) {
+            let mut changed = false;
             for j in ((i + 1)..ops.len()).rev() {
                 let second = ops[j];
-                if let Some((other_constant, other_val, other_variant)) = check(second) {
-                    if val == other_val {
-                        match (variant, other_variant) {
-                            // (c > x) & (c2 > x) allows removing the one with greater c
-                            (Variant::GtLeft, Variant::GtLeft) => {
-                                if other_constant >= constant {
-                                    ops.swap_remove(j);
-                                } else {
-                                    ops.swap_remove(j);
-                                    constant = other_constant;
-                                    changed = true;
-                                }
-                            }
-                            // Same as above, but remove smaller c
-                            (Variant::GtRight, Variant::GtRight) => {
-                                if other_constant <= constant {
-                                    ops.swap_remove(j);
-                                } else {
-                                    ops.swap_remove(j);
-                                    constant = other_constant;
-                                    changed = true;
-                                }
-                            }
-                            // Could simplify this if it were x != 0 & x != 1,
-                            // but not doing it right now
-                            (Variant::Neq, Variant::Neq) => {
-                            }
-                            // (c > x) & (x > c2) is 0 if c >= c2
-                            (Variant::GtLeft, Variant::GtRight) => {
-                                if constant >= other_constant {
-                                    ops.clear();
-                                    return;
-                                }
-                            }
-                            (Variant::GtRight, Variant::GtLeft) => {
-                                if constant <= other_constant {
-                                    ops.clear();
-                                    return;
-                                }
-                            }
-                            // (c > x) & (x != c2) is c > x if c2 >= c,
-                            // or (c - 1) > x if c2 == c - 1
-                            (Variant::GtLeft, Variant::Neq) => {
-                                if other_constant >= constant {
-                                    ops.swap_remove(j);
-                                } else if other_constant == constant - 1 {
-                                    ops.swap_remove(j);
-                                    constant = constant - 1;
-                                    changed = true;
-                                }
-                            }
-                            // Same as above, just swapped c and c2
-                            (Variant::Neq, Variant::GtLeft) => {
-                                if constant >= other_constant {
-                                    variant = Variant::GtLeft;
-                                    constant = other_constant;
-                                    ops.swap_remove(j);
-                                    changed = true;
-                                } else if constant == other_constant - 1 {
-                                    variant = Variant::GtLeft;
-                                    ops.swap_remove(j);
-                                    changed = true;
-                                }
-                            }
-                            (Variant::GtRight, Variant::Neq) => {
-                                if other_constant <= constant {
-                                    ops.swap_remove(j);
-                                } else if other_constant == constant + 1 {
-                                    ops.swap_remove(j);
-                                    constant = constant + 1;
-                                    changed = true;
-                                }
-                            }
-                            (Variant::Neq, Variant::GtRight) => {
-                                if constant <= other_constant {
-                                    variant = Variant::GtRight;
-                                    constant = other_constant;
-                                    ops.swap_remove(j);
-                                    changed = true;
-                                } else if constant == other_constant + 1 {
-                                    variant = Variant::GtRight;
-                                    ops.swap_remove(j);
-                                    changed = true;
-                                }
-                            }
-                        }
+                if let Some(other) = check(second) {
+                    if try_merge(&mut value, &other) {
+                        ops.swap_remove(j);
+                        changed = true;
                     }
                 }
             }
             if changed {
-                new = Some(match variant {
-                    Variant::GtLeft => ctx.gt_const_left(constant, val),
-                    Variant::GtRight => ctx.gt_const(val, constant),
-                    Variant::Neq => ctx.neq_const(val, constant),
-                });
+                let (min, max, mask, op, set) = value;
+                let new = if min == 0 && max == mask {
+                    // Always 0/1
+                    ctx.constant(if set { 1 } else { 0 })
+                } else {
+                    if set {
+                        if min == max {
+                            let op = ctx.and_const(op, mask);
+                            ctx.eq_const(op, min)
+                        } else if min == 0 {
+                            // max + 1 > x
+                            let op = ctx.and_const(op, mask);
+                            ctx.gt_const_left(max.wrapping_add(1), op)
+                        } else if max == mask {
+                            // x > min - 1
+                            let op = ctx.and_const(op, mask);
+                            ctx.gt_const(op, min.wrapping_sub(1))
+                        } else {
+                            // x is in range min ..= max
+                            // So max - min + 1 > x - min
+                            ctx.gt_const_left(
+                                max.wrapping_sub(min).wrapping_add(1),
+                                ctx.and_const(
+                                    ctx.sub_const(op, min),
+                                    mask,
+                                ),
+                            )
+                        }
+                    } else {
+                        if min == max {
+                            let op = ctx.and_const(op, mask);
+                            ctx.neq_const(op, min)
+                        } else if min == 0 {
+                            // x > max
+                            let op = ctx.and_const(op, mask);
+                            ctx.gt_const(op, max)
+                        } else if max == mask {
+                            // min > x
+                            let op = ctx.and_const(op, mask);
+                            ctx.gt_const_left(min, op)
+                        } else {
+                            // x is not in range min ..= max
+                            // So x - min > max - min
+                            ctx.gt_const(
+                                ctx.and_const(
+                                    ctx.sub_const(op, min),
+                                    mask,
+                                ),
+                                max.wrapping_sub(min),
+                            )
+                        }
+                    }
+                };
+                ops[i] = new;
             }
-        }
-        if let Some(new) = new {
-            ops[i] = new;
         }
         i += 1;
     }
