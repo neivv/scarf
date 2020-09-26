@@ -1959,6 +1959,9 @@ pub fn simplify_and_const<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
+    if right == u64::max_value() {
+        return left;
+    }
     // Check if left is x & const
     if let Some((l, r)) = left.if_arithmetic_and() {
         if let Some(c) = r.if_constant() {
