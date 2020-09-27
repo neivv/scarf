@@ -488,29 +488,39 @@ fn instruction_operations32_main(
         0x90 => Ok(()),
         // Cwde
         0x98 => {
-            let eax = s.dest_and_op_register(0);
-            let cond = ctx.gt_const(eax.op, 0x7fff);
-            let neg_sign_extend = ctx.or_const(eax.op, 0xffff_0000);
-            let neg_sign_extend_op = Operation::Move(
-                dest_operand_reg64(0),
-                neg_sign_extend,
-                Some(cond),
+            let extended_sign = ctx.and_const(
+                ctx.sub_const(
+                    ctx.eq_const(
+                        ctx.and_const(
+                            ctx.register(0),
+                            0x8000,
+                        ),
+                        0,
+                    ),
+                    1,
+                ),
+                0xffff_0000,
             );
-            s.output_and_const(eax, 0xffff);
-            s.output(neg_sign_extend_op);
+            let merged_eax = ctx.or(
+                extended_sign,
+                s.register_cache.register16(0),
+            );
+            s.output(mov_to_reg(0, merged_eax));
             Ok(())
         }
         // Cdq
         0x99 => {
-            let eax = ctx.register_ref(0);
-            let cond = ctx.gt_const(eax, 0x7fff_ffff);
-            let neg_sign_extend_op = Operation::Move(
-                dest_operand_reg64(2),
-                ctx.const_ffffffff(),
-                Some(cond),
+            let extended_sign = ctx.sub_const(
+                ctx.eq_const(
+                    ctx.and_const(
+                        ctx.register(0),
+                        0x8000_0000,
+                    ),
+                    0,
+                ),
+                1,
             );
-            s.output(mov_to_reg(2, ctx.const_0()));
-            s.output(neg_sign_extend_op);
+            s.output(mov_to_reg(2, extended_sign));
             Ok(())
         },
         0x9f => s.lahf(),
@@ -778,47 +788,60 @@ fn instruction_operations64_main(
         0x8f => s.pop_rm(),
         0x90 => Ok(()),
         0x98 => {
-            let eax = s.dest_and_op_register(0);
+            let sign_bit;
+            let high_half_mask;
             if s.rex_prefix() & 0x8 == 0 {
-                let cond = ctx.gt_const(eax.op, 0x7fff);
-                let neg_sign_extend = ctx.or_const(eax.op, 0xffff_0000);
-                let neg_sign_extend_op =
-                    Operation::Move(dest_operand_reg64(0), neg_sign_extend, Some(cond));
-                s.output_and_const(eax, 0xffff);
-                s.output(neg_sign_extend_op);
+                sign_bit = 0x8000;
+                high_half_mask = 0xffff_0000;
             } else {
-                let cond = ctx.gt_const(eax.op, 0x7fff_ffff);
-                let neg_sign_extend = ctx.or_const(eax.op, 0xffff_ffff_0000_0000);
-                let neg_sign_extend_op =
-                    Operation::Move(dest_operand_reg64(0), neg_sign_extend, Some(cond));
-                s.output_and_const(eax, 0xffff_ffff);
-                s.output(neg_sign_extend_op);
+                sign_bit = 0x8000_0000;
+                high_half_mask = 0xffff_ffff_0000_0000;
             }
+            let extended_sign = ctx.and_const(
+                ctx.sub_const(
+                    ctx.eq_const(
+                        ctx.and_const(
+                            ctx.register(0),
+                            sign_bit,
+                        ),
+                        0,
+                    ),
+                    1,
+                ),
+                high_half_mask,
+            );
+            let new_eax = ctx.or(
+                extended_sign,
+                s.register_cache.register16(0),
+            );
+            s.output(mov_to_reg(0, new_eax));
             Ok(())
         }
         // Cdq
         0x99 => {
+            let sign_bit;
+            let mask;
             if s.rex_prefix() & 0x8 == 0 {
-                let eax = ctx.register_ref(0);
-                let cond = ctx.gt_const(eax, 0x7fff_ffff);
-                let neg_sign_extend_op = Operation::Move(
-                    dest_operand_reg64(2),
-                    ctx.const_ffffffff(),
-                    Some(cond),
-                );
-                s.output(mov_to_reg(2, ctx.const_0()));
-                s.output(neg_sign_extend_op);
+                sign_bit = 0x8000_0000;
+                mask = 0xffff_ffff;
             } else {
-                let rax = ctx.register_ref(0);
-                let cond = ctx.gt_const(rax, 0x7fff_ffff_ffff_ffff);
-                let neg_sign_extend_op = Operation::Move(
-                    dest_operand_reg64(2),
-                    ctx.constant(!0),
-                    Some(cond),
-                );
-                s.output(mov_to_reg(2, ctx.const_0()));
-                s.output(neg_sign_extend_op);
+                sign_bit = 0x8000_0000_0000_0000;
+                mask = 0xffff_ffff_ffff_ffff;
             }
+            let extended_sign = ctx.and_const(
+                ctx.sub_const(
+                    ctx.eq_const(
+                        ctx.and_const(
+                            ctx.register(0),
+                            sign_bit,
+                        ),
+                        0,
+                    ),
+                    1,
+                ),
+                mask,
+            );
+            s.output(mov_to_reg(2, extended_sign));
             Ok(())
         },
         0x9f => s.lahf(),
@@ -3741,10 +3764,6 @@ fn dest_operand<'e>(val: Operand<'e>) -> DestOperand<'e> {
         #[cfg(debug_assertions)]
         _ => panic!("Invalid value for converting Operand -> DestOperand {}", val),
     }
-}
-
-fn dest_operand_reg64<'e>(reg: u8) -> DestOperand<'e> {
-    DestOperand::Register64(Register(reg))
 }
 
 #[cfg(test)]
