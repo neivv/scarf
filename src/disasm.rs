@@ -1939,20 +1939,41 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             ArithOperation::RightShiftArithmetic => {
                 // TODO flags, using ToFloat to cheat
                 self.output(flags(ArithOpType::ToFloat, dest.op, rhs, size));
-                let sign_bit = 1 << (size.bits() - 1);
-                let is_positive = ctx.eq_const(
-                    ctx.and_const(dest.op, sign_bit),
-                    0,
+                // Arithmetic shift shifts in the value of sign bit,
+                // that can be represented as bitwise or of
+                // `not(ffff...ffff << rhs >> rhs) & ((sign_bit == 0) - 1)`
+                // with logical right shift
+                // (sign_bit == 0) - 1 is 0 if sign_bit is clear, ffff...ffff if sign_bit is set
+                let sign_bit = 1u64 << (size.bits() - 1);
+                let logical_rsh = ctx.rsh(dest.op, rhs);
+                let negative_shift_in_bits = ctx.rsh(
+                    ctx.lsh(
+                        ctx.constant((sign_bit << 1).wrapping_sub(1)),
+                        rhs,
+                    ),
+                    rhs,
+                );
+                let sign_bit_set_mask = ctx.sub_const(
+                    ctx.eq_const(
+                        ctx.and_const(
+                            dest.op,
+                            sign_bit,
+                        ),
+                        0,
+                    ),
+                    1,
+                );
+                let result = ctx.or(
+                    logical_rsh,
+                    ctx.and(
+                        negative_shift_in_bits,
+                        sign_bit_set_mask,
+                    ),
                 );
                 self.output(Operation::Move(
-                    dest.dest.clone(),
-                    ctx.or_const(ctx.rsh(dest.op, rhs), sign_bit),
-                    Some(ctx.neq_const(is_positive, 0)),
-                ));
-                self.output(Operation::Move(
                     dest.dest,
-                    ctx.rsh(dest.op, rhs),
-                    Some(is_positive),
+                    result,
+                    None,
                 ));
             }
             ArithOperation::RotateLeft | ArithOperation::RotateRight => {
