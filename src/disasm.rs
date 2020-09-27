@@ -1969,12 +1969,19 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 // (sign_bit == 0) - 1 is 0 if sign_bit is clear, ffff...ffff if sign_bit is set
                 let sign_bit = 1u64 << (size.bits() - 1);
                 let logical_rsh = ctx.rsh(dest.op, rhs);
-                let negative_shift_in_bits = ctx.rsh(
-                    ctx.lsh(
-                        ctx.constant((sign_bit << 1).wrapping_sub(1)),
+                let mask = (sign_bit << 1).wrapping_sub(1);
+                let negative_shift_in_bits = ctx.xor_const(
+                    ctx.rsh(
+                        ctx.and_const(
+                            ctx.lsh(
+                                ctx.constant(mask),
+                                rhs,
+                            ),
+                            mask,
+                        ),
                         rhs,
                     ),
-                    rhs,
+                    mask,
                 );
                 let sign_bit_set_mask = ctx.sub_const(
                     ctx.eq_const(
