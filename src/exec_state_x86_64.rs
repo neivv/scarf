@@ -322,6 +322,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         self.unresolved_constraint = None;
     }
 
+    #[inline]
     fn ctx(&self) -> OperandCtx<'e> {
         self.ctx
     }

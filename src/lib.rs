@@ -88,6 +88,7 @@ impl std::fmt::UpperHex for VirtualAddress64 {
 
 impl std::ops::Add<Rva> for VirtualAddress {
     type Output = VirtualAddress;
+    #[inline]
     fn add(self, rhs: Rva) -> VirtualAddress {
         self + rhs.0
     }
@@ -95,6 +96,7 @@ impl std::ops::Add<Rva> for VirtualAddress {
 
 impl std::ops::Add<Rva> for VirtualAddress64 {
     type Output = VirtualAddress64;
+    #[inline]
     fn add(self, rhs: Rva) -> VirtualAddress64 {
         self + rhs.0
     }
@@ -102,6 +104,7 @@ impl std::ops::Add<Rva> for VirtualAddress64 {
 
 impl std::ops::Add<u32> for VirtualAddress {
     type Output = VirtualAddress;
+    #[inline]
     fn add(self, rhs: u32) -> VirtualAddress {
         VirtualAddress(self.0.wrapping_add(rhs))
     }
@@ -109,6 +112,7 @@ impl std::ops::Add<u32> for VirtualAddress {
 
 impl std::ops::Add<u32> for VirtualAddress64 {
     type Output = VirtualAddress64;
+    #[inline]
     fn add(self, rhs: u32) -> VirtualAddress64 {
         VirtualAddress64(self.0.wrapping_add(rhs as u64))
     }
@@ -116,6 +120,7 @@ impl std::ops::Add<u32> for VirtualAddress64 {
 
 impl std::ops::Sub<u32> for VirtualAddress {
     type Output = VirtualAddress;
+    #[inline]
     fn sub(self, rhs: u32) -> VirtualAddress {
         VirtualAddress(self.0.wrapping_sub(rhs))
     }
@@ -123,6 +128,7 @@ impl std::ops::Sub<u32> for VirtualAddress {
 
 impl std::ops::Sub<u32> for VirtualAddress64 {
     type Output = VirtualAddress64;
+    #[inline]
     fn sub(self, rhs: u32) -> VirtualAddress64 {
         VirtualAddress64(self.0.wrapping_sub(rhs as u64))
     }
@@ -130,6 +136,7 @@ impl std::ops::Sub<u32> for VirtualAddress64 {
 
 impl std::ops::Sub<VirtualAddress> for VirtualAddress {
     type Output = Rva;
+    #[inline]
     fn sub(self, rhs: VirtualAddress) -> Rva {
         Rva(self.0 - rhs.0)
     }
@@ -137,6 +144,7 @@ impl std::ops::Sub<VirtualAddress> for VirtualAddress {
 
 impl std::ops::Sub<VirtualAddress64> for VirtualAddress64 {
     type Output = u64;
+    #[inline]
     fn sub(self, rhs: VirtualAddress64) -> u64 {
         self.0 - rhs.0
     }
@@ -144,6 +152,7 @@ impl std::ops::Sub<VirtualAddress64> for VirtualAddress64 {
 
 impl std::ops::Add<u32> for Rva {
     type Output = Rva;
+    #[inline]
     fn add(self, rhs: u32) -> Rva {
         Rva(self.0 + rhs)
     }
@@ -201,6 +210,7 @@ pub struct BinarySection<Va: exec_state::VirtualAddress> {
 }
 
 impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
+    #[inline]
     pub fn base(&self) -> Va {
         self.base
     }

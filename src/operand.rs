@@ -60,6 +60,7 @@ impl<'e> Eq for Operand<'e> { }
 
 // Short-circuit the common case of aliasing pointers
 impl<'e> PartialEq for Operand<'e> {
+    #[inline]
     fn eq(&self, other: &Operand<'e>) -> bool {
         ptr::eq(self.0, other.0)
     }
@@ -292,10 +293,12 @@ pub type OperandCtx<'e> = &'e OperandContext<'e>;
 struct OperandSelfRef(*const ());
 
 impl OperandSelfRef {
+    #[inline]
     fn new<'e>(operand: Operand<'e>) -> OperandSelfRef {
         OperandSelfRef(operand.0 as *const OperandBase<'e> as *const ())
     }
 
+    #[inline]
     unsafe fn cast<'e>(self) -> Operand<'e> {
         Operand(&*(self.0 as *const OperandBase<'e>), PhantomData)
     }
@@ -539,30 +542,37 @@ impl<'e> OperandContext<'e> {
         })
     }
 
+    #[inline]
     pub fn flag_z(&'e self) -> Operand<'e> {
         self.flag(Flag::Zero)
     }
 
+    #[inline]
     pub fn flag_c(&'e self) -> Operand<'e> {
         self.flag(Flag::Carry)
     }
 
+    #[inline]
     pub fn flag_o(&'e self) -> Operand<'e> {
         self.flag(Flag::Overflow)
     }
 
+    #[inline]
     pub fn flag_s(&'e self) -> Operand<'e> {
         self.flag(Flag::Sign)
     }
 
+    #[inline]
     pub fn flag_p(&'e self) -> Operand<'e> {
         self.flag(Flag::Parity)
     }
 
+    #[inline]
     pub fn flag_d(&'e self) -> Operand<'e> {
         self.flag(Flag::Direction)
     }
 
+    #[inline]
     pub fn flag(&'e self, flag: Flag) -> Operand<'e> {
         self.flag_by_index(flag as usize)
     }
@@ -572,6 +582,7 @@ impl<'e> OperandContext<'e> {
         unsafe { self.common_operands[0x41 + 0x10 + index as usize].cast() }
     }
 
+    #[inline]
     pub fn register(&'e self, index: u8) -> Operand<'e> {
         if index <= 0x10 {
             unsafe { self.common_operands[0x41 + index as usize].cast() }
@@ -580,6 +591,7 @@ impl<'e> OperandContext<'e> {
         }
     }
 
+    #[inline]
     pub fn register_ref(&'e self, index: u8) -> Operand<'e> {
         self.register(index)
     }
@@ -892,18 +904,22 @@ impl<'e> OperandContext<'e> {
         self.gt(left, right)
     }
 
+    #[inline]
     pub fn mem64(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem64, val)
     }
 
+    #[inline]
     pub fn mem32(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem32, val)
     }
 
+    #[inline]
     pub fn mem16(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem16, val)
     }
 
+    #[inline]
     pub fn mem8(&'e self, val: Operand<'e>) -> Operand<'e> {
         self.mem_variable_rc(MemAccessSize::Mem8, val)
     }
@@ -1306,10 +1322,12 @@ impl<'e> Operand<'e> {
         }
     }
 
+    #[inline]
     pub fn ty(self) -> &'e OperandType<'e> {
         &self.0.ty
     }
 
+    #[inline]
     pub fn hash_by_address(self) -> OperandHashByAddress<'e> {
         OperandHashByAddress(self)
     }
@@ -1392,6 +1410,7 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns true if self.ty() == OperandType::Undefined
+    #[inline]
     pub fn is_undefined(self) -> bool {
         match self.ty() {
             OperandType::Undefined(_) => true,
@@ -1400,6 +1419,7 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns true if self or any child operand is Undefined
+    #[inline]
     pub fn contains_undefined(self) -> bool {
         self.0.flags & FLAG_CONTAINS_UNDEFINED != 0
     }
@@ -1423,6 +1443,7 @@ impl<'e> Operand<'e> {
     /// End cannot be larger than 64.
     ///
     /// Can be also seen as trailing_zeros .. 64 - leading_zeros range
+    #[inline]
     pub fn relevant_bits(self) -> Range<u8> {
         self.0.relevant_bits.clone()
     }
@@ -1461,6 +1482,7 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns `Some(c)` if `self.ty` is `OperandType::Constant(c)`
+    #[inline]
     pub fn if_constant(self) -> Option<u64> {
         match *self.ty() {
             OperandType::Constant(c) => Some(c),
@@ -1469,6 +1491,7 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns `Some(c)` if `self.ty` is `OperandType::Custom(c)`
+    #[inline]
     pub fn if_custom(self) -> Option<u32> {
         match *self.ty() {
             OperandType::Custom(c) => Some(c),
@@ -1477,6 +1500,7 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns `Some(r)` if `self.ty` is `OperandType::Register(r)`
+    #[inline]
     pub fn if_register(self) -> Option<Register> {
         match *self.ty() {
             OperandType::Register(r) => Some(r),
@@ -1485,6 +1509,7 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)`
+    #[inline]
     pub fn if_memory(self) -> Option<&'e MemAccess<'e>> {
         match *self.ty() {
             OperandType::Memory(ref mem) => Some(mem),
@@ -1494,6 +1519,7 @@ impl<'e> Operand<'e> {
 
     /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem64`
+    #[inline]
     pub fn if_mem64(self) -> Option<Operand<'e>> {
         match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem64 {
@@ -1506,6 +1532,7 @@ impl<'e> Operand<'e> {
 
     /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem32`
+    #[inline]
     pub fn if_mem32(self) -> Option<Operand<'e>> {
         match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem32 {
@@ -1518,6 +1545,7 @@ impl<'e> Operand<'e> {
 
     /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem16`
+    #[inline]
     pub fn if_mem16(self) -> Option<Operand<'e>> {
         match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem16 {
@@ -1530,6 +1558,7 @@ impl<'e> Operand<'e> {
 
     /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem8`
+    #[inline]
     pub fn if_mem8(self) -> Option<Operand<'e>> {
         match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem8 {
@@ -1541,6 +1570,7 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns `Some((left, right))` if self.ty is `OperandType::Arithmetic { ty == ty }`
+    #[inline]
     pub fn if_arithmetic(
         self,
         ty: ArithOpType,
@@ -1554,6 +1584,7 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns `true` if self.ty is `OperandType::Arithmetic { ty == ty }`
+    #[inline]
     pub fn is_arithmetic(
         self,
         ty: ArithOpType,
@@ -1566,54 +1597,63 @@ impl<'e> Operand<'e> {
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Add(left, right))`
+    #[inline]
     pub fn if_arithmetic_add(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Add)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Sub(left, right))`
+    #[inline]
     pub fn if_arithmetic_sub(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Sub)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Mul(left, right))`
+    #[inline]
     pub fn if_arithmetic_mul(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Mul)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Equal(left, right))`
+    #[inline]
     pub fn if_arithmetic_eq(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Equal)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::GreaterThan(left, right))`
+    #[inline]
     pub fn if_arithmetic_gt(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::GreaterThan)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::And(left, right))`
+    #[inline]
     pub fn if_arithmetic_and(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::And)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Or(left, right))`
+    #[inline]
     pub fn if_arithmetic_or(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Or)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Lsh(left, right))`
+    #[inline]
     pub fn if_arithmetic_lsh(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Lsh)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Rsh(left, right))`
+    #[inline]
     pub fn if_arithmetic_rsh(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Rsh)
     }
@@ -1686,6 +1726,7 @@ pub enum MemAccessSize {
 }
 
 impl MemAccessSize {
+    #[inline]
     pub fn bits(self) -> u32 {
         match self {
             MemAccessSize::Mem64 => 64,

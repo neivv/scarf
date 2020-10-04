@@ -157,6 +157,7 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
         Ok(ins)
     }
 
+    #[inline]
     fn address(&self) -> VirtualAddress32 {
         self.virtual_address + self.pos as u32
     }
@@ -1120,13 +1121,6 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     false => MemAccessSize::Mem32,
                 },
             }
-        }
-    }
-
-    fn dest_and_op_register(&self, register: u8) -> DestAndOperand<'e> {
-        DestAndOperand {
-            op: self.ctx.register(register),
-            dest: DestOperand::Register64(Register(register)),
         }
     }
 
