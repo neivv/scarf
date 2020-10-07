@@ -166,11 +166,9 @@ quick_error! {
             from()
         }
         InvalidPeFile(detail: String) {
-            description("Invalid PE file")
             display("Invalid PE file ({})", detail)
         }
         InvalidFilename(filename: OsString) {
-            description("Invalid filename")
             display("Invalid filename {:?}", filename)
         }
     }

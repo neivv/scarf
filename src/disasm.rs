@@ -15,18 +15,17 @@ quick_error! {
     pub enum Error {
         // First 8 bytes of the instruction should be enough information
         UnknownOpcode(op: [u8; 8], len: u8) {
-            description("Unknown opcode")
             display("Unknown opcode {:02x?}", &op[..*len as usize])
         }
         End {
-            description("End of file")
+            display("End of file")
         }
         // The preceding instruction's operations will be given before this error.
         Branch {
-            description("Reached a branch")
+            display("Reached a branch")
         }
         InternalDecodeError {
-            description("Internal decode error")
+            display("Internal decode error")
         }
     }
 }
