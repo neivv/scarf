@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
+use std::mem;
 
 use copyless::BoxHelper;
 use quick_error::quick_error;
@@ -496,11 +497,12 @@ pub struct Control<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> {
 }
 
 struct ControlInner<'e: 'b, 'b, Exec: ExecutionState<'e> + 'b, State: AnalysisState> {
-    state: &'b mut (Exec, State),
+    state: Box<(Exec, State)>,
     analysis: &'b mut FuncAnalysis<'e, Exec, State>,
     // Set by Analyzer callback if it wants an early exit
     end: Option<End>,
     address: Exec::VirtualAddress,
+    branch_start: Exec::VirtualAddress,
     instruction_length: u8,
     skip_operation: bool,
 }
@@ -808,18 +810,29 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         analyzer: &mut A,
         disasm: &mut Exec::Disassembler,
         addr: Exec::VirtualAddress,
-        mut state: Box<(Exec, State)>,
+        state: Box<(Exec, State)>,
     ) -> Option<End> {
-        let mut inner = ControlInner {
+        // update_analysis_for_operation is a small function, which would be cleaner
+        // to inline here if it keeping it separate wasn't good for binary size
+        // (It is not generic over A).
+        // It mainly takes state (ControlInner) by ref, but on branches it will move
+        // exec state out and leave AnalysisUpdateResult::End there, which this function
+        // uses as a signal to break out of instruction loop.
+        let mut inner_wrap = AnalysisUpdateResult::Continue(ControlInner {
             analysis: self,
             address: addr,
+            branch_start: addr,
             instruction_length: 0,
             skip_operation: false,
-            state: &mut state,
+            state,
             end: None,
-        };
-        let mut control = Control {
-            inner: &mut inner,
+        });
+        let mut control = match inner_wrap {
+            AnalysisUpdateResult::Continue(ref mut inner) => Control {
+                inner,
+            },
+            // Unreachable
+            AnalysisUpdateResult::End(end) => return end,
         };
         analyzer.branch_start(&mut control);
         if control.inner.end.is_some() {
@@ -828,22 +841,17 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
         // Create CfgNode in advance to avoid some small moves.
         // state doesn't get changed after creation, other fields do.
-        let mut node = CfgNode {
+        let mut node = Some(CfgNode {
             out_edges: CfgOutEdges::None,
             end_address: Exec::VirtualAddress::from_u64(0),
             distance: 0,
             state: CfgState {
                 phantom: Default::default(),
-                data: clone_state(control.inner.state),
+                data: clone_state(&control.inner.state),
             }
-        };
-        // skip_operation from branch_start is no-op, clear the flag here
-        // if it was set by user code
-        control.inner.skip_operation = false;
-        let mut current_address;
-        let end = 'branch_loop: loop {
+        });
+        loop {
             let address = disasm.address();
-            current_address = address;
             control.inner.address = address;
             let mut instruction = disasm.next();
             let instruction = match instruction {
@@ -851,48 +859,41 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                 Err(ref mut e) => {
                     control.inner.analysis.add_error(address, e);
                     analyzer.branch_end(&mut control);
-                    break 'branch_loop control.inner.end;
+                    if let Some(mut cfg_node) = node {
+                        cfg_node.end_address = control.inner.address;
+                        control.inner.analysis.cfg.add_node(control.inner.branch_start, cfg_node);
+                    }
+                    let end = control.inner.end;
+                    return end;
                 }
             };
             control.inner.instruction_length = instruction.len() as u8;
             for op in instruction.ops() {
+                control.inner.skip_operation = false;
                 analyzer.operation(&mut control, op);
                 if control.inner.end.is_some() {
                     return control.inner.end;
                 }
                 if control.inner.skip_operation {
-                    control.inner.skip_operation = false;
                     continue;
                 }
                 match *op {
-                    disasm::Operation::Jump { condition, to } => {
+                    disasm::Operation::Jump { .. } | disasm::Operation::Return(..) => {
                         analyzer.branch_end(&mut control);
-                        let end = control.inner.end;
-                        // control goes out of scope here
-                        update_analysis_for_jump(
-                            self,
-                            state,
-                            condition,
-                            to,
-                            instruction,
-                            &mut node.out_edges,
-                        );
-                        break 'branch_loop end;
                     }
-                    disasm::Operation::Return(_) => {
-                        analyzer.branch_end(&mut control);
-                        break 'branch_loop control.inner.end;
-                    }
-                    ref o => {
-                        control.inner.state.0.update(o);
-                    }
+                    _ => (),
                 }
+                update_analysis_for_operation(&mut inner_wrap, op, &mut node);
+                control = match inner_wrap {
+                    AnalysisUpdateResult::End(end) => {
+                        return end;
+                    }
+                    AnalysisUpdateResult::Continue(ref mut inner) => Control {
+                        inner,
+                    },
+                };
             }
-        };
-        node.end_address = current_address; // Is this correct?
-        self.cfg.add_node(addr, node);
-
-        end
+        }
     }
 
     // Micro-optimization:
@@ -1136,12 +1137,75 @@ fn try_add_branch<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     }
 }
 
+enum AnalysisUpdateResult<'e: 'b, 'b, E, S>
+where E: ExecutionState<'e> + 'b,
+      S: AnalysisState,
+{
+    Continue(ControlInner<'e, 'b, E, S>),
+    End(Option<End>),
+}
+
+// A separate function to minimize binary size
+fn update_analysis_for_operation<'e: 'b, 'b, E, S>(
+    // Expected to always be AnalysisUpdateResult::Continue
+    // On end gets overwritten to AnalysisUpdateResult::End
+    control_ref: &mut AnalysisUpdateResult<'e, 'b, E, S>,
+    op: &disasm::Operation<'e>,
+    // Option so that it can be moved out of. Expected to always be Some
+    cfg_node_opt: &mut Option<CfgNode<'e, CfgState<'e, E, S>>>,
+)
+where E: ExecutionState<'e> + 'b,
+      S: AnalysisState,
+{
+    let control = match control_ref {
+        AnalysisUpdateResult::Continue(ref mut c) => c,
+        AnalysisUpdateResult::End(_) => return,
+    };
+    match op {
+        disasm::Operation::Jump { .. } | disasm::Operation::Return(..) => {
+            let cfg_node = match cfg_node_opt {
+                Some(ref mut s) => s,
+                None => return,
+            };
+            let end = control.end;
+            let control = match mem::replace(control_ref, AnalysisUpdateResult::End(end)) {
+                AnalysisUpdateResult::Continue(c) => c,
+                // Unreachable
+                AnalysisUpdateResult::End(_) => return,
+            };
+            let address = control.address;
+            if let disasm::Operation::Jump { condition, to } = *op {
+                let state = control.state;
+                update_analysis_for_jump(
+                    control.analysis,
+                    state,
+                    condition,
+                    to,
+                    address,
+                    u32::from(control.instruction_length),
+                    &mut cfg_node.out_edges,
+                );
+            } else {
+                drop(control.state);
+            }
+            cfg_node.end_address = address;
+            if let Some(cfg_node) = cfg_node_opt.take() {
+                control.analysis.cfg.add_node(control.branch_start, cfg_node);
+            }
+        }
+        o => {
+            control.state.0.update(o);
+        }
+    }
+}
+
 fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     analysis: &mut FuncAnalysis<'e, Exec, S>,
     mut state: Box<(Exec, S)>,
     condition: Operand<'e>,
     to: Operand<'e>,
-    instruction: &disasm::Instruction<'_, 'e, Exec::VirtualAddress>,
+    address: Exec::VirtualAddress,
+    instruction_len: u32,
     cfg_out_edge: &mut CfgOutEdges<'e, Exec::VirtualAddress>,
 ) {
     /// Returns address of the table,
@@ -1215,8 +1279,6 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
             })
     }
 
-    let address = instruction.address();
-    let instruction_len = instruction.len();
     state.0.maybe_convert_memory_immutable(16);
     match state.0.resolve_apply_constraints(condition).if_constant() {
         Some(0) => {
