@@ -524,10 +524,6 @@ impl<'e> ExecutionState<'e> {
                 }
                 self.state[FLAGS_INDEX + Flag::Direction as usize] = ctx.const_0();
             }
-            Operation::Jump { .. } => {
-            }
-            Operation::Return(_) => {
-            }
             Operation::Special(_) => {
             }
             Operation::SetFlags(ref arith, size) => {
@@ -543,6 +539,7 @@ impl<'e> ExecutionState<'e> {
                 // constraints always are bunch of flags, invalidate it completely.
                 self.unresolved_constraint = None;
             }
+            Operation::Jump { .. } | Operation::Return(_) | Operation::Error(..) => (),
         }
     }
 

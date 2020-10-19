@@ -3,25 +3,14 @@ use std::convert::TryFrom;
 use std::mem;
 
 use copyless::BoxHelper;
-use quick_error::quick_error;
 
 use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
-use crate::disasm::{self, Operation};
+use crate::disasm::{Operation};
 use crate::exec_state::{self, Disassembler, ExecutionState, MergeStateCache};
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{MemAccessSize, Operand, OperandCtx};
 use crate::{BinaryFile, BinarySection, VirtualAddress, VirtualAddress64};
-
-quick_error! {
-    #[derive(Debug)]
-    pub enum Error {
-        Disasm(e: disasm::Error) {
-            display("Disassembly error: {}", e)
-            from()
-        }
-    }
-}
 
 pub type Cfg<'a, E, S> = cfg::Cfg<'a, CfgState<'a, E, S>>;
 
@@ -487,8 +476,6 @@ pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     more_unchecked_branches: BTreeMap<Exec::VirtualAddress, Box<(Exec, State)>>,
     current_branch: Exec::VirtualAddress,
     operand_ctx: OperandCtx<'a>,
-    /// (Func, arg1, arg2)
-    pub errors: Vec<(Exec::VirtualAddress, Error)>,
     merge_state_cache: MergeStateCache<'a>,
 }
 
@@ -674,7 +661,6 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
     ) -> FuncAnalysis<'a, Exec, DefaultState> {
         FuncAnalysis {
             binary,
-            errors: Vec::new(),
             cfg: Cfg::new(),
             unchecked_branches: {
                 let user_state = DefaultState::default();
@@ -699,7 +685,6 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
     ) -> FuncAnalysis<'a, Exec, DefaultState> {
         FuncAnalysis {
             binary,
-            errors: Vec::new(),
             cfg: Cfg::new(),
             unchecked_branches: {
                 let mut map = BTreeMap::new();
@@ -736,7 +721,6 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     ) -> FuncAnalysis<'a, Exec, State> {
         FuncAnalysis {
             binary,
-            errors: Vec::new(),
             cfg: Cfg::new(),
             unchecked_branches: {
                 let mut map = BTreeMap::new();
@@ -853,20 +837,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         loop {
             let address = disasm.address();
             control.inner.address = address;
-            let mut instruction = disasm.next();
-            let instruction = match instruction {
-                Ok(ref o) => o,
-                Err(ref mut e) => {
-                    control.inner.analysis.add_error(address, e);
-                    analyzer.branch_end(&mut control);
-                    if let Some(mut cfg_node) = node {
-                        cfg_node.end_address = control.inner.address;
-                        control.inner.analysis.cfg.add_node(control.inner.branch_start, cfg_node);
-                    }
-                    let end = control.inner.end;
-                    return end;
-                }
-            };
+            let instruction = disasm.next();
             control.inner.instruction_length = instruction.len() as u8;
             for op in instruction.ops() {
                 control.inner.skip_operation = false;
@@ -878,7 +849,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                     continue;
                 }
                 match *op {
-                    disasm::Operation::Jump { .. } | disasm::Operation::Return(..) => {
+                    Operation::Jump { .. } | Operation::Return(..) | Operation::Error(..) => {
                         analyzer.branch_end(&mut control);
                     }
                     _ => (),
@@ -894,14 +865,6 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                 };
             }
         }
-    }
-
-    // Micro-optimization:
-    // Take error as reference so that the caller side doesn't have to move out of Result.
-    #[cold]
-    fn add_error(&mut self, address: Exec::VirtualAddress, error: &mut disasm::Error) {
-        let error = std::mem::replace(error, disasm::Error::End);
-        self.errors.push((address, error.into()));
     }
 
     fn add_unchecked_branch(
@@ -942,7 +905,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         Some((addr, state))
     }
 
-    pub fn finish(self) -> (Cfg<'a, Exec, State>, Vec<(Exec::VirtualAddress, Error)>) {
+    pub fn finish(self) -> Cfg<'a, Exec, State> {
         self.finish_with_changes(|_, _, _| {})
     }
 
@@ -950,7 +913,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     pub fn finish_with_changes<F>(
         mut self,
         mut hook: F
-    ) -> (Cfg<'a, Exec, State>, Vec<(Exec::VirtualAddress, Error)>)
+    ) -> Cfg<'a, Exec, State>
     where F: FnMut(
         &Operation<'a>,
         &mut Exec,
@@ -977,7 +940,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             analysis.analyze(&mut analyzer);
             analyzer.result
         });
-        (cfg, self.errors)
+        cfg
     }
 }
 
@@ -1035,7 +998,7 @@ where F: FnMut(&Operation<'e>, &mut Exec, Exec::VirtualAddress)
             true
         } else {
             match *op {
-                Operation::Jump { .. } | Operation::Return(_) => true,
+                Operation::Jump { .. } | Operation::Return(_) | Operation::Error(_) => true,
                 _ => false,
             }
         };
@@ -1074,7 +1037,7 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
 
     fn operation(&mut self, control: &mut Control<'exec, '_, '_, Self>, op: &Operation<'exec>) {
         self.inner.operation(&mut control.cast(), op);
-        if let disasm::Operation::Return(_) = op {
+        if let Operation::Return(_) = op {
             match self.state {
                 Some(ref mut state) => {
                     let new = control.exec_state();
@@ -1150,7 +1113,7 @@ fn update_analysis_for_operation<'e: 'b, 'b, E, S>(
     // Expected to always be AnalysisUpdateResult::Continue
     // On end gets overwritten to AnalysisUpdateResult::End
     control_ref: &mut AnalysisUpdateResult<'e, 'b, E, S>,
-    op: &disasm::Operation<'e>,
+    op: &Operation<'e>,
     // Option so that it can be moved out of. Expected to always be Some
     cfg_node_opt: &mut Option<CfgNode<'e, CfgState<'e, E, S>>>,
 )
@@ -1162,7 +1125,7 @@ where E: ExecutionState<'e> + 'b,
         AnalysisUpdateResult::End(_) => return,
     };
     match op {
-        disasm::Operation::Jump { .. } | disasm::Operation::Return(..) => {
+        Operation::Jump { .. } | Operation::Return(..) | Operation::Error(..) => {
             let cfg_node = match cfg_node_opt {
                 Some(ref mut s) => s,
                 None => return,
@@ -1174,7 +1137,7 @@ where E: ExecutionState<'e> + 'b,
                 AnalysisUpdateResult::End(_) => return,
             };
             let address = control.address;
-            if let disasm::Operation::Jump { condition, to } = *op {
+            if let Operation::Jump { condition, to } = *op {
                 let state = control.state;
                 update_analysis_for_jump(
                     control.analysis,

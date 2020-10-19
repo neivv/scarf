@@ -11,7 +11,7 @@ use crate::VirtualAddress64;
 
 quick_error! {
     // NOTE: Try avoid making this have a destructor
-    #[derive(Debug)]
+    #[derive(Debug, Copy, Clone)]
     pub enum Error {
         // First 8 bytes of the instruction should be enough information
         UnknownOpcode(op: [u8; 8], len: u8) {
@@ -19,10 +19,6 @@ quick_error! {
         }
         End {
             display("End of file")
-        }
-        // The preceding instruction's operations will be given before this error.
-        Branch {
-            display("Reached a branch")
         }
         InternalDecodeError {
             display("Internal decode error")
@@ -41,7 +37,6 @@ pub struct Disassembler32<'e> {
     buf: &'e [u8],
     pos: usize,
     virtual_address: VirtualAddress32,
-    is_branching: bool,
     register_cache: RegisterCache<'e>,
     ops_buffer: Vec<Operation<'e>>,
     ctx: OperandCtx<'e>,
@@ -102,7 +97,6 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
             buf: &[],
             pos: 0,
             virtual_address: VirtualAddress32(0),
-            is_branching: false,
             register_cache: RegisterCache::new(ctx, false),
             ops_buffer: Vec::with_capacity(16),
             ctx,
@@ -114,46 +108,36 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
         self.buf = buf;
         self.pos = pos;
         self.virtual_address = address;
-        self.is_branching = false;
     }
 
-    fn next<'s>(&'s mut self) -> Result<Instruction<'s, 'a, VirtualAddress32>, Error> {
-        if self.is_branching {
-            return Err(Error::Branch);
-        }
+    fn next<'s>(&'s mut self) -> Instruction<'s, 'a, VirtualAddress32> {
         let length = instruction_length_32(&self.buf[self.pos..]);
+        let address = self.virtual_address + self.pos as u32;
+        self.ops_buffer.clear();
         if length == 0 {
             if self.pos == self.buf.len() {
-                return Err(Error::End);
+                self.ops_buffer.push(Operation::Error(Error::End));
             } else {
                 let mut bytes = [0u8; 8];
                 bytes[0] = self.buf[self.pos];
-                return Err(Error::UnknownOpcode(bytes, 1));
+                self.ops_buffer.push(Operation::Error(Error::UnknownOpcode(bytes, 1)));
             }
+        } else {
+            let data = &self.buf[self.pos..self.pos + length];
+            instruction_operations32(
+                address,
+                data,
+                self.ctx,
+                &mut self.ops_buffer,
+                &mut self.register_cache,
+            );
         }
-        let address = self.virtual_address + self.pos as u32;
-        let data = &self.buf[self.pos..self.pos + length];
-        self.ops_buffer.clear();
-        instruction_operations32(
-            address,
-            data,
-            self.ctx,
-            &mut self.ops_buffer,
-            &mut self.register_cache,
-        )?;
-        let ins = Instruction {
+        self.pos += length;
+        Instruction {
             address,
             ops: &self.ops_buffer,
             length: length as u32,
-        };
-        if ins.is_finishing() {
-            self.is_branching = true;
-            self.buf = &self.buf[..self.pos + length];
-            self.pos = self.buf.len();
-        } else {
-            self.pos += length;
         }
-        Ok(ins)
     }
 
     #[inline]
@@ -166,7 +150,6 @@ pub struct Disassembler64<'e> {
     buf: &'e [u8],
     pos: usize,
     virtual_address: VirtualAddress64,
-    is_branching: bool,
     register_cache: RegisterCache<'e>,
     ops_buffer: Vec<Operation<'e>>,
     ctx: OperandCtx<'e>,
@@ -183,7 +166,6 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
             buf: &[],
             pos: 0,
             virtual_address: VirtualAddress64(0),
-            is_branching: false,
             register_cache: RegisterCache::new(ctx, true),
             ops_buffer: Vec::with_capacity(16),
             ctx,
@@ -195,46 +177,36 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
         self.buf = buf;
         self.pos = pos;
         self.virtual_address = address;
-        self.is_branching = false;
     }
 
-    fn next<'s>(&'s mut self) -> Result<Instruction<'s, 'a, VirtualAddress64>, Error> {
-        if self.is_branching {
-            return Err(Error::Branch);
-        }
+    fn next<'s>(&'s mut self) -> Instruction<'s, 'a, VirtualAddress64> {
         let length = instruction_length_64(&self.buf[self.pos..]);
+        let address = self.virtual_address + self.pos as u32;
+        self.ops_buffer.clear();
         if length == 0 {
             if self.pos == self.buf.len() {
-                return Err(Error::End);
+                self.ops_buffer.push(Operation::Error(Error::End));
             } else {
                 let mut bytes = [0u8; 8];
                 bytes[0] = self.buf[self.pos];
-                return Err(Error::UnknownOpcode(bytes, 1));
+                self.ops_buffer.push(Operation::Error(Error::UnknownOpcode(bytes, 1)));
             }
+        } else {
+            let data = &self.buf[self.pos..self.pos + length];
+            instruction_operations64(
+                address,
+                data,
+                self.ctx,
+                &mut self.ops_buffer,
+                &mut self.register_cache,
+            );
         }
-        let address = self.virtual_address + self.pos as u32;
-        let data = &self.buf[self.pos..self.pos + length];
-        self.ops_buffer.clear();
-        instruction_operations64(
-            address,
-            data,
-            self.ctx,
-            &mut self.ops_buffer,
-            &mut self.register_cache,
-        )?;
-        let ins = Instruction {
+        self.pos += length;
+        Instruction {
             address,
             ops: &self.ops_buffer,
             length: length as u32,
-        };
-        if ins.is_finishing() {
-            self.is_branching = true;
-            self.buf = &self.buf[..self.pos + length];
-            self.pos = self.buf.len();
-        } else {
-            self.pos += length;
         }
-        Ok(ins)
     }
 
     fn address(&self) -> VirtualAddress64 {
@@ -259,14 +231,6 @@ impl<'a, 'e, Va: VirtualAddress> Instruction<'a, 'e, Va> {
 
     pub fn len(&self) -> u32 {
         self.length
-    }
-
-    fn is_finishing(&self) -> bool {
-        self.ops().iter().any(|op| match *op {
-            Operation::Jump { .. } => true,
-            Operation::Return(..) => true,
-            _ => false,
-        })
     }
 }
 
@@ -362,7 +326,7 @@ fn instruction_operations32<'e>(
     ctx: OperandCtx<'e>,
     out: &mut OperationVec<'e>,
     register_cache: &mut RegisterCache<'e>,
-) -> Result<(), Error> {
+) {
     let is_prefix_byte = |byte| match byte {
         0x64 => true, // TODO fs segment is not handled
         0x65 => true, // TODO gs segment is not handled
@@ -413,18 +377,17 @@ fn instruction_operations32<'e>(
     };
     let result = instruction_operations32_main(&mut s);
     if let Err(Failed) = result {
-        if s.error_is_decode_error {
-            Err(Error::InternalDecodeError)
+        let error = if s.error_is_decode_error {
+            Operation::Error(Error::InternalDecodeError)
         } else {
             let mut bytes = [0u8; 8];
             let len = full_data.len().min(bytes.len());
             for (out, &val) in bytes.iter_mut().zip(full_data.iter()) {
                 *out = val;
             }
-            Err(Error::UnknownOpcode(bytes, len as u8))
-        }
-    } else {
-        Ok(())
+            Operation::Error(Error::UnknownOpcode(bytes, len as u8))
+        };
+        out.push(error);
     }
 }
 
@@ -660,7 +623,7 @@ fn instruction_operations64<'e>(
     ctx: OperandCtx<'e>,
     out: &mut OperationVec<'e>,
     register_cache: &mut RegisterCache<'e>,
-) -> Result<(), Error> {
+) {
     let is_prefix_byte = |byte| match byte {
         0x40 ..= 0x4f => true,
         0x64 => true, // TODO fs segment is not handled
@@ -713,18 +676,17 @@ fn instruction_operations64<'e>(
     };
     let result = instruction_operations64_main(&mut s);
     if let Err(Failed) = result {
-        if s.error_is_decode_error {
-            Err(Error::InternalDecodeError)
+        let error = if s.error_is_decode_error {
+            Operation::Error(Error::InternalDecodeError)
         } else {
             let mut bytes = [0u8; 8];
             let len = full_data.len().min(bytes.len());
             for (out, &val) in bytes.iter_mut().zip(full_data.iter()) {
                 *out = val;
             }
-            Err(Error::UnknownOpcode(bytes, len as u8))
-        }
-    } else {
-        Ok(())
+            Operation::Error(Error::UnknownOpcode(bytes, len as u8))
+        };
+        out.push(error);
     }
 }
 
@@ -3493,7 +3455,7 @@ pub mod operation_helpers {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Operation<'e> {
     Move(DestOperand<'e>, Operand<'e>, Option<Operand<'e>>),
     Call(Operand<'e>),
@@ -3509,6 +3471,8 @@ pub enum Operation<'e> {
     /// Like Move, but evaluate all operands before assigning over any.
     /// Used for mul/div/swap.
     MoveSet(Vec<(DestOperand<'e>, Operand<'e>)>),
+    /// Error - Should assume that no more operations can be decoded from current position.
+    Error(Error),
 }
 
 /// Operations which operate on 2 operands, (almost always) writing to lhs.
@@ -3669,7 +3633,7 @@ impl<'e> Clone for DestAndOperand<'e> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DestOperand<'e> {
     Register64(Register),
     Register32(Register),
@@ -3779,12 +3743,13 @@ mod test {
         let buf = [0x66, 0xc7, 0x47, 0x62, 0x00, 0x20];
         let mut disasm = Disassembler32::new(ctx);
         disasm.set_pos(&buf[..], 0, VirtualAddress(0));
-        let ins = disasm.next().unwrap();
+        let ins = disasm.next();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
         let dest = ctx.mem16(ctx.add_const(ctx.register(0x7), 0x62));
 
-        assert_eq!(*op, Operation::Move(dest_operand(dest), ctx.constant(0x2000), None));
+        assert!(matches!(*op, Operation::Move(a, b, None) if
+                a == dest_operand(dest) && b == ctx.constant(0x2000)));
     }
 
     #[test]
@@ -3795,7 +3760,7 @@ mod test {
         let buf = [0x89, 0x84, 0xb5, 0x18, 0xeb, 0xff, 0xff];
         let mut disasm = Disassembler32::new(ctx);
         disasm.set_pos(&buf[..], 0, VirtualAddress(0));
-        let ins = disasm.next().unwrap();
+        let ins = disasm.next();
         assert_eq!(ins.ops().len(), 1);
         let op = &ins.ops()[0];
         let dest = ctx.mem32(

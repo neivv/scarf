@@ -7,7 +7,7 @@ use std::rc::Rc;
 use fxhash::FxBuildHasher;
 
 use crate::analysis;
-use crate::disasm::{self, DestOperand, Instruction, Operation};
+use crate::disasm::{DestOperand, Instruction, Operation};
 use crate::operand::{
     ArithOpType, ArithOperand, Operand, OperandType, OperandCtx, OperandHashByAddress,
     MemAccessSize,
@@ -495,8 +495,7 @@ pub trait Disassembler<'e> {
         pos: usize,
         address: Self::VirtualAddress,
     );
-    fn next<'s>(&'s mut self) ->
-        Result<Instruction<'s, 'e, Self::VirtualAddress>, disasm::Error>;
+    fn next<'s>(&'s mut self) -> Instruction<'s, 'e, Self::VirtualAddress>;
     fn address(&self) -> Self::VirtualAddress;
 }
 

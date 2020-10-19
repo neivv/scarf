@@ -4,13 +4,12 @@ extern crate scarf;
 mod helpers;
 
 use std::ffi::OsStr;
+
 use byteorder::{ReadBytesExt, LittleEndian};
 
-use scarf::analysis;
+use scarf::analysis::{self, Control};
 use scarf::cfg::CfgOutEdges;
-use scarf::{
-    BinaryFile, VirtualAddress
-};
+use scarf::{BinaryFile, Operation, VirtualAddress};
 
 type Analysis<'a> =
     analysis::FuncAnalysis<'a, scarf::ExecutionStateX86<'a>, analysis::DefaultState>;
@@ -19,10 +18,10 @@ type Analysis<'a> =
 fn switch_cfg() {
     let (binary, func) = load_test(0);
     let ctx = scarf::operand::OperandContext::new();
-    let analysis = Analysis::new(&binary, &ctx, func);
-    let (mut cfg, errors) = analysis.finish();
+    let mut analysis = Analysis::new(&binary, &ctx, func);
+    analysis.analyze(&mut FailOnError);
+    let mut cfg = analysis.finish();
     cfg.calculate_distances();
-    assert!(errors.is_empty());
     for node in cfg.nodes() {
         println!("Node {:#?}", node);
     }
@@ -40,9 +39,9 @@ fn switch_cfg() {
 fn undecideable() {
     let (binary, func) = load_test(1);
     let ctx = &scarf::operand::OperandContext::new();
-    let analysis = Analysis::new(&binary, ctx, func);
-    let (mut cfg, errors) = analysis.finish();
-    assert!(errors.is_empty());
+    let mut analysis = Analysis::new(&binary, ctx, func);
+    analysis.analyze(&mut FailOnError);
+    let mut cfg = analysis.finish();
 
     let mut dummy = Vec::new();
     scarf::cfg_dot::write(ctx, &mut cfg, &mut dummy).unwrap();
@@ -51,14 +50,11 @@ fn undecideable() {
 #[test]
 fn switch_but_constant_case() {
     let (binary, func) = load_test(2);
-    let ctx = scarf::operand::OperandContext::new();
-    let analysis = Analysis::new(&binary, &ctx, func);
-    let (mut cfg, errors) = analysis.finish();
+    let ctx = &scarf::operand::OperandContext::new();
+    let mut analysis = Analysis::new(&binary, ctx, func);
+    analysis.analyze(&mut FailOnError);
+    let mut cfg = analysis.finish();
     cfg.calculate_distances();
-    for e in &errors {
-        println!("Error: {:#?}", e);
-    }
-    assert!(errors.is_empty());
     for node in cfg.nodes() {
         println!("Node {:?}", node);
     }
@@ -80,4 +76,16 @@ fn load_test(idx: usize) -> (BinaryFile<VirtualAddress>, VirtualAddress) {
     let switch_table_addr = code_section.virtual_address + (code_section.virtual_size - 5 * 4);
     binary.set_relocs((0..5).map(|i| switch_table_addr + i * 4).collect());
     (binary, func)
+}
+
+struct FailOnError;
+
+impl<'e> analysis::Analyzer<'e> for FailOnError {
+    type State = analysis::DefaultState;
+    type Exec = scarf::ExecutionStateX86<'e>;
+    fn operation(&mut self, _control: &mut Control<'e, '_, '_, Self>, op: &Operation<'e>) {
+        if let Operation::Error(e) = *op {
+            panic!("Disassembly error {}", e);
+        }
+    }
 }

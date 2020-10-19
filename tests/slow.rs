@@ -2,7 +2,8 @@ mod helpers;
 
 use std::ffi::OsStr;
 
-use scarf::analysis;
+use scarf::analysis::{self, Control};
+use scarf::Operation;
 
 use byteorder::{ReadBytesExt, LittleEndian};
 
@@ -35,12 +36,22 @@ struct DummyAnalyzer;
 impl<'e> analysis::Analyzer<'e> for DummyAnalyzer {
     type State = analysis::DefaultState;
     type Exec = scarf::ExecutionStateX86<'e>;
+    fn operation(&mut self, _control: &mut Control<'e, '_, '_, Self>, op: &Operation<'e>) {
+        if let Operation::Error(e) = *op {
+            panic!("Disassembly error {}", e);
+        }
+    }
 }
 
 struct DummyAnalyzer64;
 impl<'e> analysis::Analyzer<'e> for DummyAnalyzer64 {
     type State = analysis::DefaultState;
     type Exec = scarf::ExecutionStateX86_64<'e>;
+    fn operation(&mut self, _control: &mut Control<'e, '_, '_, Self>, op: &Operation<'e>) {
+        if let Operation::Error(e) = *op {
+            panic!("Disassembly error {}", e);
+        }
+    }
 }
 
 fn test(idx: usize) {
@@ -50,7 +61,6 @@ fn test(idx: usize) {
     let ctx = scarf::operand::OperandContext::new();
     let mut analysis = analysis::FuncAnalysis::new(&binary, &ctx, func);
     analysis.analyze(&mut DummyAnalyzer);
-    assert!(analysis.errors.is_empty(), "Had errors: {:#?}", analysis.errors);
 }
 
 fn test64(idx: usize) {
@@ -60,5 +70,4 @@ fn test64(idx: usize) {
     let ctx = scarf::operand::OperandContext::new();
     let mut analysis = analysis::FuncAnalysis::new(&binary, &ctx, func);
     analysis.analyze(&mut DummyAnalyzer64);
-    assert!(analysis.errors.is_empty(), "Had errors: {:#?}", analysis.errors);
 }

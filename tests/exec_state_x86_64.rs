@@ -626,6 +626,9 @@ impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
     type Exec = ExecutionState<'e>;
     fn operation(&mut self, control: &mut Control<'e, '_, '_, Self>, op: &Operation<'e>) {
         println!("@ {:x} {:#?}", control.address(), op);
+        if let Operation::Error(e) = *op {
+            panic!("Disassembly error {}", e);
+        }
         if let Operation::Move(_, val, _) = *op {
             println!("Resolved is {}", control.resolve(val));
         }
@@ -661,8 +664,6 @@ fn test_inner<'e, 'b>(
     };
     analysis.analyze(&mut collect_end_state);
 
-    println!("{:?}", analysis.errors);
-    assert!(analysis.errors.is_empty());
     let mut end_state = collect_end_state.end_state.unwrap();
     for i in 0..16 {
         let expected = expected_state.resolve(ctx.register(i));
