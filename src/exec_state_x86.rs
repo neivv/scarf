@@ -204,6 +204,32 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         }
         result
     }
+
+    unsafe fn clone_to(&self, out: *mut Self) {
+        use std::ptr::write;
+        let Self {
+            memory,
+            cached_low_registers,
+            xmm_fpu,
+            state,
+            resolved_constraint,
+            unresolved_constraint,
+            memory_constraint,
+            ctx,
+            binary,
+            pending_flags,
+        } = self;
+        write(&mut (*out).memory, memory.clone());
+        write(&mut (*out).cached_low_registers, cached_low_registers.clone());
+        write(&mut (*out).xmm_fpu, xmm_fpu.clone());
+        write(&mut (*out).state, *state);
+        write(&mut (*out).resolved_constraint, *resolved_constraint);
+        write(&mut (*out).unresolved_constraint, *unresolved_constraint);
+        write(&mut (*out).memory_constraint, *memory_constraint);
+        write(&mut (*out).ctx, *ctx);
+        write(&mut (*out).binary, *binary);
+        write(&mut (*out).pending_flags, *pending_flags);
+    }
 }
 
 const FPU_REGISTER_INDEX: usize = 0;

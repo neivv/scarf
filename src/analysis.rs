@@ -946,17 +946,33 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
 /// Meant for cloning and boxing &(ExecutionState, AnalysisState)
 ///
-/// Does a big stack allocation that is immediately boxed.
-/// Having this be a separate function so that it can be shared between compatible
-/// generic instantations to save some binary size.
-/// And avoids having the parent function having to allocate ~300 extra stack bytes just
-/// for this clone (Though LLVM could likely reuse the space?)
-fn clone_state<A: Clone, B: Clone>(val: &(A, B)) -> Box<(A, B)> {
-    // This actually still has a memcpy of exec state,
-    // from constructing the tuple :(
-    // Would probably need Box<MaybeUninit<T>> and a clone_to(&self, *mut T) func.
-    let alloc = Box::alloc();
-    alloc.init(val.clone())
+/// Avoids any stack allocations/copies by using E::clone_to with Box<MaybeUninit<(A, B)>>.
+fn clone_state<'e, A: Clone + ExecutionState<'e>, B: Clone>(val: &(A, B)) -> Box<(A, B)> {
+    clone_state_separate(&val.0, &val.1)
+}
+
+fn clone_state_separate<'e, A: Clone + ExecutionState<'e>, B: Clone>(
+    exec: &A,
+    rest: &B,
+) -> Box<(A, B)> {
+    use std::alloc;
+    use std::mem::MaybeUninit;
+
+    fn box_new_uninit<T>() -> Box<MaybeUninit<T>> {
+        let layout = alloc::Layout::new::<MaybeUninit<T>>();
+        unsafe {
+            let ptr = alloc::alloc(layout);
+            Box::from_raw(ptr as *mut MaybeUninit<T>)
+        }
+    }
+
+    let mut boxed = box_new_uninit::<(A, B)>();
+    let out = boxed.as_mut_ptr();
+    unsafe {
+        exec.clone_to(&mut (*out).0);
+        std::ptr::write(&mut (*out).1, rest.clone());
+        Box::from_raw(Box::into_raw(boxed) as *mut (A, B))
+    }
 }
 
 struct RunHookAnalyzer<'e, F, Exec: ExecutionState<'e>, S: AnalysisState> {
@@ -1052,10 +1068,9 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
                     }
                 }
                 None => {
-                    let alloc = Box::alloc();
-                    let user = control.user_state().clone();
-                    let exec = control.exec_state().clone();
-                    self.state = Some(alloc.init((exec, user)));
+                    let exec = &control.inner.state.0;
+                    let user = &control.inner.state.1;
+                    self.state = Some(clone_state_separate(exec, user));
                 }
             }
         }

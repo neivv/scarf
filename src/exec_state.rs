@@ -184,6 +184,12 @@ pub trait ExecutionState<'e> : Clone + 'e {
     ) -> Result<Vec<Self::VirtualAddress>, crate::OutOfBounds> {
         Ok(Vec::new())
     }
+
+    /// Equivalent to `out.write(self.clone())`, but may leave `out` partially
+    /// overwritten if it panics.
+    ///
+    /// Useful for avoiding unnecessary memcpys.
+    unsafe fn clone_to(&self, out: *mut Self);
 }
 
 /// Either `scarf::VirtualAddress` in 32-bit or `scarf::VirtualAddress64` in 64-bit
