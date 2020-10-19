@@ -763,16 +763,26 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         None
     }
 
+    fn pop_next_branch_and_set_disasm(
+        &mut self,
+        disasm: &mut Exec::Disassembler,
+    ) -> Option<(Exec::VirtualAddress, Box<(Exec, State)>)> {
+        while let Some((addr, state)) = self.pop_next_branch_merge_with_cfg() {
+            if self.disasm_set_pos(disasm, addr).is_ok() {
+                return Some((addr, state));
+            }
+        }
+        None
+    }
+
     pub fn analyze<A: Analyzer<'a, State = State, Exec = Exec>>(&mut self, analyzer: &mut A) {
         let mut disasm = Exec::Disassembler::new(self.operand_ctx);
 
-        while let Some((addr, state)) = self.pop_next_branch_merge_with_cfg() {
-            if let Ok(()) = self.disasm_set_pos(&mut disasm, addr) {
-                self.current_branch = addr;
-                let end = self.analyze_branch(analyzer, &mut disasm, addr, state);
-                if end == Some(End::Function) {
-                    break;
-                }
+        while let Some((addr, state)) = self.pop_next_branch_and_set_disasm(&mut disasm) {
+            self.current_branch = addr;
+            let end = self.analyze_branch(analyzer, &mut disasm, addr, state);
+            if end == Some(End::Function) {
+                break;
             }
         }
     }
