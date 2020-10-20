@@ -589,7 +589,7 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         let mut analyzer = CollectReturnsAnalyzer::new(analyzer);
         analysis.analyze(&mut analyzer);
         if let Some(state) = analyzer.state {
-            *inner.state = *state;
+            inner.state = state;
         }
     }
 
