@@ -12,6 +12,8 @@ use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{MemAccessSize, Operand, OperandCtx};
 use crate::{BinaryFile, BinarySection, VirtualAddress, VirtualAddress64};
 
+pub use crate::disasm::Error;
+
 pub type Cfg<'a, E, S> = cfg::Cfg<'a, CfgState<'a, E, S>>;
 
 #[derive(Debug)]
