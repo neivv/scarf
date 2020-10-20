@@ -48,7 +48,8 @@ impl<'e> Interner<'e> {
                 RawEntryMut::Occupied(e) => e.key().transmute_operand_lifetime(),
                 RawEntryMut::Vacant(e) => {
                     let relevant_bits = ty.calculate_relevant_bits();
-                    let min_zero_bit_simplify_size = ty.min_zero_bit_simplify_size();
+                    let min_zero_bit_simplify_size =
+                        ty.min_zero_bit_simplify_size(relevant_bits.clone());
                     let flags = ty.flags();
                     let base = OperandBase {
                         ty,

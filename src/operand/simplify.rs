@@ -259,20 +259,13 @@ pub fn simplify_sign_extend<'e>(
     // Shouldn't be 64bit constant since then `from` would already be Mem64
     // Obviously such thing could be built, but assuming disasm/users don't..
     if let Some(val) = val.if_constant() {
-        let (ext, mask) = match from {
-            MemAccessSize::Mem8 => (val & 0x80 != 0, 0xff),
-            MemAccessSize::Mem16 => (val & 0x8000 != 0, 0xffff),
-            MemAccessSize::Mem32 | _ => (val & 0x8000_0000 != 0, 0xffff_ffff),
-        };
+        let mask = from.mask();
+        let sign = (mask >> 1).wrapping_add(1);
+        let ext = val & sign != 0;
         let val = val & mask;
         if ext {
-            let new = match to {
-                MemAccessSize::Mem16 => (0xffff & !mask) | val as u64,
-                MemAccessSize::Mem32 => (0xffff_ffff & !mask) | val as u64,
-                MemAccessSize::Mem64 | _ => {
-                    (0xffff_ffff_ffff_ffff & !mask) | val as u64
-                }
-            };
+            let to_mask = to.mask();
+            let new = (to_mask & !mask) | val;
             ctx.constant(new)
         } else {
             ctx.constant(val)
@@ -2656,12 +2649,7 @@ fn simplify_or_merge_child_ands<'e>(
             OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
                 arith.right.if_constant().map(|c| (c, arith.left))
             }
-            OperandType::Memory(mem) => match mem.size {
-                MemAccessSize::Mem8 => Some((0xff, op)),
-                MemAccessSize::Mem16 => Some((0xffff, op)),
-                MemAccessSize::Mem32 => Some((0xffff_ffff, op)),
-                MemAccessSize::Mem64 => Some((0xffff_ffff_ffff_ffff, op)),
-            }
+            OperandType::Memory(mem) => Some((mem.size.mask(), op)),
             _ => {
                 let bits = op.relevant_bits();
                 if bits != (0..64) && bits.start < bits.end {
@@ -3076,13 +3064,7 @@ fn is_offset_mem<'e>(
             None
         }
         OperandType::Memory(ref mem) => {
-            let len = match mem.size {
-                MemAccessSize::Mem64 => 8,
-                MemAccessSize::Mem32 => 4,
-                MemAccessSize::Mem16 => 2,
-                MemAccessSize::Mem8 => 1,
-            };
-
+            let len = mem.size.bits() / 8;
             Some(
                 Operand::const_offset(mem.address, ctx)
                     .map(|(val, off)| (val, (off, len, 0)))
@@ -4044,12 +4026,7 @@ fn simplify_with_and_mask_inner<'e>(
             }
         }
         OperandType::Memory(ref mem) => {
-            let mask = match mem.size {
-                MemAccessSize::Mem8 => mask & 0xff,
-                MemAccessSize::Mem16 => mask & 0xffff,
-                MemAccessSize::Mem32 => mask & 0xffff_ffff,
-                MemAccessSize::Mem64 => mask,
-            };
+            let mask = mem.size.mask() & mask;
             // Try to do conversions such as Mem32[x] & 00ff_ff00 => Mem16[x + 1] << 8,
             // but also Mem32[x] & 003f_5900 => (Mem16[x + 1] & 3f59) << 8.
 
@@ -4091,13 +4068,8 @@ fn simplify_with_and_mask_inner<'e>(
             op
         }
         OperandType::SignExtend(val, from, _) => {
-            let from_mask = match from {
-                MemAccessSize::Mem8 => 0xffu32,
-                MemAccessSize::Mem16 => 0xffff,
-                MemAccessSize::Mem32 => 0xffff_ffff,
-                MemAccessSize::Mem64 => return val,
-            };
-            if from_mask as u64 & mask == mask {
+            let from_mask = from.mask();
+            if from_mask & mask == mask {
                 ctx.and_const(val, mask)
             } else {
                 op

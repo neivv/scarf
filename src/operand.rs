@@ -1089,7 +1089,10 @@ impl<'e> OperandContext<'e> {
 impl<'e> OperandType<'e> {
     /// Returns the minimum size of a zero bit range required in simplify_with_zero_bits for
     /// anything to simplify.
-    fn min_zero_bit_simplify_size(&self) -> u8 {
+    ///
+    /// Relevant_bits argument should be acquired by calling self.relevant_bits()
+    /// (Expected to be something that would be calculated otherwise by the caller anyway)
+    fn min_zero_bit_simplify_size(&self, relevant_bits: Range<u8>) -> u8 {
         match *self {
             OperandType::Constant(_) => 0,
             // Mem32 can be simplified to Mem16 if highest bits are zero, etc
@@ -1116,10 +1119,7 @@ impl<'e> OperandType<'e> {
                 }
                 // Could this be better than 0?
                 ArithOpType::Add => 0,
-                _ => {
-                    let rel_bits = self.calculate_relevant_bits();
-                    rel_bits.end - rel_bits.start
-                }
+                _ => relevant_bits.end - relevant_bits.start,
             }
             _ => 0,
         }
@@ -1128,34 +1128,23 @@ impl<'e> OperandType<'e> {
     /// Returns which bits the operand will use at most.
     fn calculate_relevant_bits(&self) -> Range<u8> {
         match *self {
-            OperandType::Memory(ref mem) => match mem.size {
-                MemAccessSize::Mem8 => 0..8,
-                MemAccessSize::Mem16 => 0..16,
-                MemAccessSize::Mem32 => 0..32,
-                MemAccessSize::Mem64 => 0..64,
-            },
             OperandType::Arithmetic(ref arith) => match arith.ty {
                 ArithOpType::Equal | ArithOpType::GreaterThan => {
                     0..1
                 }
-                ArithOpType::Lsh => {
+                ArithOpType::Lsh | ArithOpType::Rsh => {
                     if let Some(c) = arith.right.if_constant() {
                         let c = c & 0x3f;
                         let left_bits = arith.left.relevant_bits();
-                        let start = min(64, left_bits.start + c as u8);
-                        let end = min(64, left_bits.end + c as u8);
-                        start..end
-                    } else {
-                        0..64
-                    }
-                }
-                ArithOpType::Rsh => {
-                    if let Some(c) = arith.right.if_constant() {
-                        let c = c & 0x3f;
-                        let left_bits = arith.left.relevant_bits();
-                        let start = left_bits.start.saturating_sub(c as u8);
-                        let end = left_bits.end.saturating_sub(c as u8);
-                        start..end
+                        if arith.ty == ArithOpType::Lsh {
+                            let start = min(64, left_bits.start + c as u8);
+                            let end = min(64, left_bits.end + c as u8);
+                            start..end
+                        } else {
+                            let start = left_bits.start.saturating_sub(c as u8);
+                            let end = left_bits.end.saturating_sub(c as u8);
+                            start..end
+                        }
                     } else {
                         0..64
                     }
@@ -1235,12 +1224,7 @@ impl<'e> OperandType<'e> {
                     trailing..(64 - leading)
                 }
             }
-            _ => match self.expr_size() {
-                MemAccessSize::Mem8 => 0..8,
-                MemAccessSize::Mem16 => 0..16,
-                MemAccessSize::Mem32 => 0..32,
-                MemAccessSize::Mem64 => 0..64,
-            },
+            _ => 0..(self.expr_size().bits() as u8),
         }
     }
 
@@ -1734,6 +1718,16 @@ impl MemAccessSize {
             MemAccessSize::Mem16 => 16,
             MemAccessSize::Mem8 => 8,
         }
+    }
+
+    #[inline]
+    pub fn mask(self) -> u64 {
+        (self.sign_bit() << 1).wrapping_sub(1)
+    }
+
+    #[inline]
+    pub fn sign_bit(self) -> u64 {
+        1u64.wrapping_shl(self.bits().wrapping_sub(1))
     }
 }
 

@@ -588,13 +588,8 @@ impl<'e> ExecutionState<'e> {
         let result = ctx.arithmetic(arith.ty, arith.left, arith.right);
         match arith.ty {
             Add | Sub => {
-                let sign_bit = match size {
-                    MemAccessSize::Mem8 => 0x80u64,
-                    MemAccessSize::Mem16 => 0x8000,
-                    MemAccessSize::Mem32 => 0x8000_0000,
-                    MemAccessSize::Mem64 => 0x8000_0000_0000_0000,
-                };
-                let mask = (sign_bit << 1).wrapping_sub(1);
+                let mask = size.mask();
+                let sign_bit = (mask >> 1).wrapping_add(1);
                 let left = ctx.and_const(arith.left, mask);
                 let right = ctx.and_const(arith.right, mask);
                 let result = ctx.and_const(result, mask);
@@ -647,12 +642,7 @@ impl<'e> ExecutionState<'e> {
         let parity;
         let ctx = self.ctx;
         let zero = ctx.eq_const(result, 0);
-        let sign_bit = match size {
-            MemAccessSize::Mem8 => 0x80,
-            MemAccessSize::Mem16 => 0x8000,
-            MemAccessSize::Mem32 => 0x8000_0000,
-            MemAccessSize::Mem64 => 0x8000_0000_0000_0000,
-        };
+        let sign_bit = size.sign_bit();
         let sign = ctx.neq_const(
             ctx.and_const(
                 result,
