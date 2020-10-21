@@ -536,6 +536,13 @@ pub(crate) struct MemoryMap<'e> {
     /// Optimization for cases where memory gets large.
     /// The existing mapping can be moved to Rc, where cloning it is effectively free.
     immutable: Option<Rc<MemoryMap<'e>>>,
+    /// Updated once made immutable. Equal to immutable.len()
+    /// (Amount of values in immutable and all its child immutables,
+    /// counting duplicate keys)
+    immutable_len: usize,
+    /// How long the immutable chain is.
+    /// 0 if `immutable` is None, otherwise `immutable.immutable_depth + 1`
+    pub immutable_depth: usize,
 }
 
 type MemoryMapTopLevel<'e> = HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>;
@@ -553,6 +560,8 @@ impl<'e> Memory<'e> {
             map: MemoryMap {
                 map: Rc::new(HashMap::with_hasher(Default::default())),
                 immutable: None,
+                immutable_len: 0,
+                immutable_depth: 0,
             },
             cached_addr: None,
             cached_value: None,
@@ -714,7 +723,7 @@ impl<'e> MemoryMap<'e> {
     }
 
     pub fn len(&self) -> usize {
-        self.map.len() + self.immutable.as_ref().map(|x| x.len()).unwrap_or(0)
+        self.map.len() + self.immutable.as_ref().map(|x| x.immutable_len).unwrap_or(0)
     }
 
     /// The bool is true if the value is in immutable map
@@ -744,17 +753,22 @@ impl<'e> MemoryMap<'e> {
     }
 
     fn common_immutable<'a>(&'a self, other: &'a MemoryMap<'e>) -> Option<&'a MemoryMap<'e>> {
-        self.immutable.as_ref().and_then(|i| {
-            let a = &**i as *const MemoryMap;
-            let mut pos = Some(other);
-            while let Some(o) = pos {
-                if o as *const MemoryMap == a {
-                    return pos;
-                }
-                pos = o.immutable.as_ref().map(|x| &**x);
+        let (mut greater, mut smaller) = match self.immutable_depth > other.immutable_depth {
+            true => (self, other),
+            false => (other, self),
+        };
+        let mut diff = greater.immutable_depth.wrapping_sub(smaller.immutable_depth);
+        while diff != 0 {
+            greater = greater.immutable.as_ref()?;
+            diff -= 1;
+        }
+        loop {
+            if Rc::ptr_eq(&greater.map, &smaller.map) {
+                return Some(greater);
             }
-            i.common_immutable(other)
-        })
+            greater = greater.immutable.as_ref()?;
+            smaller = smaller.immutable.as_ref()?;
+        }
     }
 
     pub fn maybe_convert_immutable(&mut self, limit: usize) {
@@ -764,6 +778,7 @@ impl<'e> MemoryMap<'e> {
     }
 
     fn convert_immutable(&mut self) {
+        let immutable_len = self.len();
         let map = mem::replace(
             &mut self.map,
             Rc::new(HashMap::with_hasher(Default::default())),
@@ -772,7 +787,10 @@ impl<'e> MemoryMap<'e> {
         self.immutable = Some(Rc::new(MemoryMap {
             map,
             immutable: old_immutable,
+            immutable_len,
+            immutable_depth: self.immutable_depth,
         }));
+        self.immutable_depth = self.immutable_depth.wrapping_add(1);
     }
 
     /// Does a value -> key lookup (Finds an address containing value)
@@ -819,6 +837,8 @@ impl<'e> MemoryMap<'e> {
             return MemoryMap {
                 map: Rc::new(result),
                 immutable: a.immutable.clone(),
+                immutable_len: a.immutable_len,
+                immutable_depth: a.immutable_depth,
             };
         }
         let imm_eq = a.immutable.as_ref().map(|x| &**x as *const MemoryMap) ==
@@ -867,6 +887,8 @@ impl<'e> MemoryMap<'e> {
             MemoryMap {
                 map: Rc::new(result),
                 immutable: a.immutable.clone(),
+                immutable_len: a.immutable_len,
+                immutable_depth: a.immutable_depth,
             }
         } else {
             // a's immutable map is used as base, so one which exist there don't get inserted to
@@ -927,6 +949,8 @@ impl<'e> MemoryMap<'e> {
             MemoryMap {
                 map: Rc::new(result),
                 immutable: a.immutable.clone(),
+                immutable_len: a.immutable_len,
+                immutable_depth: a.immutable_depth,
             }
         };
         result
