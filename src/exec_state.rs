@@ -813,7 +813,12 @@ impl<'e> MemoryMap<'e> {
         // Otherwise:
         //   If the address contains undefined, then it *may* be forgotten entirely
         //   If old is undefined, keep old value
-        //   If old isn't undefined, generate a new value
+        //   If old isn't undefined, but new is, *may* use new's value
+        //      This is different from other exec state merging, but allows nicer perf
+        //      when old is small and new is large with a lot of undefined
+        //      Not sure if the "*may*" is ever false right now, ideally nobody
+        //      should try relying on that.
+        //   Otherwise generate a new undefined (obviously)
         let a = self;
         let b = new;
         if Rc::ptr_eq(&a.map, &b.map) {
@@ -857,7 +862,11 @@ impl<'e> MemoryMap<'e> {
                                 }
                             }
                             false => {
-                                result.insert(key, ctx.new_undef());
+                                if b_val.is_undefined() {
+                                    result.insert(key, b_val);
+                                } else {
+                                    result.insert(key, ctx.new_undef());
+                                }
                             }
                         }
                     } else {
@@ -909,13 +918,21 @@ impl<'e> MemoryMap<'e> {
                         }
                         false => {
                             if !a_val.is_undefined() {
-                                result.insert(key, ctx.new_undef());
+                                if b_val.is_undefined() {
+                                    result.insert(key, b_val);
+                                } else {
+                                    result.insert(key, ctx.new_undef());
+                                }
                             }
                         }
                     }
                 } else {
                     if !key.0.contains_undefined() {
-                        result.insert(key, ctx.new_undef());
+                        if b_val.is_undefined() {
+                            result.insert(key, b_val);
+                        } else {
+                            result.insert(key, ctx.new_undef());
+                        }
                     }
                 }
             }
