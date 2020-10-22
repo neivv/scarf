@@ -828,8 +828,10 @@ impl<'e> MemoryMap<'e> {
             a.map.len().max(b.map.len()),
             Default::default(),
         );
-        let a_empty = a.len() == 0;
-        let b_empty = b.len() == 0;
+        let a_len = a.len();
+        let b_len = b.len();
+        let a_empty = a_len == 0;
+        let b_empty = b_len == 0;
         if (a_empty || b_empty) && a.immutable.is_none() && b.immutable.is_none() {
             let other = if a_empty { b } else { a };
             for (&key, &val) in other.map.iter() {
@@ -1289,6 +1291,9 @@ fn merge_memory_equal() {
     b.map.convert_immutable();
     a.set(addr, ctx.constant(4));
     a.set(addr2, ctx.constant(1));
+    //  { addr: 8, addr2: 4 }       { addr: 4 }
+    //          ^                      ^
+    //  a { addr: 4, addr2: 1 }     b { }
     let mut new = a.merge(&b, ctx);
     assert_eq!(new.get(addr).unwrap(), ctx.constant(4));
     assert!(new.get(addr2).unwrap().is_undefined());
@@ -1341,4 +1346,52 @@ fn value_limits_gt_range() {
     let (low, high) = value_limits_recurse(constraint, ctx.register(0));
     assert_eq!(low, 2);
     assert_eq!(high, 7);
+}
+
+#[test]
+fn merge_memory_undef3() {
+    let ctx = &crate::operand::OperandContext::new();
+    let mut a = Memory::new();
+    let addr = ctx.sub_const(ctx.register(5), 8);
+    let addr2 = ctx.sub_const(ctx.register(5), 16);
+    a.set(addr, ctx.mem32(ctx.constant(4)));
+    a.map.convert_immutable();
+    let mut b = a.clone();
+    b.set(addr2, ctx.new_undef());
+    b.map.convert_immutable();
+    a.set(addr, ctx.new_undef());
+    a.set(addr2, ctx.new_undef());
+    //          base { addr: mem32[4] }
+    //          ^               ^
+    //  b { addr2: ud }     a { addr: ud, addr2: ud }
+    let mut new = a.merge(&b, ctx);
+    assert!(new.get(addr).unwrap().is_undefined());
+    assert!(new.get(addr2).unwrap().is_undefined());
+    let mut new = b.merge(&a, ctx);
+    assert!(new.get(addr).unwrap().is_undefined());
+    assert!(new.get(addr2).unwrap().is_undefined());
+}
+
+#[test]
+fn merge_memory_undef4() {
+    let ctx = &crate::operand::OperandContext::new();
+    let mut a = Memory::new();
+    let addr = ctx.sub_const(ctx.register(5), 8);
+    let addr2 = ctx.sub_const(ctx.register(5), 16);
+    a.set(addr, ctx.mem32(ctx.constant(4)));
+    a.map.convert_immutable();
+    let mut b = a.clone();
+    b.set(addr2, ctx.new_undef());
+    b.map.convert_immutable();
+    a.set(addr, ctx.constant(6));
+    a.set(addr2, ctx.constant(5));
+    //          base { addr: mem32[4] }
+    //          ^               ^
+    //  b { addr2: ud }     a { addr: 6, addr2: 5 }
+    let mut new = a.merge(&b, ctx);
+    assert!(new.get(addr).unwrap().is_undefined());
+    assert!(new.get(addr2).unwrap().is_undefined());
+    let mut new = b.merge(&a, ctx);
+    assert!(new.get(addr).unwrap().is_undefined());
+    assert!(new.get(addr2).unwrap().is_undefined());
 }
