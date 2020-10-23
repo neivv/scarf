@@ -1174,14 +1174,7 @@ pub fn merge_states<'a: 'r, 'r>(
                 state[i] = merge(ctx, old_xmm_fpu[i], new_xmm_fpu[i]);
             }
         }
-        let memory = match cache.get_merge_result(&old.memory, &new.memory) {
-            Some(s) => s,
-            None => {
-                let result = old.memory.merge(&new.memory, ctx);
-                cache.set_merge_result(&old.memory, &new.memory, &result);
-                result
-            }
-        };
+        let memory = cache.merge_memory(&old.memory, &new.memory, ctx);
         let result = Some(ExecutionState {
             state,
             xmm_fpu,

@@ -749,8 +749,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                         &mut self.merge_state_cache,
                     );
                     match merged {
-                        Some(mut s) => {
-                            s.maybe_convert_memory_immutable(16);
+                        Some(s) => {
                             let mut user_state = state.data.1.clone();
                             user_state.merge(branch_state.1);
                             return Some((addr, Box::new((s, user_state))));

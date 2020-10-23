@@ -542,7 +542,7 @@ pub(crate) struct MemoryMap<'e> {
     immutable_len: usize,
     /// How long the immutable chain is.
     /// 0 if `immutable` is None, otherwise `immutable.immutable_depth + 1`
-    pub immutable_depth: usize,
+    immutable_depth: usize,
 }
 
 type MemoryMapTopLevel<'e> = HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>;
@@ -686,14 +686,6 @@ impl<'e> Memory<'e> {
             }
         })
     }
-
-    pub fn merge(&self, new: &Memory<'e>, ctx: OperandCtx<'e>) -> Memory<'e> {
-        Memory {
-            map: self.map.merge(&new.map, ctx),
-            cached_addr: None,
-            cached_value: None,
-        }
-    }
 }
 
 impl<'e> MemoryMap<'e> {
@@ -807,7 +799,7 @@ impl<'e> MemoryMap<'e> {
         }
     }
 
-    pub fn merge(&self, new: &MemoryMap<'e>, ctx: OperandCtx<'e>) -> MemoryMap<'e> {
+    fn merge(&self, new: &MemoryMap<'e>, ctx: OperandCtx<'e>) -> MemoryMap<'e> {
         // Merging memory is defined as:
         // If new & old values match, then the value is kept
         // Otherwise:
@@ -1141,25 +1133,47 @@ impl<'e> MergeStateCache<'e> {
         })
     }
 
-    pub fn get_merge_result(&self, old: &Memory<'e>, new: &Memory<'e>) -> Option<Memory<'e>> {
-        let cached = self.last_merge.as_ref()?;
-        if Rc::ptr_eq(&cached.old, &old.map.map) && Rc::ptr_eq(&cached.new, &new.map.map) {
-            Some(Memory {
-                map: cached.result.clone(),
-                cached_addr: None,
-                cached_value: None,
-            })
-        } else {
-            None
+    pub fn merge_memory(
+        &mut self,
+        old: &Memory<'e>,
+        new: &Memory<'e>,
+        ctx: OperandCtx<'e>,
+    ) -> Memory<'e> {
+        let mut old = &old.map;
+        let mut new = &new.map;
+        // Don't use empty outermost map when checking for cached inputs
+        if old.map.len() == 0 {
+            if let Some(ref imm) = old.immutable {
+                old = &*imm;
+            }
         }
-    }
+        if new.map.len() == 0 {
+            if let Some(ref imm) = new.immutable {
+                new = &*imm;
+            }
+        }
+        if let Some(ref cached) = self.last_merge {
+            if Rc::ptr_eq(&cached.old, &old.map) && Rc::ptr_eq(&cached.new, &new.map) {
+                return Memory {
+                    map: cached.result.clone(),
+                    cached_addr: None,
+                    cached_value: None,
+                };
+            }
+        }
+        let mut result = old.merge(&new, ctx);
+        result.maybe_convert_immutable(16);
 
-    pub fn set_merge_result(&mut self, old: &Memory<'e>, new: &Memory<'e>, result: &Memory<'e>) {
         self.last_merge = Some(MemoryOpCached {
-            old: old.map.map.clone(),
-            new: new.map.map.clone(),
-            result: result.map.clone(),
-        })
+            old: old.map.clone(),
+            new: new.map.clone(),
+            result: result.clone(),
+        });
+        Memory {
+            map: result,
+            cached_addr: None,
+            cached_value: None,
+        }
     }
 }
 
@@ -1256,7 +1270,8 @@ fn merge_immutable_memory() {
     b.set(ctx.constant(12), ctx.constant(8));
     a.map.convert_immutable();
     b.map.convert_immutable();
-    let mut new = a.merge(&b, ctx);
+    let mut cache = MergeStateCache::new();
+    let mut new = cache.merge_memory(&a, &b, ctx);
     assert!(new.get(ctx.constant(4)).unwrap().is_undefined());
     assert!(new.get(ctx.constant(8)).unwrap().is_undefined());
     assert_eq!(new.get(ctx.constant(12)).unwrap(), ctx.constant(8));
@@ -1271,7 +1286,8 @@ fn merge_memory_undef() {
     a.set(addr, ctx.mem32(ctx.constant(4)));
     b.set(addr, ctx.mem32(ctx.constant(4)));
     a.map.convert_immutable();
-    let mut new = a.merge(&b, ctx);
+    let mut cache = MergeStateCache::new();
+    let mut new = cache.merge_memory(&a, &b, ctx);
     assert_eq!(new.get(addr).unwrap(), ctx.mem32(ctx.constant(4)));
 }
 
@@ -1294,7 +1310,8 @@ fn merge_memory_equal() {
     //  { addr: 8, addr2: 4 }       { addr: 4 }
     //          ^                      ^
     //  a { addr: 4, addr2: 1 }     b { }
-    let mut new = a.merge(&b, ctx);
+    let mut cache = MergeStateCache::new();
+    let mut new = cache.merge_memory(&a, &b, ctx);
     assert_eq!(new.get(addr).unwrap(), ctx.constant(4));
     assert!(new.get(addr2).unwrap().is_undefined());
 }
@@ -1328,7 +1345,8 @@ fn merge_memory_undef2() {
     b.map.convert_immutable();
     a.set(addr, ctx.new_undef());
     a.set(addr2, ctx.new_undef());
-    let mut new = a.merge(&b, ctx);
+    let mut cache = MergeStateCache::new();
+    let mut new = cache.merge_memory(&a, &b, ctx);
     assert!(new.get(addr).unwrap().is_undefined());
     assert!(new.get(addr2).unwrap().is_undefined());
 }
@@ -1364,10 +1382,11 @@ fn merge_memory_undef3() {
     //          base { addr: mem32[4] }
     //          ^               ^
     //  b { addr2: ud }     a { addr: ud, addr2: ud }
-    let mut new = a.merge(&b, ctx);
+    let mut cache = MergeStateCache::new();
+    let mut new = cache.merge_memory(&a, &b, ctx);
     assert!(new.get(addr).unwrap().is_undefined());
     assert!(new.get(addr2).unwrap().is_undefined());
-    let mut new = b.merge(&a, ctx);
+    let mut new = cache.merge_memory(&b, &a, ctx);
     assert!(new.get(addr).unwrap().is_undefined());
     assert!(new.get(addr2).unwrap().is_undefined());
 }
@@ -1388,10 +1407,11 @@ fn merge_memory_undef4() {
     //          base { addr: mem32[4] }
     //          ^               ^
     //  b { addr2: ud }     a { addr: 6, addr2: 5 }
-    let mut new = a.merge(&b, ctx);
+    let mut cache = MergeStateCache::new();
+    let mut new = cache.merge_memory(&a, &b, ctx);
     assert!(new.get(addr).unwrap().is_undefined());
     assert!(new.get(addr2).unwrap().is_undefined());
-    let mut new = b.merge(&a, ctx);
+    let mut new = cache.merge_memory(&b, &a, ctx);
     assert!(new.get(addr).unwrap().is_undefined());
     assert!(new.get(addr2).unwrap().is_undefined());
 }
