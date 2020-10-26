@@ -2,6 +2,7 @@ use std::collections::{hash_map, HashMap};
 use std::fmt;
 use std::mem;
 use std::ops::{Add, Sub};
+use std::ptr;
 use std::rc::Rc;
 
 use fxhash::FxBuildHasher;
@@ -744,6 +745,15 @@ impl<'e> MemoryMap<'e> {
         }
     }
 
+    fn find_immutable_by_depth(&self, depth: usize) -> Option<&MemoryMap<'e>> {
+        let diff = self.immutable_depth.checked_sub(depth)?;
+        let mut pos = self;
+        for _ in 0..diff {
+            pos = pos.immutable.as_ref()?;
+        }
+        Some(pos)
+    }
+
     fn common_immutable<'a>(&'a self, other: &'a MemoryMap<'e>) -> Option<&'a MemoryMap<'e>> {
         let (mut greater, mut smaller) = match self.immutable_depth > other.immutable_depth {
             true => (self, other),
@@ -967,6 +977,58 @@ impl<'e> MemoryMap<'e> {
         result
     }
 
+    /// Merges two unique branches to self.
+    /// Assumes that an immutable child of `a` (or it itself) is ptr_equal with `a_end`
+    /// (And same for `b`), and that self.map is empty (Merging three branches is more
+    /// complicated)
+    fn merge_update(
+        &self,
+        a: &MemoryMap<'e>,
+        a_end: &MemoryMap<'e>,
+        b: &MemoryMap<'e>,
+        b_end: &MemoryMap<'e>,
+        ctx: OperandCtx<'e>,
+    ) -> MemoryMap<'e> {
+        let pairs = [(a, a_end, b), (b, b_end, a)];
+        let a_len = a.len() - a_end.len();
+        let b_len = b.len() - b_end.len();
+        let mut result = HashMap::with_capacity_and_hasher(
+            a_len.max(b_len),
+            Default::default(),
+        );
+        for &(begin, end, other) in &pairs {
+            if ptr::eq(begin, end) {
+                continue;
+            }
+            for (&key, &val, _) in begin.iter_until_immutable(Some(end)) {
+                let entry = result.entry(key);
+                entry.or_insert_with(|| {
+                    if val.is_undefined() {
+                        val
+                    } else {
+                        if let Some(other_val) = other.get(key.0) {
+                            if other_val == val {
+                                val
+                            } else if other_val.is_undefined() {
+                                other_val
+                            } else {
+                                ctx.new_undef()
+                            }
+                        } else {
+                            ctx.new_undef()
+                        }
+                    }
+                });
+            }
+        }
+        MemoryMap {
+            map: Rc::new(result),
+            immutable: self.immutable.clone(),
+            immutable_len: 0,
+            immutable_depth: self.immutable_depth,
+        }
+    }
+
     /// Check if there are any not equal fields that aren't undefined in `self`
     pub fn has_merge_changed(&self, b: &MemoryMap<'e>) -> bool {
         let a = self;
@@ -1097,7 +1159,9 @@ fn collect_and_ops<'e>(
 /// Large switches will obviously benefit even more from this.
 pub struct MergeStateCache<'e> {
     last_compare: Option<MemoryOpCached<'e, bool>>,
-    last_merge: Option<MemoryOpCached<'e, MemoryMap<'e>>>,
+    last_merge: Option<MemoryMergeCached<'e>>,
+    /// Merge where the result has mutable map len == 0
+    last_immutable_merge: Option<MemoryMergeCached<'e>>,
 }
 
 struct MemoryOpCached<'e, T> {
@@ -1108,11 +1172,18 @@ struct MemoryOpCached<'e, T> {
     result: T,
 }
 
+struct MemoryMergeCached<'e> {
+    old: MemoryMap<'e>,
+    new: MemoryMap<'e>,
+    result: MemoryMap<'e>,
+}
+
 impl<'e> MergeStateCache<'e> {
     pub fn new() -> MergeStateCache<'e> {
         MergeStateCache {
             last_compare: None,
             last_merge: None,
+            last_immutable_merge: None,
         }
     }
 
@@ -1135,12 +1206,12 @@ impl<'e> MergeStateCache<'e> {
 
     pub fn merge_memory(
         &mut self,
-        old: &Memory<'e>,
-        new: &Memory<'e>,
+        old_base: &Memory<'e>,
+        new_base: &Memory<'e>,
         ctx: OperandCtx<'e>,
     ) -> Memory<'e> {
-        let mut old = &old.map;
-        let mut new = &new.map;
+        let mut old = &old_base.map;
+        let mut new = &new_base.map;
         // Don't use empty outermost map when checking for cached inputs
         if old.map.len() == 0 {
             if let Some(ref imm) = old.immutable {
@@ -1153,7 +1224,7 @@ impl<'e> MergeStateCache<'e> {
             }
         }
         if let Some(ref cached) = self.last_merge {
-            if Rc::ptr_eq(&cached.old, &old.map) && Rc::ptr_eq(&cached.new, &new.map) {
+            if Rc::ptr_eq(&cached.old.map, &old.map) && Rc::ptr_eq(&cached.new.map, &new.map) {
                 return Memory {
                     map: cached.result.clone(),
                     cached_addr: None,
@@ -1161,12 +1232,49 @@ impl<'e> MergeStateCache<'e> {
                 };
             }
         }
+        if let Some(ref mut cached) = self.last_immutable_merge {
+            if Rc::ptr_eq(&cached.old.map, &old.map) && Rc::ptr_eq(&cached.new.map, &new.map) {
+                return Memory {
+                    map: cached.result.clone(),
+                    cached_addr: None,
+                    cached_value: None,
+                };
+            }
+            if let Some((a, b)) = MergeStateCache::is_parent_merge(cached, old, new) {
+                let mut result = cached.result.merge_update(old, a, new, b, ctx);
+                result.maybe_convert_immutable(16);
+                if result.map.len() == 0 {
+                    *cached = MemoryMergeCached {
+                        old: old.clone(),
+                        new: new.clone(),
+                        result: result.clone(),
+                    };
+                }
+                self.last_merge = Some(MemoryMergeCached {
+                    old: old.clone(),
+                    new: new.clone(),
+                    result: result.clone(),
+                });
+                return Memory {
+                    map: result,
+                    cached_addr: None,
+                    cached_value: None,
+                }
+            }
+        }
         let mut result = old.merge(&new, ctx);
         result.maybe_convert_immutable(16);
 
-        self.last_merge = Some(MemoryOpCached {
-            old: old.map.clone(),
-            new: new.map.clone(),
+        if result.map.len() == 0 {
+            self.last_immutable_merge = Some(MemoryMergeCached {
+                old: old.clone(),
+                new: new.clone(),
+                result: result.clone(),
+            });
+        }
+        self.last_merge = Some(MemoryMergeCached {
+            old: old.clone(),
+            new: new.clone(),
             result: result.clone(),
         });
         Memory {
@@ -1174,6 +1282,55 @@ impl<'e> MergeStateCache<'e> {
             cached_addr: None,
             cached_value: None,
         }
+    }
+
+    /// If the old-new merge can be done by using cached result
+    /// on top of which the old's and new's branches which aren't in the result
+    /// are merged, return Some((first_branch_end, second_branch_end)).
+    /// End being the first immutable MemoryMap that doesn't need to be added.
+    fn is_parent_merge<'a>(
+        cached: &'a MemoryMergeCached<'e>,
+        old: &'a MemoryMap<'e>,
+        new: &'a MemoryMap<'e>,
+    ) -> Option<(&'a MemoryMap<'e>, &'a MemoryMap<'e>)> {
+        // What this is doing is to check if one but not both maps have cached.result.immutable
+        // as a parent, and that the other map has a shared parent with one of the inputs
+        // (Or just is has the input as a parent)
+        let result_imm = cached.result.immutable.as_ref()?;
+        let old_has_result = old
+            .find_immutable_by_depth(result_imm.immutable_depth)
+            .filter(|x| Rc::ptr_eq(&x.map, &result_imm.map))
+            .is_some();
+        let new_has_result = new
+            .find_immutable_by_depth(result_imm.immutable_depth)
+            .filter(|x| Rc::ptr_eq(&x.map, &result_imm.map))
+            .is_some();
+        if old_has_result == new_has_result {
+            return None;
+        }
+        let other = match old_has_result {
+            true => new,
+            false => old,
+        };
+        for &cand in &[&cached.old, &cached.new] {
+            if let Some(parent) = other.find_immutable_by_depth(cand.immutable_depth) {
+                if Rc::ptr_eq(&cand.map, &parent.map) {
+                    if old_has_result {
+                        return Some((result_imm, parent));
+                    } else {
+                        return Some((parent, result_imm));
+                    }
+                }
+                if let Some(common) = parent.common_immutable(cand) {
+                    if old_has_result {
+                        return Some((result_imm, common));
+                    } else {
+                        return Some((common, result_imm));
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
