@@ -549,7 +549,7 @@ pub(crate) struct MemoryMap<'e> {
 type MemoryMapTopLevel<'e> = HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>;
 
 struct MemoryIterUntilImm<'a, 'e> {
-    iter: hash_map::Iter<'a, OperandHashByAddress<'e>, Operand<'e>>,
+    iter: Option<hash_map::Iter<'a, OperandHashByAddress<'e>, Operand<'e>>>,
     immutable: &'a Option<Rc<MemoryMap<'e>>>,
     limit: Option<&'a MemoryMap<'e>>,
     in_immutable: bool,
@@ -737,8 +737,15 @@ impl<'e> MemoryMap<'e> {
         &'a self,
         limit: Option<&'a MemoryMap<'e>>,
     ) -> MemoryIterUntilImm<'a, 'e> {
+        let limit_is_self = match limit {
+            Some(s) => ptr::eq(self, s),
+            None => false,
+        };
         MemoryIterUntilImm {
-            iter: self.map.iter(),
+            iter: match limit_is_self {
+                true => None,
+                false => Some(self.map.iter()),
+            },
             immutable: &self.immutable,
             limit,
             in_immutable: false,
@@ -1078,14 +1085,9 @@ impl<'a, 'e> Iterator for MemoryIterUntilImm<'a, 'e> {
     /// The bool tells if we're at immutable parts of the calling operand or not
     type Item = (&'a OperandHashByAddress<'e>, &'a Operand<'e>, bool);
     fn next(&mut self) -> Option<Self::Item> {
-        match self.iter.next() {
+        match self.iter.as_mut()?.next() {
             Some(s) => Some((s.0, s.1, self.in_immutable)),
             None => {
-                let at_limit = self.immutable.as_ref().map(|x| &**x as *const MemoryMap) ==
-                    self.limit.map(|x| x as *const MemoryMap);
-                if at_limit {
-                    return None;
-                }
                 match *self.immutable {
                     Some(ref i) => {
                         *self = i.iter_until_immutable(self.limit);
@@ -1262,7 +1264,9 @@ impl<'e> MergeStateCache<'e> {
                 }
             }
         }
-        let mut result = old.merge(&new, ctx);
+        // This uses the possibly empty outermost maps because merge can't
+        // handle immutable input properly.
+        let mut result = old_base.map.merge(&new_base.map, ctx);
         result.maybe_convert_immutable(16);
 
         if result.map.len() == 0 {
@@ -1571,4 +1575,28 @@ fn merge_memory_undef4() {
     let mut new = cache.merge_memory(&b, &a, ctx);
     assert!(new.get(addr).unwrap().is_undefined());
     assert!(new.get(addr2).unwrap().is_undefined());
+}
+
+#[test]
+fn merge_memory_undef5() {
+    let ctx = &crate::operand::OperandContext::new();
+    let mut a = Memory::new();
+    let addr = ctx.sub_const(ctx.register(5), 8);
+    let addr2 = ctx.sub_const(ctx.register(5), 16);
+    a.set(addr, ctx.constant(1));
+    a.set(addr2, ctx.constant(2));
+    a.map.convert_immutable();
+    let b = a.clone();
+    a.set(addr, ctx.constant(6));
+    //      { addr: 1, addr2: 2 }
+    //      ^             ^
+    //  b { }     a { addr: 6 }
+    let mut cache = MergeStateCache::new();
+    let mut new = cache.merge_memory(&a, &b, ctx);
+    assert!(new.get(addr).unwrap().is_undefined());
+    assert_eq!(new.get(addr2).unwrap(), ctx.constant(2));
+    let mut cache = MergeStateCache::new();
+    let mut new = cache.merge_memory(&b, &a, ctx);
+    assert!(new.get(addr).unwrap().is_undefined());
+    assert_eq!(new.get(addr2).unwrap(), ctx.constant(2));
 }
