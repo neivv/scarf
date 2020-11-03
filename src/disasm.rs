@@ -536,7 +536,8 @@ fn instruction_operations32_main(
         0x110 | 0x111| 0x113 | 0x128 | 0x129 | 0x12b | 0x16f | 0x17e | 0x17f => s.sse_move(),
         0x12a => s.sse_int_to_float(),
         0x12c | 0x12d => s.cvttss2si(),
-        0x12e => s.sse_compare(),
+        // ucomiss, comiss, comiss signals exceptions but that isn't simulated
+        0x12e | 0x12f => s.sse_compare(),
         // rdtsc
         0x131 => {
             s.output(mov_to_reg(0, s.ctx.new_undef()));
@@ -854,7 +855,8 @@ fn instruction_operations64_main(
         0x110 | 0x111| 0x113 | 0x128 | 0x129 | 0x12b | 0x16f | 0x17e | 0x17f => s.sse_move(),
         0x12a => s.sse_int_to_float(),
         0x12c | 0x12d => s.cvttss2si(),
-        0x12e => s.sse_compare(),
+        // ucomiss, comiss, comiss signals exceptions but that isn't simulated
+        0x12e | 0x12f => s.sse_compare(),
         // rdtsc
         0x131 => {
             s.output(mov_to_reg(0, s.ctx.new_undef()));
@@ -2393,8 +2395,15 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn sse_compare(&mut self) -> Result<(), Failed> {
         // TODO
+        // Needs to specify how to check for unordered. Does not(y > x) mean
+        // that `y == x || x > y || nan(y) || nan(x)` or just `y == x || x > y`.
         let ctx = self.ctx;
         let zero = ctx.const_0();
+        // zpc = 111 if unordered, 000 if greater, 001 if less, 100 if equal
+        // or alternatively
+        // z = equal or unordererd
+        // p = unordered
+        // c = less than or unordered
         self.output(Operation::Move(
             DestOperand::Flag(Flag::Zero), ctx.and_const(ctx.new_undef(), 1), None,
         ));
