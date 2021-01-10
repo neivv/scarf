@@ -1449,7 +1449,7 @@ fn simplify_eq_ops<'e>(
                         }
                     }
                 }
-            };
+            }
             let left = make_op(ctx, left.0, mask, !left.1);
             let right = make_op(ctx, right.0, mask, right.1);
             simplify_eq_2_ops(left, right, ctx)
@@ -1530,7 +1530,7 @@ fn simplify_eq_2_ops<'e>(
             }
             _ => None,
         }
-    };
+    }
 
     let (left, right) = match left < right {
         true => (left, right),
@@ -1864,7 +1864,7 @@ fn try_merge_ands<'e>(
                     } else {
                         None
                     }
-                };
+                }
                 match (a_mem.size, b_mem.size) {
                     (MemAccessSize::Mem64, _) => check_mask(b, b_mask, a),
                     (_, MemAccessSize::Mem64) => check_mask(a, a_mask, b),

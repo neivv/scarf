@@ -1014,7 +1014,7 @@ pub fn merge_states<'a: 'r, 'r>(
             true => a,
             false => ctx.new_undef(),
         }
-    };
+    }
 
     let merged_ljec = if old.unresolved_constraint != new.unresolved_constraint {
         let mut result = None;
