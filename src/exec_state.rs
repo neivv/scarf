@@ -512,14 +512,14 @@ pub trait Disassembler<'e> {
 /// to be word-sized, and any misaligned accesses become bitwise and-or combinations.
 #[derive(Clone)]
 pub struct Memory<'e> {
-    pub(crate) map: MemoryMap<'e>,
+    map: MemoryMap<'e>,
     /// Caches value of last read/write
     cached_addr: Option<Operand<'e>>,
     cached_value: Option<Operand<'e>>,
 }
 
 #[derive(Clone)]
-pub(crate) struct MemoryMap<'e> {
+struct MemoryMap<'e> {
     /// Mutable map, cloned lazily on mutation if Rc is shared.
     /// Two memory cannot have ptr-equal `map` with different `immutable`
     ///
@@ -533,7 +533,7 @@ pub(crate) struct MemoryMap<'e> {
     /// can be used to read/write a lot at once.
     /// But I would believe that the instruction decoding/etc overhead is a lot greater
     /// than memory access during analysis.
-    pub(crate) map: Rc<MemoryMapTopLevel<'e>>,
+    map: Rc<MemoryMapTopLevel<'e>>,
     /// Optimization for cases where memory gets large.
     /// The existing mapping can be moved to Rc, where cloning it is effectively free.
     immutable: Option<Rc<MemoryMap<'e>>>,
@@ -686,6 +686,22 @@ impl<'e> Memory<'e> {
                 (op, size)
             }
         })
+    }
+
+    /// Cheap check for if `self` and `other` share their hashmap.
+    ///
+    /// If true is returned, maps are equal; false can still mean
+    /// that the maps are equal, it just can't be cheaply confirmed.
+    pub fn is_same(&self, other: &Memory<'e>) -> bool {
+        Rc::ptr_eq(&self.map.map, &other.map.map)
+    }
+
+    pub fn maybe_convert_immutable(&mut self, limit: usize) {
+        self.map.maybe_convert_immutable(limit);
+    }
+
+    pub fn has_merge_changed(&self, b: &Memory<'e>) -> bool {
+        self.map.has_merge_changed(&b.map)
     }
 }
 

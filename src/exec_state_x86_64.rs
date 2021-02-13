@@ -266,7 +266,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     const WORD_SIZE: MemAccessSize = MemAccessSize::Mem64;
 
     fn maybe_convert_memory_immutable(&mut self, limit: usize) {
-        self.memory.map.maybe_convert_immutable(limit);
+        self.memory.maybe_convert_immutable(limit);
     }
 
     fn add_resolved_constraint(&mut self, constraint: Constraint<'e>) {
@@ -1059,13 +1059,13 @@ pub fn merge_states<'a: 'r, 'r>(
             old.state.iter().zip(new.state.iter())
                 .any(|(&a, &b)| !check_eq(a, b))
         ) || (
-            if Rc::ptr_eq(&old.memory.map.map, &new.memory.map.map) {
+            if old.memory.is_same(&new.memory) {
                 false
             } else {
                 match cache.get_compare_result(&old.memory, &new.memory) {
                     Some(s) => s,
                     None => {
-                        let result = old.memory.map.has_merge_changed(&new.memory.map);
+                        let result = old.memory.has_merge_changed(&new.memory);
                         cache.set_compare_result(&old.memory, &new.memory, result);
                         result
                     }
