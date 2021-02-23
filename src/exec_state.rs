@@ -536,21 +536,61 @@ struct MemoryMap<'e> {
     map: Rc<MemoryMapTopLevel<'e>>,
     /// Optimization for cases where memory gets large.
     /// The existing mapping can be moved to Rc, where cloning it is effectively free.
+    ///
+    /// Every 4th immutable map gets previous 4 immutables merged together to one larger
+    /// immutable map to make lookups that have to work through the chain of immutable maps
+    /// faster.
+    /// The non-merged chain is also kept avaiable to keep merges ideal.
+    ///
+    /// Example on how different maps point to each other:
+    /// Numbers represent immutable_depth value.
+    /// Going up/left means following immmutable, going right is following slower_immutable
+    ///                      (0)
+    ///                      (1)
+    ///                      (2)
+    ///              (3)---->(3)
+    ///               |
+    ///               |<-----(4)
+    ///               |      (5)
+    ///               |      (6)
+    ///              (7)---->(7)
+    ///               |
+    ///               |<-----(8)
+    ///               |      (9)
+    ///               |      (10)
+    ///              (11)--->(11)
+    ///               |
+    ///               |<-----(12)
+    ///               |      (13)
+    ///               |      (14)
+    ///     (15)---->(15)--->(15)
+    ///      |
+    ///      |<--------------(16)
+    ///      |        |      (17)
+    ///      |        |      (18)
+    ///      |       (19)--->(19)
+    ///      |        |
+    ///
+    /// This layout allows memory.get() to just follow immutable, no matter which submap is
+    /// used. It can also be assumed that if `slower_immutable` is `Some`, it's immutable_len
+    /// is equal to `self.immutable_len`
     immutable: Option<Rc<MemoryMap<'e>>>,
+    slower_immutable: Option<Rc<MemoryMap<'e>>>,
     /// Updated once made immutable. Equal to immutable.len()
     /// (Amount of values in immutable and all its child immutables,
     /// counting duplicate keys)
     immutable_len: usize,
     /// How long the immutable chain is.
-    /// 0 if `immutable` is None, otherwise `immutable.immutable_depth + 1`
+    /// See above diagram for how it works with the merged maps
     immutable_depth: usize,
 }
 
 type MemoryMapTopLevel<'e> = HashMap<OperandHashByAddress<'e>, Operand<'e>, FxBuildHasher>;
 
 struct MemoryIterUntilImm<'a, 'e> {
+    // self.iter can always be assumed to be from self.map.map.iter()
     iter: Option<hash_map::Iter<'a, OperandHashByAddress<'e>, Operand<'e>>>,
-    immutable: &'a Option<Rc<MemoryMap<'e>>>,
+    map: &'a MemoryMap<'e>,
     limit: Option<&'a MemoryMap<'e>>,
     in_immutable: bool,
 }
@@ -561,6 +601,7 @@ impl<'e> Memory<'e> {
             map: MemoryMap {
                 map: Rc::new(HashMap::with_hasher(Default::default())),
                 immutable: None,
+                slower_immutable: None,
                 immutable_len: 0,
                 immutable_depth: 0,
             },
@@ -749,6 +790,10 @@ impl<'e> MemoryMap<'e> {
 
     /// Iterates until the immutable block.
     /// Only ref-equality is considered, not deep-eq.
+    ///
+    /// Takes as fast path as possible.
+    /// Passing Some(map) which isn't in this map's immutable chain isn't required to work.
+    /// Also limit must be "main immutable" for the depth; slower_immutable isn't accepted.
     fn iter_until_immutable<'a>(
         &'a self,
         limit: Option<&'a MemoryMap<'e>>,
@@ -757,33 +802,107 @@ impl<'e> MemoryMap<'e> {
             Some(s) => ptr::eq(self, s),
             None => false,
         };
+
+        // Walk through slower_immutable if they exist to find the map that
+        // doesn't go past limit
+        let limit_depth = limit.map(|x| x.immutable_depth).unwrap_or(0);
+        let mut pos = self;
+        loop {
+            let pos_depth = match pos.immutable.as_ref().map(|x| x.immutable_depth) {
+                Some(s) => s,
+                None => break,
+            };
+            if pos_depth >= limit_depth {
+                break;
+            }
+            pos = match pos.slower_immutable.as_ref() {
+                Some(s) => s,
+                None => break,
+            };
+        }
         MemoryIterUntilImm {
             iter: match limit_is_self {
                 true => None,
-                false => Some(self.map.iter()),
+                false => Some(pos.map.iter()),
             },
-            immutable: &self.immutable,
+            map: pos,
             limit,
             in_immutable: false,
         }
     }
 
     fn common_immutable<'a>(&'a self, other: &'a MemoryMap<'e>) -> Option<&'a MemoryMap<'e>> {
-        let (mut greater, mut smaller) = match self.immutable_depth > other.immutable_depth {
-            true => (self, other),
-            false => (other, self),
-        };
-        let mut diff = greater.immutable_depth.wrapping_sub(smaller.immutable_depth);
-        while diff != 0 {
-            greater = greater.immutable.as_ref()?;
-            diff -= 1;
+        // The code afterwards doesn't work with some still-mutable maps
+        // (E.g. immutable_depth == 3 but slower_immutable == None)
+        // Still return a valid result if for some reason self.common_immutable(self)
+        // is done, but then move to immutable if a map is mutable
+        // Mutable maps where depth doesn't require slower_immutable are fine.
+        if Rc::ptr_eq(&self.map, &other.map) {
+            return Some(self);
         }
+        let a = match self.immutable_depth & 0x3 == 0x3 && self.slower_immutable.is_none() {
+            true => self.immutable.as_deref()?,
+            false => self,
+        };
+        let b = match other.immutable_depth & 0x3 == 0x3 && other.slower_immutable.is_none() {
+            true => other.immutable.as_deref()?,
+            false => other,
+        };
+
+        let (mut greater, mut smaller) = match a.immutable_depth > b.immutable_depth {
+            true => (a, b),
+            false => (b, a),
+        };
+
+        while greater.immutable_depth != smaller.immutable_depth {
+            let mut next = greater.immutable.as_ref();
+            let mut next_depth = next.map(|x| x.immutable_depth).unwrap_or(0);
+            while next_depth < smaller.immutable_depth {
+                greater = greater.slower_immutable.as_ref()?;
+                next = greater.immutable.as_ref();
+                next_depth = next.map(|x| x.immutable_depth).unwrap_or(0);
+            }
+            greater = next?;
+        }
+        let mut prev_g_slow: Option<&Rc<MemoryMap<'e>>> = None;
+        let mut prev_s_slow: Option<&Rc<MemoryMap<'e>>> = None;
         loop {
             if Rc::ptr_eq(&greater.map, &smaller.map) {
-                return Some(greater);
+                // Consider two maps shaped like this which join at (5) and lower.
+                //                      (0)
+                //                      (1)
+                //                      (2)
+                //              (3)---->(3)
+                //               |
+                //               |<-----(4)
+                //               |      (5)
+                //               |      (6)
+                //              (7)---->(7)
+                // Since this loop has been walking through fast path, (7) isn't equal
+                // while (3) is, but we'd want to return (5). So if slow paths exist,
+                // descend into the slower path from last non-eq and keep looping
+                if let Some(prev_g_slow) = prev_g_slow {
+                    greater = &*prev_g_slow;
+                    // Expected to be Some always too
+                    smaller = &*prev_s_slow?;
+                } else {
+                    return Some(greater);
+                }
             }
-            greater = greater.immutable.as_ref()?;
-            smaller = smaller.immutable.as_ref()?;
+            prev_g_slow = greater.slower_immutable.as_ref();
+            prev_s_slow = smaller.slower_immutable.as_ref();
+            match greater.immutable.as_ref() {
+                Some(s) => {
+                    greater = s;
+                    smaller = smaller.immutable.as_ref()?;
+                }
+                None => {
+                    greater = prev_g_slow?;
+                    prev_g_slow = greater.slower_immutable.as_ref();
+                    smaller = prev_s_slow?;
+                    prev_s_slow = smaller.slower_immutable.as_ref();
+                }
+            };
         }
     }
 
@@ -800,13 +919,56 @@ impl<'e> MemoryMap<'e> {
             Rc::new(HashMap::with_hasher(Default::default())),
         );
         let old_immutable = self.immutable.take();
+        let immutable_depth = self.immutable_depth;
         self.immutable = Some(Rc::new(MemoryMap {
             map,
             immutable: old_immutable,
+            slower_immutable: None,
             immutable_len,
-            immutable_depth: self.immutable_depth,
+            immutable_depth,
         }));
-        self.immutable_depth = self.immutable_depth.wrapping_add(1);
+        self.immutable_depth = immutable_depth.wrapping_add(1);
+        // Merge 4 immutables to one larger map, another layer if we're at 16
+        // immutables etc.
+        let mut n = 4usize;
+        while self.immutable_depth & n.wrapping_sub(1) == 0 {
+            // Calculate sum of 4 immutable map sizes
+            let mut sum = 0usize;
+            let mut pos = self.immutable.as_ref();
+            for _ in 0..4 {
+                match pos {
+                    Some(next) => {
+                        sum = sum.wrapping_add(next.map.len());
+                        pos = next.immutable.as_ref();
+                    }
+                    None => break,
+                }
+            }
+            // Actually build the map
+            let mut merged_map = HashMap::with_capacity_and_hasher(sum, Default::default());
+            let mut pos = self.immutable.as_ref();
+            for _ in 0..4 {
+                match pos {
+                    Some(next) => {
+                        for (&k, &val) in next.map.iter() {
+                            merged_map.entry(k).or_insert_with(|| val);
+                        }
+                        pos = next.immutable.as_ref();
+                    }
+                    None => break,
+                }
+            }
+            let immutable = pos.cloned();
+            let slower_immutable = self.immutable.take();
+            self.immutable = Some(Rc::new(MemoryMap {
+                map: Rc::new(merged_map),
+                immutable,
+                slower_immutable,
+                immutable_len,
+                immutable_depth,
+            }));
+            n = n << 2;
+        }
     }
 
     /// Does a value -> key lookup (Finds an address containing value)
@@ -848,6 +1010,8 @@ impl<'e> MemoryMap<'e> {
         let b_len = b.len();
         let a_empty = a_len == 0;
         let b_empty = b_len == 0;
+        let result_immutable = a.immutable.clone();
+        let slower_immutable = a.slower_immutable.clone();
         if (a_empty || b_empty) && a.immutable.is_none() && b.immutable.is_none() {
             let other = if a_empty { b } else { a };
             for (&key, &val) in other.map.iter() {
@@ -859,7 +1023,8 @@ impl<'e> MemoryMap<'e> {
             }
             return MemoryMap {
                 map: Rc::new(result),
-                immutable: a.immutable.clone(),
+                immutable: result_immutable,
+                slower_immutable,
                 immutable_len: a.immutable_len,
                 immutable_depth: a.immutable_depth,
             };
@@ -913,7 +1078,8 @@ impl<'e> MemoryMap<'e> {
             }
             MemoryMap {
                 map: Rc::new(result),
-                immutable: a.immutable.clone(),
+                immutable: result_immutable,
+                slower_immutable,
                 immutable_len: a.immutable_len,
                 immutable_depth: a.immutable_depth,
             }
@@ -983,7 +1149,8 @@ impl<'e> MemoryMap<'e> {
             }
             MemoryMap {
                 map: Rc::new(result),
-                immutable: a.immutable.clone(),
+                immutable: result_immutable,
+                slower_immutable,
                 immutable_len: a.immutable_len,
                 immutable_depth: a.immutable_depth,
             }
@@ -1043,13 +1210,13 @@ impl<'a, 'e> Iterator for MemoryIterUntilImm<'a, 'e> {
         match self.iter.as_mut()?.next() {
             Some(s) => Some((s.0, s.1, self.in_immutable)),
             None => {
-                match *self.immutable {
+                match self.map.immutable {
                     Some(ref i) => {
                         *self = i.iter_until_immutable(self.limit);
                         self.in_immutable = true;
                         self.next()
                     }
-                    None => None,
+                    None => return None,
                 }
             }
         }
@@ -1525,6 +1692,7 @@ fn merge_memory_undef6() {
     //  result { } ~~~~~~~~~~~~~~~~~~~~~~~
 
     for &(swap_ab, swap_cm2) in &[(false, false), (false, true), (true, false), (true, true)] {
+        println!("----------- {} {}", swap_ab, swap_cm2);
         let mut cache = MergeStateCache::new();
         let mut m = match swap_ab {
             false => cache.merge_memory(&a, &b, ctx),
@@ -1546,4 +1714,132 @@ fn merge_memory_undef6() {
         assert_eq!(c.get(addr).unwrap(), ctx.constant(2));
         assert!(result.get(addr).unwrap().is_undefined());
     }
+}
+
+#[test]
+fn immutable_tree() {
+    // Building 19-deep map and verifying it is correct
+    //                      (0)
+    //                      (1)
+    //                      (2)
+    //              (3)---->(3)
+    //               |
+    //               |<-----(4)
+    //               |      (5)
+    //               |      (6)
+    //              (7)---->(7)
+    //               |
+    //               |<-----(8)
+    //               |      (9)
+    //               |      (10)
+    //              (11)--->(11)
+    //               |
+    //               |<-----(12)
+    //               |      (13)
+    //               |      (14)
+    //     (15)---->(15)--->(15)
+    //      |
+    //      |<--------------(16)
+    //      |        |      (17)
+    //      |        |      (18)
+    //      |       (19)--->(19)
+    let ctx = &crate::operand::OperandContext::new();
+    let mut map = Memory::new();
+    let addr = ctx.sub_const(ctx.register(5), 8);
+    let addr2 = ctx.sub_const(ctx.register(5), 16);
+    for i in 0..20 {
+        map.set(addr, ctx.constant(i));
+        if i == 3 {
+            map.set(addr2, ctx.constant(8));
+        }
+        map.map.convert_immutable();
+    }
+
+    // Just show the map for debugging the test
+    let mut pos = &map.map;
+    for i in (0..21).rev() {
+        println!("--- {} ---", i);
+        println!("{:?}", pos.get(addr));
+        if matches!(i, 15) {
+            pos = pos.slower_immutable.as_deref().unwrap();
+            println!("{:?}", pos.get(addr));
+            pos = pos.slower_immutable.as_deref().unwrap();
+            println!("{:?}", pos.get(addr));
+        }
+        if matches!(i, 19 | 11 | 7 | 3) {
+            pos = pos.slower_immutable.as_deref().unwrap();
+            println!("{:?}", pos.get(addr));
+        }
+        if i != 0 {
+            pos = pos.immutable.as_deref().unwrap();
+        }
+    }
+
+    let mut pos = &map.map;
+    let mut prev_fast = None;
+    for i in (0..21).rev() {
+        println!("--- {} ---", i);
+        assert_eq!(pos.immutable_depth, i);
+        if i == 20 {
+            pos = pos.immutable.as_deref().unwrap();
+            continue;
+        }
+
+        assert_eq!(pos.get(addr), Some(ctx.constant(i as u64)));
+        if i >= 3 {
+            assert_eq!(pos.get(addr2), Some(ctx.constant(8)));
+        } else {
+            assert_eq!(pos.get(addr2), None);
+        }
+
+        if matches!(i, 19 | 11 | 7 | 3) {
+            prev_fast = pos.immutable.as_deref();
+            pos = pos.slower_immutable.as_deref().unwrap();
+            assert_eq!(pos.get(addr), Some(ctx.constant(i as u64)));
+        }
+        if i == 15 {
+            pos = pos.slower_immutable.as_deref().unwrap();
+            assert_eq!(pos.get(addr), Some(ctx.constant(i as u64)));
+
+            prev_fast = pos.immutable.as_deref();
+            pos = pos.slower_immutable.as_deref().unwrap();
+            assert_eq!(pos.get(addr), Some(ctx.constant(i as u64)));
+        }
+        if matches!(i, 16 | 12 | 8 | 4) {
+            let prev_fast = prev_fast.unwrap();
+            assert!(Rc::ptr_eq(&pos.immutable.as_deref().unwrap().map, &prev_fast.map));
+        }
+        if i != 0 {
+            pos = pos.immutable.as_deref().unwrap();
+        }
+    }
+}
+
+#[test]
+fn test_common_immutable() {
+    fn add_immutables<'e>(mem: &mut Memory<'e>, ctx: OperandCtx<'e>, count: usize) {
+        for i in 0..count {
+            mem.set(ctx.constant(444), ctx.constant(i as u64));
+            mem.map.convert_immutable();
+        }
+    }
+    let ctx = &crate::operand::OperandContext::new();
+    let mut mem = Memory::new();
+    for i in 0..72 {
+        println!("--- {} ---", i);
+        mem.set(ctx.constant(999), ctx.constant(i as u64));
+        mem.map.convert_immutable();
+        let mut a = mem.clone();
+        let mut b = mem.clone();
+        add_immutables(&mut a, ctx, i + 4);
+        add_immutables(&mut b, ctx, i + 7);
+        let common = a.map.common_immutable(&b.map).unwrap();
+        assert!(Rc::ptr_eq(&common.map, &mem.map.immutable.as_deref().unwrap().map));
+        let common = mem.map.common_immutable(&a.map).unwrap();
+        assert!(Rc::ptr_eq(&common.map, &mem.map.immutable.as_deref().unwrap().map));
+        let common = mem.map.common_immutable(&b.map).unwrap();
+        assert!(Rc::ptr_eq(&common.map, &mem.map.immutable.as_deref().unwrap().map));
+    }
+    let common = mem.map.common_immutable(&mem.map).unwrap();
+    assert!(Rc::ptr_eq(&common.map, &mem.map.map));
 }
