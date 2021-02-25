@@ -1,8 +1,7 @@
 use super::*;
 
 fn check_simplification_consistency<'e>(ctx: OperandCtx<'e>, op: Operand<'e>) {
-    use bincode::Options;
-    let config = bincode::options();
+    let config = bincode::config();
     let bytes = config.serialize(&op).unwrap();
     let back: Operand<'e> = config.deserialize_seed(ctx.deserialize_seed(), &bytes).unwrap();
     assert_eq!(op, back);
