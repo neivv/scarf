@@ -74,7 +74,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
         }
     }
 
-    /// Updates state with the condition assumed to be true/false.
+    /// Updates state with the *unresolved* condition assumed to be true if jump == true
     fn assume_jump_flag(
         &mut self,
         condition: Operand<'e>,
@@ -88,7 +88,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
                 match arith.ty {
                     ArithOpType::Equal => {
                         let unresolved_cond = match jump {
-                            true => condition.clone(),
+                            true => condition,
                             false => ctx.eq_const(condition, 0)
                         };
                         let resolved_cond = self.resolve(unresolved_cond);

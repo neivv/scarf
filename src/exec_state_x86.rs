@@ -35,7 +35,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
                     let val = ctx.mem_variable_rc(size, addr);
                     self.add_memory_constraint(ctx.arithmetic(arith.ty, arith.left, val));
                 }
-            } else if arith.left.if_constant().is_some() {
+            } else if arith.right.if_constant().is_some() {
                 if let Some((addr, mut size)) =
                     self.memory.fast_reverse_lookup(ctx, arith.left, 0xffff_ffff)
                 {
@@ -45,6 +45,11 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
                     let val = ctx.mem_variable_rc(size, addr);
                     self.add_memory_constraint(ctx.arithmetic(arith.ty, val, arith.right));
                 }
+            }
+        }
+        for i in FLAGS_INDEX..self.state.len() {
+            if self.state[i] == constraint.0 {
+                self.state[i] = ctx.const_1();
             }
         }
     }

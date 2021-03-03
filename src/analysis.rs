@@ -6,7 +6,7 @@ use copyless::BoxHelper;
 
 use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
 use crate::disasm::{Operation};
-use crate::exec_state::{self, Disassembler, ExecutionState, MergeStateCache};
+use crate::exec_state::{self, Constraint, Disassembler, ExecutionState, MergeStateCache};
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{MemAccessSize, Operand, OperandCtx};
@@ -1273,6 +1273,8 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         Some(0) => {
             let address = address + instruction_len;
             *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
+            let constraint = analysis.operand_ctx.eq_const(condition, 0);
+            state.0.add_unresolved_constraint(Constraint::new(constraint));
             analysis.add_unchecked_branch(address, state);
         }
         Some(_) => {
@@ -1304,6 +1306,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                     *cfg_out_edge = CfgOutEdges::Switch(cases, index);
                 }
             } else {
+                state.0.add_unresolved_constraint(Constraint::new(condition));
                 let dest = try_add_branch(analysis, state, to, address);
                 *cfg_out_edge = CfgOutEdges::Single(
                     dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)

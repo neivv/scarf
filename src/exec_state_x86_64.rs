@@ -285,13 +285,21 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
                     let val = ctx.mem_variable_rc(size, addr);
                     self.add_memory_constraint(ctx.arithmetic(arith.ty, arith.left, val));
                 }
-            } else if arith.left.if_constant().is_some() {
+            } else if arith.right.if_constant().is_some() {
                 if let Some((addr, size)) =
                     self.memory.fast_reverse_lookup(ctx, arith.left, u64::max_value())
                 {
                     let val = ctx.mem_variable_rc(size, addr);
                     self.add_memory_constraint(ctx.arithmetic(arith.ty, val, arith.right));
                 }
+            }
+        }
+        // Check if the constraint ends up making a flag always true
+        // (Could do more extensive checks in state but this is cheap
+        // and has uses for control flow tautologies)
+        for i in FLAGS_INDEX..self.state.len() {
+            if self.state[i] == constraint.0 {
+                self.state[i] = ctx.const_1();
             }
         }
         self.resolved_constraint = Some(constraint);

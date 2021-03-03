@@ -462,3 +462,60 @@ fn movdqa() {
          (ctx.register(3), ctx.mem32(ctx.add_const(ctx.register(4), 0xc))),
     ]);
 }
+
+#[test]
+fn jump_constraint_missed1() {
+    let ctx = &OperandContext::new();
+    // When reaching the `jg bad`, both skip_loop and out-of-loop branches
+    // aren't going to jump. And as such jle branch should always jump
+    // jg means Z = 0 & S = O
+    // When coming from skip_loop, it knows that eax = 0 => edx = 0 => Z = 1,
+    // from loop Z = 1 due to preceding jne
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x39, 0xd0, // cmp eax, edx
+        0x73, 0x08, // jae skip_loop
+        0x29, 0xc2, // sub edx, eax
+        // loop:
+        0x83, 0xea, 0x01, // sub edx, 1
+        0x75, 0xfb, // jne loop
+        0x90, // nop
+        // skip_loop:
+        0x7f, 0x02, // jg bad
+        0x7e, 0x01, // jle end
+        // bad
+        0xcc, // int3
+        // end:
+        0x31, 0xd2, // xor edx, edx
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(2), ctx.constant(0)),
+    ]);
+}
+
+#[test]
+fn jump_constraint_missed2() {
+    let ctx = &OperandContext::new();
+    // Same as above but no nop before skip_loop
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x39, 0xd0, // cmp eax, edx
+        0x73, 0x07, // jae skip_loop
+        0x29, 0xc2, // sub edx, eax
+        // loop:
+        0x83, 0xea, 0x01, // sub edx, 1
+        0x75, 0xfb, // jne loop
+        // skip_loop:
+        0x7f, 0x02, // jg bad
+        0x7e, 0x01, // jle end
+        // bad
+        0xcc, // int3
+        // end:
+        0x31, 0xd2, // xor edx, edx
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(2), ctx.constant(0)),
+    ]);
+}
