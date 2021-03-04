@@ -1102,24 +1102,22 @@ pub fn merge_states<'a: 'r, 'r>(
         // If one state has no constraint but matches the constrait of the other
         // state, the constraint should be kept on merge.
         if old.unresolved_constraint.is_none() {
-            if let Some(ref con) = new.unresolved_constraint {
+            if let Some(con) = new.unresolved_constraint {
                 // As long as we're working with flags, limiting to lowest bit
                 // allows simplifying cases like (undef | 1)
                 let lowest_bit = ctx.and_const(con.0, 1);
-                match old.resolve_apply_constraints(lowest_bit).if_constant() {
-                    Some(1) => result = Some(con.clone()),
-                    _ => (),
+                if old.resolve_apply_constraints(lowest_bit) == ctx.const_1() {
+                    result = Some(con);
                 }
             }
         }
         if new.unresolved_constraint.is_none() {
-            if let Some(ref con) = old.unresolved_constraint {
+            if let Some(con) = old.unresolved_constraint {
                 // As long as we're working with flags, limiting to lowest bit
                 // allows simplifying cases like (undef | 1)
                 let lowest_bit = ctx.and_const(con.0, 1);
-                match new.resolve_apply_constraints(lowest_bit).if_constant() {
-                    Some(1) => result = Some(con.clone()),
-                    _ => (),
+                if new.resolve_apply_constraints(lowest_bit) == ctx.const_1() {
+                    result = Some(con);
                 }
             }
         }

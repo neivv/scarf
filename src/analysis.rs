@@ -1206,7 +1206,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         to: Operand<'e>,
     ) -> Option<(VirtualAddress, Operand<'e>, u64, MemAccessSize)> {
         let (base, mem) = match to.if_arithmetic_add() {
-            Some((l, r)) => Operand::either(l, r, |x| x.if_constant())?,
+            Some((l, r)) => (r.if_constant()?, l),
             None => (0, to),
         };
         mem.if_memory()

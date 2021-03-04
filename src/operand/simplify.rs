@@ -80,13 +80,14 @@ pub fn simplify_arith<'e>(
                     }
                 }
             }
-            if left.if_constant() == Some(0) {
-                return ctx.const_0();
+            let zero = ctx.const_0();
+            if left == zero {
+                return zero;
             }
             if left == right {
                 // x % x == 0, x / x = 1
                 if ty == ArithOpType::Modulo {
-                    return ctx.const_0();
+                    return zero;
                 } else {
                     return ctx.const_1();
                 }
@@ -1143,7 +1144,7 @@ pub fn simplify_rsh<'e>(
     }
 }
 
-fn simplify_add_merge_masked_reverting<'e>(ops: &mut AddSlice<'e>) -> u64 {
+fn simplify_add_merge_masked_reverting<'e>(ops: &mut AddSlice<'e>, ctx: OperandCtx<'e>) -> u64 {
     // Shouldn't need as complex and_const as other places use
     fn and_const<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
         match op.ty() {
@@ -1154,14 +1155,14 @@ fn simplify_add_merge_masked_reverting<'e>(ops: &mut AddSlice<'e>) -> u64 {
         }
     }
 
-    fn check_vals<'e>(a: Operand<'e>, b: Operand<'e>) -> bool {
+    fn check_vals<'e>(a: Operand<'e>, b: Operand<'e>, ctx: OperandCtx<'e>) -> bool {
         if let Some((l, r)) = a.if_arithmetic_sub() {
-            if l.if_constant() == Some(0) && r == b {
+            if l == ctx.const_0() && r == b {
                 return true;
             }
         }
         if let Some((l, r)) = b.if_arithmetic_sub() {
-            if l.if_constant() == Some(0) && r == a {
+            if l == ctx.const_0() && r == a {
                 return true;
             }
         }
@@ -1183,7 +1184,7 @@ fn simplify_add_merge_masked_reverting<'e>(ops: &mut AddSlice<'e>) -> u64 {
                     let other_op = ops[j].0;
                     if let Some((other_constant, other_val)) = and_const(other_op) {
                         let ok = other_constant == constant &&
-                            check_vals(val, other_val) &&
+                            check_vals(val, other_val, ctx) &&
                             ops[j].1 == false;
                         if ok {
                             sum = sum.wrapping_add(constant.wrapping_add(1));
@@ -2217,12 +2218,13 @@ fn simplify_and_main<'e>(
         if ops.is_empty() {
             break;
         }
+        let zero = ctx.const_0();
         for bits in zero_bit_ranges(const_remain) {
             slice_filter_map(ops, |op| {
                 simplify_with_zero_bits(op, &bits, ctx, swzb_ctx)
-                    .and_then(|x| match x.if_constant() {
-                        Some(0) => None,
-                        _ => Some(x),
+                    .and_then(|x| match x == zero {
+                        true => None,
+                        false => Some(x),
                     })
             });
             // Unlike the other is_empty check above this returns 0, since if zero bit filter
@@ -2230,7 +2232,7 @@ fn simplify_and_main<'e>(
             // (simplify_with_zero_bits is defined to return None instead of Some(const(0)),
             // and obviously constant & 0 == 0)
             if ops.is_empty() {
-                return Ok(ctx.const_0());
+                return Ok(zero);
             }
         }
         // Simplify (x | y) & mask to (x | (y & mask)) if mask is useless to x
@@ -2310,11 +2312,11 @@ fn simplify_and_main<'e>(
 
     // Replace not(x) & not(y) with not(x | y)
     if ops.len() >= 2 {
-        let neq_compare_count = ops.iter().filter(|&&x| is_neq_compare(x)).count();
+        let neq_compare_count = ops.iter().filter(|&&x| is_neq_compare(x, ctx)).count();
         if neq_compare_count >= 2 {
             let not: Result<_, SizeLimitReached> = ctx.simplify_temp_stack().alloc(|slice| {
                 for &op in ops.iter() {
-                    if is_neq_compare(op) {
+                    if is_neq_compare(op, ctx) {
                         if let Some((l, _)) = op.if_arithmetic_eq() {
                             slice.push(l)?;
                         }
@@ -2324,7 +2326,7 @@ fn simplify_and_main<'e>(
                 Ok(simplify_eq(or, ctx.const_0(), ctx))
             });
             if let Ok(not) = not {
-                ops.retain(|x| !is_neq_compare(x));
+                ops.retain(|x| !is_neq_compare(x, ctx));
                 ops.push(not)?;
             }
         }
@@ -2371,10 +2373,10 @@ fn simplify_and_main<'e>(
     Ok(tree)
 }
 
-fn is_neq_compare(op: Operand<'_>) -> bool {
+fn is_neq_compare<'e>(op: Operand<'e>, ctx: OperandCtx<'e>) -> bool {
     match op.if_arithmetic_eq() {
-        Some((l, r)) => match l.ty() {
-            OperandType::Arithmetic(a) => a.is_compare_op() && r.if_constant() == Some(0),
+        Some((l, r)) if r == ctx.const_0() => match l.ty() {
+            OperandType::Arithmetic(a) => a.is_compare_op(),
             _ => false,
         },
         _ => false,
@@ -3698,7 +3700,7 @@ fn simplify_collected_add_sub_ops<'e>(
 ) -> Result<(), SizeLimitReached> {
     heapsort::sort(ops);
     simplify_add_merge_muls(ops, ctx);
-    let new_consts = simplify_add_merge_masked_reverting(ops);
+    let new_consts = simplify_add_merge_masked_reverting(ops, ctx);
     let const_sum = const_sum.wrapping_add(new_consts);
     if ops.is_empty() {
         if const_sum != 0 {
@@ -4024,10 +4026,11 @@ fn simplify_with_and_mask_inner<'e>(
                         }
                     }
                     // Possibly common to get zeros here
-                    if simplified_left.if_constant() == Some(0) {
+                    let zero = ctx.const_0();
+                    if simplified_left == zero {
                         return simplified_right;
                     }
-                    if simplified_right.if_constant() == Some(0) {
+                    if simplified_right == zero {
                         return simplified_left;
                     }
                     if should_stop_with_and_mask(swzb_ctx) {

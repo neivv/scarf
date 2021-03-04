@@ -398,8 +398,16 @@ impl<'e> Iterator for IterNoMemAddr<'e> {
 macro_rules! operand_context_const_methods {
     ($lt:lifetime, $($name:ident, $val:expr,)*) => {
         $(
+            // Inline and a bit redundant implementation to allow
+            // const_0() and other ones with less than 0x40 be
+            // just an array read which is known to be in bounds.
+            #[inline]
             pub fn $name(&$lt self) -> Operand<$lt> {
-                self.constant($val)
+                if ($val as u64) <= 0x40 {
+                    unsafe { self.common_operands[$val & 0x3f].cast() }
+                } else {
+                    self.constant($val)
+                }
             }
         )*
     }

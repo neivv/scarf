@@ -3094,7 +3094,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             _ => self.mem16_32(),
         };
         let (_, _, imm) = self.parse_modrm_imm(op_size, MemAccessSize::Mem8)?;
-        if imm.if_constant() == Some(0) {
+        if imm == self.ctx.const_0() {
             return Ok(());
         }
         let arith = match (self.read_u8(1)? >> 3) & 0x7 {
@@ -3165,7 +3165,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let ctx = self.ctx;
         let imm = ctx.and_const(imm, 0x1f);
         let hi = self.rm_to_dest_and_operand(&hi);
-        if imm.if_constant() != Some(0) {
+        if imm != ctx.const_0() {
             // TODO flags
             let low = self.r_to_operand(low);
             self.output(
@@ -3193,7 +3193,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let ctx = self.ctx;
         let imm = ctx.and_const(imm, 0x1f);
         let low = self.rm_to_dest_and_operand(&low);
-        if imm.if_constant() != Some(0) {
+        if imm != ctx.const_0() {
             // TODO flags
             let hi = self.r_to_operand(hi);
             self.output(

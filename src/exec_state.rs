@@ -93,17 +93,15 @@ pub trait ExecutionState<'e> : Clone + 'e {
                         };
                         let resolved_cond = self.resolve(unresolved_cond);
                         self.add_resolved_constraint(Constraint::new(resolved_cond));
-                        let assignable_flag =
-                            Operand::either(left, right, |x| {
-                                x.if_constant().filter(|&c| c == 0)
-                            })
-                            .map(|(_, other)| {
-                                other.if_arithmetic_eq()
+                        let assignable_flag = Some(())
+                            .filter(|()| right == ctx.const_0())
+                            .map(|()| {
+                                left.if_arithmetic_eq()
                                     .and_then(|(l, r)| {
                                         r.if_constant()
                                             .map(|c| (l, if c == 0 { jump } else { !jump }))
                                     })
-                                    .unwrap_or_else(|| (other, !jump))
+                                    .unwrap_or_else(|| (left, !jump))
                             })
                             .and_then(|(other, flag_state)| match *other.ty() {
                                 OperandType::Flag(f) => Some((f, flag_state)),
