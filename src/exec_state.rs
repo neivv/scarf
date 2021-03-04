@@ -99,8 +99,10 @@ pub trait ExecutionState<'e> : Clone + 'e {
                             })
                             .map(|(_, other)| {
                                 other.if_arithmetic_eq()
-                                    .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
-                                    .map(|(c, other)| (other, if c == 0 { jump } else { !jump }))
+                                    .and_then(|(l, r)| {
+                                        r.if_constant()
+                                            .map(|c| (l, if c == 0 { jump } else { !jump }))
+                                    })
                                     .unwrap_or_else(|| (other, !jump))
                             })
                             .and_then(|(other, flag_state)| match *other.ty() {
@@ -358,8 +360,8 @@ where F: FnMut(&OperandType<'e>) -> bool,
 
 fn other_if_eq_zero<'e>(op: Operand<'e>) -> Option<Operand<'e>> {
     op.if_arithmetic_eq()
-        .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant().filter(|&c| c == 0)))
-        .map(|x| x.1)
+        .filter(|(_, r)| r.if_constant() == Some(0))
+        .map(|(l, _)| l)
 }
 
 /// Splits the constraint at ands that can be applied separately
@@ -370,6 +372,8 @@ fn apply_constraint_split<'e>(
     val: Operand<'e>,
     with: bool,
 ) -> Operand<'e> {
+    let zero = ctx.const_0();
+    let one = ctx.const_1();
     match constraint.ty() {
         OperandType::Arithmetic(arith) if {
             arith.ty == ArithOpType::And &&
@@ -390,32 +394,28 @@ fn apply_constraint_split<'e>(
             let y = other_if_eq_zero(arith.right);
             if let (Some(x), Some(y)) = (x, y) {
                 // Check also for (x & y) == 0 (Replaced with 1)
-                let (cmp, subst) = other_if_eq_zero(val)
-                    .map(|x| (x, 1))
-                    .unwrap_or_else(|| (val, 0));
+                let (cmp, subst_1) = other_if_eq_zero(val)
+                    .map(|x| (x, true))
+                    .unwrap_or_else(|| (val, false));
                 if let Some((l, r)) = cmp.if_arithmetic_and() {
                     if (l == x && r == y) || (l == y && r == x) {
-                        return ctx.constant(subst);
+                        return if subst_1 { one } else { zero };
                     }
                 }
             }
-            let subst_val = ctx.constant(if with { 1 } else { 0 });
+            let subst_val = if with { one } else { zero };
             ctx.substitute(val, constraint, subst_val, 6)
         }
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Equal => {
-            let (l, r) = (arith.left, arith.right);
-            let other = Operand::either(l, r, |x| x.if_constant().filter(|&c| c == 0))
-                .map(|x| x.1)
-                .filter(|x| x.relevant_bits() == (0..1));
-            if let Some(other) = other {
-                apply_constraint_split(ctx, other, val, !with)
+            if arith.right == zero && arith.left.relevant_bits() == (0..1) {
+                apply_constraint_split(ctx, arith.left, val, !with)
             } else {
-                let subst_val = ctx.constant(if with { 1 } else { 0 });
+                let subst_val = if with { one } else { zero };
                 ctx.substitute(val, constraint, subst_val, 6)
             }
         }
         _ => {
-            let subst_val = ctx.constant(if with { 1 } else { 0 });
+            let subst_val = if with { one } else { zero };
             ctx.substitute(val, constraint, subst_val, 6)
         }
     }

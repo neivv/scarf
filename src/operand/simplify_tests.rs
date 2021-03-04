@@ -3613,10 +3613,7 @@ fn simplify_eq_consistency4() {
         ),
         ctx.mem32(ctx.register(1)),
     );
-    assert!(
-        op1.iter().any(|x| x.if_arithmetic_and().is_some()) == false,
-        "Operand didn't simplify correctly: {}", op1,
-    );
+    assert_eq!(op1, ctx.const_0());
 }
 
 #[test]
@@ -3629,10 +3626,7 @@ fn simplify_eq_consistency5() {
             ctx.mem8(ctx.register(0)),
         ),
     );
-    assert!(
-        op1.iter().any(|x| x.if_arithmetic_and().is_some()) == false,
-        "Operand didn't simplify correctly: {}", op1,
-    );
+    assert_eq!(op1, ctx.const_0());
 }
 
 #[test]
@@ -5856,5 +5850,121 @@ fn gt_and_ne() {
         ),
         0xd,
     );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn eq_simplify_const_right() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.eq_const(
+        ctx.register(6),
+        6,
+    );
+    let op2 = ctx.eq_const(
+        ctx.eq_const(
+            ctx.register(6),
+            6,
+        ),
+        0,
+    );
+    let op3 = ctx.eq_const(
+        ctx.and_const(
+            ctx.register(6),
+            0xffff,
+        ),
+        6,
+    );
+    assert_eq!(op1.if_arithmetic_eq().unwrap().1, ctx.constant(6));
+    assert_eq!(op2.if_arithmetic_eq().unwrap().1, ctx.constant(0));
+    assert_eq!(op2.if_arithmetic_eq().unwrap().0.if_arithmetic_eq().unwrap().1, ctx.constant(6));
+    assert_eq!(op3.if_arithmetic_eq().unwrap().1, ctx.constant(6));
+}
+
+#[test]
+fn simplify_eq3() {
+    let ctx = &OperandContext::new();
+    let sub = ctx.sub(
+        ctx.mem32(ctx.constant(0x29a)),
+        ctx.mem32(ctx.register(2)),
+    );
+    let op1 = ctx.eq_const(
+        sub,
+        0x4d2,
+    );
+    assert_eq!(op1.if_arithmetic_eq().unwrap().0, sub);
+    assert_eq!(op1.if_arithmetic_eq().unwrap().1, ctx.constant(0x4d2));
+}
+
+#[test]
+fn simplify_eq4() {
+    let ctx = &OperandContext::new();
+    let and = ctx.and_const(
+        ctx.sub(
+            ctx.mem32(ctx.constant(0x29a)),
+            ctx.mem32(ctx.register(2)),
+        ),
+        0xffff_ffff,
+    );
+    let op1 = ctx.eq_const(
+        and,
+        0x4d2,
+    );
+    assert_eq!(op1.if_arithmetic_eq().unwrap().0, and);
+    assert_eq!(op1.if_arithmetic_eq().unwrap().1, ctx.constant(0x4d2));
+}
+
+#[test]
+fn simplify_or_gt_not() {
+    let ctx = &OperandContext::new();
+    // Can't simplify (2 > (x & 0xffff_ffff)) | x == 2 to (3 > (x & 0xffff_ffff))
+    // as that would change result x == 0x1_0000_0002
+    let op1 = ctx.or(
+        ctx.gt_const_left(
+            2,
+            ctx.and_const(
+                ctx.register(0),
+                0xffff_ffff,
+            ),
+        ),
+        ctx.eq_const(
+            ctx.register(0),
+            2,
+        ),
+    );
+    let eq1 = ctx.gt_const_left(
+        3,
+        ctx.and_const(
+            ctx.register(0),
+            0xffff_ffff,
+        ),
+    );
+    assert_ne!(op1, eq1);
+}
+
+#[test]
+fn simplify_eq5() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.register(1),
+                2,
+            ),
+            0xffff_ffff,
+        ),
+        0,
+    );
+    let ne1 = ctx.eq_const(
+        ctx.register(1),
+        2,
+    );
+    let eq1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.register(1),
+            0xffff_ffff,
+        ),
+        2,
+    );
+    assert_ne!(op1, ne1);
     assert_eq!(op1, eq1);
 }

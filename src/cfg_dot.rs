@@ -156,12 +156,12 @@ fn comparision_from_operand<'e>(
         OperandType::Arithmetic(arith) => {
             let l = arith.left;
             let r = arith.right;
+            let zero = ctx.const_0();
             match arith.ty {
                 ArithOpType::Equal => {
-                    let other = match (l.ty(), r.ty()) {
-                        (&OperandType::Constant(0), _) => Some(r),
-                        (_, &OperandType::Constant(0)) => Some(l),
-                        _ => None,
+                    let other = match r == zero {
+                        true => Some(l),
+                        false => None,
                     };
                     if let Some(other) = other {
                         if let Some(inner) = comparision_from_operand(ctx, other) {
@@ -186,8 +186,8 @@ fn comparision_from_operand<'e>(
                             let (l2, r2) = compare_base_op(ctx, other).decide(ctx);
                             Some(ComparisionGuess {
                                 comparision: Comparision::Equal,
-                                left: l2.clone(),
-                                right: r2.clone(),
+                                left: l2,
+                                right: r2,
                                 size,
                             })
                         }
@@ -236,8 +236,8 @@ fn comparision_from_operand<'e>(
                         let (l, r, size) = extract_masks(l, r);
                         Some(ComparisionGuess {
                             comparision: Comparision::Equal,
-                            left: l.clone(),
-                            right: r.clone(),
+                            left: l,
+                            right: r,
                             size,
                         })
                     }
@@ -249,7 +249,7 @@ fn comparision_from_operand<'e>(
                             Some(ComparisionGuess {
                                 comparision: Comparision::SignedLessThan,
                                 left: op.1,
-                                right: ctx.constant(0),
+                                right: zero,
                                 size: size,
                             })
                         } else {
@@ -290,15 +290,15 @@ fn comparision_from_operand<'e>(
                         if check_signed_lt_zero(right, size) {
                             Some(ComparisionGuess {
                                 comparision: Comparision::SignedLessThan,
-                                left: left.clone(),
-                                right: ctx.constant(0),
+                                left: left,
+                                right: zero,
                                 size,
                             })
                         } else {
                             Some(ComparisionGuess {
                                 comparision: Comparision::GreaterThan,
-                                left: left.clone(),
-                                right: right.clone(),
+                                left: left,
+                                right: right,
                                 size,
                             })
                         }
@@ -1131,12 +1131,12 @@ fn recognize_compare_operands_unsigned() {
     );
     let comp = comparision_from_operand(ctx, op).unwrap();
     assert_eq!(comp, ComparisionGuess {
-        comparision: Comparision::LessOrEqual,
-        left: ctx.sub(
+        comparision: Comparision::GreaterThan,
+        left: ctx.constant(1235),
+        right: ctx.sub(
             ctx.mem32(ctx.register(2)),
             ctx.mem32(ctx.constant(666)),
         ),
-        right: ctx.constant(1234),
         size: MemAccessSize::Mem32,
     });
 }

@@ -1648,17 +1648,16 @@ impl<'e> Operand<'e> {
     /// Useful for detecting 32-bit register which is represented as `Register(r) & ffff_ffff`.
     pub fn if_and_masked_register(self) -> Option<(Register, u64)> {
         let (l, r) = self.if_arithmetic_and()?;
-        let (reg, other) = Operand::either(l, r, |x| x.if_register())?;
-        let other = other.if_constant()?;
-        Some((reg, other))
+        let reg = l.if_register()?;
+        let c = r.if_constant()?;
+        Some((reg, c))
     }
 
     /// Returns `(other, constant)` if operand is an and mask with constant,
     /// or just (self, u64::max_value())
     pub fn and_masked(this: Operand<'e>) -> (Operand<'e>, u64) {
         this.if_arithmetic_and()
-            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
-            .map(|(c, o)| (o, c))
+            .and_then(|(l, r)| Some((l, r.if_constant()?)))
             .unwrap_or_else(|| (this, u64::max_value()))
     }
 

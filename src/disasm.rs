@@ -3698,9 +3698,9 @@ fn dest_operand<'e>(val: Operand<'e>) -> DestOperand<'e> {
         Arithmetic(ref arith) => {
             match arith.ty {
                 ArithOpType::And => {
-                    let result = Operand::either(arith.left, arith.right, |x| x.if_constant())
-                        .and_then(|(c, other)| {
-                            let reg = other.if_register()?;
+                    let result = arith.right.if_constant()
+                        .and_then(|c| {
+                            let reg = arith.left.if_register()?;
                             match c {
                                 0xff => Some(DestOperand::Register8Low(reg)),
                                 0xffff => Some(DestOperand::Register16(reg)),
@@ -3715,9 +3715,11 @@ fn dest_operand<'e>(val: Operand<'e>) -> DestOperand<'e> {
                 ArithOpType::Rsh => {
                     if arith.right.if_constant() == Some(8) {
                         let reg = arith.left.if_arithmetic_and()
-                            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()))
-                            .filter(|&(c, _)| c == 0xff00)
-                            .and_then(|(_, other)| other.if_register());
+                            .and_then(|(l, r)| {
+                                r.if_constant()
+                                    .filter(|&c| c == 0xff00)?;
+                                l.if_register()
+                            });
                         if let Some(reg) = reg {
                             return DestOperand::Register8High(reg);
                         }

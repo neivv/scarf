@@ -1305,28 +1305,72 @@ fn simplify_eq_ops<'e>(
     //
     // Sorting without the mask, hopefully is valid way to keep
     // ordering stable.
+    let mut constant = if let Some((c, neg)) =
+        ops.last().and_then(|op| Some((op.0.if_constant()?, op.1)))
+    {
+        ops.pop();
+        // Leaving constant positive if it's negated as it'll go to right hand side
+        if neg {
+            c
+        } else {
+            0u64.wrapping_sub(c)
+        }
+    } else {
+        0
+    };
+    let zero = ctx.const_0();
+    if ops.len() == 0 {
+        return if constant == 0 {
+            ctx.const_1()
+        } else {
+            zero
+        };
+    }
     heapsort::sort_by(ops, |a, b| Operand::and_masked(a.0) < Operand::and_masked(b.0));
-    if ops[ops.len() - 1].1 == true {
+    if constant >= 0x8000_0000_0000_0000 ||
+        (constant == 0 && ops.last().filter(|x| x.1 == true).is_some())
+    {
         for op in ops.iter_mut() {
             op.1 = !op.1;
         }
+        constant = 0u64.wrapping_sub(constant);
+    }
+    constant &= add_sub_mask;
+    let (low, high) = sum_valid_range(ops);
+    if low < high {
+        if constant < low || constant > high {
+            return zero;
+        }
+    } else {
+        if constant < low && constant > high {
+            return zero;
+        }
     }
     match ops.len() {
-        0 => ctx.const_1(),
-        1 => match *ops[0].0.ty() {
-            OperandType::Constant(0) => ctx.const_1(),
-            OperandType::Constant(_) => ctx.const_0(),
-            _ => {
+        1 => {
+            let swzb_ctx = &mut SimplifyWithZeroBits::default();
+            if constant != 0 {
+                let (mut op, neg) = ops[0];
+                let constant = if neg {
+                    0u64.wrapping_sub(constant) & add_sub_mask
+                } else {
+                    constant
+                };
+                let relbits = op.relevant_bits_mask();
+                if add_sub_mask & relbits != relbits {
+                    op = simplify_and_const(op, add_sub_mask, ctx, swzb_ctx);
+                }
+                simplify_eq_const(op, constant, ctx)
+            } else {
+                // constant == 0 so ops[0] == 0 comparision
                 if let Some((left, right)) = ops[0].0.if_arithmetic_eq() {
                     // Check for (x == 0) == 0
-                    let either_const = Operand::either(left, right, |x| x.if_constant());
-                    if let Some((0, other)) = either_const {
-                        if other.relevant_bits().end == 1 {
-                            return other.clone();
+                    if right == zero {
+                        if left.relevant_bits().end == 1 {
+                            return left;
                         }
                     }
                 }
-                let swzb_ctx = &mut SimplifyWithZeroBits::default();
                 // Simplify (c > x) == 0 to x > (c - 1)
                 // Wouldn't be valid for (0 > x) but it should never be created.
                 // Same for (x > c) == 0 to c + 1 > x
@@ -1403,25 +1447,16 @@ fn simplify_eq_ops<'e>(
                 let arith = ArithOperand {
                     ty: ArithOpType::Equal,
                     left: op,
-                    right: ctx.const_0(),
+                    right: zero,
                 };
                 ctx.intern(OperandType::Arithmetic(arith))
             }
-        },
-        2 => {
-            let first_const = ops[0].0.if_constant().is_some();
-
-            let (left, right) = match first_const {
-                // ops[1] isn't const, so make it to not need sub(0, x)
-                true => match ops[1].1 {
-                    false => (&ops[0], &ops[1]),
-                    true => (&ops[1], &ops[0]),
-                },
-                // Otherwise just make ops[0] not need sub
-                _ => match ops[0].1 {
-                    false => (&ops[1], &ops[0]),
-                    true => (&ops[0], &ops[1]),
-                },
+        }
+        2 if constant == 0 => {
+            // Make ops[0] not need sub
+            let (left, right) = match ops[0].1 {
+                false => (&ops[1], &ops[0]),
+                true => (&ops[0], &ops[1]),
             };
             let mask = add_sub_mask;
             fn make_op<'e>(
@@ -1455,50 +1490,75 @@ fn simplify_eq_ops<'e>(
             simplify_eq_2_ops(left, right, ctx)
         },
         _ => {
-            let (left_rel_bits, right_rel_bits) = relevant_bits_for_eq(&ops);
-            // Construct a + b + c == d + e + f
-            // where left side has all non-negated terms,
-            // and right side has all negated terms (Negation forgotten as they're on the right)
+            let mut right_tree;
             let mut left_tree = match ops.iter().position(|x| x.1 == false) {
                 Some(i) => ops.swap_remove(i).0,
-                None => ctx.const_0(),
+                None => zero,
             };
-            let mut right_tree = match ops.iter().position(|x| x.1 == true) {
-                Some(i) => ops.swap_remove(i).0,
-                None => ctx.const_0(),
-            };
-            while let Some((op, neg)) = ops.pop() {
-                if !neg {
+            let (left_rel_bits, right_rel_bits) = relevant_bits_for_eq(&ops);
+            if constant == 0 {
+                // Construct a + b + c == d + e + f
+                // where left side has all non-negated terms,
+                // and right side has all negated terms
+                // (Negation forgotten as they're on the right)
+                right_tree = match ops.iter().position(|x| x.1 == true) {
+                    Some(i) => ops.swap_remove(i).0,
+                    None => zero,
+                };
+                while let Some((op, neg)) = ops.pop() {
+                    if !neg {
+                        let arith = ArithOperand {
+                            ty: ArithOpType::Add,
+                            left: left_tree,
+                            right: op,
+                        };
+                        left_tree = ctx.intern(OperandType::Arithmetic(arith));
+                    } else {
+                        let arith = ArithOperand {
+                            ty: ArithOpType::Add,
+                            left: right_tree,
+                            right: op,
+                        };
+                        right_tree = ctx.intern(OperandType::Arithmetic(arith));
+                    }
+                }
+                if add_sub_mask & left_rel_bits != left_rel_bits {
+                    left_tree = simplify_and_const(
+                        left_tree,
+                        add_sub_mask,
+                        ctx,
+                        &mut SimplifyWithZeroBits::default(),
+                    );
+                }
+                if add_sub_mask & right_rel_bits != right_rel_bits {
+                    right_tree = simplify_and_const(
+                        right_tree,
+                        add_sub_mask,
+                        ctx,
+                        &mut SimplifyWithZeroBits::default(),
+                    );
+                }
+            } else {
+                // Collect everything to left, negate what needs to be negated,
+                // and put constant to right
+
+                while let Some((op, neg)) = ops.pop() {
                     let arith = ArithOperand {
-                        ty: ArithOpType::Add,
+                        ty: if neg { ArithOpType::Sub } else { ArithOpType::Add },
                         left: left_tree,
                         right: op,
                     };
                     left_tree = ctx.intern(OperandType::Arithmetic(arith));
-                } else {
-                    let arith = ArithOperand {
-                        ty: ArithOpType::Add,
-                        left: right_tree,
-                        right: op,
-                    };
-                    right_tree = ctx.intern(OperandType::Arithmetic(arith));
                 }
-            }
-            if add_sub_mask & left_rel_bits != left_rel_bits {
-                left_tree = simplify_and_const(
-                    left_tree,
-                    add_sub_mask,
-                    ctx,
-                    &mut SimplifyWithZeroBits::default(),
-                );
-            }
-            if add_sub_mask & right_rel_bits != right_rel_bits {
-                right_tree = simplify_and_const(
-                    right_tree,
-                    add_sub_mask,
-                    ctx,
-                    &mut SimplifyWithZeroBits::default(),
-                );
+                if right_rel_bits != 0 || add_sub_mask & left_rel_bits != left_rel_bits {
+                    left_tree = simplify_and_const(
+                        left_tree,
+                        add_sub_mask,
+                        ctx,
+                        &mut SimplifyWithZeroBits::default(),
+                    );
+                }
+                right_tree = ctx.constant(constant);
             }
             let arith = ArithOperand {
                 ty: ArithOpType::Equal,
@@ -1509,6 +1569,25 @@ fn simplify_eq_ops<'e>(
             ctx.intern(ty)
         }
     }
+}
+
+fn simplify_eq_const<'e>(
+    left: Operand<'e>,
+    right: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    if right == 1 {
+        // Simplify x == 1 to x if x is just the lowest bit
+        if left.relevant_bits().end == 1 {
+            return left;
+        }
+    }
+    let arith = ArithOperand {
+        ty: ArithOpType::Equal,
+        left,
+        right: ctx.constant(right),
+    };
+    ctx.intern(OperandType::Arithmetic(arith))
 }
 
 fn simplify_eq_2_ops<'e>(
@@ -1537,14 +1616,6 @@ fn simplify_eq_2_ops<'e>(
         false => (right, left),
     };
 
-    if let Some((c, other)) = Operand::either(left, right, |x| x.if_constant()) {
-        if c == 1 {
-            // Simplify x == 1 to x if x is just the lowest bit
-            if other.relevant_bits().end == 1 {
-                return other;
-            }
-        }
-    }
     if let Some(result) = simplify_eq_2op_check_signed_less(ctx, left, right) {
         return result;
     }
@@ -1608,12 +1679,13 @@ fn simplify_eq_2op_check_signed_less<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
 ) -> Option<Operand<'e>> {
+    let zero = ctx.const_0();
     let ((cmp_l, cmp_r, sign_bit, size), other) = Operand::either(left, right, |op| {
         // Sign: (((x - y) & sign_bit) == 0) == 0
         let (sub, sign) = op.if_arithmetic_eq()
-            .filter(|(_, r)| r.if_constant() == Some(0))
+            .filter(|&(_, r)| r == zero)
             .and_then(|(l, _)| l.if_arithmetic_eq())
-            .filter(|(_, r)| r.if_constant() == Some(0))
+            .filter(|&(_, r)| r == zero)
             .and_then(|(l, _)| l.if_arithmetic_and())?;
         let sign_bit = sign.if_constant()?;
         let size = match sign_bit {
@@ -1646,7 +1718,7 @@ fn simplify_eq_2op_check_signed_less<'e>(
                 Some(s) if s < sign_bit => Some(other),
                 Some(_) => {
                     let (l, r) = other.if_arithmetic_eq()?;
-                    if r.if_constant() == Some(0) {
+                    if r == zero {
                         Some(l)
                     } else {
                         None
@@ -1704,6 +1776,41 @@ fn simplify_eq_masked_add<'e>(operand: Operand<'e>) -> Option<(u64, Operand<'e>)
         }
         _ => None,
     }
+}
+
+/// Returns (lowest, highest) constant what the sum of all `ops` can have.
+/// Both low and high are inclusive.
+///
+/// Assumes that ops have been simplified already, so cases like x - x won't
+/// exist. Or (0..0) ops.
+///
+/// The returned range can imply that x is in valid range while it is not,
+/// but not imply that x is in invalid range when it is not.
+///
+/// And the returned range can have low > high, meaning that the values
+/// between ends aren't possible. E.g. Mem8 - Mem8 has valid range of
+/// (0xffff_ffff_ffff_ff01, 0xff)
+fn sum_valid_range(ops: &[(Operand<'_>, bool)]) -> (u64, u64) {
+    let mut low = 0u64;
+    let mut high = 0u64;
+    let mut sum = 1u64;
+    for &val in ops {
+        let bits = val.0.relevant_bits();
+        let max = match 1u64.checked_shl(bits.end as u32) {
+            Some(x) => x.wrapping_sub(1),
+            None => return (0, u64::max_value()),
+        };
+        match sum.checked_add(max) {
+            Some(s) => sum = s,
+            None => return (0, u64::max_value()),
+        };
+        if val.1 {
+            low = low.wrapping_sub(max);
+        } else {
+            high = high.wrapping_add(max);
+        }
+    }
+    (low, high)
 }
 
 /// Return Some(smaller) if the the operand with smaller mask is same as the
@@ -2409,14 +2516,14 @@ fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
                 }
             }
             OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Equal => {
-                let (c, other) = Operand::either(arith.left, arith.right, |x| x.if_constant())?;
+                let c = arith.right.if_constant()?;
                 if c == 0 {
-                    if let Some(mut result) = check(other) {
+                    if let Some(mut result) = check(arith.left) {
                         result.4 = !result.4;
                         return Some(result);
                     }
                 }
-                Some((c, c, u64::max_value(), other, true))
+                Some((c, c, u64::max_value(), arith.left, true))
             }
             _ => None,
         }
@@ -2805,8 +2912,8 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
                 let right = arith.right;
                 match arith.ty {
                     ArithOpType::Equal => {
-                        let (c, other) = Operand::either(left, right, |x| x.if_constant())?;
-                        return Some((c, other, MatchType::Equal));
+                        let c = right.if_constant()?;
+                        return Some((c, left, MatchType::Equal));
                     }
                     ArithOpType::GreaterThan => {
                         if let Some(c) = left.if_constant() {
@@ -4728,4 +4835,21 @@ pub fn simplify_gt<'e>(
         right,
     };
     ctx.intern(OperandType::Arithmetic(arith))
+}
+
+#[test]
+fn test_sum_valid_range() {
+    let ctx = &crate::OperandContext::new();
+    assert_eq!(
+        sum_valid_range(&[(ctx.mem8(ctx.constant(4)), false), (ctx.mem8(ctx.constant(8)), true)]),
+        (0xffff_ffff_ffff_ff01, 0xff),
+    );
+    assert_eq!(
+        sum_valid_range(&[(ctx.register(4), false)]),
+        (0, u64::max_value()),
+    );
+    assert_eq!(
+        sum_valid_range(&[(ctx.register(4), true)]),
+        (0, u64::max_value()),
+    );
 }
