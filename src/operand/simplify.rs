@@ -1260,6 +1260,123 @@ fn relevant_bits_for_eq<'e>(ops: &[(Operand<'e>, bool)]) -> (u64, u64) {
     (pos_mask, neg_mask)
 }
 
+/// This is called by main simplify_eq, so it is assuming
+/// that left doesn't have any constants
+fn simplify_eq_1op_const<'e>(
+    left: Operand<'e>,
+    right: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    if right == 1 {
+        // Simplify x == 1 to x if x is just the lowest bit
+        if left.relevant_bits().end == 1 {
+            return left;
+        }
+    }
+    let arith = ArithOperand {
+        ty: ArithOpType::Equal,
+        left,
+        right: ctx.constant(right),
+    };
+    ctx.intern(OperandType::Arithmetic(arith))
+}
+
+pub fn simplify_eq_const<'e>(
+    left: Operand<'e>,
+    right: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    if right == 0 {
+        if let Some((l, r)) = left.if_arithmetic_eq() {
+            // Check for (x == 0) == 0 => x
+            if r == ctx.const_0() {
+                if l.relevant_bits().end == 1 {
+                    return l;
+                }
+            }
+        }
+    }
+    if right == 1 {
+        // Simplify x == 1 to x if x is just the lowest bit
+        if left.relevant_bits().end == 1 {
+            return left;
+        }
+    }
+    // Check if left can never have value that's high enough to be equal to right
+    let left_bits = left.relevant_bits();
+    if left_bits.end != 64 {
+        let max_value = (1 << left_bits.end) - 1;
+        if right > max_value {
+            return ctx.const_0();
+        }
+    }
+
+    let mut can_quick_simplify = can_quick_simplify_type(left.ty());
+    if !can_quick_simplify {
+        // Should be also able to quick simplify most arithmetic.
+        // Gt has some extra logic too which needs to be checked first.
+        if let OperandType::Arithmetic(ref arith) = left.ty() {
+            can_quick_simplify = match arith.ty {
+                ArithOpType::Add | ArithOpType::Sub | ArithOpType::And |
+                    ArithOpType::Lsh | ArithOpType::Rsh | ArithOpType::Mul => false,
+                ArithOpType::GreaterThan => {
+                    // If right > 1, it gets caught by the max_value check above,
+                    // if right == 1, it gets caught by the right == 1 check above,
+                    // so right must be 0.
+                    debug_assert_eq!(right, 0);
+                    if let Some(result) = simplify_eq_zero_with_gt(arith.left, arith.right, ctx) {
+                        return result;
+                    }
+                    true
+                }
+                _ => true,
+            };
+        }
+        if let Some(c) = left.if_constant() {
+            return match c == right {
+                true => ctx.const_1(),
+                false => ctx.const_0(),
+            }
+        }
+    }
+    if can_quick_simplify {
+        let right = ctx.constant(right);
+        let arith = ArithOperand {
+            ty: ArithOpType::Equal,
+            left,
+            right,
+        };
+        return ctx.intern(OperandType::Arithmetic(arith));
+    }
+    simplify_eq_main(left, ctx.constant(right), ctx)
+}
+
+/// Special cases for simplifying `(left > right) == 0`
+/// Can become `right > (left - 1)` or `(right + 1) > left`
+fn simplify_eq_zero_with_gt<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ctx: OperandCtx<'e>,
+) -> Option<Operand<'e>> {
+    if let Some(c) = left.if_constant() {
+        return Some(simplify_gt(
+            right,
+            ctx.constant(c.wrapping_sub(1)),
+            ctx,
+            &mut SimplifyWithZeroBits::default(),
+        ));
+    }
+    if let Some(c) = right.if_constant() {
+        return Some(simplify_gt(
+            ctx.constant(c.wrapping_add(1)),
+            left,
+            ctx,
+            &mut SimplifyWithZeroBits::default(),
+        ));
+    }
+    None
+}
+
 pub fn simplify_eq<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
@@ -1269,6 +1386,18 @@ pub fn simplify_eq<'e>(
     if left == right {
         return ctx.const_1();
     }
+    if let Some((c, other)) = Operand::either(left, right, |x| x.if_constant()) {
+        simplify_eq_const(other, c, ctx)
+    } else {
+        simplify_eq_main(left, right, ctx)
+    }
+}
+
+fn simplify_eq_main<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
     // Equality is just bit comparision without overflow semantics, even though
     // this also uses x == y => x - y == 0 property to simplify it.
     let shared_mask = left.relevant_bits_mask() | right.relevant_bits_mask();
@@ -1361,7 +1490,7 @@ fn simplify_eq_ops<'e>(
                 if add_sub_mask & relbits != relbits {
                     op = simplify_and_const(op, add_sub_mask, ctx, swzb_ctx);
                 }
-                simplify_eq_const(op, constant, ctx)
+                simplify_eq_1op_const(op, constant, ctx)
             } else {
                 // constant == 0 so ops[0] == 0 comparision
                 if let Some((left, right)) = ops[0].0.if_arithmetic_eq() {
@@ -1376,21 +1505,8 @@ fn simplify_eq_ops<'e>(
                 // Wouldn't be valid for (0 > x) but it should never be created.
                 // Same for (x > c) == 0 to c + 1 > x
                 if let Some((l, r)) = ops[0].0.if_arithmetic_gt() {
-                    if let Some(c) = l.if_constant() {
-                        return simplify_gt(
-                            r,
-                            ctx.constant(c.wrapping_sub(1)),
-                            ctx,
-                            swzb_ctx,
-                        );
-                    }
-                    if let Some(c) = r.if_constant() {
-                        return simplify_gt(
-                            ctx.constant(c.wrapping_add(1)),
-                            l,
-                            ctx,
-                            swzb_ctx,
-                        );
+                    if let Some(result) = simplify_eq_zero_with_gt(l, r, ctx) {
+                        return result;
                     }
                 }
 
@@ -1570,25 +1686,6 @@ fn simplify_eq_ops<'e>(
             ctx.intern(ty)
         }
     }
-}
-
-fn simplify_eq_const<'e>(
-    left: Operand<'e>,
-    right: u64,
-    ctx: OperandCtx<'e>,
-) -> Operand<'e> {
-    if right == 1 {
-        // Simplify x == 1 to x if x is just the lowest bit
-        if left.relevant_bits().end == 1 {
-            return left;
-        }
-    }
-    let arith = ArithOperand {
-        ty: ArithOpType::Equal,
-        left,
-        right: ctx.constant(right),
-    };
-    ctx.intern(OperandType::Arithmetic(arith))
 }
 
 fn simplify_eq_2_ops<'e>(

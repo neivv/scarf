@@ -884,8 +884,7 @@ impl<'e> OperandContext<'e> {
     ///
     /// The returned value is simplified.
     pub fn eq_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        let right = self.constant(right);
-        simplify::simplify_eq(left, right, self)
+        simplify::simplify_eq_const(left, right, self)
     }
 
     /// Returns `Operand` for `left != right`.
