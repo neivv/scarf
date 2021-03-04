@@ -1216,48 +1216,72 @@ fn simplify_add_merge_masked_reverting<'e>(ops: &mut AddSlice<'e>, ctx: OperandC
 /// (bool + u8) + bool = 0..10
 ///
 /// First return value is relbit mask for positive terms, second is for negative terms.
-fn relevant_bits_for_eq<'e>(ops: &[(Operand<'e>, bool)]) -> (u64, u64) {
-    let mut sizes = ops.iter().map(|x| (x.1, x.0.relevant_bits())).collect::<Vec<_>>();
-    heapsort::sort_by(&mut sizes, |(a_neg, a_bits), (b_neg, b_bits)| {
-        (a_neg, a_bits.end) < (b_neg, b_bits.end)
-    });
-    let mut iter = sizes.iter();
-    let mut pos_bits = 64..0;
-    let mut neg_bits = 64..0;
-    while let Some(next) = iter.next() {
-        let bits = next.1.clone();
-        if next.0 == true {
-            neg_bits = bits;
-            while let Some(next) = iter.next() {
-                let bits = next.1.clone();
-                neg_bits.start = min(bits.start, neg_bits.start);
-                neg_bits.end =
-                    max(neg_bits.end.wrapping_add(1), bits.end.wrapping_add(1)).min(64);
-            }
-            break;
-        }
-        if pos_bits.end == 0 {
-            pos_bits = bits;
-        } else {
-            pos_bits.start = min(bits.start, pos_bits.start);
-            pos_bits.end = max(pos_bits.end.wrapping_add(1), bits.end.wrapping_add(1)).min(64);
-        }
+fn relevant_bits_for_eq<'e>(ops: &[(Operand<'e>, bool)], ctx: OperandCtx<'e>) -> (u64, u64) {
+    // slice_stack expects at least word sized values.
+    // Could probably fix it but this'll do for now.
+    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+    #[derive(Copy, Clone)]
+    struct Vals {
+        negate: bool,
+        bits_start: u8,
+        bits_end: u8,
     }
-    let pos_mask = if pos_bits.end == 0 {
-        0
-    } else {
-        let low = pos_bits.start;
-        let high = 64 - pos_bits.end;
-        !0u64 << high >> high >> low << low
-    };
-    let neg_mask = if neg_bits.end == 0 {
-        0
-    } else {
-        let low = neg_bits.start;
-        let high = 64 - neg_bits.end;
-        !0u64 << high >> high >> low << low
-    };
-    (pos_mask, neg_mask)
+
+    ctx.simplify_temp_stack().alloc(|sizes| {
+        for &x in ops {
+            let relbits = x.0.relevant_bits();
+            sizes.push(Vals {
+                negate: x.1,
+                bits_start: relbits.start,
+                bits_end: relbits.end,
+            }).ok()?;
+        }
+        let sizes = &mut *sizes;
+        heapsort::sort_by(sizes, |a, b| {
+            (a.negate, a.bits_end) < (b.negate, b.bits_end)
+        });
+        let mut iter = sizes.iter();
+        let mut pos_bits = 64..0;
+        let mut neg_bits = 64..0;
+        while let Some(next) = iter.next() {
+            let bits = (next.bits_start)..(next.bits_end);
+            if next.negate == true {
+                neg_bits = bits;
+                while let Some(next) = iter.next() {
+                    let bits = (next.bits_start)..(next.bits_end);
+                    neg_bits.start = min(bits.start, neg_bits.start);
+                    neg_bits.end =
+                        max(neg_bits.end.wrapping_add(1), bits.end.wrapping_add(1)).min(64);
+                }
+                break;
+            }
+            if pos_bits.end == 0 {
+                pos_bits = bits;
+            } else {
+                pos_bits.start = min(bits.start, pos_bits.start);
+                pos_bits.end =
+                    max(pos_bits.end.wrapping_add(1), bits.end.wrapping_add(1)).min(64);
+            }
+        }
+        let pos_mask = if pos_bits.end == 0 {
+            0
+        } else {
+            let low = pos_bits.start;
+            let high = 64 - pos_bits.end;
+            !0u64 << high >> high >> low << low
+        };
+        let neg_mask = if neg_bits.end == 0 {
+            0
+        } else {
+            let low = neg_bits.start;
+            let high = 64 - neg_bits.end;
+            !0u64 << high >> high >> low << low
+        };
+        Some((pos_mask, neg_mask))
+    }).unwrap_or_else(|| {
+        (0, u64::max_value())
+    })
 }
 
 /// This is called by main simplify_eq, so it is assuming
@@ -1612,7 +1636,7 @@ fn simplify_eq_ops<'e>(
                 Some(i) => ops.swap_remove(i).0,
                 None => zero,
             };
-            let (left_rel_bits, right_rel_bits) = relevant_bits_for_eq(&ops);
+            let (left_rel_bits, right_rel_bits) = relevant_bits_for_eq(&ops, ctx);
             if constant == 0 {
                 // Construct a + b + c == d + e + f
                 // where left side has all non-negated terms,
