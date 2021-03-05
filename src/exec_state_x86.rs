@@ -708,8 +708,16 @@ impl<'e> ExecutionState<'e> {
         size: MemAccessSize,
     ) {
         let ctx = self.ctx;
-        let zero = ctx.eq_const(result, 0);
         let sign_bit = size.sign_bit();
+        let result_masked = if result.relevant_bits().end <= 32 {
+            result
+        } else {
+            ctx.and_const(
+                result,
+                (sign_bit << 1).wrapping_sub(1),
+            )
+        };
+        let zero = ctx.eq_const(result_masked, 0);
         let sign = ctx.neq_const(
             ctx.and_const(
                 result,
@@ -717,7 +725,7 @@ impl<'e> ExecutionState<'e> {
             ),
             0,
         );
-        let parity = ctx.arithmetic(ArithOpType::Parity, result, ctx.const_0());
+        let parity = ctx.arithmetic(ArithOpType::Parity, result_masked, ctx.const_0());
         self.state[FLAGS_INDEX + Flag::Zero as usize] = zero;
         self.state[FLAGS_INDEX + Flag::Sign as usize] = sign;
         self.state[FLAGS_INDEX + Flag::Parity as usize] = parity;

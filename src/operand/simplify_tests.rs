@@ -5988,3 +5988,33 @@ fn simplify_eq6() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_eq7() {
+    let ctx = &OperandContext::new();
+    let cmp = ctx.and_const(
+        ctx.sub_const_left(
+            0,
+            ctx.gt_const(
+                ctx.mem32(ctx.constant(0x100)),
+                3,
+            ),
+        ),
+        0xffff_ffff,
+    );
+    let op1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.add_const(
+                cmp,
+                1,
+            ),
+            0xffff_ffff,
+        ),
+        0,
+    );
+    let eq1 = ctx.gt_const(
+        ctx.mem32(ctx.constant(0x100)),
+        3,
+    );
+    assert_eq!(op1, eq1);
+}

@@ -1547,10 +1547,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     fn inc_dec_flags(&mut self, is_inc: bool, reg: Operand<'e>) {
         let is_64 = Va::SIZE == 8;
         let ctx = self.ctx;
-        self.output_flag_set(Flag::Zero, ctx.eq_const(reg, 0));
         if is_64 {
+            self.output_flag_set(Flag::Zero, ctx.eq_const(reg, 0));
             self.output_flag_set(Flag::Sign, ctx.gt_const(reg, 0x7fff_ffff_ffff_ffff));
         } else {
+            self.output_flag_set(Flag::Zero, ctx.eq_const(ctx.and_const(reg, 0xffff_ffff), 0));
             self.output_flag_set(Flag::Sign, ctx.gt_const(reg, 0x7fff_ffff));
         }
         let eq_value = match (is_inc, is_64) {

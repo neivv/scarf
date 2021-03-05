@@ -606,6 +606,26 @@ fn movzx_movsx_high_reg2() {
 }
 
 #[test]
+fn jump_eq() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xb8, 0x34, 0x12, 0x00, 0x00, // mov eax, 1234
+        0xb9, 0x03, 0x00, 0x00, 0x00, // mov ecx, 3
+        0x8b, 0x00, // mov eax, [eax]
+        0x3b, 0xc8, // cmp ecx, eax (carry set if eax > ecx)
+        0x1b, 0xc0, // sbb eax, eax (eax = ffff_ffff if carry set)
+        0xff, 0xc0, // inc eax (eax = (eax > ecx) == 0)
+        0x85, 0xc0, // test eax, eax
+        0xb8, 0x00, 0x00, 0x00, 0x00, // mov eax, 0
+        0x0f, 0x94, 0xc0, // sete al (eax = eax > ecx)
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.gt(ctx.mem32(ctx.constant(0x1234)), ctx.constant(3))),
+         (ctx.register(1), ctx.constant(3)),
+    ]);
+}
+
+#[test]
 fn test_switch_cases_in_memory() {
     let ctx = &OperandContext::new();
     // 2 cases to ok, 3rd fake
