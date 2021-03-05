@@ -5968,3 +5968,23 @@ fn simplify_eq5() {
     assert_ne!(op1, ne1);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_eq6() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.add_const(
+                ctx.mem32(ctx.constant(0x100)),
+                0x1,
+            ),
+            0xffff_ffff,
+        ),
+        0,
+    );
+    let eq1 = ctx.eq_const(
+        ctx.mem32(ctx.constant(0x100)),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}

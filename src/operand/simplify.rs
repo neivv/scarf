@@ -1355,8 +1355,7 @@ pub fn simplify_eq_const<'e>(
                 }
                 _ => true,
             };
-        }
-        if let Some(c) = left.if_constant() {
+        } else if let Some(c) = left.if_constant() {
             return match c == right {
                 true => ctx.const_1(),
                 false => ctx.const_0(),
@@ -1490,7 +1489,7 @@ fn simplify_eq_ops<'e>(
         constant = 0u64.wrapping_sub(constant);
     }
     constant &= add_sub_mask;
-    let (low, high) = sum_valid_range(ops);
+    let (low, high) = sum_valid_range(ops, add_sub_mask);
     if low < high {
         if constant < low || constant > high {
             return zero;
@@ -1912,19 +1911,19 @@ fn simplify_eq_masked_add<'e>(operand: Operand<'e>) -> Option<(u64, Operand<'e>)
 /// And the returned range can have low > high, meaning that the values
 /// between ends aren't possible. E.g. Mem8 - Mem8 has valid range of
 /// (0xffff_ffff_ffff_ff01, 0xff)
-fn sum_valid_range(ops: &[(Operand<'_>, bool)]) -> (u64, u64) {
+fn sum_valid_range(ops: &[(Operand<'_>, bool)], mask: u64) -> (u64, u64) {
     let mut low = 0u64;
     let mut high = 0u64;
-    let mut sum = 1u64;
+    let mut sum = 0u64.wrapping_sub(mask);
     for &val in ops {
         let bits = val.0.relevant_bits();
         let max = match 1u64.checked_shl(bits.end as u32) {
             Some(x) => x.wrapping_sub(1),
-            None => return (0, u64::max_value()),
+            None => return (0, mask),
         };
         match sum.checked_add(max) {
             Some(s) => sum = s,
-            None => return (0, u64::max_value()),
+            None => return (0, mask),
         };
         if val.1 {
             low = low.wrapping_sub(max);
@@ -1932,7 +1931,7 @@ fn sum_valid_range(ops: &[(Operand<'_>, bool)]) -> (u64, u64) {
             high = high.wrapping_add(max);
         }
     }
-    (low, high)
+    (low & mask, high)
 }
 
 /// Return Some(smaller) if the the operand with smaller mask is same as the
@@ -4965,15 +4964,18 @@ pub fn simplify_gt<'e>(
 fn test_sum_valid_range() {
     let ctx = &crate::OperandContext::new();
     assert_eq!(
-        sum_valid_range(&[(ctx.mem8(ctx.constant(4)), false), (ctx.mem8(ctx.constant(8)), true)]),
+        sum_valid_range(
+            &[(ctx.mem8(ctx.constant(4)), false), (ctx.mem8(ctx.constant(8)), true)],
+            u64::max_value(),
+        ),
         (0xffff_ffff_ffff_ff01, 0xff),
     );
     assert_eq!(
-        sum_valid_range(&[(ctx.register(4), false)]),
+        sum_valid_range(&[(ctx.register(4), false)], u64::max_value()),
         (0, u64::max_value()),
     );
     assert_eq!(
-        sum_valid_range(&[(ctx.register(4), true)]),
+        sum_valid_range(&[(ctx.register(4), true)], u64::max_value()),
         (0, u64::max_value()),
     );
 }
