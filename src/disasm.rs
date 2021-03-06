@@ -1162,7 +1162,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         // Optimization: avoid having to go through simplify for x + x * 4 -type accesses
         let base_index_same = rm.base == rm.index && rm.index_mul != 0;
         let base_offset = if rm.constant_base() {
-            if Va::SIZE == 4 {
+            if Va::SIZE == 4 || !rm.rip_relative() {
                 self.ctx.constant(rm.constant as u64)
             } else {
                 let addr = self.address.as_u64()
@@ -1491,7 +1491,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             (5, 0) => {
                 // Constant base
                 let constant = self.read_u32(3)?;
-                result.base = u8::max_value();
+                result.base = 0xfe;
                 result.constant = constant;
                 7
             }
@@ -3530,13 +3530,13 @@ struct ModRm_R(u8, RegisterSize);
 #[derive(Clone)]
 struct ModRm_Rm {
     size: RegisterSize,
-    /// u8::max_value signifies that this is constant base.
+    /// 0xff or 0xfe signifies that this is constant base.
     base: u8,
     /// u8::max_value signifies that this is register instead of memory operand.
     /// (Register is in `base`)
     index: u8,
     index_mul: u8,
-    /// Rip-relative if 64-bit and base == u8::max_value.
+    /// Rip-relative if 64-bit and base == 0xff
     constant: u32,
 }
 
@@ -3614,7 +3614,11 @@ impl ModRm_Rm {
     }
 
     fn constant_base(&self) -> bool {
-        self.base == u8::max_value()
+        self.base >= 0x80
+    }
+
+    fn rip_relative(&self) -> bool {
+        self.base == 0xff
     }
 
     fn reg_variable_size(reg: u8, size: MemAccessSize) -> ModRm_Rm {

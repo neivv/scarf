@@ -626,6 +626,17 @@ fn jump_eq() {
 }
 
 #[test]
+fn absolute_address() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x48, 0x8b, 0x0c, 0x25, 0x34, 0x12, 0x00, 0x00, // mov rcx, [1234]
+        0xc3, // ret
+    ], &[
+         (ctx.register(1), ctx.mem64(ctx.constant(0x1234))),
+    ]);
+}
+
+#[test]
 fn test_switch_cases_in_memory() {
     let ctx = &OperandContext::new();
     // 2 cases to ok, 3rd fake
