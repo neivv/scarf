@@ -3246,7 +3246,10 @@ fn collect_xor_ops<'e>(
     collect_arith_ops(s, ops, ArithOpType::Xor, limit)
 }
 
-/// Return (offset, len, value_offset)
+/// Return (base, (offset, len, value_offset))
+///
+/// E.g. Mem32[x] + 100 => (Mem32[x], (100, 4, 0))
+///     (Mem32[x] + 100) << 20 => (Mem32[x], (100, 4, 4))
 fn is_offset_mem<'e>(
     op: Operand<'e>,
     ctx: OperandCtx<'e>,
@@ -3305,6 +3308,8 @@ fn is_offset_mem<'e>(
 }
 
 /// Returns simplified operands.
+///
+/// shift and other_shift are (offset, len, value_offset)
 fn try_merge_memory<'e>(
     val: Operand<'e>,
     shift: (u64, u32, u32),
@@ -3323,11 +3328,14 @@ fn try_merge_memory<'e>(
         return None;
     }
     let addr = ctx.add_const(val, off1);
-    let oper = match (len1 + len2).min(4) {
+    let len = (len1 + len2).min(8);
+    let oper = match len {
         1 => ctx.mem8(addr),
         2 => ctx.mem16(addr),
         3 => ctx.and_const(ctx.mem32(addr), 0x00ff_ffff),
         4 => ctx.mem32(addr),
+        5 | 6 | 7 => ctx.and_const(ctx.mem64(addr), u64::max_value() >> ((8 - len) << 3)),
+        8 => ctx.mem64(addr),
         _ => return None,
     };
     Some(oper)

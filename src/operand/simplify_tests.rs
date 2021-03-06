@@ -1300,7 +1300,7 @@ fn simplify_mem_or() {
     let ctx = &OperandContext::new();
     let op1 = ctx.or(
         ctx.rsh(
-            ctx.mem32(
+            ctx.mem64(
                 ctx.add(
                     ctx.register(0),
                     ctx.constant(0x120),
@@ -1309,16 +1309,16 @@ fn simplify_mem_or() {
             ctx.constant(0x8),
         ),
         ctx.lsh(
-            ctx.mem32(
+            ctx.mem64(
                 ctx.add(
                     ctx.register(0),
-                    ctx.constant(0x124),
+                    ctx.constant(0x128),
                 ),
             ),
-            ctx.constant(0x18),
+            ctx.constant(0x38),
         ),
     );
-    let eq1 = ctx.mem32(
+    let eq1 = ctx.mem64(
         ctx.add(
             ctx.register(0),
             ctx.constant(0x121),
@@ -6015,6 +6015,66 @@ fn simplify_eq7() {
     let eq1 = ctx.gt_const(
         ctx.mem32(ctx.constant(0x100)),
         3,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_xor_mem_merge() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.xor_const(
+            ctx.mem32(
+                ctx.add_const(
+                    ctx.mem64(ctx.constant(0x80)),
+                    0x18,
+                ),
+            ),
+            0x45451212,
+        ),
+        ctx.xor_const(
+            ctx.xor(
+                ctx.lsh_const(
+                    ctx.mem32(
+                        ctx.add_const(
+                            ctx.mem64(ctx.constant(0x80)),
+                            0x1c,
+                        ),
+                    ),
+                    0x20,
+                ),
+                ctx.lsh_const(
+                    ctx.mem32(
+                        ctx.add_const(
+                            ctx.mem64(ctx.constant(0x80)),
+                            0x18,
+                        ),
+                    ),
+                    0x20,
+                ),
+            ),
+            0x00451200,
+        ),
+    );
+    let eq1 = ctx.xor_const(
+        ctx.xor(
+            ctx.lsh_const(
+                ctx.mem32(
+                    ctx.add_const(
+                        ctx.mem64(ctx.constant(0x80)),
+                        0x18,
+                    ),
+                ),
+                0x20,
+            ),
+            ctx.mem64(
+                ctx.add_const(
+                    ctx.mem64(ctx.constant(0x80)),
+                    0x18,
+                ),
+            ),
+        ),
+        0x45000012,
     );
     assert_eq!(op1, eq1);
 }
