@@ -615,10 +615,10 @@ impl<'e> ExecutionState<'e> {
             }
             Operation::Special(ref code) => {
                 let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
-                if code == &[0xd9, 0xf6] {
+                if &code[..] == &[0xd9, 0xf6] {
                     // fdecstp
                     (&mut xmm_fpu[FPU_REGISTER_INDEX..][..8]).rotate_left(1);
-                } else if code == &[0xd9, 0xf7] {
+                } else if &code[..] == &[0xd9, 0xf7] {
                     // fincstp
                     (&mut xmm_fpu[FPU_REGISTER_INDEX..][..8]).rotate_right(1);
                 }

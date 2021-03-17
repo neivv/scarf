@@ -1,3 +1,4 @@
+use arrayvec::ArrayVec;
 use lde::Isa;
 use quick_error::quick_error;
 
@@ -490,7 +491,11 @@ fn instruction_operations32_main(
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
         0xa4 | 0xa5 | 0xaa | 0xab => {
-            s.output(Operation::Special(s.full_data.into()));
+            let mut arr = ArrayVec::new();
+            if arr.try_extend_from_slice(&s.full_data).is_err() {
+                return Err(Failed);
+            }
+            s.output(Operation::Special(arr));
             Ok(())
         }
         0xa8 | 0xa9 => s.eax_imm_arith(ArithOperation::Test),
@@ -811,7 +816,11 @@ fn instruction_operations64_main(
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
         0xa4 | 0xa5 | 0xaa | 0xab => {
-            s.output(Operation::Special(s.full_data.into()));
+            let mut arr = ArrayVec::new();
+            if arr.try_extend_from_slice(&s.full_data).is_err() {
+                return Err(Failed);
+            }
+            s.output(Operation::Special(arr));
             Ok(())
         }
         0xa8 | 0xa9 => s.eax_imm_arith(ArithOperation::Test),
@@ -2933,12 +2942,16 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn fpu_push(&mut self) {
         // fdecstp
-        self.output(Operation::Special(vec![0xd9, 0xf6]));
+        let mut arr = ArrayVec::new();
+        let _ = arr.try_extend_from_slice(&[0xd9, 0xf6]);
+        self.output(Operation::Special(arr));
     }
 
     fn fpu_pop(&mut self) {
         // fincstp
-        self.output(Operation::Special(vec![0xd9, 0xf7]));
+        let mut arr = ArrayVec::new();
+        let _ = arr.try_extend_from_slice(&[0xd9, 0xf7]);
+        self.output(Operation::Special(arr));
     }
 
     fn various_d8(&mut self) -> Result<(), Failed> {
@@ -2975,7 +2988,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let variant = (byte >> 3) & 0x7;
         if variant == 6 && byte == 0xf6 || byte == 0xf7 {
             // Fincstp, fdecstp
-            self.output(Operation::Special(self.data.into()));
+            let mut arr = ArrayVec::new();
+            if arr.try_extend_from_slice(&self.data).is_err() {
+                return Err(Failed);
+            }
+            self.output(Operation::Special(arr));
             return Ok(());
         }
         let (rm_parsed, _) = self.parse_modrm(MemAccessSize::Mem32)?;
@@ -3473,7 +3490,7 @@ pub enum Operation<'e> {
     Return(u32),
     /// Special cases like interrupts etc that scarf doesn't want to touch.
     /// Also rep mov for now
-    Special(Vec<u8>),
+    Special(ArrayVec<[u8; 8]>),
     /// Set flags based on operation type. While Move(..) could handle this
     /// (And it does for odd cases like inc), it would mean generating 5
     /// additional operations for each instruction, so special-case flags.
