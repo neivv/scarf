@@ -940,7 +940,8 @@ pub fn simplify_rsh<'e>(
     } else if constant >= left.relevant_bits().end.into() {
         return ctx.const_0();
     }
-    let zero_bits = 0..(constant as u8);
+    let constant = constant as u8;
+    let zero_bits = 0..constant;
     match simplify_with_zero_bits(left, &zero_bits, ctx, swzb_ctx) {
         None => return ctx.const_0(),
         Some(s) => {
@@ -1013,53 +1014,35 @@ pub fn simplify_rsh<'e>(
                         })
                         .unwrap_or_else(|| default())
                 }
-                ArithOpType::Lsh | ArithOpType::Mul => {
-                    let shift_constant = if arith.ty == ArithOpType::Lsh {
-                        arith.right.if_constant().map(|x| x as u8)
+                ArithOpType::Mul => {
+                    if let Some(c) = arith.right.if_constant().filter(|&c| c & 0x1 == 0) {
+                        // Convert (x * c) to ((x * (c >> n)) << n),
+                        // and then simplify that lsh
+                        let lsh_size = (c.trailing_zeros() as u8).min(constant);
+                        let inner = ctx.mul_const(arith.left, c >> lsh_size);
+                        simplify_lsh_const_inside_rsh(ctx, swzb_ctx, inner, lsh_size, constant)
                     } else {
-                        arith.right.if_constant()
-                            .filter(|c| c.wrapping_sub(1) & c == 0)
-                            .map(|c| c.trailing_zeros() as u8)
-                    };
-                    if let Some(lsh_const) = shift_constant {
-                        let diff = constant as i8 - lsh_const as i8;
-                        let mask = (!0u64 << lsh_const) >> constant;
-                        let val = match diff {
-                            0 => arith.left,
-                            // (x << rsh) >> lsh, rsh > lsh
-                            x if x > 0 => {
-                                simplify_rsh(
-                                    arith.left,
-                                    ctx.constant(x as u64),
-                                    ctx,
-                                    swzb_ctx,
-                                )
-                            }
-                            // (x << rsh) >> lsh, lsh > rsh
-                            x => {
-                                simplify_lsh(
-                                    arith.left,
-                                    ctx.constant(x.abs() as u64),
-                                    ctx,
-                                    swzb_ctx,
-                                )
-                            }
-                        };
-                        let relbit_mask = val.relevant_bits_mask();
-                        if relbit_mask & mask != relbit_mask {
-                            simplify_and_const(val, mask, ctx, swzb_ctx)
-                        } else {
-                            val
-                        }
+                        default()
+                    }
+                }
+                ArithOpType::Lsh => {
+                    if let Some(lsh_const) = arith.right.if_constant().map(|x| x as u8) {
+                        simplify_lsh_const_inside_rsh(
+                            ctx,
+                            swzb_ctx,
+                            arith.left,
+                            lsh_const,
+                            constant,
+                        )
                     } else {
                         default()
                     }
                 }
                 ArithOpType::Rsh => {
-                    if let Some(inner_const) = arith.right.if_constant() {
+                    if let Some(inner_const) = arith.right.if_constant().map(|x| x as u8) {
                         let sum = inner_const.saturating_add(constant);
                         if sum < 64 {
-                            simplify_rsh(arith.left, ctx.constant(sum), ctx, swzb_ctx)
+                            simplify_rsh(arith.left, ctx.constant(sum.into()), ctx, swzb_ctx)
                         } else {
                             ctx.const_0()
                         }
@@ -1070,11 +1053,11 @@ pub fn simplify_rsh<'e>(
                 ArithOpType::Add => {
                     // Maybe this could be loosened to only require one of the operands to
                     // not have any bits that would be discarded?
-                    let ok = arith.left.relevant_bits().start >= constant as u8 &&
-                        arith.right.relevant_bits().start >= constant as u8;
+                    let ok = arith.left.relevant_bits().start >= constant &&
+                        arith.right.relevant_bits().start >= constant;
                     if ok {
                         if let Some(add_const) = arith.right.if_constant() {
-                            let left = ctx.rsh_const(arith.left, constant);
+                            let left = ctx.rsh_const(arith.left, constant.into());
                             return simplify_add_const(left, add_const >> constant, ctx);
                         }
                     }
@@ -1085,7 +1068,7 @@ pub fn simplify_rsh<'e>(
                         if let Some(sub_const) = arith.right.if_constant() {
                             let add_const = 0u64.wrapping_sub(sub_const);
                             if add_const >> constant << constant == add_const {
-                                let left = ctx.rsh_const(arith.left, constant);
+                                let left = ctx.rsh_const(arith.left, constant.into());
                                 return simplify_add_const(left, add_const >> constant, ctx);
                             }
                         }
@@ -1100,17 +1083,17 @@ pub fn simplify_rsh<'e>(
                 MemAccessSize::Mem64 => {
                     if constant >= 56 {
                         let addr = ctx.add_const(mem.address, 7);
-                        let c = ctx.constant(constant - 56);
+                        let c = ctx.constant((constant - 56).into());
                         let new = ctx.mem8(addr);
                         return simplify_rsh(new, c, ctx, swzb_ctx);
                     } else if constant >= 48 {
                         let addr = ctx.add_const(mem.address, 6);
-                        let c = ctx.constant(constant - 48);
+                        let c = ctx.constant((constant - 48).into());
                         let new = ctx.mem16(addr);
                         return simplify_rsh(new, c, ctx, swzb_ctx);
                     } else if constant >= 32 {
                         let addr = ctx.add_const(mem.address, 4);
-                        let c = ctx.constant(constant - 32);
+                        let c = ctx.constant((constant - 32).into());
                         let new = ctx.mem32(addr);
                         return simplify_rsh(new, c, ctx, swzb_ctx);
                     }
@@ -1118,12 +1101,12 @@ pub fn simplify_rsh<'e>(
                 MemAccessSize::Mem32 => {
                     if constant >= 24 {
                         let addr = ctx.add_const(mem.address, 3);
-                        let c = ctx.constant(constant - 24);
+                        let c = ctx.constant((constant - 24).into());
                         let new = ctx.mem8(addr);
                         return simplify_rsh(new, c, ctx, swzb_ctx);
                     } else if constant >= 16 {
                         let addr = ctx.add_const(mem.address, 2);
-                        let c = ctx.constant(constant - 16);
+                        let c = ctx.constant((constant - 16).into());
                         let new = ctx.mem16(addr);
                         return simplify_rsh(new, c, ctx, swzb_ctx);
                     }
@@ -1131,7 +1114,7 @@ pub fn simplify_rsh<'e>(
                 MemAccessSize::Mem16 => {
                     if constant >= 8 {
                         let addr = ctx.add_const(mem.address, 1);
-                        let c = ctx.constant(constant - 8);
+                        let c = ctx.constant((constant - 8).into());
                         let new = ctx.mem8(addr);
                         return simplify_rsh(new, c, ctx, swzb_ctx);
                     }
@@ -1141,6 +1124,44 @@ pub fn simplify_rsh<'e>(
             default()
         }
         _ => default(),
+    }
+}
+
+fn simplify_lsh_const_inside_rsh<'e>(
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+    lsh_left: Operand<'e>,
+    lsh_const: u8,
+    constant: u8,
+) -> Operand<'e> {
+    let diff = constant as i8 - lsh_const as i8;
+    let mask = (!0u64 << lsh_const) >> constant;
+    let val = match diff {
+        0 => lsh_left,
+        // (x << rsh) >> lsh, rsh > lsh
+        x if x > 0 => {
+            simplify_rsh(
+                lsh_left,
+                ctx.constant(x as u64),
+                ctx,
+                swzb_ctx,
+            )
+        }
+        // (x << rsh) >> lsh, lsh > rsh
+        x => {
+            simplify_lsh(
+                lsh_left,
+                ctx.constant(x.abs() as u64),
+                ctx,
+                swzb_ctx,
+            )
+        }
+    };
+    let relbit_mask = val.relevant_bits_mask();
+    if relbit_mask & mask != relbit_mask {
+        simplify_and_const(val, mask, ctx, swzb_ctx)
+    } else {
+        val
     }
 }
 

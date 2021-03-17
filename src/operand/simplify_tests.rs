@@ -6078,3 +6078,28 @@ fn simplify_xor_mem_merge() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_mul_rsh() {
+    // Simplify (x * 422) >> 4 to ((x * 221) >> 3) & 0fff_ffff_ffff_ffff
+    // etc
+    let ctx = &OperandContext::new();
+    let op1 = ctx.rsh_const(
+        ctx.mul_const(
+            ctx.register(0),
+            0x554
+        ),
+        5,
+    );
+    let eq1 = ctx.and_const(
+        ctx.rsh_const(
+            ctx.mul_const(
+                ctx.register(0),
+                0x155
+            ),
+            3,
+        ),
+        0x07ff_ffff_ffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}
