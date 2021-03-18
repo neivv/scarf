@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::analysis;
 use crate::disasm::{Disassembler64, DestOperand, Operation};
-use crate::exec_state::{self, Constraint, Memory, MergeStateCache};
+use crate::exec_state::{self, Constraint, FreezeOperation, Memory, MergeStateCache};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{
@@ -30,6 +30,8 @@ pub struct ExecutionState<'e> {
     /// Lazily update flags since a lot of instructions set them and
     /// they get discarded later.
     pending_flags: Option<(ArithOperand<'e>, MemAccessSize)>,
+    freeze_buffer: Vec<FreezeOperation<'e>>,
+    frozen: bool,
 }
 
 // Manual impl since derive adds an unwanted inline hint
@@ -42,6 +44,7 @@ impl<'e> Clone for ExecutionState<'e> {
             memory: self.memory.clone(),
             cached_low_registers: self.cached_low_registers.clone(),
             xmm: self.xmm.clone(),
+            freeze_buffer: self.freeze_buffer.clone(),
             state: self.state,
             resolved_constraint: self.resolved_constraint,
             unresolved_constraint: self.unresolved_constraint,
@@ -49,6 +52,7 @@ impl<'e> Clone for ExecutionState<'e> {
             ctx: self.ctx,
             binary: self.binary,
             pending_flags: self.pending_flags,
+            frozen: self.frozen,
         }
     }
 }
@@ -312,22 +316,35 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         let ctx = self.ctx();
         let resolved = self.resolve(value);
-        let dest = self.get_dest_invalidate_constraints(dest);
-        dest.set(resolved, ctx);
+        if self.frozen {
+            let dest = self.resolve_dest(dest);
+            self.freeze_buffer.push(FreezeOperation::Move(dest, resolved));
+        } else {
+            let dest = self.get_dest_invalidate_constraints(dest);
+            dest.set(resolved, ctx);
+        }
     }
 
     fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         let ctx = self.ctx;
-        self.unresolved_constraint = None;
-        let dest = self.get_dest(dest, true);
-        dest.set(value, ctx);
+        if self.frozen {
+            self.freeze_buffer.push(FreezeOperation::Move(*dest, value));
+        } else {
+            self.unresolved_constraint = None;
+            let dest = self.get_dest(dest, true);
+            dest.set(value, ctx);
+        }
     }
 
     fn set_flags_resolved(&mut self, arith: &ArithOperand<'e>, size: MemAccessSize) {
-        self.pending_flags = Some((*arith, size));
-        // Could try to do smarter invalidation, but since in practice unresolved
-        // constraints always are bunch of flags, invalidate it completely.
-        self.unresolved_constraint = None;
+        if self.frozen {
+            self.freeze_buffer.push(FreezeOperation::SetFlags(*arith, size));
+        } else {
+            self.pending_flags = Some((*arith, size));
+            // Could try to do smarter invalidation, but since in practice unresolved
+            // constraints always are bunch of flags, invalidate it completely.
+            self.unresolved_constraint = None;
+        }
     }
 
     #[inline]
@@ -455,10 +472,13 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
             ctx,
             binary,
             pending_flags,
+            freeze_buffer,
+            frozen,
         } = self;
         write(&mut (*out).memory, memory.clone());
         write(&mut (*out).cached_low_registers, cached_low_registers.clone());
         write(&mut (*out).xmm, xmm.clone());
+        write(&mut (*out).freeze_buffer, freeze_buffer.clone());
         write(&mut (*out).state, *state);
         write(&mut (*out).resolved_constraint, *resolved_constraint);
         write(&mut (*out).unresolved_constraint, *unresolved_constraint);
@@ -466,6 +486,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         write(&mut (*out).ctx, *ctx);
         write(&mut (*out).binary, *binary);
         write(&mut (*out).pending_flags, *pending_flags);
+        write(&mut (*out).frozen, *frozen);
     }
 }
 
@@ -499,6 +520,8 @@ impl<'e> ExecutionState<'e> {
             ctx,
             binary: None,
             pending_flags: None,
+            freeze_buffer: Vec::new(),
+            frozen: false,
         }
     }
 
@@ -520,25 +543,37 @@ impl<'e> ExecutionState<'e> {
                     match self.resolve(cond).if_constant() {
                         Some(0) => (),
                         Some(_) => {
-                            self.move_to(&dest, value);
+                            self.move_to(dest, value);
                         }
                         None => {
-                            self.get_dest_invalidate_constraints(&dest)
-                                .set(ctx.new_undef(), ctx)
+                            self.move_to(dest, ctx.new_undef());
                         }
                     }
                 } else {
-                    self.move_to(&dest, value);
+                    self.move_to(dest, value);
                 }
             }
-            Operation::MoveSet(ref moves) => {
-                let resolved: Vec<Operand<'e>> = moves.iter()
-                    .map(|x| self.resolve(x.1))
-                    .collect();
-                for (tp, val) in moves.iter().zip(resolved.into_iter()) {
-                    self.get_dest_invalidate_constraints(&tp.0)
-                        .set(val, ctx);
+            Operation::Freeze => {
+                self.frozen = true;
+                ctx.swap_freeze_buffer(&mut self.freeze_buffer);
+            }
+            Operation::Unfreeze => {
+                self.frozen = false;
+                let mut i = 0;
+                while i < self.freeze_buffer.len() {
+                    let op = self.freeze_buffer[i];
+                    match op {
+                        FreezeOperation::Move(ref dest, val) => {
+                            self.move_resolved(dest, val);
+                        }
+                        FreezeOperation::SetFlags(ref arith, size) => {
+                            self.set_flags_resolved(arith, size);
+                        }
+                    }
+                    i = i.wrapping_add(1);
                 }
+                self.freeze_buffer.clear();
+                ctx.swap_freeze_buffer(&mut self.freeze_buffer);
             }
             Operation::Call(_) => {
                 self.unresolved_constraint = None;
@@ -568,10 +603,7 @@ impl<'e> ExecutionState<'e> {
                     right,
                     ty: arith.ty,
                 };
-                self.pending_flags = Some((arith, size));
-                // Could try to do smarter invalidation, but since in practice unresolved
-                // constraints always are bunch of flags, invalidate it completely.
-                self.unresolved_constraint = None;
+                self.set_flags_resolved(&arith, size);
             }
             Operation::Jump { .. } | Operation::Return(_) | Operation::Error(..) => (),
         }
@@ -734,6 +766,19 @@ impl<'e> ExecutionState<'e> {
                 };
                 Destination::Memory(self, address, mem.size)
             }
+        }
+    }
+
+    fn resolve_dest(
+        &mut self,
+        dest: &DestOperand<'e>,
+    ) -> DestOperand<'e> {
+        match *dest {
+            DestOperand::Memory(ref mem) => {
+                let address = self.resolve(mem.address);
+                DestOperand::Memory(MemAccess { address, size: mem.size })
+            }
+            x => x,
         }
     }
 
@@ -1119,6 +1164,10 @@ pub fn merge_states<'a: 'r, 'r>(
             pending_flags: None,
             ctx,
             binary: old.binary,
+            // Freeze buffer is intended to be empty at merge points,
+            // not going to support merging it
+            freeze_buffer: Vec::new(),
+            frozen: false,
         })
     } else {
         None

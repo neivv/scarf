@@ -22,6 +22,8 @@ use copyless::BoxHelper;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::exec_state;
+
 use self::slice_stack::SliceStack;
 
 #[derive(Copy, Clone)]
@@ -278,6 +280,12 @@ pub struct OperandContext<'e> {
     // 0x100 * 14 + 0x300 * 2 = 5120 words for 64-bit.
     // Size can be set with OperandCtx::resize_offset_cache
     offset_cache: RefCell<Vec<Option<Operand<'e>>>>,
+    // Keep buffer for ExecutionState's Operation::Freeze handling
+    // Unless the user does something weird with intercepting the freeze operations,
+    // this should be the only one that gets ever used
+    // (Semi-ugly code organization for operand to slightly depend on exec_state,
+    // but oh well)
+    freeze_buffer: RefCell<Vec<exec_state::FreezeOperation<'e>>>,
 }
 
 /// Convenience alias for `OperandContext` reference that avoids having to
@@ -440,6 +448,7 @@ impl<'e> OperandContext<'e> {
             invariant_lifetime: PhantomData,
             simplify_temp_stack: SliceStack::new(),
             offset_cache: RefCell::new(Vec::new()),
+            freeze_buffer: RefCell::new(Vec::new()),
         };
         let common_operands = &mut result.common_operands;
         // Accessing interner here would force the invariant lifetime 'e to this stack frame.
@@ -1090,6 +1099,11 @@ impl<'e> OperandContext<'e> {
         }
         // Uncached default
         self.add_const(self.register(register), offset as i64 as u64)
+    }
+
+    pub(crate) fn swap_freeze_buffer(&'e self, other: &mut Vec<exec_state::FreezeOperation<'e>>) {
+        let mut own = self.freeze_buffer.borrow_mut();
+        std::mem::swap(&mut *own, other);
     }
 }
 

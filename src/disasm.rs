@@ -1638,10 +1638,10 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         if !r.equal_to_rm(&rm) {
             let r = self.r_to_dest_and_operand(r);
             let rm = self.rm_to_dest_and_operand(&rm);
-            self.output(Operation::MoveSet(vec![
-                (r.dest, rm.op),
-                (rm.dest, r.op),
-            ]));
+            self.output(Operation::Freeze);
+            self.output(Operation::Move(r.dest, rm.op, None));
+            self.output(Operation::Move(rm.dest, r.op, None));
+            self.output(Operation::Unfreeze);
         }
         Ok(())
     }
@@ -1790,7 +1790,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 }
             }
             ArithOperation::Sbb | ArithOperation::Adc => {
-                // Since sbb wants to do
+                // Sbb
                 //
                 // carry = (l - r - carry > l) | (l - r > l)
                 // l = l - r - carry
@@ -2130,18 +2130,32 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 let eax = self.reg_variable_size(Register(0), op_size);
                 let edx = self.reg_variable_size(Register(2), op_size);
                 let multiply = ctx.mul(eax, rm.op);
+                self.output(Operation::Freeze);
                 if op_size == MemAccessSize::Mem64 {
-                    self.output(Operation::MoveSet(vec![
-                        (DestOperand::from_oper(edx), self.ctx.new_undef()),
-                        (DestOperand::from_oper(eax), multiply),
-                    ]));
+                    self.output(Operation::Move(
+                        DestOperand::from_oper(edx),
+                        ctx.new_undef(),
+                        None,
+                    ));
+                    self.output(Operation::Move(
+                        DestOperand::from_oper(eax),
+                        multiply,
+                        None,
+                    ));
                 } else {
                     let size = op_size.bits() as u64;
-                    self.output(Operation::MoveSet(vec![
-                        (DestOperand::from_oper(edx), ctx.rsh_const(multiply, size)),
-                        (DestOperand::from_oper(eax), multiply),
-                    ]));
+                    self.output(Operation::Move(
+                        DestOperand::from_oper(edx),
+                        ctx.rsh_const(multiply, size),
+                        None,
+                    ));
+                    self.output(Operation::Move(
+                        DestOperand::from_oper(eax),
+                        multiply,
+                        None,
+                    ));
                 }
+                self.output(Operation::Unfreeze);
             },
             // Div, idiv
             6 | 7 => {
@@ -2164,10 +2178,10 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     div = ctx.div(pair, rm.op);
                     modulo = ctx.modulo(pair, rm.op);
                 }
-                self.output(Operation::MoveSet(vec![
-                    (DestOperand::from_oper(edx), modulo),
-                    (DestOperand::from_oper(eax), div),
-                ]));
+                self.output(Operation::Freeze);
+                self.output(Operation::Move(DestOperand::from_oper(edx), modulo, None));
+                self.output(Operation::Move(DestOperand::from_oper(eax), div, None));
+                self.output(Operation::Unfreeze);
             }
             _ => return Err(self.unknown_opcode()),
         }
@@ -3495,9 +3509,15 @@ pub enum Operation<'e> {
     /// (And it does for odd cases like inc), it would mean generating 5
     /// additional operations for each instruction, so special-case flags.
     SetFlags(ArithOperand<'e>, MemAccessSize),
-    /// Like Move, but evaluate all operands before assigning over any.
-    /// Used for mul/div/swap.
-    MoveSet(Vec<(DestOperand<'e>, Operand<'e>)>),
+    /// Makes the following `Operation`s until `Unfreeze` be buffered, resolving
+    /// input `Operand`s, without mutating the state.
+    ///
+    /// Allows implementing operations that write to several outputs, which are
+    /// simultaneously used as inputs. For example, long mul, div (Result + modulo), swap,
+    /// carry add/sub.
+    Freeze,
+    /// Commits any buffered operations since `Freeze` was used to buffer them.
+    Unfreeze,
     /// Error - Should assume that no more operations can be decoded from current position.
     Error(Error),
 }

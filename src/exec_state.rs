@@ -255,6 +255,12 @@ impl VirtualAddress for crate::VirtualAddress64 {
     }
 }
 
+#[derive(Copy, Clone)]
+pub(crate) enum FreezeOperation<'e> {
+    Move(DestOperand<'e>, Operand<'e>),
+    SetFlags(ArithOperand<'e>, MemAccessSize),
+}
+
 /// The constraint is assumed to be something that can be substituted with 1 if met
 /// (so constraint == constval(1)).
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
