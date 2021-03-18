@@ -2,13 +2,12 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::analysis;
-use crate::disasm::{Disassembler64, DestOperand, Operation};
+use crate::disasm::{FlagArith, Disassembler64, DestOperand, FlagUpdate, Operation};
 use crate::exec_state::{self, Constraint, FreezeOperation, Memory, MergeStateCache};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{
-    ArithOperand, Flag, MemAccess, MemAccessSize, Operand, OperandCtx, OperandType,
-    ArithOpType,
+    Flag, MemAccess, MemAccessSize, Operand, OperandCtx, OperandType, ArithOpType,
 };
 use crate::{BinaryFile, VirtualAddress64};
 
@@ -29,7 +28,9 @@ pub struct ExecutionState<'e> {
     binary: Option<&'e BinaryFile<VirtualAddress64>>,
     /// Lazily update flags since a lot of instructions set them and
     /// they get discarded later.
-    pending_flags: Option<(ArithOperand<'e>, MemAccessSize)>,
+    /// The separate Operand is for resolved carry for adc/sbb, otherwise dummy value.
+    /// (Operands here are resolved)
+    pending_flags: Option<(FlagUpdate<'e>, Option<Operand<'e>>)>,
     freeze_buffer: Vec<FreezeOperation<'e>>,
     frozen: bool,
 }
@@ -336,11 +337,11 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         }
     }
 
-    fn set_flags_resolved(&mut self, arith: &ArithOperand<'e>, size: MemAccessSize) {
+    fn set_flags_resolved(&mut self, arith: &FlagUpdate<'e>, carry: Option<Operand<'e>>) {
         if self.frozen {
-            self.freeze_buffer.push(FreezeOperation::SetFlags(*arith, size));
+            self.freeze_buffer.push(FreezeOperation::SetFlags(*arith, carry));
         } else {
-            self.pending_flags = Some((*arith, size));
+            self.pending_flags = Some((*arith, carry));
             // Could try to do smarter invalidation, but since in practice unresolved
             // constraints always are bunch of flags, invalidate it completely.
             self.unresolved_constraint = None;
@@ -566,8 +567,8 @@ impl<'e> ExecutionState<'e> {
                         FreezeOperation::Move(ref dest, val) => {
                             self.move_resolved(dest, val);
                         }
-                        FreezeOperation::SetFlags(ref arith, size) => {
-                            self.set_flags_resolved(arith, size);
+                        FreezeOperation::SetFlags(ref arith, carry) => {
+                            self.set_flags_resolved(arith, carry);
                         }
                     }
                     i = i.wrapping_add(1);
@@ -595,15 +596,20 @@ impl<'e> ExecutionState<'e> {
             }
             Operation::Special(_) => {
             }
-            Operation::SetFlags(ref arith, size) => {
+            Operation::SetFlags(ref arith) => {
                 let left = self.resolve(arith.left);
                 let right = self.resolve(arith.right);
-                let arith = ArithOperand {
+                let arith = FlagUpdate {
                     left,
                     right,
                     ty: arith.ty,
+                    size: arith.size,
                 };
-                self.set_flags_resolved(&arith, size);
+                let carry = match arith.ty {
+                    FlagArith::Adc | FlagArith::Sbb => Some(self.resolve(ctx.flag_c())),
+                    _ => None,
+                };
+                self.set_flags_resolved(&arith, carry);
             }
             Operation::Jump { .. } | Operation::Return(_) | Operation::Error(..) => (),
         }
@@ -613,46 +619,40 @@ impl<'e> ExecutionState<'e> {
     /// Must be called before accessing (both read or write) arithmetic flags.
     /// Obvously can just zero pending_flags if all flags are written over though.
     fn update_flags(&mut self) {
-        if let Some((arith, size)) = self.pending_flags.take() {
-            self.set_flags(arith, size);
+        if let Some((arith, carry)) = self.pending_flags.take() {
+            self.set_flags(&arith, carry);
         }
     }
 
     fn set_flags(
         &mut self,
-        arith: ArithOperand<'e>,
-        size: MemAccessSize,
+        arith: &FlagUpdate<'e>,
+        in_carry: Option<Operand<'e>>,
     ) {
-        use crate::operand::ArithOpType::*;
+        use crate::disasm::FlagArith::*;
         let ctx = self.ctx;
-        let result = ctx.arithmetic(arith.ty, arith.left, arith.right);
-        match arith.ty {
-            Add | Sub => {
-                let mask = size.mask();
-                let sign_bit = (mask >> 1).wrapping_add(1);
-                let left = ctx.and_const(arith.left, mask);
-                let right = ctx.and_const(arith.right, mask);
-                let result = ctx.and_const(result, mask);
-                let carry;
-                let overflow;
-                if arith.ty == Add {
-                    carry = ctx.gt(left, result);
-                    // (right sge 0) == (left sgt result)
-                    overflow = ctx.eq(
-                        ctx.gt_const_left(sign_bit, right),
-                        ctx.gt_signed(left, result, size),
-                    );
-                } else {
-                    carry = ctx.gt(result, left);
-                    // (right sge 0) == (result sgt left)
-                    overflow = ctx.eq(
-                        ctx.gt_const_left(sign_bit, right),
-                        ctx.gt_signed(result, left, size),
-                    );
+        let size = arith.size;
+
+        let arith_ty = exec_state::flag_arith_to_op_arith(arith.ty);
+        let arith_ty = match arith_ty {
+            Some(s) => s,
+            None => {
+                // NOTE: Relies on direction being index 5 so it won't change here
+                for i in 0..5 {
+                    self.state[FLAGS_INDEX + i] = ctx.new_undef();
                 }
+                return;
+            }
+        };
+
+        let result = ctx.arithmetic(arith_ty, arith.left, arith.right);
+        match arith.ty {
+            Add | Sub | Adc | Sbb => {
+                let (carry, overflow, new_result) =
+                    exec_state::carry_overflow_for_add_sub(ctx, arith, result, in_carry);
                 self.state[FLAGS_INDEX + Flag::Carry as usize] = carry;
                 self.state[FLAGS_INDEX + Flag::Overflow as usize] = overflow;
-                self.result_flags(result, size);
+                self.result_flags(new_result, size);
             }
             Xor | And | Or => {
                 let zero = ctx.const_0();
@@ -660,17 +660,12 @@ impl<'e> ExecutionState<'e> {
                 self.state[FLAGS_INDEX + Flag::Overflow as usize] = zero;
                 self.result_flags(result, size);
             }
-            Lsh | Rsh  => {
+            LeftShift | RightShift  => {
                 self.state[FLAGS_INDEX + Flag::Carry as usize] = ctx.new_undef();
                 self.state[FLAGS_INDEX + Flag::Overflow as usize] = ctx.new_undef();
                 self.result_flags(result, size);
             }
-            _ => {
-                // NOTE: Relies on direction being index 5 so it won't change here
-                for i in 0..5 {
-                    self.state[FLAGS_INDEX + i] = ctx.new_undef();
-                }
-            }
+            _ => (),
         }
     }
 

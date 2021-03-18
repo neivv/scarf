@@ -5,7 +5,7 @@ use quick_error::quick_error;
 use crate::exec_state::{VirtualAddress};
 use crate::operand::{
     self, ArithOpType, Flag, MemAccess, Operand, OperandCtx, OperandType, Register,
-    MemAccessSize, ArithOperand,
+    MemAccessSize,
 };
 use crate::VirtualAddress as VirtualAddress32;
 use crate::VirtualAddress64;
@@ -1767,141 +1767,74 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         self.skip_unnecessary_32bit_operand_masking(lhs, arith);
         let dest = self.rm_to_dest_and_operand(lhs);
         let ctx = self.ctx;
-        let normal_flags = match arith {
-            ArithOperation::Add => Some(ArithOpType::Add),
-            ArithOperation::Sub | ArithOperation::Cmp => Some(ArithOpType::Sub),
-            ArithOperation::And | ArithOperation::Test => Some(ArithOpType::And),
-            ArithOperation::Or => Some(ArithOpType::Or),
-            ArithOperation::Xor => Some(ArithOpType::Xor),
-            ArithOperation::LeftShift => Some(ArithOpType::Lsh),
-            ArithOperation::RightShift => Some(ArithOpType::Rsh),
-            _ => None,
+        let flags = match arith {
+            ArithOperation::Add => Some(FlagArith::Add),
+            ArithOperation::Sub | ArithOperation::Cmp => Some(FlagArith::Sub),
+            ArithOperation::And | ArithOperation::Test => Some(FlagArith::And),
+            ArithOperation::Or => Some(FlagArith::Or),
+            ArithOperation::Xor => Some(FlagArith::Xor),
+            ArithOperation::Adc => Some(FlagArith::Adc),
+            ArithOperation::Sbb => Some(FlagArith::Sbb),
+            ArithOperation::LeftShift => Some(FlagArith::LeftShift),
+            ArithOperation::RightShift => Some(FlagArith::RightShift),
+            ArithOperation::RotateLeft => Some(FlagArith::RotateLeft),
+            ArithOperation::RotateRight => Some(FlagArith::RotateRight),
+            ArithOperation::RightShiftArithmetic => Some(FlagArith::RightShiftArithmetic),
+            ArithOperation::Move => None,
         };
-        if let Some(ty) = normal_flags {
-            self.output(flags(ty, dest.op, rhs, size));
+        if let Some(ty) = flags {
+            if ty == FlagArith::Sbb || ty == FlagArith::Adc {
+                // Will have to freeze this since SetFlags writes to carry,
+                // but the old carry is used as input too.
+                self.output(Operation::Freeze);
+            }
+            self.output(Operation::SetFlags(FlagUpdate {
+                left: dest.op,
+                right: rhs,
+                ty,
+                size,
+            }));
         }
         match arith {
+            ArithOperation::Cmp | ArithOperation::Test => (),
             ArithOperation::Add => {
                 self.output_add(dest, rhs);
             }
-            ArithOperation::Sub | ArithOperation::Cmp => {
-                if arith != ArithOperation::Cmp {
-                    self.output_sub(dest, rhs);
-                }
+            ArithOperation::Sub => {
+                self.output_sub(dest, rhs);
             }
-            ArithOperation::Sbb | ArithOperation::Adc => {
-                // Sbb
-                //
-                // carry = (l - r - carry > l) | (l - r > l)
-                // l = l - r - carry
-                //
-                // which is bad since carry depends on original l
-                // and l depends on original carry,
-                // order it as
-                //
-                // l = l - carry
-                // carry = (l - r > l + carry) | (l - r + carry > l + carry)
-                // overflow = signed_gt(l - r, l + carry) | signed_gt(..)
-                // l = l - r
-                // (set zero, sign, parity)
-                //
-                // That works when l != r
-                // if l == r just do l = 0 - c
-                //
-                // With adc, do
-                //
-                // l = l + carry
-                // carry = (l - carry > l - carry + r) | (l - carry > l + r)
-                // l = l + r
-                //
-                // if l == r:
-                // l = l + carry
-                // carry = (l - carry > l - carry + r - 1) | (l - carry > l + r - 1)
-                // l = l + r - 1
-                let carry = ctx.flag_c();
-                let zero = ctx.const_0();
-                let dest_op = dest.op;
-                let lhs_eq_rhs = dest_op == rhs;
-                let is_sbb = arith == ArithOperation::Sbb;
-                let a;
-                let b;
-                let c;
-                let gt_lhs1;
-                let gt_lhs2;
-                let gt_rhs1;
-                let gt_rhs2;
-                let mut rhs = rhs;
-                if is_sbb {
-                    if lhs_eq_rhs {
-                        self.output(mov(dest.dest, ctx.sub(zero, carry)));
-                        self.output_flag_set(Flag::Overflow, zero);
-                        self.output_flag_set(Flag::Parity, ctx.const_1());
-                        self.output_flag_set(Flag::Zero, ctx.eq(carry, zero));
-                        self.output_flag_set(Flag::Sign, carry);
-                        return;
-                    }
-                    self.output_sub(dest.clone(), carry);
-                    // dest is now dest_orig - carry
-                    // carry = ((dest - rhs) > (dest + carry)) ||
-                    //         ((dest - rhs + carry) > (dest + carry))
-                    // (Overflow is same but signed)
-                    a = ctx.sub(dest_op, rhs);
-                    b = ctx.add(dest_op, carry);
-                    c = ctx.add(a, carry);
-                    gt_lhs1 = a;
-                    gt_lhs2 = c;
-                    gt_rhs1 = b;
-                    gt_rhs2 = b;
-                } else {
-                    // Adc
-                    if lhs_eq_rhs {
-                        rhs = ctx.sub_const(rhs, 1)
-                    }
-                    self.output_add(dest.clone(), carry);
-                    // dest is now dest_orig + carry
-                    // carry = ((dest - carry) > (dest + rhs)) ||
-                    //         ((dest - carry) > (dest + rhs - carry))
-                    // (Overflow is same but signed)
-                    a = ctx.sub(dest_op, carry);
-                    b = ctx.add(dest_op, rhs);
-                    c = ctx.sub(b, carry);
-                    gt_lhs1 = a;
-                    gt_lhs2 = a;
-                    gt_rhs1 = b;
-                    gt_rhs2 = c;
-                }
-
-                let gt = ctx.or(
-                    ctx.gt(gt_lhs1, gt_rhs1),
-                    ctx.gt(gt_lhs2, gt_rhs2),
+            ArithOperation::Adc => {
+                let result = ctx.add(
+                    ctx.add(
+                        dest.op,
+                        rhs,
+                    ),
+                    ctx.flag_c(),
                 );
-                let signed_gt = ctx.or(
-                    ctx.gt_signed(gt_lhs1, gt_rhs1, size),
-                    ctx.gt_signed(gt_lhs2, gt_rhs2, size),
-                );
-                self.output_flag_set(Flag::Carry, gt);
-                self.output_flag_set(Flag::Overflow, signed_gt);
-                if is_sbb {
-                    self.output_sub(dest, rhs);
-                } else {
-                    self.output_add(dest, rhs);
-                }
-
-                let dest_zero = ctx.eq(dest_op, zero);
-                let parity = ctx.arithmetic(ArithOpType::Parity, dest_op, zero);
-                let sign_bit = 1 << (size.bits() - 1);
-                let sign = ctx.neq_const(
-                    ctx.and_const(dest_op, sign_bit),
-                    0,
-                );
-                self.output_flag_set(Flag::Zero, dest_zero);
-                self.output_flag_set(Flag::Parity, parity);
-                self.output_flag_set(Flag::Sign, sign);
+                self.output(Operation::Move(
+                    dest.dest,
+                    result,
+                    None,
+                ));
+                self.output(Operation::Unfreeze);
             }
-            ArithOperation::And | ArithOperation::Test => {
-                if arith != ArithOperation::Test {
-                    self.output_and(dest, rhs);
-                }
+            ArithOperation::Sbb => {
+                let result = ctx.sub(
+                    ctx.sub(
+                        dest.op,
+                        rhs,
+                    ),
+                    ctx.flag_c(),
+                );
+                self.output(Operation::Move(
+                    dest.dest,
+                    result,
+                    None,
+                ));
+                self.output(Operation::Unfreeze);
+            }
+            ArithOperation::And => {
+                self.output_and(dest, rhs);
             }
             ArithOperation::Or => {
                 self.output_or(dest, rhs);
@@ -1927,8 +1860,6 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 self.output_rsh(dest, rhs);
             }
             ArithOperation::RightShiftArithmetic => {
-                // TODO flags, using ToFloat to cheat
-                self.output(flags(ArithOpType::ToFloat, dest.op, rhs, size));
                 // Arithmetic shift shifts in the value of sign bit,
                 // that can be represented as bitwise or of
                 // `not(ffff...ffff << rhs >> rhs) & ((sign_bit == 0) - 1)`
@@ -1988,7 +1919,6 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     right = ctx.lsh(dest.op, bits_minus_rsh);
                 }
                 let full = ctx.or(left, right);
-                // TODO set overflow if 1bit??
                 if size == MemAccessSize::Mem64 {
                     self.output(Operation::Move(dest.dest, full, None));
                 } else {
@@ -3440,7 +3370,7 @@ fn is_rm_short_r_register(rm: &ModRm_Rm, r: ModRm_R) -> bool {
 }
 
 pub mod operation_helpers {
-    use crate::operand::{Operand, MemAccessSize, ArithOpType, ArithOperand, Register};
+    use crate::operand::{Operand, MemAccessSize, Register};
     use super::{DestOperand, Operation};
 
     pub fn mov_to_reg<'e>(dest: u8, from: Operand<'e>) -> Operation<'e> {
@@ -3480,20 +3410,6 @@ pub mod operation_helpers {
     pub fn mov<'e>(dest: DestOperand<'e>, from: Operand<'e>) -> Operation<'e> {
         Operation::Move(dest, from, None)
     }
-
-    pub fn flags<'e>(
-        ty: ArithOpType,
-        left: Operand<'e>,
-        right: Operand<'e>,
-        size: MemAccessSize,
-    ) -> Operation<'e> {
-        let arith = ArithOperand {
-            ty,
-            left,
-            right,
-        };
-        Operation::SetFlags(arith, size)
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -3508,7 +3424,7 @@ pub enum Operation<'e> {
     /// Set flags based on operation type. While Move(..) could handle this
     /// (And it does for odd cases like inc), it would mean generating 5
     /// additional operations for each instruction, so special-case flags.
-    SetFlags(ArithOperand<'e>, MemAccessSize),
+    SetFlags(FlagUpdate<'e>),
     /// Makes the following `Operation`s until `Unfreeze` be buffered, resolving
     /// input `Operand`s, without mutating the state.
     ///
@@ -3520,6 +3436,14 @@ pub enum Operation<'e> {
     Unfreeze,
     /// Error - Should assume that no more operations can be decoded from current position.
     Error(Error),
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct FlagUpdate<'e> {
+    pub left: Operand<'e>,
+    pub right: Operand<'e>,
+    pub ty: FlagArith,
+    pub size: MemAccessSize,
 }
 
 /// Operations which operate on 2 operands, (almost always) writing to lhs.
@@ -3537,6 +3461,23 @@ enum ArithOperation {
     Cmp,
     Move,
     Test,
+    RotateLeft,
+    RotateRight,
+    LeftShift,
+    RightShift,
+    RightShiftArithmetic,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[repr(u8)]
+pub enum FlagArith {
+    Add,
+    Or,
+    Adc,
+    Sbb,
+    And,
+    Sub,
+    Xor,
     RotateLeft,
     RotateRight,
     LeftShift,
