@@ -281,12 +281,46 @@ pub(crate) fn flag_arith_to_op_arith(val: FlagArith) -> Option<ArithOpType> {
     MAPPING[val as usize]
 }
 
-pub(crate) fn carry_overflow_for_add_sub<'e>(
+pub(crate) fn carry_for_add_sub<'e>(
     ctx: OperandCtx<'e>,
     arith: &FlagUpdate<'e>,
     result: Operand<'e>,
-    in_carry: Option<Operand<'e>>,
-) -> (Operand<'e>, Operand<'e>, Operand<'e>) {
+    result_with_carry: Operand<'e>,
+) -> Operand<'e> {
+    use crate::disasm::FlagArith::*;
+
+    let size = arith.size;
+    let mask = size.mask();
+    let left = ctx.and_const(arith.left, mask);
+    let result = ctx.and_const(result, mask);
+    if arith.ty == Add {
+        ctx.gt(left, result)
+    } else if arith.ty == Sub {
+        ctx.gt(result, left)
+    } else if arith.ty == Adc {
+        // carry = (left > left + right) | (left > result)
+        let result_with_carry = ctx.and_const(result_with_carry, mask);
+        ctx.or(
+            ctx.gt(left, result),
+            ctx.gt(left, result_with_carry),
+        )
+    } else {
+        // Sbb
+        // carry = (left - right > left) | (result > left)
+        let result_with_carry = ctx.and_const(result_with_carry, mask);
+        ctx.or(
+            ctx.gt(result, left),
+            ctx.gt(result_with_carry, left),
+        )
+    }
+}
+
+pub(crate) fn overflow_for_add_sub<'e>(
+    ctx: OperandCtx<'e>,
+    arith: &FlagUpdate<'e>,
+    result: Operand<'e>,
+    result_with_carry: Operand<'e>,
+) -> Operand<'e> {
     use crate::disasm::FlagArith::*;
 
     let size = arith.size;
@@ -294,65 +328,41 @@ pub(crate) fn carry_overflow_for_add_sub<'e>(
     let sign_bit = (mask >> 1).wrapping_add(1);
     let left = ctx.and_const(arith.left, mask);
     let right = ctx.and_const(arith.right, mask);
-    let mut result = ctx.and_const(result, mask);
-    let carry;
-    let overflow;
+    let result = ctx.and_const(result, mask);
     if arith.ty == Add {
-        carry = ctx.gt(left, result);
         // (right sge 0) == (left sgt result)
-        overflow = ctx.eq(
+        ctx.eq(
             ctx.gt_const_left(sign_bit, right),
             ctx.gt_signed(left, result, size),
-        );
+        )
     } else if arith.ty == Sub {
-        carry = ctx.gt(result, left);
         // (right sge 0) == (result sgt left)
-        overflow = ctx.eq(
+        ctx.eq(
             ctx.gt_const_left(sign_bit, right),
             ctx.gt_signed(result, left, size),
-        );
+        )
     } else if arith.ty == Adc {
-        // carry = (left > left + right) | (left > result)
         // overflow = (right sge 0) == ((left sgt left + right) | (left sgt result))
-        let noncarry_result = result;
-        result = ctx.add(
-            noncarry_result,
-            in_carry.unwrap_or_else(|| ctx.const_0()),
-        );
-
-        carry = ctx.or(
-            ctx.gt(left, noncarry_result),
-            ctx.gt(left, result),
-        );
-        overflow = ctx.eq(
+        let result_with_carry = ctx.and_const(result_with_carry, mask);
+        ctx.eq(
             ctx.gt_const_left(sign_bit, right),
             ctx.or(
-                ctx.gt_signed(left, noncarry_result, size),
                 ctx.gt_signed(left, result, size),
+                ctx.gt_signed(left, result_with_carry, size),
             ),
-        );
+        )
     } else {
         // Sbb
-        // carry = (left - right > left) | (result > left)
         // overflow = (right sge 0) == ((left - right sgt left) | (result sgt left))
-        let noncarry_result = result;
-        result = ctx.sub(
-            noncarry_result,
-            in_carry.unwrap_or_else(|| ctx.const_0()),
-        );
-        carry = ctx.or(
-            ctx.gt(noncarry_result, left),
-            ctx.gt(result, left),
-        );
-        overflow = ctx.eq(
+        let result_with_carry = ctx.and_const(result_with_carry, mask);
+        ctx.eq(
             ctx.gt_const_left(sign_bit, right),
             ctx.or(
-                ctx.gt_signed(noncarry_result, left, size),
                 ctx.gt_signed(result, left, size),
+                ctx.gt_signed(result_with_carry, left, size),
             ),
-        );
+        )
     }
-    (carry, overflow, result)
 }
 
 /// The constraint is assumed to be something that can be substituted with 1 if met

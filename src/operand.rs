@@ -1755,7 +1755,8 @@ impl MemAccessSize {
 #[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd)]
 pub struct Register(pub u8);
 
-// Flags currently are cast to usize index when stored in ExecutionState
+// Flags currently are cast to usize index when stored in ExecutionState,
+// and the index is also used with pending_flags
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd)]
 #[repr(u8)]
