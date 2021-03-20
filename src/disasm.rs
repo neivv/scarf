@@ -2766,14 +2766,29 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         ];
         for &x in &x_arr {
             for i in (1..4).rev() {
-                self.output_arith(
-                    dests[i - 1].clone(),
-                    ArithOpType::Or,
-                    ctx.lsh(ops[i], x),
-                    ctx.rsh(ops[i - 1], ctx.sub_const_left(0x20, x)),
-                );
+                self.output(Operation::Move(
+                    dests[i - 1],
+                    ctx.and_const(
+                        ctx.or(
+                            ctx.lsh(ops[i], x),
+                            ctx.rsh(ops[i - 1], ctx.sub_const_left(0x20, x)),
+                        ),
+                        0xffff_ffff,
+                    ),
+                    None
+                ));
             }
-            self.output_lsh(dest_zero.clone(), x);
+            self.output(Operation::Move(
+                dest_zero.dest,
+                ctx.and_const(
+                    ctx.lsh(
+                        dest_zero.op,
+                        x,
+                    ),
+                    0xffff_ffff,
+                ),
+                None,
+            ));
         }
         for _ in 0..4 {
             let val = self.out[self.out.len() - 4].clone();
@@ -2845,12 +2860,17 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         ];
         for &x in &x_arr {
             for i in 0..3 {
-                self.output_arith(
-                    dests[i].clone(),
-                    ArithOpType::Or,
-                    ctx.rsh(ops[i], x),
-                    ctx.lsh(ops[i + 1], ctx.sub_const_left(0x20, x)),
-                );
+                self.output(Operation::Move(
+                    dests[i],
+                    ctx.and_const(
+                        ctx.or(
+                            ctx.rsh(ops[i], x),
+                            ctx.lsh(ops[i + 1], ctx.sub_const_left(0x20, x)),
+                        ),
+                        0xffff_ffff,
+                    ),
+                    None,
+                ));
             }
             self.output_rsh(dest_three.clone(), x);
         }

@@ -519,3 +519,51 @@ fn jump_constraint_missed2() {
          (ctx.register(2), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn xmm_u128_left_shift1() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x89, 0x04, 0xe4, // mov [esp], eax
+        0x89, 0x4c, 0xe4, 0x04, // mov [esp + 4], ecx
+        0x89, 0x54, 0xe4, 0x08, // mov [esp + 8], edx
+        0x89, 0x5c, 0xe4, 0x0c, // mov [esp + c], ebx
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x66, 0x0f, 0x73, 0xf8, 0x04, // pslldq xmm0, 4
+        0x0f, 0x11, 0x04, 0xe4, // movups [esp], xmm0
+        0x8b, 0x04, 0xe4, // mov eax, [esp]
+        0x8b, 0x4c, 0xe4, 0x04, // mov ecx, [esp + 4]
+        0x8b, 0x54, 0xe4, 0x08, // mov edx, [esp + 8]
+        0x8b, 0x5c, 0xe4, 0x0c, // mov ebx, [esp + c]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(0)),
+        (ctx.register(1), ctx.and_const(ctx.register(0), 0xffff_ffff)),
+        (ctx.register(2), ctx.and_const(ctx.register(1), 0xffff_ffff)),
+        (ctx.register(3), ctx.and_const(ctx.register(2), 0xffff_ffff)),
+    ]);
+}
+
+#[test]
+fn xmm_u128_right_shift1() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x89, 0x04, 0xe4, // mov [esp], eax
+        0x89, 0x4c, 0xe4, 0x04, // mov [esp + 4], ecx
+        0x89, 0x54, 0xe4, 0x08, // mov [esp + 8], edx
+        0x89, 0x5c, 0xe4, 0x0c, // mov [esp + c], ebx
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x66, 0x0f, 0x73, 0xd8, 0x04, // pslrdq xmm0, 4
+        0x0f, 0x11, 0x04, 0xe4, // movups [esp], xmm0
+        0x8b, 0x04, 0xe4, // mov eax, [esp]
+        0x8b, 0x4c, 0xe4, 0x04, // mov ecx, [esp + 4]
+        0x8b, 0x54, 0xe4, 0x08, // mov edx, [esp + 8]
+        0x8b, 0x5c, 0xe4, 0x0c, // mov ebx, [esp + c]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.and_const(ctx.register(1), 0xffff_ffff)),
+        (ctx.register(1), ctx.and_const(ctx.register(2), 0xffff_ffff)),
+        (ctx.register(2), ctx.and_const(ctx.register(3), 0xffff_ffff)),
+        (ctx.register(3), ctx.constant(0)),
+    ]);
+}

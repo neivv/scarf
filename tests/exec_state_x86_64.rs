@@ -627,6 +627,60 @@ fn jump_eq() {
 }
 
 #[test]
+fn xmm_u128_left_shift2() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x89, 0x04, 0xe4, // mov [esp], eax
+        0x89, 0x4c, 0xe4, 0x04, // mov [esp + 4], ecx
+        0x89, 0x54, 0xe4, 0x08, // mov [esp + 8], edx
+        0x89, 0x5c, 0xe4, 0x0c, // mov [esp + c], ebx
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x66, 0x0f, 0x73, 0xf8, 0x0a, // pslldq xmm0, a
+        0x0f, 0x11, 0x04, 0xe4, // movups [esp], xmm0
+        0x8b, 0x04, 0xe4, // mov eax, [esp]
+        0x8b, 0x4c, 0xe4, 0x04, // mov ecx, [esp + 4]
+        0x8b, 0x54, 0xe4, 0x08, // mov edx, [esp + 8]
+        0x8b, 0x5c, 0xe4, 0x0c, // mov ebx, [esp + c]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(0)),
+        (ctx.register(1), ctx.constant(0)),
+        (ctx.register(2), ctx.and_const(ctx.lsh_const(ctx.register(0), 0x10), 0xffff_ffff)),
+        (ctx.register(3), ctx.or(
+            ctx.and_const(ctx.rsh_const(ctx.register(0), 0x10), 0xffff),
+            ctx.and_const(ctx.lsh_const(ctx.register(1), 0x10), 0xffff_0000),
+        )),
+    ]);
+}
+
+#[test]
+fn xmm_u128_right_shift2() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x89, 0x04, 0xe4, // mov [esp], eax
+        0x89, 0x4c, 0xe4, 0x04, // mov [esp + 4], ecx
+        0x89, 0x54, 0xe4, 0x08, // mov [esp + 8], edx
+        0x89, 0x5c, 0xe4, 0x0c, // mov [esp + c], ebx
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x66, 0x0f, 0x73, 0xd8, 0x0a, // psrldq xmm0, a
+        0x0f, 0x11, 0x04, 0xe4, // movups [esp], xmm0
+        0x8b, 0x04, 0xe4, // mov eax, [esp]
+        0x8b, 0x4c, 0xe4, 0x04, // mov ecx, [esp + 4]
+        0x8b, 0x54, 0xe4, 0x08, // mov edx, [esp + 8]
+        0x8b, 0x5c, 0xe4, 0x0c, // mov ebx, [esp + c]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.or(
+            ctx.and_const(ctx.rsh_const(ctx.register(2), 0x10), 0xffff),
+            ctx.and_const(ctx.lsh_const(ctx.register(3), 0x10), 0xffff_0000),
+        )),
+        (ctx.register(1), ctx.and_const(ctx.rsh_const(ctx.register(3), 0x10), 0xffff)),
+        (ctx.register(2), ctx.constant(0)),
+        (ctx.register(3), ctx.constant(0)),
+    ]);
+}
+
+#[test]
 fn absolute_address() {
     let ctx = &OperandContext::new();
     test_inline(&[
