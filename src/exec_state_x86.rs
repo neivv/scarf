@@ -486,7 +486,12 @@ impl<'a, 'e> Destination<'a, 'e> {
                 if let Some((base, offset)) = Operand::const_offset(addr, ctx) {
                     let offset = offset as u32;
                     let offset_4 = offset & 3;
-                    let offset_rest = sext32_64(offset & !3);
+                    let offset_rest = if base == ctx.const_0() {
+                        // Don't sign extend constant addresses
+                        (offset & !3) as u64
+                    } else {
+                        sext32_64(offset & !3)
+                    };
                     if offset_4 != 0 {
                         let size_bits = size.bits();
                         let low_base = ctx.add_const(base, offset_rest);
@@ -921,7 +926,12 @@ impl<'e> ExecutionState<'e> {
             let size_bytes = size.bits() / 8;
             let offset = offset as u32;
             let offset_4 = offset & 3;
-            let offset_rest = sext32_64(offset & !3);
+            let offset_rest = if base == ctx.const_0() {
+                // Don't sign extend constant addresses
+                (offset & !3) as u64
+            } else {
+                sext32_64(offset & !3)
+            };
             if offset_4 != 0 {
                 let low_base = ctx.add_const(base, offset_rest);
                 let low = self.memory.get(low_base)

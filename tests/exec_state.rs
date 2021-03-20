@@ -13,6 +13,7 @@ use scarf::{
 };
 use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86 as ExecutionState;
+use scarf::exec_state::ExecutionState as _;
 
 #[test]
 fn movzx() {
@@ -182,7 +183,10 @@ fn read_ffffffff() {
         0xa1, 0xff, 0xff, 0xff, 0xff, // mov eax, [ffffffff]
         0xc3, //ret
     ], &[
-         (ctx.register(0), ctx.mem32(ctx.constant(0xffff_ffff))),
+        (ctx.register(0), ctx.or(
+            ctx.mem8(ctx.constant(0xffff_ffff)),
+            ctx.and_const(ctx.lsh_const(ctx.mem32(ctx.constant(0)), 0x8), 0xffff_ff00),
+        )),
     ]);
 }
 
@@ -195,9 +199,12 @@ fn read_this() {
         0x8b, 0x15, 0x0f, 0x10, 0x40, 0x00, // mov edx, [40100f]
         0xc3, //ret
     ], &[
-         (ctx.register(0), ctx.constant(0x4010_00a1)),
-         (ctx.register(1), ctx.constant(0xc300_4010)),
-         (ctx.register(2), ctx.mem32(ctx.constant(0x0040_100f))),
+        (ctx.register(0), ctx.constant(0x4010_00a1)),
+        (ctx.register(1), ctx.constant(0xc300_4010)),
+        (ctx.register(2), ctx.or(
+            ctx.constant(0x40),
+            ctx.and_const(ctx.lsh_const(ctx.mem32(ctx.constant(0x401010)), 0x8), 0xffff_ff00),
+        )),
     ]);
 }
 
@@ -665,8 +672,7 @@ fn test_inner<'e, 'b>(
     let state = ExecutionState::with_binary(file, ctx);
     let mut expected_state = state.clone();
     for &(op, val) in &changes {
-        let op = Operation::Move(DestOperand::from_oper(op), val, None);
-        expected_state.update(&op);
+        expected_state.move_resolved(&DestOperand::from_oper(op), val);
     }
     let mut analysis = analysis::FuncAnalysis::with_state(file, ctx, func, state);
     let mut collect_end_state = CollectEndState {

@@ -13,6 +13,7 @@ use scarf::{
 };
 use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86_64 as ExecutionState;
+use scarf::exec_state::ExecutionState as _;
 
 #[test]
 fn test_basic() {
@@ -686,8 +687,7 @@ fn test_inner<'e, 'b>(
     let state = ExecutionState::with_binary(file, ctx);
     let mut expected_state = state.clone();
     for &(op, val) in &changes {
-        let op = Operation::Move(DestOperand::from_oper(op), val, None);
-        expected_state.update(&op);
+        expected_state.move_resolved(&DestOperand::from_oper(op), val);
     }
     let mut analysis = analysis::FuncAnalysis::with_state(file, ctx, func, state);
     let mut collect_end_state = CollectEndState {
