@@ -1985,7 +1985,7 @@ fn try_merge_ands_check_add_merge<'e>(
                 }
             }
             (&OperandType::Constant(a), &OperandType::Constant(b)) => {
-                a & smaller_mask == b
+                a & smaller_mask == b & smaller_mask
             }
             (&OperandType::Memory(ref a_mem), &OperandType::Memory(ref b_mem)) => {
                 if a_mem.address != b_mem.address {

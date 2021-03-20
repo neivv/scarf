@@ -6103,3 +6103,59 @@ fn simplify_mul_rsh() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn merge_or_complex() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.and_const(
+                    ctx.rsh_const(
+                        ctx.mul_const(
+                            ctx.mem16(ctx.register(0)),
+                            0x21dd,
+                        ),
+                        2,
+                    ),
+                    0xffe,
+                ),
+                0x67d,
+            ),
+            0xf00,
+        ),
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.and_const(
+                    ctx.rsh_const(
+                        ctx.mul_const(
+                            ctx.mem16(ctx.register(0)),
+                            0x21dd,
+                        ),
+                        2,
+                    ),
+                    0xffe,
+                ),
+                0x67d,
+            ),
+            0xff,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.and_const(
+                ctx.rsh_const(
+                    ctx.mul_const(
+                        ctx.mem16(ctx.register(0)),
+                        0x21dd,
+                    ),
+                    2,
+                ),
+                0xffe,
+            ),
+            0x67d,
+        ),
+        0xfff,
+    );
+    assert_eq!(op1, eq1);
+}
