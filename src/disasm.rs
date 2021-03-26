@@ -392,6 +392,19 @@ fn instruction_operations32<'e>(
     }
 }
 
+static ARITH_MAPPING: [ArithOperation; 0x20] = {
+    let mut ret = [ArithOperation::Move; 0x20];
+    ret[0] = ArithOperation::Add;
+    ret[1] = ArithOperation::Or;
+    ret[2] = ArithOperation::Adc;
+    ret[3] = ArithOperation::Sbb;
+    ret[4] = ArithOperation::And;
+    ret[5] = ArithOperation::Sub;
+    ret[6] = ArithOperation::Xor;
+    ret[7] = ArithOperation::Cmp;
+    ret
+};
+
 fn instruction_operations32_main(
     s: &mut InstructionOpsState<VirtualAddress32>,
 ) -> Result<(), Failed> {
@@ -414,17 +427,7 @@ fn instruction_operations32_main(
             0x38 | 0x39 | 0x3a | 0x3b | 0x3c | 0x3d |
             0x88 | 0x89 | 0x8a | 0x8b =>
         {
-            let arith = match first_byte / 8 {
-                0 => ArithOperation::Add,
-                1 => ArithOperation::Or,
-                2 => ArithOperation::Adc,
-                3 => ArithOperation::Sbb,
-                4 => ArithOperation::And,
-                5 => ArithOperation::Sub,
-                6 => ArithOperation::Xor,
-                7 => ArithOperation::Cmp,
-                _ => ArithOperation::Move,
-            };
+            let arith = ARITH_MAPPING[first_byte as usize / 8];
             let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
             if eax_imm_arith {
                 s.eax_imm_arith(arith)
@@ -451,42 +454,7 @@ fn instruction_operations32_main(
         0x8f => s.pop_rm(),
         0x90 => Ok(()),
         // Cwde
-        0x98 => {
-            let extended_sign = ctx.and_const(
-                ctx.sub_const(
-                    ctx.eq_const(
-                        ctx.and_const(
-                            ctx.register(0),
-                            0x8000,
-                        ),
-                        0,
-                    ),
-                    1,
-                ),
-                0xffff_0000,
-            );
-            let merged_eax = ctx.or(
-                extended_sign,
-                s.register_cache.register16(0),
-            );
-            s.output(mov_to_reg(0, merged_eax));
-            Ok(())
-        }
-        // Cdq
-        0x99 => {
-            let extended_sign = ctx.sub_const(
-                ctx.eq_const(
-                    ctx.and_const(
-                        ctx.register(0),
-                        0x8000_0000,
-                    ),
-                    0,
-                ),
-                1,
-            );
-            s.output(mov_to_reg(2, extended_sign));
-            Ok(())
-        },
+        0x98 | 0x99 => s.sign_extend(),
         0x9f => s.lahf(),
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
@@ -545,8 +513,9 @@ fn instruction_operations32_main(
         0x12e | 0x12f => s.sse_compare(),
         // rdtsc
         0x131 => {
-            s.output(mov_to_reg(0, s.ctx.new_undef()));
-            s.output(mov_to_reg(2, s.ctx.new_undef()));
+            for &reg in &[0, 2] {
+                s.output(mov_to_reg(reg, s.ctx.new_undef()));
+            }
             Ok(())
         }
         0x140 | 0x141 | 0x142 | 0x143 | 0x144 | 0x145 | 0x146 | 0x147 |
@@ -718,17 +687,7 @@ fn instruction_operations64_main(
             0x38 | 0x39 | 0x3a | 0x3b | 0x3c | 0x3d |
             0x88 | 0x89 | 0x8a | 0x8b =>
         {
-            let arith = match first_byte / 8 {
-                0 => ArithOperation::Add,
-                1 => ArithOperation::Or,
-                2 => ArithOperation::Adc,
-                3 => ArithOperation::Sbb,
-                4 => ArithOperation::And,
-                5 => ArithOperation::Sub,
-                6 => ArithOperation::Xor,
-                7 => ArithOperation::Cmp,
-                _ => ArithOperation::Move,
-            };
+            let arith = ARITH_MAPPING[first_byte as usize / 8];
             let eax_imm_arith = first_byte < 0x80 && (first_byte & 7) >= 4;
             if eax_imm_arith {
                 s.eax_imm_arith(arith)
@@ -755,63 +714,7 @@ fn instruction_operations64_main(
         0x8d => s.lea(),
         0x8f => s.pop_rm(),
         0x90 => Ok(()),
-        0x98 => {
-            let sign_bit;
-            let high_half_mask;
-            if s.rex_prefix() & 0x8 == 0 {
-                sign_bit = 0x8000;
-                high_half_mask = 0xffff_0000;
-            } else {
-                sign_bit = 0x8000_0000;
-                high_half_mask = 0xffff_ffff_0000_0000;
-            }
-            let extended_sign = ctx.and_const(
-                ctx.sub_const(
-                    ctx.eq_const(
-                        ctx.and_const(
-                            ctx.register(0),
-                            sign_bit,
-                        ),
-                        0,
-                    ),
-                    1,
-                ),
-                high_half_mask,
-            );
-            let new_eax = ctx.or(
-                extended_sign,
-                s.register_cache.register16(0),
-            );
-            s.output(mov_to_reg(0, new_eax));
-            Ok(())
-        }
-        // Cdq
-        0x99 => {
-            let sign_bit;
-            let mask;
-            if s.rex_prefix() & 0x8 == 0 {
-                sign_bit = 0x8000_0000;
-                mask = 0xffff_ffff;
-            } else {
-                sign_bit = 0x8000_0000_0000_0000;
-                mask = 0xffff_ffff_ffff_ffff;
-            }
-            let extended_sign = ctx.and_const(
-                ctx.sub_const(
-                    ctx.eq_const(
-                        ctx.and_const(
-                            ctx.register(0),
-                            sign_bit,
-                        ),
-                        0,
-                    ),
-                    1,
-                ),
-                mask,
-            );
-            s.output(mov_to_reg(2, extended_sign));
-            Ok(())
-        },
+        0x98 | 0x99 => s.sign_extend(),
         0x9f => s.lahf(),
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
@@ -868,8 +771,9 @@ fn instruction_operations64_main(
         0x12e | 0x12f => s.sse_compare(),
         // rdtsc
         0x131 => {
-            s.output(mov_to_reg(0, s.ctx.new_undef()));
-            s.output(mov_to_reg(2, s.ctx.new_undef()));
+            for &reg in &[0, 2] {
+                s.output(mov_to_reg(reg, s.ctx.new_undef()));
+            }
             Ok(())
         }
         0x140 | 0x141 | 0x142 | 0x143 | 0x144 | 0x145 | 0x146 | 0x147 |
@@ -1707,6 +1611,51 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
         let value = value.unwrap();
         self.output(mov_to_reg_variable_size(size, register, value));
+        Ok(())
+    }
+
+    fn sign_extend(&mut self) -> Result<(), Failed> {
+        // Handles Cwde (eax = sext32(ax)), Cdq (edx = high(sext64(eax))),
+        // Cdqe (rax = sext64(eax)), Cqo (rdx = high(sext128(rax)))
+        let ctx = self.ctx;
+        let (mut sign, dest) = match self.read_u8(0)? {
+            0x98 => (0x8000u64, 0),
+            _ => (0x8000_0000, 2),
+        };
+        if self.rex_prefix() & 0x8 != 0 {
+            if dest == 0 {
+                sign = sign << 16;
+            } else {
+                sign = sign << 32;
+            }
+        }
+        let mut result = ctx.sub_const(
+            ctx.eq_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    sign,
+                ),
+                0,
+            ),
+            1,
+        );
+        if dest == 0 {
+            // If dest = eax, result = (extended_sign & !keep_mask) | old
+            // Else dest = edx and it's just the sign
+            let keep_mask = (sign << 1).wrapping_sub(1);
+            result = ctx.or(
+                ctx.and_const(
+                    result,
+                    !keep_mask,
+                ),
+                ctx.register(0),
+            );
+        }
+        let size = match self.rex_prefix() & 0x8 == 0 {
+            true => MemAccessSize::Mem32,
+            false => MemAccessSize::Mem64,
+        };
+        self.output(operation_helpers::mov_to_reg_variable_size(size, dest, result));
         Ok(())
     }
 
@@ -2673,17 +2622,25 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
         let variant = (byte >> 3) & 0x7;
         let dest = ModRm_R(byte & 0x7, RegisterSize::R32);
-        let mut constant = self.read_u8(2)? as u64;
-        // variants 3/7 shift in bytes
-        if variant == 3 || variant == 7 {
-            constant = constant << 3;
-        }
-        let constant = self.ctx.constant(constant);
+        let constant = self.read_u8(2)?;
         match variant {
-            2 => self.packed_shift_right_xmm_u64(dest, constant),
-            3 => self.packed_shift_right_xmm_u128(dest, constant),
-            6 => self.packed_shift_left_xmm_u64(dest, constant),
-            7 => self.packed_shift_left_xmm_u128(dest, constant),
+            2 | 6 => {
+                let constant = self.ctx.constant(constant as u64);
+                if variant == 2 {
+                    self.packed_shift_right_xmm_u64(dest, constant)
+                } else {
+                    self.packed_shift_left_xmm_u64(dest, constant)
+                }
+            }
+            3 | 7 => {
+                // Shift value is in bytes
+                let constant = constant << 3;
+                if variant == 3 {
+                    self.packed_shift_right_xmm_u128(dest, constant)
+                } else {
+                    self.packed_shift_left_xmm_u128(dest, constant)
+                }
+            }
             _ => return Err(self.unknown_opcode()),
         }
         Ok(())
@@ -2722,7 +2679,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
     }
 
-    fn packed_shift_left_xmm_u128(&mut self, dest: ModRm_R, with: Operand<'e>) {
+    fn packed_shift_left_xmm_u128(&mut self, dest: ModRm_R, with: u8) {
         // let x = with & 0x1f
         // dest.3 = (dest.3 << x) | (dest.2 >> (32 - x))
         // dest.2 = (dest.2 << x) | (dest.1 >> (32 - x))
@@ -2740,38 +2697,24 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         // dest.1 = (dest.1 << x) | (dest.0 >> (32 - x))
         // dest.0 = (dest.0 << x)
         let ctx = self.ctx;
-        let high_bits = ctx.rsh_const(
-            ctx.and_const(
-                with,
-                !0x3f,
-            ),
-            0x1,
-        );
         let x_arr = [
-            ctx.and_const(with, 0x1f),
-            ctx.and_const(with, 0x20),
-            high_bits,
+            with & 0x1f,
+            with & 0x20,
+            (with & !0x3f) >> 1,
         ];
         let dest_zero = self.r_to_dest_and_operand_xmm(dest, 0);
-        let dests = [
-            dest.dest_operand_xmm(1),
-            dest.dest_operand_xmm(2),
-            dest.dest_operand_xmm(3),
-        ];
-        let ops = [
-            self.r_to_operand_xmm(dest, 0),
-            self.r_to_operand_xmm(dest, 1),
-            self.r_to_operand_xmm(dest, 2),
-            self.r_to_operand_xmm(dest, 3),
-        ];
+        let dests: [_; 3] = array_init::array_init(|i| {
+            dest.dest_operand_xmm((i as u8).wrapping_add(1))
+        });
+        let ops: [_; 4] = array_init::array_init(|i| self.r_to_operand_xmm(dest, i as u8));
         for &x in &x_arr {
             for i in (1..4).rev() {
                 self.output(Operation::Move(
                     dests[i - 1],
                     ctx.and_const(
                         ctx.or(
-                            ctx.lsh(ops[i], x),
-                            ctx.rsh(ops[i - 1], ctx.sub_const_left(0x20, x)),
+                            ctx.lsh_const(ops[i], x as u64),
+                            ctx.rsh_const(ops[i - 1], 0x20u8.wrapping_sub(x) as u64),
                         ),
                         0xffff_ffff,
                     ),
@@ -2781,9 +2724,9 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             self.output(Operation::Move(
                 dest_zero.dest,
                 ctx.and_const(
-                    ctx.lsh(
+                    ctx.lsh_const(
                         dest_zero.op,
-                        x,
+                        x as u64,
                     ),
                     0xffff_ffff,
                 ),
@@ -2825,7 +2768,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
     }
 
-    fn packed_shift_right_xmm_u128(&mut self, dest: ModRm_R, with: Operand<'e>) {
+    fn packed_shift_right_xmm_u128(&mut self, dest: ModRm_R, with: u8) {
         // let x = with & 0x1f
         // dest.0 = (dest.0 >> x) | (dest.1 << (32 - x))
         // dest.1 = (dest.1 >> x) | (dest.2 << (32 - x))
@@ -2834,45 +2777,30 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         // let x = with & 0x20
         // ...
         let ctx = self.ctx;
-        let high_bits = ctx.rsh_const(
-            ctx.and_const(
-                with,
-                !0x3f,
-            ),
-            0x1,
-        );
         let x_arr = [
-            ctx.and_const(with, 0x1f),
-            ctx.and_const(with, 0x20),
-            high_bits,
+            with & 0x1f,
+            with & 0x20,
+            (with & !0x3f) >> 1,
         ];
         let dest_three = self.r_to_dest_and_operand_xmm(dest, 3);
-        let dests = [
-            dest.dest_operand_xmm(0),
-            dest.dest_operand_xmm(1),
-            dest.dest_operand_xmm(2),
-        ];
-        let ops = [
-            self.r_to_operand_xmm(dest, 0),
-            self.r_to_operand_xmm(dest, 1),
-            self.r_to_operand_xmm(dest, 2),
-            self.r_to_operand_xmm(dest, 3),
-        ];
+        let dests: [_; 3] = array_init::array_init(|i| dest.dest_operand_xmm(i as u8));
+        let ops: [_; 4] = array_init::array_init(|i| self.r_to_operand_xmm(dest, i as u8));
         for &x in &x_arr {
             for i in 0..3 {
                 self.output(Operation::Move(
                     dests[i],
                     ctx.and_const(
                         ctx.or(
-                            ctx.rsh(ops[i], x),
-                            ctx.lsh(ops[i + 1], ctx.sub_const_left(0x20, x)),
+                            ctx.rsh_const(ops[i], x as u64),
+                            ctx.lsh_const(ops[i + 1], 0x20u8.wrapping_sub(x) as u64),
                         ),
                         0xffff_ffff,
                     ),
                     None,
                 ));
             }
-            self.output_rsh(dest_three.clone(), x);
+            let op = self.ctx.rsh_const(dest_three.op, x as u64);
+            self.output(Operation::Move(dest_three.dest, op, None));
         }
         for _ in 0..4 {
             let val = self.out[self.out.len() - 4].clone();
