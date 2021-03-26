@@ -306,7 +306,7 @@ impl<'e> RegisterCache<'e> {
 
 struct InstructionOpsState<'a, 'e: 'a, Va: VirtualAddress> {
     address: Va,
-    data: &'a [u8],
+    data: [u8; 16],
     full_data: &'a [u8],
     prefixes: InstructionPrefixes,
     len: u8,
@@ -360,10 +360,13 @@ fn instruction_operations32<'e>(
     let instruction_len = data.len();
     let data = &data[prefix_count..];
     let is_ext = data[0] == 0xf;
-    let data = match is_ext {
+    let data_in = match is_ext {
         true => &data[1..],
         false => data,
     };
+    let mut data = [0u8; 16];
+    let copy_len = data.len().min(data_in.len());
+    (&mut data[..copy_len]).copy_from_slice(&data_in[..copy_len]);
     let mut s = InstructionOpsState {
         address,
         data,
@@ -633,10 +636,13 @@ fn instruction_operations64<'e>(
     let instruction_len = data.len();
     let data = &data[prefix_count..];
     let is_ext = data[0] == 0xf;
-    let data = match is_ext {
+    let data_in = match is_ext {
         true => &data[1..],
         false => data,
     };
+    let mut data = [0u8; 16];
+    let copy_len = data.len().min(data_in.len());
+    (&mut data[..copy_len]).copy_from_slice(&data_in[..copy_len]);
     let mut s = InstructionOpsState {
         address,
         data,
