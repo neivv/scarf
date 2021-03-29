@@ -4930,6 +4930,36 @@ fn gt_signed3() {
 }
 
 #[test]
+fn gt_signed4() {
+    // sign(x - y) != overflow(x - y) => gt_signed(y, x),
+    //      with y == constant and x == (var - constant)
+    let ctx = &OperandContext::new();
+    let arith = ctx.sub(
+        ctx.sub_const(ctx.register(0), 1),
+        ctx.constant(0x50),
+    );
+    let op1 = ctx.neq(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, ctx.constant(0x50)),
+            ctx.gt_signed(arith, ctx.sub_const(ctx.register(0), 1), MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let eq1 = ctx.gt_signed(
+        ctx.constant(0x50),
+        ctx.sub_const(ctx.register(0), 1),
+        MemAccessSize::Mem32,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
 fn merge_mem_or() {
     let ctx = &OperandContext::new();
     let op1 = ctx.or(

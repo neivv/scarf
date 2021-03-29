@@ -1890,7 +1890,7 @@ fn simplify_eq_2op_check_signed_less<'e>(
     let offset = rc.wrapping_sub(sign_bit) & mask;
     let l_ok = match l.if_constant() {
         Some(a) => match cmp_r.if_constant() {
-            Some(b) => a.wrapping_sub(offset) == b,
+            Some(b) => a.wrapping_sub(offset) & mask == b,
             None => false,
         },
         None => offset == 0 && l == cmp_r,
