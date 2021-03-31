@@ -6245,3 +6245,29 @@ fn merge_xor_complex() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn merge_xor_complex2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.mem16(ctx.register(0)),
+                0x6400,
+            ),
+            0xff00,
+        ),
+        ctx.and_const(
+            ctx.mem8(ctx.register(0)),
+            0xff,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.mem16(ctx.register(0)),
+            0x6400,
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}

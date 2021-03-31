@@ -2117,6 +2117,24 @@ fn try_merge_ands<'e>(
             }
             None
         }
+        (&OperandType::Arithmetic(ref arith), _) | (_, &OperandType::Arithmetic(ref arith)) => {
+            // Handle things such as (a - 0x1700) & 0xff00 with a & 0xff.
+            // They can be merged to (a - 0x1700) & 0xffff.
+            let (arith_mask, other, other_mask) = match a.ty() {
+                OperandType::Arithmetic(..) => (a_mask, b, b_mask),
+                _ => (b_mask, a, a_mask),
+            };
+            if matches!(arith.ty, ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul) {
+                if arith_mask & other_mask == 0 && arith_mask > other_mask {
+                    if let Some(result) =
+                        try_merge_ands(arith.left, other, arith_mask, other_mask, ctx)
+                    {
+                        return Some(ctx.arithmetic(arith.ty, result, arith.right));
+                    }
+                }
+            }
+            None
+        }
         (&OperandType::Memory(ref a_mem), &OperandType::Memory(ref b_mem)) => {
             // Can treat Mem16[x], Mem8[x] as Mem16[x], Mem16[x]
             if a_mem.address == b_mem.address {
