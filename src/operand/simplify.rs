@@ -1978,8 +1978,21 @@ fn try_merge_ands_check_add_merge<'e>(
                     return false;
                 }
                 match a.ty {
-                    ArithOpType::Mul | ArithOpType::Lsh => {
-                        a.right == b.right && is_subset(a.left, b.left, smaller_mask)
+                    ArithOpType::Mul => {
+                        if a.right != b.right {
+                            return false;
+                        }
+                        is_subset(a.left, b.left, smaller_mask)
+                    }
+                    ArithOpType::Lsh => {
+                        if a.right != b.right {
+                            return false;
+                        }
+                        if let Some(c) = a.right.if_constant() {
+                            is_subset(a.left, b.left, smaller_mask.wrapping_shr(c as u32))
+                        } else {
+                            is_subset(a.left, b.left, smaller_mask)
+                        }
                     }
                     _ => false,
                 }

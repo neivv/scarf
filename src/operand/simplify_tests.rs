@@ -6189,3 +6189,59 @@ fn merge_or_complex() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn merge_xor_complex() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.add_const(
+                ctx.or(
+                    ctx.rsh_const(
+                        ctx.mem32(ctx.register(0)),
+                        0xb,
+                    ),
+                    ctx.lsh_const(
+                        ctx.mem8(ctx.register(0)),
+                        0x15,
+                    ),
+                ),
+                0x643e18,
+            ),
+            0xff_ffff,
+        ),
+        ctx.and_const(
+            ctx.add_const(
+                ctx.or(
+                    ctx.rsh_const(
+                        ctx.mem32(ctx.register(0)),
+                        0xb,
+                    ),
+                    ctx.lsh_const(
+                        ctx.mem16(ctx.register(0)),
+                        0x15,
+                    ),
+                ),
+                0x48643e18,
+            ),
+            0xff00_0000,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.add_const(
+            ctx.or(
+                ctx.rsh_const(
+                    ctx.mem32(ctx.register(0)),
+                    0xb,
+                ),
+                ctx.lsh_const(
+                    ctx.mem16(ctx.register(0)),
+                    0x15,
+                ),
+            ),
+            0x48643e18,
+        ),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}
