@@ -6271,3 +6271,118 @@ fn merge_xor_complex2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn gt_sub_mask() {
+    let ctx = &OperandContext::new();
+    // If the x - y subtraction overflows, it'll be greater than x
+    // whether it gets masked or not (As long as the mask >= x)
+    let op1 = ctx.gt(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xffff,
+                ),
+                0x50,
+            ),
+            0xffff_ffff,
+        ),
+        ctx.and_const(
+            ctx.register(0),
+            0xffff,
+        ),
+    );
+    let eq1 = ctx.gt(
+        ctx.sub_const(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff,
+            ),
+            0x50,
+        ),
+        ctx.and_const(
+            ctx.register(0),
+            0xffff,
+        ),
+    );
+
+    let op2 = ctx.gt(
+        ctx.and_const(
+            ctx.sub(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xffff,
+                ),
+                ctx.mem32(ctx.register(2)),
+            ),
+            0xffff_ffff,
+        ),
+        ctx.and_const(
+            ctx.register(0),
+            0xffff,
+        ),
+    );
+    let eq2 = ctx.gt(
+        ctx.sub(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff,
+            ),
+            ctx.mem32(ctx.register(2)),
+        ),
+        ctx.and_const(
+            ctx.register(0),
+            0xffff,
+        ),
+    );
+
+    // This can't simplified like above since (3 - 1_0000_0000) & ffff_ffff == 3
+    let op3 = ctx.gt(
+        ctx.and_const(
+            ctx.sub(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xffff,
+                ),
+                ctx.mem64(ctx.register(2)),
+            ),
+            0xffff_ffff,
+        ),
+        ctx.and_const(
+            ctx.register(0),
+            0xffff,
+        ),
+    );
+    let ne3 = ctx.gt(
+        ctx.sub(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff,
+            ),
+            ctx.mem64(ctx.register(2)),
+        ),
+        ctx.and_const(
+            ctx.register(0),
+            0xffff,
+        ),
+    );
+    let eq3 = ctx.gt(
+        ctx.sub(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff,
+            ),
+            ctx.mem32(ctx.register(2)),
+        ),
+        ctx.and_const(
+            ctx.register(0),
+            0xffff,
+        ),
+    );
+
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+    assert_ne!(op3, ne3);
+    assert_eq!(op3, eq3);
+}
