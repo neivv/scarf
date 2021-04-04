@@ -917,61 +917,6 @@ fn recognize_compare_operands_32() {
         right: ctx.constant(0),
         size: MemAccessSize::Mem32,
     });
-
-    // Comparing with sub
-    let op = ctx.eq(
-        ctx.constant(0),
-        ctx.eq(
-            ctx.gt(
-                ctx.and(
-                    ctx.sub(
-                        ctx.register(4),
-                        ctx.add(
-                            ctx.register(2),
-                            ctx.constant(123),
-                        ),
-                    ),
-                    ctx.constant(0xffff_ffff),
-                ),
-                ctx.constant(0x7fff_ffff),
-            ),
-            ctx.gt(
-                ctx.and(
-                    ctx.add(
-                        ctx.sub(
-                            ctx.register(4),
-                            ctx.add(
-                                ctx.register(2),
-                                ctx.constant(123),
-                            ),
-                        ),
-                        ctx.constant(0x8000_0000),
-                    ),
-                    ctx.constant(0xffff_ffff),
-                ),
-                ctx.and(
-                    ctx.add(
-                        ctx.sub(
-                            ctx.register(4),
-                            ctx.register(2),
-                        ),
-                        ctx.constant(0x8000_0000),
-                    ),
-                    ctx.constant(0xffff_ffff),
-                ),
-            ),
-        ),
-    );
-    let comp = comparision_from_operand(ctx, op).unwrap();
-    assert_eq!(comp, ComparisionGuess {
-        comparision: Comparision::SignedLessThan,
-        left: ctx.sub(
-            ctx.register(4),
-            ctx.register(2),
-        ),
-        right: ctx.constant(123),
-        size: MemAccessSize::Mem32,
-    });
 }
 
 #[test]
@@ -1036,52 +981,6 @@ fn recognize_compare_operands_64() {
         comparision: Comparision::SignedLessThan,
         left: ctx.register(2),
         right: ctx.constant(0),
-        size: MemAccessSize::Mem64,
-    });
-
-    // Comparing with sub
-    let op = ctx.eq(
-        ctx.constant(0),
-        ctx.eq(
-            ctx.gt(
-                ctx.sub(
-                    ctx.register(4),
-                    ctx.add(
-                        ctx.register(2),
-                        ctx.constant(123),
-                    ),
-                ),
-                ctx.constant(0x7fff_ffff_ffff_ffff),
-            ),
-            ctx.gt(
-                ctx.add(
-                    ctx.sub(
-                        ctx.register(4),
-                        ctx.add(
-                            ctx.register(2),
-                            ctx.constant(123),
-                        ),
-                    ),
-                    ctx.constant(0x8000_0000_0000_0000),
-                ),
-                ctx.add(
-                    ctx.sub(
-                        ctx.register(4),
-                        ctx.register(2),
-                    ),
-                    ctx.constant(0x8000_0000_0000_0000),
-                ),
-            ),
-        ),
-    );
-    let comp = comparision_from_operand(ctx, op).unwrap();
-    assert_eq!(comp, ComparisionGuess {
-        comparision: Comparision::SignedLessThan,
-        left: ctx.sub(
-            ctx.register(4),
-            ctx.register(2),
-        ),
-        right: ctx.constant(123),
         size: MemAccessSize::Mem64,
     });
 }

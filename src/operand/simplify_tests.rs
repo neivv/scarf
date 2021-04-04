@@ -6473,3 +6473,85 @@ fn gt_sub_mask2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn signed_gt_normalize2() {
+    let ctx = &OperandContext::new();
+    // Mem32 sgt 50 in two different ways
+    let op1 = ctx.gt(
+        ctx.and_const(
+            ctx.sub(
+                ctx.constant(0x50),
+                ctx.mem32(ctx.register(0)),
+            ),
+            0xffff_ffff,
+        ),
+        ctx.constant(0x8000_0050),
+    );
+    let eq1 = ctx.gt(
+        ctx.and_const(
+            ctx.add_const(
+                ctx.mem32(ctx.register(0)),
+                0x8000_0000,
+            ),
+            0xffff_ffff,
+        ),
+        ctx.and_const(
+            ctx.add_const(
+                ctx.constant(0x50),
+                0x8000_0000,
+            ),
+            0xffff_ffff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn gt_normalize3() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt_const(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.register(0),
+                1,
+            ),
+            0xffff_ffff,
+        ),
+        0,
+    );
+    let eq1 = ctx.neq_const(
+        ctx.and_const(
+            ctx.register(0),
+            0xffff_ffff,
+        ),
+        1,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn gt_normalize4() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt_const(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.register(0),
+                0x51,
+            ),
+            0xffff_ffff,
+        ),
+        0x7fff_ffaf,
+    );
+    let eq1 = ctx.gt_const_left(
+        0x8000_0050,
+        ctx.and_const(
+            ctx.add_const(
+                ctx.register(0),
+                0x7fff_ffff,
+            ),
+            0xffff_ffff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}

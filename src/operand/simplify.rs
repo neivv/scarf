@@ -315,7 +315,11 @@ fn simplify_gt_lhs_sub<'e>(
                                 .checked_abs().map(|x| x as u64).unwrap_or(left_const);
                             let constant_abs = (constant as i64)
                                 .checked_abs().map(|x| x as u64).unwrap_or(constant);
-                            left_abs < constant_abs
+                            if left_abs == constant_abs {
+                                left_const < constant
+                            } else {
+                                left_abs < constant_abs
+                            }
                         } else {
                             let negation_count = left_ops.iter().filter(|x| x.1 == true).count();
                             if negation_count * 2 < left_ops.len() {
@@ -4931,16 +4935,29 @@ pub fn simplify_gt<'e>(
     }
     // Normalize (c1 - x) > c2 to (0 - c2 - 1) > (x - c1 - 1)
     // if c2 > sign_bit
+    // Similarly (x - c1) > c2 to (0 - c2 - 1) > (x - c2 - c1 - 1)
     if let Some(c2) = right.if_constant() {
         let (left_inner, mask) = Operand::and_masked(left);
-        if let Some((c1, x)) = left_inner.if_arithmetic_sub() {
-            if let Some(c1) = c1.if_constant() {
+        if let Some((l, r)) = left_inner.if_arithmetic_sub() {
+            if let Some(c1) = l.if_constant() {
                 if c2 > mask >> 1 {
                     left = ctx.constant(0u64.wrapping_sub(c2).wrapping_sub(1) & mask);
                     right = ctx.and_const(
                         ctx.sub_const(
-                            x,
+                            r,
                             c1.wrapping_add(1),
+                        ),
+                        mask,
+                    );
+                }
+            } else if let Some(c1) = r.if_constant() {
+                let new_right_c = c1.wrapping_add(c2).wrapping_add(1);
+                if new_right_c >= (mask >> 2) + 1 {
+                    left = ctx.constant(0u64.wrapping_sub(c2).wrapping_sub(1) & mask);
+                    right = ctx.and_const(
+                        ctx.sub_const(
+                            l,
+                            new_right_c,
                         ),
                         mask,
                     );
@@ -4976,7 +4993,7 @@ pub fn simplify_gt<'e>(
 
     // x - y > x == y > x
     if let Some(new) = simplify_gt_lhs_sub(ctx, left, right) {
-        left = new;
+        return simplify_gt(new, right, ctx, swzb_ctx);
     } else {
         let (left_inner, mask) = match Operand::and_masked(left) {
             (inner, x) if x == !0u64 =>
@@ -4993,8 +5010,8 @@ pub fn simplify_gt<'e>(
         if mask & mask2 == mask2 && mask_is_continuous_from_0 {
             for &cand in &[right_inner, right] {
                 if let Some(new) = simplify_gt_lhs_sub(ctx, left_inner, cand) {
-                    left = simplify_and_const(new, mask, ctx, swzb_ctx);
-                    break;
+                    let new = simplify_and_const(new, mask, ctx, swzb_ctx);
+                    return simplify_gt(new, right, ctx, swzb_ctx);
                 }
             }
         }
