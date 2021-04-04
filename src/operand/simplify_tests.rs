@@ -6386,3 +6386,61 @@ fn gt_sub_mask() {
     assert_ne!(op3, ne3);
     assert_eq!(op3, eq3);
 }
+
+#[test]
+fn signed_gt_normalize() {
+    let ctx = &OperandContext::new();
+    // Mem32 sgt 50 in two different ways
+    let op1 = ctx.gt(
+        ctx.and_const(
+            ctx.sub(
+                ctx.constant(0x50),
+                ctx.mem32(ctx.register(0)),
+            ),
+            0xffff_ffff,
+        ),
+        ctx.constant(0x8000_0050),
+    );
+    let eq1 = ctx.gt(
+        ctx.constant(0x7fff_ffaf),
+        ctx.sub(
+            ctx.mem32(ctx.register(0)),
+            ctx.constant(0x51),
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn merge_signed_gt_ne() {
+    let ctx = &OperandContext::new();
+    // (Mem32 sgt 50) & Mem32 != 51
+    let op1 = ctx.and(
+        ctx.gt(
+            ctx.and_const(
+                ctx.sub(
+                    ctx.constant(0x50),
+                    ctx.mem32(ctx.register(0)),
+                ),
+                0xffff_ffff,
+            ),
+            ctx.constant(0x8000_0050),
+        ),
+        ctx.neq_const(
+            ctx.mem32(ctx.register(0)),
+            0x51,
+        ),
+    );
+    // Mem32 sgt 51
+    let eq1 = ctx.gt(
+        ctx.and_const(
+            ctx.sub(
+                ctx.constant(0x51),
+                ctx.mem32(ctx.register(0)),
+            ),
+            0xffff_ffff,
+        ),
+        ctx.constant(0x8000_0051),
+    );
+    assert_eq!(op1, eq1);
+}

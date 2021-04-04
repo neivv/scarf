@@ -2655,7 +2655,9 @@ fn simplify_and_merge_child_ors<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
 fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
     // Range start, range end (inclusive), mask, compare operand, range value
     // E.g. range value for `x in 5..=10` would be true,
-    // false for `not x in 5..=10` Caller can assume that for
+    // false for `not x in 5..=10`
+    // Signed ranges, e.g. `-1 ..= 2, true` should be represented as `3 ..= -2, false`
+    // instead; start <= end always.
     fn check<'e>(op: Operand<'e>) -> Option<(u64, u64, u64, Operand<'e>, bool)> {
         match op.ty() {
             OperandType::Arithmetic(arith) if arith.ty == ArithOpType::GreaterThan => {
@@ -2674,6 +2676,9 @@ fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
                     Some((c2, c2.wrapping_add(c).wrapping_sub(1), mask, inner, true))
                 } else if let Some(c) = arith.right.if_constant() {
                     // x - c2 > c is a (c2 ..= c2 + c) false range
+                    // Alternatively:
+                    // c2 - x > c is a (c2 + 1 ..= c - c2 - 1) true range
+                    // but it isn't implemented currently.
                     let (mask, inner) = arith.left.if_arithmetic_and()
                         .and_then(|(l, r)| {
                             let mask = r.if_constant()
@@ -2681,10 +2686,12 @@ fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
                             Some((mask, l))
                         })
                         .unwrap_or_else(|| (u64::max_value(), arith.left));
-                    let (c2, inner) = inner.if_arithmetic_sub()
-                        .and_then(|x| x.1.if_constant().map(|c2| (c2, x.0)))
-                        .unwrap_or_else(|| (0, inner));
-                    Some((c2, c2.wrapping_add(c), mask, inner, false))
+                    inner.if_arithmetic_sub()
+                        .and_then(|x| {
+                            x.1.if_constant()
+                                .map(|c2| (c2, c2.wrapping_add(c), mask, x.0, false))
+                        })
+                        .or_else(|| Some((0, c, mask, inner, false)))
                 } else {
                     None
                 }
@@ -4921,6 +4928,26 @@ pub fn simplify_gt<'e>(
     if left == right {
         return ctx.const_0();
     }
+    // Normalize (c1 - x) > c2 to (0 - c2 - 1) > (x - c1 - 1)
+    // if c2 > sign_bit
+    if let Some(c2) = right.if_constant() {
+        let (left_inner, mask) = Operand::and_masked(left);
+        if let Some((c1, x)) = left_inner.if_arithmetic_sub() {
+            if let Some(c1) = c1.if_constant() {
+                if c2 > mask >> 1 {
+                    left = ctx.constant(0u64.wrapping_sub(c2).wrapping_sub(1) & mask);
+                    right = ctx.and_const(
+                        ctx.sub_const(
+                            x,
+                            c1.wrapping_add(1),
+                        ),
+                        mask,
+                    );
+                }
+            }
+        }
+    }
+
     // Remove mask in a > ((x - b) & mask)
     // if x <= mask && a + b <= mask
     if let Some((right_inner, mask_op)) = right.if_arithmetic_and() {
