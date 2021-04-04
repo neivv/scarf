@@ -2704,7 +2704,8 @@ fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
                         return Some(result);
                     }
                 }
-                Some((c, c, u64::max_value(), arith.left, true))
+                let (left, mask) = Operand::and_masked(arith.left);
+                Some((c, c, mask, left, true))
             }
             _ => None,
         }

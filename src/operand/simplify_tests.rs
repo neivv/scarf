@@ -6444,3 +6444,32 @@ fn merge_signed_gt_ne() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn gt_sub_mask2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and(
+        ctx.gt_const(
+            ctx.and_const(
+                ctx.custom(0),
+                0xffff,
+            ),
+            0x50,
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                ctx.custom(0),
+                0xffff,
+            ),
+            0x51,
+        ),
+    );
+    let eq1 = ctx.gt_const(
+        ctx.and_const(
+            ctx.custom(0),
+            0xffff,
+        ),
+        0x51,
+    );
+    assert_eq!(op1, eq1);
+}
