@@ -1080,6 +1080,9 @@ impl<'e> ExecutionState<'e> {
     }
 
     pub fn resolve(&mut self, value: Operand<'e>) -> Operand<'e> {
+        if !value.needs_resolve() {
+            return value;
+        }
         match *value.ty() {
             OperandType::Register(reg) => {
                 self.state[reg.0 as usize & 7]
@@ -1114,16 +1117,17 @@ impl<'e> ExecutionState<'e> {
                 let right = self.resolve(op.right);
                 self.ctx.float_arithmetic(op.ty, left, right, size)
             }
-            OperandType::Constant(_) => value,
-            OperandType::Custom(_) => value,
             OperandType::Memory(ref mem) => {
                 self.resolve_mem(mem)
                     .unwrap_or_else(|| value)
             }
-            OperandType::Undefined(_) => value,
             OperandType::SignExtend(val, from, to) => {
                 let val = self.resolve(val);
                 self.ctx.sign_extend(val, from, to)
+            }
+            OperandType::Undefined(_) | OperandType::Constant(_) | OperandType::Custom(_) => {
+                debug_assert!(false, "Should be unreachable due to needs_resolve check");
+                value
             }
         }
     }

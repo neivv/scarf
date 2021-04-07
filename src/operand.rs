@@ -51,6 +51,9 @@ const FLAG_CONTAINS_UNDEFINED: u8 = 0x1;
 // For simplify_with_and_mask optimization.
 // For example, ((x & ff) | y) & ff should remove the inner mask.
 const FLAG_COULD_REMOVE_CONST_AND: u8 = 0x2;
+// If not set, resolve(x) == x
+// (Constants, undef, custom, and arithmetic using them)
+const FLAG_NEEDS_RESOLVE: u8 = 0x4;
 
 impl<'e> Hash for OperandHashByAddress<'e> {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -1252,10 +1255,15 @@ impl<'e> OperandType<'e> {
     fn flags(&self) -> u8 {
         use self::OperandType::*;
         match *self {
-            Memory(ref mem) => mem.address.0.flags & FLAG_CONTAINS_UNDEFINED,
-            SignExtend(val, _, _) => val.0.flags & FLAG_CONTAINS_UNDEFINED,
+            Memory(ref mem) => {
+                (mem.address.0.flags & FLAG_CONTAINS_UNDEFINED) | FLAG_NEEDS_RESOLVE
+            }
+            SignExtend(val, _, _) => {
+                val.0.flags & (FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE)
+            }
             Arithmetic(ref arith) => {
-                let base = (arith.left.0.flags | arith.right.0.flags) & FLAG_CONTAINS_UNDEFINED;
+                let base = (arith.left.0.flags | arith.right.0.flags) &
+                    (FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE);
                 let could_remove_const_and = if
                     arith.ty == ArithOpType::And && arith.right.if_constant().is_some()
                 {
@@ -1277,9 +1285,11 @@ impl<'e> OperandType<'e> {
                 base | could_remove_const_and
             }
             ArithmeticFloat(ref arith, _) => {
-                (arith.left.0.flags | arith.right.0.flags) & FLAG_CONTAINS_UNDEFINED
+                (arith.left.0.flags | arith.right.0.flags) &
+                    (FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE)
             }
-            Xmm(..) | Flag(..) | Fpu(..) | Register(..) | Constant(..) | Custom(..) => 0,
+            Xmm(..) | Flag(..) | Fpu(..) | Register(..) => FLAG_NEEDS_RESOLVE,
+            Constant(..) | Custom(..) => 0,
             Undefined(..) => FLAG_CONTAINS_UNDEFINED,
         }
     }
@@ -1427,6 +1437,11 @@ impl<'e> Operand<'e> {
     #[inline]
     pub fn contains_undefined(self) -> bool {
         self.0.flags & FLAG_CONTAINS_UNDEFINED != 0
+    }
+
+    #[inline]
+    pub(crate) fn needs_resolve(self) -> bool {
+        self.0.flags & FLAG_NEEDS_RESOLVE != 0
     }
 
     pub fn iter(self) -> Iter<'e> {
