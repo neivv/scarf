@@ -2088,6 +2088,20 @@ fn try_merge_ands<'e>(
     if let Some((val, shift)) = is_offset_mem(a, ctx) {
         if let Some((other_val, other_shift)) = is_offset_mem(b, ctx) {
             if val == other_val {
+                let a_mask_bytes = 8u32.wrapping_sub(a_mask.leading_zeros() / 8)
+                    .wrapping_sub(a_mask.trailing_zeros() / 8);
+                let b_mask_bytes = 8u32.wrapping_sub(b_mask.leading_zeros() / 8)
+                    .wrapping_sub(b_mask.trailing_zeros() / 8);
+                let shift = (
+                    shift.0,
+                    shift.1.min(a_mask_bytes),
+                    shift.2,
+                );
+                let other_shift = (
+                    other_shift.0,
+                    other_shift.1.min(b_mask_bytes),
+                    other_shift.2,
+                );
                 let result = try_merge_memory(val, other_shift, shift, ctx);
                 if let Some(merged) = result {
                     return Some(merged);
@@ -3349,13 +3363,15 @@ fn is_offset_mem<'e>(
             None
         }
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
-            if arith.right.if_constant().is_some() {
-                return is_offset_mem(arith.left, ctx)
-                    .map(|(x, (off, _, val_off))| {
-                        let len_bits = op.relevant_bits().end;
-                        let len = len_bits.wrapping_add(7) / 8;
-                        (x, (off, len as u32, val_off))
-                    })
+            if let Some(c) = arith.right.if_constant() {
+                if c.wrapping_add(1) & c == 0 {
+                    return is_offset_mem(arith.left, ctx)
+                        .map(|(x, (off, _, val_off))| {
+                            let len_bits = op.relevant_bits().end;
+                            let len = len_bits.wrapping_add(7) / 8;
+                            (x, (off, len as u32, val_off))
+                        })
+                }
             }
             None
         }

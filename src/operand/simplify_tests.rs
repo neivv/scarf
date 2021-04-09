@@ -6611,3 +6611,79 @@ fn simplify_or_merge_shifted_mem() {
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
 }
+
+#[test]
+fn simplify_or_merge_shifted_mem2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.lsh_const(
+            ctx.mem8(
+                ctx.add_const(
+                    ctx.register(1),
+                    0xf,
+                ),
+            ),
+            0x18
+        ),
+        ctx.and_const(
+            ctx.mem32(
+                ctx.add_const(
+                    ctx.register(1),
+                    0xc,
+                ),
+            ),
+            0xf0_fff0,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.mem32(
+            ctx.add_const(
+                ctx.register(1),
+                0xc,
+            ),
+        ),
+        0xfff0_fff0,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_or_merge_shifted_mem3() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.lsh_const(
+            ctx.mem8(
+                ctx.add_const(
+                    ctx.register(1),
+                    0xf,
+                ),
+            ),
+            0x18
+        ),
+        ctx.and_const(
+            ctx.or(
+                ctx.register(0),
+                ctx.mem32(
+                    ctx.add_const(
+                        ctx.register(1),
+                        0xc,
+                    ),
+                ),
+            ),
+            0xff_ffff,
+        ),
+    );
+    let eq1 = ctx.or(
+        ctx.mem32(
+            ctx.add_const(
+                ctx.register(1),
+                0xc,
+            ),
+        ),
+        ctx.and_const(
+            ctx.register(0),
+            0xff_ffff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
