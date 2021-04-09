@@ -1982,12 +1982,6 @@ fn try_merge_ands_check_add_merge<'e>(
                     return false;
                 }
                 match a.ty {
-                    ArithOpType::Mul => {
-                        if a.right != b.right {
-                            return false;
-                        }
-                        is_subset(a.left, b.left, smaller_mask)
-                    }
                     ArithOpType::Lsh => {
                         if a.right != b.right {
                             return false;
@@ -1995,10 +1989,20 @@ fn try_merge_ands_check_add_merge<'e>(
                         if let Some(c) = a.right.if_constant() {
                             is_subset(a.left, b.left, smaller_mask.wrapping_shr(c as u32))
                         } else {
-                            is_subset(a.left, b.left, smaller_mask)
+                            false
                         }
                     }
-                    ArithOpType::And | ArithOpType::Xor | ArithOpType::Or => {
+                    ArithOpType::Rsh => {
+                        if a.right != b.right {
+                            return false;
+                        }
+                        if let Some(c) = a.right.if_constant() {
+                            is_subset(a.left, b.left, smaller_mask.wrapping_shl(c as u32))
+                        } else {
+                            false
+                        }
+                    }
+                    ArithOpType::And | ArithOpType::Xor | ArithOpType::Or | ArithOpType::Mul => {
                         is_subset(a.left, b.left, smaller_mask) &&
                             is_subset(a.right, b.right, smaller_mask)
                     }
@@ -2048,7 +2052,7 @@ fn try_merge_ands_check_add_merge<'e>(
     // Would be cleaner to have these be iterators, but this is likely an one-off case so eh
     let mut l_chain = Some(larger);
     let mut s_chain = Some(smaller);
-    let mut current_ty = None;
+    let mut current_ty;
     loop {
         let (next_l, next_s) = match (l_chain, s_chain) {
             (Some(l), Some(s)) => (l, s),
@@ -2056,18 +2060,22 @@ fn try_merge_ands_check_add_merge<'e>(
             _ => return None,
         };
         let larger_part = match *next_l.ty() {
-            OperandType::Arithmetic(ref arith) => {
+            OperandType::Arithmetic(ref arith) if
+                matches!(arith.ty, ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul |
+                    ArithOpType::And | ArithOpType::Or | ArithOpType::Xor) =>
+            {
                 l_chain = Some(arith.left);
                 current_ty = Some(arith.ty);
                 arith.right
             }
             _ => {
                 l_chain = None;
+                current_ty = None;
                 next_l
             }
         };
         let smaller_part = match *next_s.ty() {
-            OperandType::Arithmetic(ref arith) => {
+            OperandType::Arithmetic(ref arith) if current_ty.is_some() => {
                 s_chain = Some(arith.left);
                 if current_ty != Some(arith.ty) {
                     return None;
