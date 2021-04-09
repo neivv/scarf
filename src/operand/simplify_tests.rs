@@ -6687,3 +6687,53 @@ fn simplify_or_merge_shifted_mem3() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_xor_merge() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.lsh_const(
+                ctx.sub(
+                    ctx.mem16(
+                        ctx.register(1),
+                    ),
+                    ctx.mem16(
+                        ctx.register(2),
+                    ),
+                ),
+                0x10,
+            ),
+            0x00ff_ffff,
+        ),
+        ctx.and_const(
+            ctx.lsh_const(
+                ctx.sub(
+                    ctx.mem16(
+                        ctx.register(1),
+                    ),
+                    ctx.mem16(
+                        ctx.register(2),
+                    ),
+                ),
+                0x10,
+            ),
+            0xff00_0000,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.lsh_const(
+            ctx.sub(
+                ctx.mem16(
+                    ctx.register(1),
+                ),
+                ctx.mem16(
+                    ctx.register(2),
+                ),
+            ),
+            0x10,
+        ),
+        0xffff_0000,
+    );
+    assert_eq!(op1, eq1);
+}

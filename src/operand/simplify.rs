@@ -2127,6 +2127,18 @@ fn try_merge_ands<'e>(
                             }).ok();
                         return result;
                     }
+                } else if c.ty == ArithOpType::Lsh {
+                    if c.right == d.right {
+                        if let Some(shift) = c.right.if_constant() {
+                            let c_mask = a_mask.wrapping_shr(shift as u32);
+                            let d_mask = b_mask.wrapping_shr(shift as u32);
+                            if let Some(result) =
+                                try_merge_ands(c.left, d.left, c_mask, d_mask, ctx)
+                            {
+                                return Some(ctx.lsh_const(result, shift));
+                            }
+                        }
+                    }
                 } else if matches!(c.ty, ArithOpType::Add | ArithOpType::Sub) {
                     if let Some(result) = try_merge_ands_check_add_merge(a, b, a_mask, b_mask) {
                         return Some(result);
