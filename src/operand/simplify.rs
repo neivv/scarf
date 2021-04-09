@@ -2002,6 +2002,18 @@ fn try_merge_ands_check_add_merge<'e>(
                         is_subset(a.left, b.left, smaller_mask) &&
                             is_subset(a.right, b.right, smaller_mask)
                     }
+                    ArithOpType::Add | ArithOpType::Sub => {
+                        // Uh, this sould be correct, try_merge_ands_check_add_merge
+                        // just ends up having a signature that isn't ideal here.
+                        // (It always either returns None or Some(larger) and
+                        // large mask would get ignored anyway)
+                        try_merge_ands_check_add_merge(
+                            larger,
+                            smaller,
+                            !0u64,
+                            smaller_mask,
+                        ).is_some()
+                    }
                     _ => false,
                 }
             }
