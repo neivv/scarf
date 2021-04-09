@@ -6852,3 +6852,62 @@ fn simplify_xor_merge3() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_xor_merge4() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem16(
+                    ctx.register(1),
+                ),
+                ctx.xor_const(
+                    ctx.and_const(
+                        ctx.mem16(
+                            ctx.register(2),
+                        ),
+                        0xfffe,
+                    ),
+                    0x1234,
+                ),
+            ),
+            0x00ff,
+        ),
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem16(
+                    ctx.register(1),
+                ),
+                ctx.xor_const(
+                    ctx.and_const(
+                        ctx.mem16(
+                            ctx.register(2),
+                        ),
+                        0xfffe,
+                    ),
+                    0x1234,
+                ),
+            ),
+            0xff00,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub(
+            ctx.mem16(
+                ctx.register(1),
+            ),
+            ctx.xor_const(
+                ctx.and_const(
+                    ctx.mem16(
+                        ctx.register(2),
+                    ),
+                    0xfffe,
+                ),
+                0x1234,
+            ),
+        ),
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}

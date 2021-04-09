@@ -1998,7 +1998,7 @@ fn try_merge_ands_check_add_merge<'e>(
                             is_subset(a.left, b.left, smaller_mask)
                         }
                     }
-                    ArithOpType::Xor | ArithOpType::Or => {
+                    ArithOpType::And | ArithOpType::Xor | ArithOpType::Or => {
                         is_subset(a.left, b.left, smaller_mask) &&
                             is_subset(a.right, b.right, smaller_mask)
                     }
