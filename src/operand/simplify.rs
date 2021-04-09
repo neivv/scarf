@@ -3373,27 +3373,26 @@ fn is_offset_mem<'e>(
 
 /// Returns simplified operands.
 ///
-/// shift and other_shift are (offset, len, value_offset)
+/// shift and other_shift are (offset, len, left_shift_in_operand)
+/// E.g. `Mem32[x + 6] << 0x18` => (6, 4, 3)
 fn try_merge_memory<'e>(
     val: Operand<'e>,
     shift: (u64, u32, u32),
     other_shift: (u64, u32, u32),
     ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
-    let (shift, other_shift) = match (shift.2, other_shift.2) {
-        (0, 0) => return None,
-        (0, _) => (shift, other_shift),
-        (_, 0) => (other_shift, shift),
-        _ => return None,
+    let (shift, other_shift) = match shift.2 < other_shift.2 {
+        true => (shift, other_shift),
+        false => (other_shift, shift),
     };
-    let (off1, len1, _) = shift;
+    let (off1, len1, val_off1) = shift;
     let (off2, len2, val_off2) = other_shift;
-    if off1.wrapping_add(len1 as u64) != off2 || len1 != val_off2 {
+    if off1.wrapping_add(len1 as u64) != off2 || val_off1.wrapping_add(len1) != val_off2 {
         return None;
     }
     let addr = ctx.add_const(val, off1);
     let len = (len1 + len2).min(8);
-    let oper = match len {
+    let mut oper = match len {
         1 => ctx.mem8(addr),
         2 => ctx.mem16(addr),
         3 => ctx.and_const(ctx.mem32(addr), 0x00ff_ffff),
@@ -3402,6 +3401,12 @@ fn try_merge_memory<'e>(
         8 => ctx.mem64(addr),
         _ => return None,
     };
+    if val_off1 != 0 {
+        oper = ctx.lsh_const(
+            oper,
+            (val_off1 << 3).into(),
+        );
+    }
     Some(oper)
 }
 

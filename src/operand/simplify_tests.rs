@@ -6555,3 +6555,59 @@ fn gt_normalize4() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_or_merge_shifted_mem() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.lsh_const(
+            ctx.mem8(
+                ctx.add_const(
+                    ctx.register(1),
+                    0xd,
+                ),
+            ),
+            0x18
+        ),
+        ctx.lsh_const(
+            ctx.mem8(
+                ctx.add_const(
+                    ctx.register(1),
+                    0xc,
+                ),
+            ),
+            0x10
+        ),
+    );
+    let eq1 = ctx.lsh_const(
+        ctx.mem16(
+            ctx.add_const(
+                ctx.register(1),
+                0xc,
+            ),
+        ),
+        0x10,
+    );
+    let op2 = ctx.or(
+        ctx.lsh_const(
+            ctx.mem8(
+                ctx.constant(0xd),
+            ),
+            0x18
+        ),
+        ctx.lsh_const(
+            ctx.mem8(
+                ctx.constant(0xc),
+            ),
+            0x10
+        ),
+    );
+    let eq2 = ctx.lsh_const(
+        ctx.mem16(
+            ctx.constant(0xc),
+        ),
+        0x10,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+}
