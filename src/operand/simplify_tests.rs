@@ -6970,3 +6970,81 @@ fn simplify_xor_merge5() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn canonicalize_demorgan() {
+    // prefer (x & y) == 0 over (x == 0) | (y == 0)
+    // and (x | y) == 0 over (x == 0) & (y == 0)
+    // when x and y are 1bit expressions
+    // (No real reason why this way, other than it's less operands)
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.eq_const(
+            ctx.eq(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            0,
+        ),
+        ctx.eq_const(
+            ctx.gt(
+                ctx.register(3),
+                ctx.register(4),
+            ),
+            0,
+        ),
+    );
+    let eq1 = ctx.eq_const(
+        ctx.and(
+            ctx.eq(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.gt(
+                ctx.register(3),
+                ctx.register(4),
+            ),
+        ),
+        0,
+    );
+
+    let op2 = ctx.and(
+        ctx.eq_const(
+            ctx.eq(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            0,
+        ),
+        ctx.eq_const(
+            ctx.gt(
+                ctx.register(3),
+                ctx.register(4),
+            ),
+            0,
+        ),
+    );
+    let eq2 = ctx.eq_const(
+        ctx.or(
+            ctx.eq(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.gt(
+                ctx.register(3),
+                ctx.register(4),
+            ),
+        ),
+        0,
+    );
+    assert!(
+        eq1.if_arithmetic_eq().and_then(|x| x.0.if_arithmetic_and()).is_some(),
+        "Bad canonicalization for {}", eq1,
+    );
+    assert_eq!(op1, eq1);
+    assert!(
+        eq2.if_arithmetic_eq().and_then(|x| x.0.if_arithmetic_or()).is_some(),
+        "Bad canonicalization for {}", eq2,
+    );
+    assert_eq!(op2, eq2);
+}

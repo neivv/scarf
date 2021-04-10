@@ -515,8 +515,43 @@ fn apply_constraint_split<'e>(
             ctx.substitute(val, constraint, subst_val, 6)
         }
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Equal => {
-            if arith.right == zero && arith.left.relevant_bits() == (0..1) {
-                apply_constraint_split(ctx, arith.left, val, !with)
+            if arith.right == zero {
+                if arith.left.relevant_bits() == (0..1) {
+                    apply_constraint_split(ctx, arith.left, val, !with)
+                } else if with == true {
+                    ctx.substitute(val, arith.left, zero, 6)
+                } else {
+                    // (arith.left == 0) is false, that is, arith.left != 0
+                    // Transform any check of arith.left == 0 or (arith.left | x) == 0
+                    // to 0
+                    ctx.transform(val, 6, |op| {
+                        let (l, r) = op.if_arithmetic_eq()?;
+                        if r != zero {
+                            return None;
+                        }
+                        let mut op = l;
+                        if op == arith.left {
+                            return Some(zero);
+                        }
+                        loop {
+                            match op.if_arithmetic_or() {
+                                Some((l, r)) => {
+                                    if r == arith.left {
+                                        return Some(zero);
+                                    }
+                                    op = l;
+                                }
+                                None => {
+                                    if op == arith.left {
+                                        return Some(zero);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        None
+                    })
+                }
             } else {
                 let subst_val = if with { one } else { zero };
                 ctx.substitute(val, constraint, subst_val, 6)
@@ -1524,6 +1559,33 @@ fn apply_constraint() {
         ctx.flag_c(),
         0,
     );
+    assert_ne!(val, old);
+    assert_eq!(val, eq);
+}
+
+#[test]
+fn apply_constraint_2() {
+    let ctx = &crate::operand::OperandContext::new();
+    let constraint = Constraint(ctx.eq_const(
+        ctx.eq_const(
+            ctx.flag_z(),
+            0,
+        ),
+        0,
+    ));
+    let val = ctx.or(
+        ctx.neq_const(
+            ctx.flag_c(),
+            0,
+        ),
+        ctx.neq_const(
+            ctx.flag_z(),
+            0,
+        ),
+    );
+    let old = val.clone();
+    let val = constraint.apply_to(ctx, val);
+    let eq = ctx.const_1();
     assert_ne!(val, old);
     assert_eq!(val, eq);
 }

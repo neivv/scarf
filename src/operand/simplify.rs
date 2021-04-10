@@ -2382,6 +2382,7 @@ fn simplify_and_main<'e>(
         heapsort::sort(ops);
         ops.dedup();
         simplify_and_remove_unnecessary_ors(ops, const_remain);
+        simplify_demorgan(ops, ctx, ArithOpType::Or);
 
         // Prefer (rax & 0xff) << 1 over (rax << 1) & 0x1fe.
         // Should this be limited to only when all ops are lsh?
@@ -2975,6 +2976,51 @@ fn simplify_or_merge_xors<'e>(
             ops[i] = new;
         }
         i += 1;
+    }
+}
+
+/// For or simplify:
+///     Joins any (x == 0) ops to single (x & y & z) == 0 (merge_ty == And)
+/// For and simplify:
+///     Joins any (x == 0) ops to single (x | y | z) == 0 (merge_ty == Or)
+fn simplify_demorgan<'e>(
+    ops: &mut Slice<'e>,
+    ctx: OperandCtx<'e>,
+    merge_ty: ArithOpType,
+) {
+    let mut i = 0;
+    let mut op = None;
+    while i < ops.len() {
+        if let Some((l, r)) = ops[i].if_arithmetic_eq() {
+            if r == ctx.const_0() {
+                op = Some(l);
+                break;
+            }
+        }
+        i = i.wrapping_add(1);
+    }
+    if let Some(op) = op {
+        let replace_pos = i;
+        i = i.wrapping_add(1);
+        let mut result = op;
+        while i < ops.len() {
+            if let Some((l, r)) = ops[i].if_arithmetic_eq() {
+                if r == ctx.const_0() {
+                    result = ctx.arithmetic(
+                        merge_ty,
+                        result,
+                        l,
+                    );
+                    ops.swap_remove(i);
+                    // Don't increment i
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        if result != op {
+            ops[replace_pos] = ctx.eq_const(result, 0);
+        }
     }
 }
 
@@ -4079,6 +4125,7 @@ fn simplify_or_ops<'e>(
         simplify_or_merge_mem(ops, ctx);
         simplify_or_merge_comparisions(ops, ctx);
         simplify_xor_merge_ands_with_same_mask(ops, true, ctx, swzb_ctx);
+        simplify_demorgan(ops, ctx, ArithOpType::And);
 
         let mut i = 0;
         let mut end = ops.len();

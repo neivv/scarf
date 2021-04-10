@@ -567,3 +567,24 @@ fn xmm_u128_right_shift1() {
         (ctx.register(3), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn keep_constraint() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x85, 0xc0, // test eax, eax
+        0xb8, 0x00, 0x00, 0x00, 0x00, // mov eax, 0
+        // loop:
+        0x7f, 0x03, // jg cont
+        0x7e, 0x01, // jle cont
+        0xcc, // int3
+        // cont:
+        0x83, 0xc0, 0x01, // add eax, 1
+        0x83, 0xf8, 0x04, // cmp eax, 4
+        0x72, 0xf3, // jb loop
+        0xb8, 0x00, 0x00, 0x00, 0x00, // mov eax, 0
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(0)),
+    ]);
+}
