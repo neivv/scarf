@@ -1344,6 +1344,12 @@ pub fn simplify_eq_const<'e>(
                 }
             }
         }
+        // (x | c) == 0 => 0
+        if let Some((_, r)) = left.if_arithmetic_or() {
+            if r.if_constant().is_some() {
+                return ctx.const_0();
+            }
+        }
     }
     if right == 1 {
         // Simplify x == 1 to x if x is just the lowest bit
@@ -1549,6 +1555,13 @@ fn simplify_eq_ops<'e>(
                         }
                     }
                 }
+                // (x | c) == 0 => 0
+                if let Some((_, r)) = ops[0].0.if_arithmetic_or() {
+                    if r.if_constant().is_some() {
+                        return zero;
+                    }
+                }
+
                 // Simplify (c > x) == 0 to x > (c - 1)
                 // Wouldn't be valid for (0 > x) but it should never be created.
                 // Same for (x > c) == 0 to c + 1 > x

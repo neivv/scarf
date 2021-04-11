@@ -588,3 +588,18 @@ fn keep_constraint() {
         (ctx.register(0), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn stc_jbe() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xf9, // stc
+        0x76, 0x01, // jbe end
+        0xcc, // int3,
+        // end:
+        0xb8, 0x00, 0x00, 0x00, 0x00, // mov eax, 0
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(0)),
+    ]);
+}
