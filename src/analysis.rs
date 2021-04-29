@@ -625,6 +625,19 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         }
     }
 
+    /// Adds a branch to be analyzed using current state.
+    ///
+    /// Can be useful when combined with end_branch() on jump to only force one branch to
+    /// be taken. As with branches in general, if the branch has been already analyzed and the
+    /// new state doesn't differ from old, the branch doesn't get analyzed.
+    pub fn add_branch_with_current_state(
+        &mut self,
+        address: <A::Exec as ExecutionState<'e>>::VirtualAddress,
+    ) {
+        let state = self.inner.state.clone();
+        self.inner.analysis.add_unchecked_branch(address, state);
+    }
+
     /// Convenience for cases where `address + CONST * REG_SIZE` is needed
     pub fn const_word_offset(&self, left: Operand<'e>, right: u32) -> Operand<'e> {
         let size = <A::Exec as ExecutionState<'e>>::VirtualAddress::SIZE;
