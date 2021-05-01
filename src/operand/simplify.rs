@@ -40,6 +40,7 @@ pub fn simplify_arith<'e>(
             simplify_add_sub(left, right, is_sub, ctx)
         }
         ArithOpType::Mul => simplify_mul(left, right, ctx),
+        ArithOpType::MulHigh => simplify_mul_high(left, right, ctx),
         ArithOpType::And => simplify_and(left, right, ctx, swzb_ctx),
         ArithOpType::Or => simplify_or(left, right, ctx, swzb_ctx),
         ArithOpType::Xor => simplify_xor(left, right, ctx, swzb_ctx),
@@ -3819,6 +3820,28 @@ pub fn simplify_mul<'e>(
                 ctx.intern(OperandType::Arithmetic(arith))
             })
     })
+}
+
+pub fn simplify_mul_high<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    if let Some(l) = left.if_constant() {
+        if let Some(r) = right.if_constant() {
+            return ctx.constant(((l as u128 * r as u128) >> 64) as u64);
+        }
+    }
+    if left.relevant_bits().end.wrapping_add(right.relevant_bits().end) <= 64 {
+        // Multiplication won't overflow to high u64
+        return ctx.const_0();
+    }
+    let ty = OperandType::Arithmetic(ArithOperand {
+        ty: ArithOpType::MulHigh,
+        left,
+        right,
+    });
+    ctx.intern(ty)
 }
 
 fn simplify_mul_ops<'e>(

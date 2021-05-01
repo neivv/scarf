@@ -2010,9 +2010,6 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             }
             4 | 5 => {
                 // TODO signed mul
-                // No way to represent rdx = imul_128(rax, rm) >> 64,
-                // Just set to undefined for now.
-                // Could alternatively either Special or add Arithmetic64High.
                 let eax = self.reg_variable_size(Register(0), op_size);
                 let edx = self.reg_variable_size(Register(2), op_size);
                 let multiply = ctx.mul(eax, rm.op);
@@ -2020,7 +2017,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 if op_size == MemAccessSize::Mem64 {
                     self.output_mov(
                         DestOperand::from_oper(edx),
-                        ctx.new_undef(),
+                        ctx.mul_high(eax, rm.op),
                     );
                     self.output_mov(
                         DestOperand::from_oper(eax),

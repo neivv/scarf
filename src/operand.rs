@@ -183,6 +183,7 @@ impl<'e> fmt::Display for Operand<'e> {
                     Equal => write!(f, "({} == {})", l, r),
                     GreaterThan => write!(f, "({} > {})", l, r),
                     SignedMul => write!(f, "mul_signed({}, {})", l, r),
+                    MulHigh => write!(f, "mul_high({}, {})", l, r),
                     Parity => write!(f, "parity({})", l),
                     ToFloat => write!(f, "to_float({})", l),
                     ToDouble => write!(f, "to_double({})", l),
@@ -238,6 +239,7 @@ pub enum ArithOpType {
     Add,
     Sub,
     Mul,
+    MulHigh,
     SignedMul,
     Div,
     Modulo,
@@ -678,15 +680,16 @@ impl<'e> OperandContext<'e> {
     }
 
     /// Returns `Operand` for `left * right`.
-    ///
-    /// The returned value is simplified.
     pub fn mul(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         simplify::simplify_mul(left, right, self)
     }
 
+    /// Returns `Operand` for high 64 bits of 128-bit result of `left * right`.
+    pub fn mul_high(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
+        self.arithmetic(ArithOpType::MulHigh, left, right)
+    }
+
     /// Returns `Operand` for signed `left * right`.
-    ///
-    /// The returned value is simplified.
     pub fn signed_mul(
         &'e self,
         left: Operand<'e>,
@@ -1634,6 +1637,13 @@ impl<'e> Operand<'e> {
     #[inline]
     pub fn if_arithmetic_mul(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Mul)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::MulHigh(left, right))`
+    #[inline]
+    pub fn if_arithmetic_mul_high(self) -> Option<(Operand<'e>, Operand<'e>)> {
+        self.if_arithmetic(ArithOpType::MulHigh)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is

@@ -7074,3 +7074,18 @@ fn or_const_eq_zero() {
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
 }
+
+#[test]
+fn simplify_mul_high() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.mul_high(
+        ctx.constant(0x5555_6666),
+        ctx.mem32(ctx.register(5)),
+    );
+    assert_eq!(op1, ctx.const_0());
+    let op2 = ctx.mul_high(
+        ctx.constant(0x5555_6666_7777_8888),
+        ctx.constant(0x5555_6666_1111_2222),
+    );
+    assert_eq!(op2, ctx.constant(0x1c71d27d12345d4b));
+}
