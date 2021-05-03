@@ -18,6 +18,7 @@ use std::ops::Range;
 use std::ptr;
 
 use copyless::BoxHelper;
+use fxhash::FxHashMap;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -291,6 +292,10 @@ pub struct OperandContext<'e> {
     // (Semi-ugly code organization for operand to slightly depend on exec_state,
     // but oh well)
     freeze_buffer: RefCell<Vec<exec_state::FreezeOperation<'e>>>,
+    // Hashmap of other_op -> own_op, for large copy_operand() calls.
+    // Key is usize, cast from other_op pointer.
+    // Cleared after every copy_operand call.
+    copy_operand_cache: RefCell<FxHashMap<usize, Operand<'e>>>,
 }
 
 /// Convenience alias for `OperandContext` reference that avoids having to
@@ -454,6 +459,7 @@ impl<'e> OperandContext<'e> {
             simplify_temp_stack: SliceStack::new(),
             offset_cache: RefCell::new(Vec::new()),
             freeze_buffer: RefCell::new(Vec::new()),
+            copy_operand_cache: RefCell::new(FxHashMap::default()),
         };
         let common_operands = &mut result.common_operands;
         // Accessing interner here would force the invariant lifetime 'e to this stack frame.
@@ -493,6 +499,23 @@ impl<'e> OperandContext<'e> {
     /// Copies an operand referring to some other OperandContext to this OperandContext
     /// and returns the copied reference.
     pub fn copy_operand<'other>(&'e self, op: Operand<'other>) -> Operand<'e> {
+        self.copy_operand_small(op, &mut 32)
+    }
+
+    fn copy_operand_small<'other>(
+        &'e self,
+        op: Operand<'other>,
+        recurse_limit: &mut u32,
+    ) -> Operand<'e> {
+        if *recurse_limit <= 1 {
+            let mut map = self.copy_operand_cache.borrow_mut();
+            if *recurse_limit == 1 {
+                map.clear();
+                *recurse_limit = 0;
+            }
+            return self.copy_operand_large(op, &mut map)
+        }
+        *recurse_limit -= 1;
         let ty = match *op.ty() {
             OperandType::Register(reg) => OperandType::Register(reg),
             OperandType::Xmm(a, b) => OperandType::Xmm(a, b),
@@ -502,30 +525,77 @@ impl<'e> OperandContext<'e> {
             OperandType::Undefined(c) => OperandType::Undefined(c),
             OperandType::Custom(c) => OperandType::Custom(c),
             OperandType::Memory(ref mem) => OperandType::Memory(MemAccess {
-                address: self.copy_operand(mem.address),
+                address: self.copy_operand_small(mem.address, recurse_limit),
                 size: mem.size,
             }),
             OperandType::Arithmetic(ref arith) => {
                 let arith = ArithOperand {
                     ty: arith.ty,
-                    left: self.copy_operand(arith.left),
-                    right: self.copy_operand(arith.right),
+                    left: self.copy_operand_small(arith.left, recurse_limit),
+                    right: self.copy_operand_small(arith.right, recurse_limit),
                 };
                 OperandType::Arithmetic(arith)
             }
             OperandType::ArithmeticFloat(ref arith, size) => {
                 let arith = ArithOperand {
                     ty: arith.ty,
-                    left: self.copy_operand(arith.left),
-                    right: self.copy_operand(arith.right),
+                    left: self.copy_operand_small(arith.left, recurse_limit),
+                    right: self.copy_operand_small(arith.right, recurse_limit),
                 };
                 OperandType::ArithmeticFloat(arith, size)
             }
             OperandType::SignExtend(a, b, c) => {
-                OperandType::SignExtend(self.copy_operand(a), b, c)
+                OperandType::SignExtend(self.copy_operand_small(a, recurse_limit), b, c)
             }
         };
         self.intern(ty)
+    }
+
+    fn copy_operand_large<'other>(
+        &'e self,
+        op: Operand<'other>,
+        cache: &mut FxHashMap<usize, Operand<'e>>
+    ) -> Operand<'e> {
+        let key = op.0 as *const OperandBase<'other> as usize;
+        if let Some(&result) = cache.get(&key) {
+            return result;
+        }
+
+        let ty = match *op.ty() {
+            OperandType::Register(reg) => OperandType::Register(reg),
+            OperandType::Xmm(a, b) => OperandType::Xmm(a, b),
+            OperandType::Flag(f) => OperandType::Flag(f),
+            OperandType::Fpu(f) => OperandType::Fpu(f),
+            OperandType::Constant(c) => OperandType::Constant(c),
+            OperandType::Undefined(c) => OperandType::Undefined(c),
+            OperandType::Custom(c) => OperandType::Custom(c),
+            OperandType::Memory(ref mem) => OperandType::Memory(MemAccess {
+                address: self.copy_operand_large(mem.address, cache),
+                size: mem.size,
+            }),
+            OperandType::Arithmetic(ref arith) => {
+                let arith = ArithOperand {
+                    ty: arith.ty,
+                    left: self.copy_operand_large(arith.left, cache),
+                    right: self.copy_operand_large(arith.right, cache),
+                };
+                OperandType::Arithmetic(arith)
+            }
+            OperandType::ArithmeticFloat(ref arith, size) => {
+                let arith = ArithOperand {
+                    ty: arith.ty,
+                    left: self.copy_operand_large(arith.left, cache),
+                    right: self.copy_operand_large(arith.right, cache),
+                };
+                OperandType::ArithmeticFloat(arith, size)
+            }
+            OperandType::SignExtend(a, b, c) => {
+                OperandType::SignExtend(self.copy_operand_large(a, cache), b, c)
+            }
+        };
+        let result = self.intern(ty);
+        cache.insert(key, result);
+        result
     }
 
     operand_context_const_methods! {
