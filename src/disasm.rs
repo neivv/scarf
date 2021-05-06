@@ -1925,9 +1925,21 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn lea(&mut self) -> Result<(), Failed> {
-        let (rm, r) = self.parse_modrm(self.mem16_32())?;
+        let op_size = self.mem16_32();
+        let (rm, r) = self.parse_modrm(op_size)?;
         if rm.is_memory() {
-            let addr = self.rm_address_operand(&rm);
+            let mut addr = self.rm_address_operand(&rm);
+            if Va::SIZE != 4 {
+                // 64-bit lea only writes the low 32 bits if either address size is
+                // overridden to 32-bit with 0x67 or dest size is not extended to 64-bit
+                // with 0x48.
+                // Combination of 0x67 + 0x48 (lea rax, [eax]) is also possible.
+                // Even if the address calculation overflows there (lea rax, [eax + eax]),
+                // the high dword of rax stays zero, so it won't need special casing.
+                if self.has_prefix(0x67) || self.rex_prefix() & 0x8 == 0 {
+                    addr = self.ctx.and_const(addr, 0xffff_ffff);
+                }
+            }
             self.output_mov(r.dest_operand(), addr);
         }
         Ok(())

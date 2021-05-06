@@ -703,6 +703,25 @@ fn test_switch_cases_in_memory() {
     ]);
 }
 
+#[test]
+fn lea_sizes() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x48, 0xb8, 0xef, 0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12, // mov rax, 1234567890abcdef
+        0x67, 0x8d, 0x08, // lea ecx, [eax]
+        0x67, 0x48, 0x8d, 0x10, // lea rdx, [eax]
+        0x8d, 0x30, // lea esi, [rax]
+        0x48, 0x8d, 0x38, // lea rdi, [rax]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(0x1234567890abcdef)),
+        (ctx.register(1), ctx.constant(0x90abcdef)),
+        (ctx.register(2), ctx.constant(0x90abcdef)),
+        (ctx.register(6), ctx.constant(0x90abcdef)),
+        (ctx.register(7), ctx.constant(0x1234567890abcdef)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
