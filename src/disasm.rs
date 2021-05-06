@@ -1810,7 +1810,15 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 self.output_and(dest, rhs);
             }
             ArithOperation::Or => {
-                self.output_or(dest, rhs);
+                // While usually in 32-bit mode the 64-bit registers are used,
+                // for operations, e.g. (rax | 1) to make users not having to
+                // consider unnecessary 32-bit masks everywhere, special case
+                // bitwise or with rhs 0xffff_ffff to mov.
+                if Va::SIZE == 4 && rhs.if_constant() == Some(0xffff_ffff) {
+                    self.output_mov(dest.dest, rhs);
+                } else {
+                    self.output_or(dest, rhs);
+                }
             }
             ArithOperation::Xor => {
                 if dest.op == rhs {

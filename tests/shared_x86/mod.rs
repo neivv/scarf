@@ -625,3 +625,15 @@ fn eq_minus_one() {
             ctx.eq_const(ctx.mem16(ctx.add_const(ctx.register(1), 0x24)), 0xffff)),
     ]);
 }
+
+#[test]
+fn or_minus_one_eax() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x83, 0xc8, 0xff, // or eax, ffff_ffff
+        0xc3, // ret
+
+    ], &[
+        (ctx.register(0), ctx.constant(0xffff_ffff)),
+    ]);
+}
