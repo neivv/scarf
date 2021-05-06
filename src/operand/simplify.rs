@@ -273,6 +273,20 @@ pub fn simplify_sign_extend<'e>(
             ctx.constant(val)
         }
     } else {
+        // Check for (x - y) & mask to x - y simplify.
+        // Valid if both x and y are less than sign bit.
+        if let Some((l, r)) = val.if_arithmetic_and() {
+            if let Some((x, y)) = l.if_arithmetic_sub() {
+                if r.if_constant() == Some(from.mask()) {
+                    let max_relbits = (from.bits() - 1) as u8;
+                    if x.relevant_bits().end <= max_relbits &&
+                        y.relevant_bits().end <= max_relbits
+                    {
+                        return l;
+                    }
+                }
+            }
+        }
         let ty = OperandType::SignExtend(val, from, to);
         ctx.intern(ty)
     }

@@ -7089,3 +7089,84 @@ fn simplify_mul_high() {
     );
     assert_eq!(op2, ctx.constant(0x1c71d27d12345d4b));
 }
+
+#[test]
+fn simplify_sub_sext() {
+    // sext32_64((x - y) & ffff_ffff) => x - y
+    // when x relevant_bits end <= 31, and y <= 31.
+    //
+    // Example for y relbits end > 31:
+    // 50 - 9000_0000 = 0xffff_ffff_7000_0050
+    // wouldn't get sign extended after masked
+    // (Currently not simplified at all)
+    // Similarly for x bits end > 31
+    // 9000_0000 - 50 => 8fff_ffb0 gets sign extended
+    // but it wasn't just as a result of the subtraction.
+    // And it cannot be converted to only sext x, as
+    // 8000_0001 - 50 would become wrong then.
+    let ctx = &OperandContext::new();
+    let op1 = ctx.sign_extend(
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem16(ctx.register(0)),
+                ctx.constant(0x555),
+            ),
+            0xffff_ffff,
+        ),
+        MemAccessSize::Mem32,
+        MemAccessSize::Mem64,
+    );
+    let eq1 = ctx.sub(
+        ctx.mem16(ctx.register(0)),
+        ctx.constant(0x555),
+    );
+    assert_eq!(op1, eq1);
+
+    let op1 = ctx.sign_extend(
+        ctx.and_const(
+            ctx.sub(
+                ctx.constant(0x555),
+                ctx.mem32(ctx.register(0)),
+            ),
+            0xffff_ffff,
+        ),
+        MemAccessSize::Mem32,
+        MemAccessSize::Mem64,
+    );
+    match *op1.ty() {
+        OperandType::SignExtend(val, MemAccessSize::Mem32, MemAccessSize::Mem64) => {
+            assert_eq!(val, ctx.and_const(
+                ctx.sub(
+                    ctx.constant(0x555),
+                    ctx.mem32(ctx.register(0)),
+                ),
+                0xffff_ffff,
+            ));
+        }
+        _ => panic!("Bad simplify to {}", op1),
+    }
+
+    let op1 = ctx.sign_extend(
+        ctx.and_const(
+            ctx.sub(
+                ctx.mem32(ctx.register(0)),
+                ctx.constant(0x555),
+            ),
+            0xffff_ffff,
+        ),
+        MemAccessSize::Mem32,
+        MemAccessSize::Mem64,
+    );
+    match *op1.ty() {
+        OperandType::SignExtend(val, MemAccessSize::Mem32, MemAccessSize::Mem64) => {
+            assert_eq!(val, ctx.and_const(
+                ctx.sub(
+                    ctx.mem32(ctx.register(0)),
+                    ctx.constant(0x555),
+                ),
+                0xffff_ffff,
+            ));
+        }
+        _ => panic!("Bad simplify to {}", op1),
+    }
+}
