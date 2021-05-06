@@ -1647,39 +1647,45 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         // Handles Cwde (eax = sext32(ax)), Cdq (edx = high(sext64(eax))),
         // Cdqe (rax = sext64(eax)), Cqo (rdx = high(sext128(rax)))
         let ctx = self.ctx;
-        let (mut sign, dest) = match self.read_u8(0)? {
-            0x98 => (0x8000u64, 0),
-            _ => (0x8000_0000, 2),
+        let (mut mem_size, dest) = match self.read_u8(0)? {
+            0x98 => (MemAccessSize::Mem16, 0),
+            _ => (MemAccessSize::Mem32, 2),
         };
         if self.rex_prefix() & 0x8 != 0 {
             if dest == 0 {
-                sign = sign << 16;
+                mem_size = MemAccessSize::Mem32;
             } else {
-                sign = sign << 32;
+                mem_size = MemAccessSize::Mem64;
             }
         }
-        let mut result = ctx.sub_const(
-            ctx.eq_const(
-                ctx.and_const(
-                    ctx.register(0),
-                    sign,
+        let dest_size = match mem_size {
+            MemAccessSize::Mem8 => MemAccessSize::Mem16,
+            MemAccessSize::Mem16 => MemAccessSize::Mem32,
+            MemAccessSize::Mem32 => MemAccessSize::Mem64,
+            MemAccessSize::Mem64 => MemAccessSize::Mem64,
+        };
+        let result = if mem_size == MemAccessSize::Mem64 {
+            // rdx = high(sext128(rax))
+            // Have to use awkward (x & sign_bit) move
+            ctx.sub_const(
+                ctx.eq_const(
+                    ctx.and_const(
+                        ctx.register(0),
+                        0x8000_0000_0000_0000,
+                    ),
+                    0,
                 ),
-                0,
-            ),
-            1,
-        );
-        if dest == 0 {
-            // If dest = eax, result = (extended_sign & !keep_mask) | old
-            // Else dest = edx and it's just the sign
-            let keep_mask = (sign << 1).wrapping_sub(1);
-            result = ctx.or(
-                ctx.and_const(
-                    result,
-                    !keep_mask,
-                ),
-                ctx.register(0),
-            );
-        }
+                1,
+            )
+        } else {
+            // Can use simple sign_extend operand
+            let result = ctx.sign_extend(ctx.register(0), mem_size, dest_size);
+            if dest == 2 {
+                ctx.rsh_const(result, 32)
+            } else {
+                result
+            }
+        };
         let size = match self.rex_prefix() & 0x8 == 0 {
             true => MemAccessSize::Mem32,
             false => MemAccessSize::Mem64,
