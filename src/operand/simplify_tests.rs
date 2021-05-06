@@ -7170,3 +7170,109 @@ fn simplify_sub_sext() {
         _ => panic!("Bad simplify to {}", op1),
     }
 }
+
+#[test]
+fn simplify_sub_sext2() {
+    // sext32_64((sext_to_32(x) - y) & ffff_ffff) => sext_to_64(x) - y
+    // As tested above, it isn't guaranteed to be doable for every x,
+    // but if `sext_to_32(x) - y` never changes sign from neg -> pos it is fine.
+    // (pos -> neg is ok)
+    // (Could also be applied for `(a - b) - y` etc.)
+    let ctx = &OperandContext::new();
+    let op1 = ctx.sign_extend(
+        ctx.and_const(
+            ctx.sub(
+                ctx.sign_extend(
+                    ctx.mem8(ctx.register(0)),
+                    MemAccessSize::Mem8,
+                    MemAccessSize::Mem32,
+                ),
+                ctx.constant(0x555),
+            ),
+            0xffff_ffff,
+        ),
+        MemAccessSize::Mem32,
+        MemAccessSize::Mem64,
+    );
+    let eq1 = ctx.sub(
+        ctx.sign_extend(
+            ctx.mem8(ctx.register(0)),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem64,
+        ),
+        ctx.constant(0x555),
+    );
+    assert_eq!(op1, eq1);
+
+    // Ok, `y` is at most 0x3fff_ffff which won't be able to signed overflow
+    // when subtracted from 0xffff_ff80
+    let op1 = ctx.sign_extend(
+        ctx.and_const(
+            ctx.sub(
+                ctx.sign_extend(
+                    ctx.mem8(ctx.register(0)),
+                    MemAccessSize::Mem8,
+                    MemAccessSize::Mem32,
+                ),
+                ctx.rsh_const(
+                    ctx.mem32(ctx.register(5)),
+                    2,
+                ),
+            ),
+            0xffff_ffff,
+        ),
+        MemAccessSize::Mem32,
+        MemAccessSize::Mem64,
+    );
+    let eq1 = ctx.sub(
+        ctx.sign_extend(
+            ctx.mem8(ctx.register(0)),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem64,
+        ),
+        ctx.rsh_const(
+            ctx.mem32(ctx.register(5)),
+            2,
+        ),
+    );
+    assert_eq!(op1, eq1);
+
+    // Not ok, `y` is at most 0x7fff_ffff.
+    let op1 = ctx.sign_extend(
+        ctx.and_const(
+            ctx.sub(
+                ctx.sign_extend(
+                    ctx.mem8(ctx.register(0)),
+                    MemAccessSize::Mem8,
+                    MemAccessSize::Mem32,
+                ),
+                ctx.rsh_const(
+                    ctx.mem32(ctx.register(5)),
+                    1,
+                ),
+            ),
+            0xffff_ffff,
+        ),
+        MemAccessSize::Mem32,
+        MemAccessSize::Mem64,
+    );
+    match *op1.ty() {
+        OperandType::SignExtend(val, MemAccessSize::Mem32, MemAccessSize::Mem64) => {
+            assert_eq!(val, ctx.and_const(
+                ctx.sub(
+                    ctx.sign_extend(
+                        ctx.mem8(ctx.register(0)),
+                        MemAccessSize::Mem8,
+                        MemAccessSize::Mem32,
+                    ),
+                    ctx.rsh_const(
+                        ctx.mem32(ctx.register(5)),
+                        1,
+                    ),
+                ),
+                0xffff_ffff,
+            ));
+        }
+        _ => panic!("Bad simplify to {}", op1),
+    }
+}

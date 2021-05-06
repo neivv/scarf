@@ -284,6 +284,36 @@ pub fn simplify_sign_extend<'e>(
                     {
                         return l;
                     }
+                    if to == MemAccessSize::Mem64 {
+                        match *x.ty() {
+                            OperandType::SignExtend(x, from2, to2) => {
+                                if to2 == from {
+                                    // Can simplify `(x - y) & mask`
+                                    // to `outer_sext(x) - y` if `x - y` won't do
+                                    // overflow from negative x to positive result.
+                                    // (Positive x to negative result is ok)
+                                    // Probably could also do this when outer_sext isn't to
+                                    // Mem64 with correct masking.
+                                    let min_signed_val = to2.mask()
+                                        .wrapping_sub(from2.mask() >> 1);
+                                    let lowest_overflowing = min_signed_val
+                                        .wrapping_sub(to2.mask() >> 1);
+                                    let y_max = match y.if_constant() {
+                                        Some(s) => s,
+                                        None => y.relevant_bits_mask(),
+                                    };
+                                    if y_max < lowest_overflowing {
+                                        return ctx.sub(
+                                            ctx.sign_extend(x, from2, to),
+                                            y,
+                                        );
+                                    }
+
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
                 }
             }
         }
