@@ -603,3 +603,25 @@ fn stc_jbe() {
         (ctx.register(0), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn eq_minus_one() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x8b, 0x41, 0x24, // mov eax, [ecx + 24]
+        0x83, 0xf8, 0xff, // cmp eax, -1
+        0x0f, 0x94, 0xc0, // sete al,
+        0x0f, 0xb6, 0xc0, // movzx eax, al
+        0x66, 0x8b, 0x49, 0x24, // mov cx, word [ecx + 24]
+        0x66, 0x83, 0xf9, 0xff, // cmp cx, -1
+        0x0f, 0x94, 0xc1, // sete cl,
+        0x0f, 0xb6, 0xc9, // movzx ecx, cl
+        0xc3, // ret
+
+    ], &[
+        (ctx.register(0),
+            ctx.eq_const(ctx.mem32(ctx.add_const(ctx.register(1), 0x24)), 0xffff_ffff)),
+        (ctx.register(1),
+            ctx.eq_const(ctx.mem16(ctx.add_const(ctx.register(1), 0x24)), 0xffff)),
+    ]);
+}

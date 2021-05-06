@@ -1404,7 +1404,9 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             let bits_minus_one = imm_size.bits() - 1;
             let sign_bit = 1 << bits_minus_one;
             if (imm as u32) & sign_bit != 0 {
-                imm | (!0u32 >> bits_minus_one << bits_minus_one) as u64 | 0xffff_ffff_0000_0000
+                (imm |
+                    (!0u32 >> bits_minus_one << bits_minus_one) as u64 |
+                    0xffff_ffff_0000_0000) & op_size.mask()
             } else {
                 imm
             }
@@ -1996,7 +1998,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             0 | 1 => return self.generic_arith_with_imm_op(ArithOperation::Test, op_size),
             2 => {
                 // Not
-                let constant = self.ctx.constant(!0u64);
+                let constant = self.ctx.constant(!0u64 & op_size.mask());
                 self.output_xor(rm, constant);
             }
             3 => {
