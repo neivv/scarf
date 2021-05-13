@@ -3346,7 +3346,7 @@ pub enum Operation<'e> {
     Return(u32),
     /// Special cases like interrupts etc that scarf doesn't want to touch.
     /// Also rep mov for now
-    Special(ArrayVec<[u8; 8]>),
+    Special(ArrayVec<u8, 8>),
     /// Set flags based on operation type. While Move(..) could handle this
     /// (And it does for odd cases like inc), it would mean generating 5
     /// additional operations for each instruction, so special-case flags.

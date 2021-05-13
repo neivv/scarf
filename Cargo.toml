@@ -13,12 +13,12 @@ path = "src/bin/scarf-cfg.rs"
 required-features = ["binaries"]
 
 [dependencies]
-arrayvec = "0.5"
-array-init = "1.0"
+arrayvec = "0.7"
+array-init = "2.0"
 byteorder = "1.1.0"
 copyless = "0.1"
 fxhash = "0.2"
-hashbrown = { version = "0.9", default-features = false }
+hashbrown = { version = "0.11", default-features = false }
 lde = { git = "https://github.com/CasualX/lde", rev = "6d8e287075eae41d0c6bae4c2f3a54268e0f8b4a" }
 log = "0.4"
 quick-error = "2.0"

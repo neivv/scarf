@@ -21,7 +21,7 @@ pub struct Interner<'e> {
 
 /// Interner for undefined, which can just do a by-index lookup.
 pub struct UndefInterner {
-    chunks: RefCell<Vec<Box<ArrayVec<[OperandBase<'static>; UNDEF_CHUNK_SIZE]>>>>,
+    chunks: RefCell<Vec<Box<ArrayVec<OperandBase<'static>, UNDEF_CHUNK_SIZE>>>>,
 }
 
 const UNDEF_CHUNK_SIZE: usize = 1024;
