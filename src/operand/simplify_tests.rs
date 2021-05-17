@@ -7373,3 +7373,91 @@ fn sext_eq() {
     assert_eq!(op7, eq7);
     assert_eq!(op8, eq8);
 }
+
+#[test]
+fn sext_gt_const_right() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+        0x66,
+    );
+    let eq1 = ctx.gt_const(
+        ctx.register(0),
+        0x66,
+    );
+    let op2 = ctx.gt_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+        0x99,
+    );
+    let eq2 = ctx.gt_const(
+        ctx.register(0),
+        0x7f,
+    );
+    let op3 = ctx.gt_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+        0xffff_ff99,
+    );
+    let eq3 = ctx.gt_const(
+        ctx.register(0),
+        0x99,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+    assert_eq!(op3, eq3);
+}
+
+#[test]
+fn sext_gt_const_left() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt_const_left(
+        0x66,
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+    );
+    let eq1 = ctx.gt_const_left(
+        0x66,
+        ctx.register(0),
+    );
+    let op2 = ctx.gt_const_left(
+        0x99,
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+    );
+    let eq2 = ctx.gt_const_left(
+        0x80,
+        ctx.register(0),
+    );
+    let op3 = ctx.gt_const_left(
+        0xffff_ff99,
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+    );
+    let eq3 = ctx.gt_const_left(
+        0x99,
+        ctx.register(0),
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+    assert_eq!(op3, eq3);
+}

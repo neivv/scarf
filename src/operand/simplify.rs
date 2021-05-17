@@ -5235,6 +5235,9 @@ pub fn simplify_gt<'e>(
                 // 1 > x if x == 0
                 return ctx.eq_const(right, 0);
             }
+            if let Some((inner, from, to)) = right.if_sign_extend() {
+                return simplify_gt_sext_const(ctx, c, inner, from, to, true);
+            }
             // max > x if x != max
             let relbit_mask = right.relevant_bits_mask();
             if c == relbit_mask {
@@ -5245,6 +5248,9 @@ pub fn simplify_gt<'e>(
             // x > 0 if x != 0
             if c == 0 {
                 return ctx.neq(left, right);
+            }
+            if let Some((inner, from, to)) = left.if_sign_extend() {
+                return simplify_gt_sext_const(ctx, c, inner, from, to, false);
             }
             let relbit_mask = left.relevant_bits_mask();
             if c == relbit_mask {
@@ -5259,6 +5265,38 @@ pub fn simplify_gt<'e>(
         right,
     };
     ctx.intern(OperandType::Arithmetic(arith))
+}
+
+fn simplify_gt_sext_const<'e>(
+    ctx: OperandCtx<'e>,
+    c: u64,
+    value: Operand<'e>,
+    from: MemAccessSize,
+    to: MemAccessSize,
+    const_on_left: bool,
+) -> Operand<'e> {
+    // If const on right:
+    //   sext(x) > c => x > c if c is positive for `from`
+    //   sext(x) > c => x > (from.mask() / 2) if c is in range that sext cannot produce.
+    //   sext(x) > c => x > (c & from.mask()) otherwise
+    // If const on left:
+    //   c > sext(x) => c > x if c is positive for `from`
+    //   c > sext(x) => ((from.mask() / 2) + 1) > x if c is in range that sext cannot produce.
+    //   c > sext(x) => (c & from.mask()) > x otherwise
+    let from_sign = from.mask() / 2 + 1;
+    let to_sign = to.mask() / 2 + 1;
+    let new_const = if c < from_sign {
+        c
+    } else if c < to_sign {
+        (from.mask() / 2).wrapping_add(const_on_left as u64)
+    } else {
+        c & from.mask()
+    };
+    if const_on_left {
+        ctx.gt_const_left(new_const, value)
+    } else {
+        ctx.gt_const(value, new_const)
+    }
 }
 
 #[test]
