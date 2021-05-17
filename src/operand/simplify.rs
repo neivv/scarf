@@ -1367,6 +1367,15 @@ fn simplify_eq_1op_const<'e>(
             return left;
         }
     }
+    if let Some((val, from, to)) = left.if_sign_extend() {
+        let from_mask = from.mask();
+        let to_mask = to.mask();
+        if right < to_mask - from_mask / 2 && right > from_mask / 2 {
+            return ctx.const_0();
+        } else {
+            return simplify_eq_const(val, right & from_mask, ctx);
+        }
+    }
     let arith = ArithOperand {
         ty: ArithOpType::Equal,
         left,

@@ -1758,6 +1758,16 @@ impl<'e> Operand<'e> {
         self.if_arithmetic(ArithOpType::Rsh)
     }
 
+    /// Returns `Some((val, from, to))` if `self.ty` is
+    /// `OperandType::SignExtend(val, from, to)`
+    #[inline]
+    pub fn if_sign_extend(self) -> Option<(Operand<'e>, MemAccessSize, MemAccessSize)> {
+        match *self.ty() {
+            OperandType::SignExtend(a, b, c) => Some((a, b, c)),
+            _ => None,
+        }
+    }
+
     /// Returns `Some((register, constant))` if operand is an and mask of register
     /// with constant.
     ///

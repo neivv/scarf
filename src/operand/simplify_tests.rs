@@ -7276,3 +7276,100 @@ fn simplify_sub_sext2() {
         _ => panic!("Bad simplify to {}", op1),
     }
 }
+
+#[test]
+fn sext_eq() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.eq_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+        0x66,
+    );
+    let eq1 = ctx.eq_const(
+        ctx.register(0),
+        0x66,
+    );
+    let op2 = ctx.eq_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+        0xffff_ff99,
+    );
+    let eq2 = ctx.eq_const(
+        ctx.register(0),
+        0x99,
+    );
+    let op3 = ctx.eq_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+        ),
+        0x99,
+    );
+    let eq3 = ctx.eq_const(
+        ctx.register(0),
+        0x99,
+    );
+    let op4 = ctx.eq_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+        ),
+        0x9999_9999,
+    );
+    let op5 = ctx.eq_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+        ),
+        0xffff_7fff,
+    );
+    let op6 = ctx.eq_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+        ),
+        0x8000,
+    );
+    let op7 = ctx.eq_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+        ),
+        0x7fff,
+    );
+    let eq7 = ctx.eq_const(
+        ctx.register(0),
+        0x7fff,
+    );
+    let op8 = ctx.eq_const(
+        ctx.sign_extend(
+            ctx.register(0),
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+        ),
+        0xffff_8000,
+    );
+    let eq8 = ctx.eq_const(
+        ctx.register(0),
+        0x8000,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+    assert_eq!(op3, eq3);
+    assert_eq!(op4, ctx.const_0());
+    assert_eq!(op5, ctx.const_0());
+    assert_eq!(op6, ctx.const_0());
+    assert_eq!(op7, eq7);
+    assert_eq!(op8, eq8);
+}
