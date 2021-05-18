@@ -7461,3 +7461,29 @@ fn sext_gt_const_left() {
     assert_eq!(op2, eq2);
     assert_eq!(op3, eq3);
 }
+
+#[test]
+fn eq_masked_sub() {
+    // (x - 77) & ffff_ffff == 22
+    // => x == 99
+    // when x is 32bit value
+    let ctx = &OperandContext::new();
+    let op1 = ctx.eq_const(
+        ctx.sub_const(
+            ctx.and_const(
+                ctx.sub_const(
+                    ctx.mem32(ctx.register(6)),
+                    0x41,
+                ),
+                0xffff_ffff
+            ),
+            0x37,
+        ),
+        0x0,
+    );
+    let eq1 = ctx.eq_const(
+        ctx.mem32(ctx.register(6)),
+        0x78
+    );
+    assert_eq!(op1, eq1);
+}

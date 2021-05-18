@@ -1404,6 +1404,10 @@ pub fn simplify_eq_const<'e>(
                 return ctx.const_0();
             }
         }
+        // Simplify x - y == 0 as x == y
+        if let Some((l, r)) = left.if_arithmetic_sub() {
+            return simplify_eq(l, r, ctx);
+        }
     }
     if right == 1 {
         // Simplify x == 1 to x if x is just the lowest bit
