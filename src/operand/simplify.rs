@@ -5242,6 +5242,19 @@ pub fn simplify_gt<'e>(
             if let Some((inner, from, to)) = right.if_sign_extend() {
                 return simplify_gt_sext_const(ctx, c, inner, from, to, true);
             }
+            if let Some((l, r)) = right.if_arithmetic_sub() {
+                if let Some(c2) = r.if_constant() {
+                    if let Some((inner, from, to)) = l.if_sign_extend() {
+                        let low = c2;
+                        let high = c2.wrapping_add(c);
+                        // Not sure if this would also work when low > high,
+                        // but not doing that now.
+                        if high > low {
+                            return simplify_gt_sext_range(ctx, low, high, inner, from, to);
+                        }
+                    }
+                }
+            }
             // max > x if x != max
             let relbit_mask = right.relevant_bits_mask();
             if c == relbit_mask {
@@ -5269,6 +5282,59 @@ pub fn simplify_gt<'e>(
         right,
     };
     ctx.intern(OperandType::Arithmetic(arith))
+}
+
+/// Note: low inclusive, high exclusive
+fn simplify_gt_sext_range<'e>(
+    ctx: OperandCtx<'e>,
+    low: u64,
+    high: u64,
+    value: Operand<'e>,
+    from: MemAccessSize,
+    to: MemAccessSize,
+) -> Operand<'e> {
+    debug_assert!(low < high);
+    let from_mask = from.mask();
+    let from_sign = from_mask / 2 + 1;
+    let from_sign_high = (to.mask() - from_sign).wrapping_add(1);
+    let low_masked = low & from_mask;
+    let high_masked = high & from_mask;
+    let (from_low, from_high) = if high <= from_sign {
+        // Valid range is positive in from, can just return x > value - y
+        // Could just be (low, high) since these are positive in from,
+        // and as such, the mask doesn't remove anything.
+        // But for consistency just using masked values in all of these
+        // following branches.
+        (low_masked, high_masked)
+    } else if high <= from_sign_high {
+        // Valid range doesn't include negative values
+        if low >= from_sign {
+            // Valid range unreachable
+            return ctx.const_0();
+        } else {
+            // Valid range low..sign_bit
+            (low_masked, from_sign)
+        }
+    } else {
+        // Valid range ends in negative values
+        if low >= from_sign_high {
+            // Valid range only negative values
+            (low_masked, high_masked)
+        } else if low >= from_sign {
+            // Valid range sign_bit..high
+            (from_sign, high_masked)
+        } else {
+            // Valid range low..high
+            (low_masked, high_masked)
+        }
+    };
+    ctx.gt_const_left(
+        from_high.wrapping_sub(from_low),
+        ctx.sub_const(
+            value,
+            from_low,
+        ),
+    )
 }
 
 fn simplify_gt_sext_const<'e>(

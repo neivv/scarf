@@ -7487,3 +7487,122 @@ fn eq_masked_sub() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn const_gt_sext_sub_const() {
+    let ctx = &OperandContext::new();
+    // Valid range 0x33 .. 0x55 => sext unnecessary
+    let op1 = ctx.gt_const_left(
+        0x22,
+        ctx.sub_const(
+            ctx.sign_extend(
+                ctx.register(0),
+                MemAccessSize::Mem8,
+                MemAccessSize::Mem32,
+            ),
+            0x33,
+        ),
+    );
+    let eq1 = ctx.gt_const_left(
+        0x22,
+        ctx.sub_const(
+            ctx.register(0),
+            0x33,
+        ),
+    );
+    // Valid range post sext 0x77 .. 0x99 => change to 0x77 .. 0x80
+    let op2 = ctx.gt_const_left(
+        0x22,
+        ctx.sub_const(
+            ctx.sign_extend(
+                ctx.register(0),
+                MemAccessSize::Mem8,
+                MemAccessSize::Mem32,
+            ),
+            0x77,
+        ),
+    );
+    let eq2 = ctx.gt_const_left(
+        0x9,
+        ctx.sub_const(
+            ctx.register(0),
+            0x77,
+        ),
+    );
+    // Valid range post sext 0x77 .. 0xffff_ff99 => change to 0x77 .. 0x99
+    let op3 = ctx.gt_const_left(
+        0xffff_ff22,
+        ctx.sub_const(
+            ctx.sign_extend(
+                ctx.register(0),
+                MemAccessSize::Mem8,
+                MemAccessSize::Mem32,
+            ),
+            0x77,
+        ),
+    );
+    let eq3 = ctx.gt_const_left(
+        0x22,
+        ctx.sub_const(
+            ctx.register(0),
+            0x77,
+        ),
+    );
+    // Valid range post sext 0x80 .. 0xffff_ff7f => zero
+    let op4 = ctx.gt_const_left(
+        0xffff_feff,
+        ctx.sub_const(
+            ctx.sign_extend(
+                ctx.register(0),
+                MemAccessSize::Mem8,
+                MemAccessSize::Mem32,
+            ),
+            0x80,
+        ),
+    );
+    let eq4 = ctx.const_0();
+    // Valid range post sext 0xffff_ff55 .. 0xffff_ff99 => change to 0x80 .. 0x99
+    let op5 = ctx.gt_const_left(
+        0x44,
+        ctx.sub_const(
+            ctx.sign_extend(
+                ctx.register(0),
+                MemAccessSize::Mem8,
+                MemAccessSize::Mem32,
+            ),
+            0xffff_ff55,
+        ),
+    );
+    let eq5 = ctx.gt_const_left(
+        0x19,
+        ctx.sub_const(
+            ctx.register(0),
+            0x80,
+        ),
+    );
+    // Valid range post sext 0xffff_ff88 .. 0xffff_ff99 => change to 0x88 .. 0x99
+    let op6 = ctx.gt_const_left(
+        0x11,
+        ctx.sub_const(
+            ctx.sign_extend(
+                ctx.register(0),
+                MemAccessSize::Mem8,
+                MemAccessSize::Mem32,
+            ),
+            0xffff_ff88,
+        ),
+    );
+    let eq6 = ctx.gt_const_left(
+        0x11,
+        ctx.sub_const(
+            ctx.register(0),
+            0x88,
+        ),
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+    assert_eq!(op3, eq3);
+    assert_eq!(op4, eq4);
+    assert_eq!(op5, eq5);
+    assert_eq!(op6, eq6);
+}
