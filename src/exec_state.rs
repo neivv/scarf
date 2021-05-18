@@ -564,10 +564,32 @@ fn apply_constraint_split<'e>(
     }
 }
 
+fn sign_extend(value: u64, from: MemAccessSize, to: MemAccessSize) -> u64 {
+    if value > from.mask() / 2 {
+        value | (to.mask() & !from.mask())
+    } else {
+        value
+    }
+}
+
 /// Helper for ExecutionState::value_limits implementations with constraints
-pub(crate) fn value_limits_recurse<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64, u64) {
-    match constraint.ty() {
-        OperandType::Arithmetic(arith) => {
+pub(crate) fn value_limits<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64, u64) {
+    let result = value_limits_recurse(constraint, value);
+    if let Some((inner, from, to)) = value.if_sign_extend() {
+        let inner_result = value_limits_recurse(constraint, inner);
+        let inner_sext = (
+            sign_extend(inner_result.0, from, to),
+            sign_extend(inner_result.1, from, to),
+        );
+        (inner_sext.0.max(result.0), (inner_sext.1.min(result.1)))
+    } else {
+        result
+    }
+}
+
+fn value_limits_recurse<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64, u64) {
+    match *constraint.ty() {
+        OperandType::Arithmetic(ref arith) => {
             match arith.ty {
                 ArithOpType::And => {
                     let left = value_limits_recurse(arith.left, value);
@@ -1744,7 +1766,7 @@ fn value_limits_gt_range() {
             2,
         ),
     );
-    let (low, high) = value_limits_recurse(constraint, ctx.register(0));
+    let (low, high) = value_limits(constraint, ctx.register(0));
     assert_eq!(low, 2);
     assert_eq!(high, 7);
 }
@@ -2012,4 +2034,50 @@ fn test_common_immutable() {
     }
     let common = mem.map.common_immutable(&mem.map).unwrap();
     assert!(Rc::ptr_eq(&common.map, &mem.map.map));
+}
+
+#[test]
+fn value_limits_sext() {
+    let ctx = &crate::operand::OperandContext::new();
+    let constraint = ctx.gt_const_left(
+        0x38,
+        ctx.sub_const(
+            ctx.mem8(ctx.register(0)),
+            0x41,
+        ),
+    );
+    let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0)));
+    assert_eq!(low, 0x41);
+    assert_eq!(high, 0x78);
+    let (low, high) = value_limits(
+        constraint,
+        ctx.sign_extend(
+            ctx.mem8(ctx.register(0)),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+    );
+    assert_eq!(low, 0x41);
+    assert_eq!(high, 0x78);
+
+    let constraint = ctx.gt_const_left(
+        0x42,
+        ctx.sub_const(
+            ctx.mem8(ctx.register(0)),
+            0x41,
+        ),
+    );
+    let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0)));
+    assert_eq!(low, 0x41);
+    assert_eq!(high, 0x82);
+    let (low, high) = value_limits(
+        constraint,
+        ctx.sign_extend(
+            ctx.mem8(ctx.register(0)),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+    );
+    assert_eq!(low, 0x41);
+    assert_eq!(high, 0xffff_ff82);
 }

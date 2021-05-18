@@ -453,7 +453,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     fn value_limits(&mut self, value: Operand<'e>) -> (u64, u64) {
         let mut result = (0, u64::max_value());
         if let Some(constraint) = self.resolved_constraint {
-            let new = crate::exec_state::value_limits_recurse(constraint.0, value);
+            let new = crate::exec_state::value_limits(constraint.0, value);
             result.0 = result.0.max(new.0);
             result.1 = result.1.min(new.1);
         }
@@ -463,7 +463,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
                 OperandType::Memory(ref mem) => Some(self.read_memory(mem.address, mem.size)),
                 _ => None,
             });
-            let new = crate::exec_state::value_limits_recurse(transformed, value);
+            let new = crate::exec_state::value_limits(transformed, value);
             result.0 = result.0.max(new.0);
             result.1 = result.1.min(new.1);
         }
