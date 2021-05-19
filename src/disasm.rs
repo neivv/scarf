@@ -2029,6 +2029,12 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             }
             3 => {
                 // Neg
+                self.output(Operation::SetFlags(FlagUpdate {
+                    left: ctx.const_0(),
+                    right: rm.op,
+                    ty: FlagArith::Sub,
+                    size: op_size,
+                }));
                 self.output_arith(
                     rm.dest,
                     ArithOpType::Sub,

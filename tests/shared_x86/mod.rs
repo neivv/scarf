@@ -637,3 +637,24 @@ fn or_minus_one_eax() {
         (ctx.register(0), ctx.constant(0xffff_ffff)),
     ]);
 }
+
+#[test]
+fn neg_sets_flags() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xb8, 0x00, 0x00, 0x00, 0x00, // mov eax, 0
+        0xb9, 0x00, 0x00, 0x00, 0x00, // mov ecx, 0
+        0xba, 0x00, 0x00, 0x00, 0x00, // mov edx, 0
+        0xf6, 0xd8, // neg al
+        0x0f, 0x93, 0xc2, // setae dl
+        0x0f, 0x94, 0xc1, // sete cl
+        0xb8, 0x80, 0x00, 0x00, 0x00, // mov eax, 80
+        0xf6, 0xd8, // neg al
+        0x0f, 0x90, 0xc0, // seto al
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(0x01)),
+        (ctx.register(1), ctx.constant(0x01)),
+        (ctx.register(2), ctx.constant(0x01)),
+    ]);
+}
