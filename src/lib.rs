@@ -58,7 +58,7 @@ impl std::fmt::Debug for VirtualAddress {
 
 impl std::fmt::Debug for VirtualAddress64 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "VirtualAddress({:08x}_{:08x})", self.0 >> 32, self.0 & 0xffff_ffff)
+        write!(f, "VirtualAddress({:08x})", self.0)
     }
 }
 
