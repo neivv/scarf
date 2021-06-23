@@ -255,6 +255,16 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
             .ok_or_else(|| OutOfBounds)
     }
 
+    /// Receives a slice of data from address to end of the respective section.
+    pub fn slice_from_address_to_end(&self, start: Va) -> Result<&[u8], OutOfBounds> {
+        self.section_by_addr(start)
+            .and_then(|s| {
+                let section_relative = start.as_u64() - s.virtual_address.as_u64();
+                s.data.get((section_relative as usize)..)
+            })
+            .ok_or_else(|| OutOfBounds)
+    }
+
     pub fn read_u8(&self, addr: Va) -> Result<u8, OutOfBounds> {
         use crate::light_byteorder::ReadLittleEndian;
         self.section_by_addr(addr)
