@@ -600,7 +600,7 @@ impl<'e> ExecutionState<'e> {
                     }
                 }
                 self.memory_constraint = None;
-                static UNDEF_REGISTERS: &[u8] = &[0, 1, 2, 4, 8, 9, 10, 11];
+                static UNDEF_REGISTERS: &[u8] = &[0, 1, 2, 8, 9, 10, 11];
                 for &i in UNDEF_REGISTERS.iter() {
                     self.state[i as usize] = ctx.new_undef();
                     self.cached_low_registers.invalidate(i);

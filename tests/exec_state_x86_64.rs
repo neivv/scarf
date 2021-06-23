@@ -488,7 +488,6 @@ fn test_eax_after_call() {
          (ctx.register(0), ctx.new_undef()),
          (ctx.register(1), ctx.new_undef()),
          (ctx.register(2), ctx.new_undef()),
-         (ctx.register(4), ctx.new_undef()),
          (ctx.register(8), ctx.new_undef()),
          (ctx.register(9), ctx.new_undef()),
          (ctx.register(10), ctx.new_undef()),
