@@ -540,7 +540,7 @@ fn instruction_operations32_main(
         0x15c => s.sse_float_arith(ArithOpType::Sub),
         0x15e => s.sse_float_arith(ArithOpType::Div),
         0x15f => s.sse_float_max(),
-        0x160 => s.punpcklbw(),
+        0x160 => s.sse_unpack(),
         0x16e => s.mov_sse_6e(),
         0x173 => s.packed_shift_imm(),
         0x180 | 0x181 | 0x182 | 0x183 | 0x184 | 0x185 | 0x186 | 0x187 |
@@ -778,6 +778,10 @@ fn instruction_operations64_main(
         // Prefetch/nop
         0x118 | 0x119 | 0x11a | 0x11b | 0x11c | 0x11d | 0x11e | 0x11f => Ok(()),
         0x110 | 0x111| 0x113 | 0x128 | 0x129 | 0x12b | 0x16f | 0x17e | 0x17f => s.sse_move(),
+        0x114 | 0x115 | 0x160 | 0x161 | 0x162 | 0x168 | 0x169 | 0x16a | 0x16c | 0x16d =>
+        {
+            s.sse_unpack()
+        }
         0x12a => s.sse_int_to_float(),
         0x12c | 0x12d => s.cvttss2si(),
         // ucomiss, comiss, comiss signals exceptions but that isn't simulated
@@ -799,7 +803,6 @@ fn instruction_operations64_main(
         0x15c => s.sse_float_arith(ArithOpType::Sub),
         0x15e => s.sse_float_arith(ArithOpType::Div),
         0x15f => s.sse_float_max(),
-        0x160 => s.punpcklbw(),
         0x16e => s.mov_sse_6e(),
         0x173 => s.packed_shift_imm(),
         0x180 | 0x181 | 0x182 | 0x183 | 0x184 | 0x185 | 0x186 | 0x187 |
@@ -1049,6 +1052,18 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn r_to_operand_xmm(&self, r: ModRm_R, i: u8) -> Operand<'e> {
         self.ctx.xmm(r.0, i)
+    }
+
+    fn r_to_operand_xmm_64(&mut self, r: ModRm_R, i: u8) -> Operand<'e> {
+        let low = self.ctx.xmm(r.0, i * 2);
+        let high = self.ctx.xmm(r.0, i * 2 + 1);
+        self.ctx.or(
+            low,
+            self.ctx.lsh_const(
+                high,
+                0x20,
+            ),
+        )
     }
 
     /// Returns a structure containing both DestOperand and Operand
@@ -2421,85 +2436,101 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         Ok(())
     }
 
-    fn punpcklbw(&mut self) -> Result<(), Failed> {
-        fn rsh_and_const<'e>(
-            ctx: OperandCtx<'e>,
-            val: Operand<'e>,
-            and_mask: u32,
-            shift: u8,
-        ) -> Operand<'e> {
-            ctx.rsh_const(
-                ctx.and_const(
-                    val,
-                    and_mask as u64,
-                ),
-                shift as u64,
-            )
-        }
-
-        fn lsh_and_const<'e>(
-            ctx: OperandCtx<'e>,
-            val: Operand<'e>,
-            and_mask: u32,
-            shift: u8,
-        ) -> Operand<'e> {
-            ctx.lsh_const(
-                ctx.and_const(
-                    val,
-                    and_mask as u64,
-                ),
-                shift as u64,
-            )
-        }
-
-        fn or4<'e>(
-            ctx: OperandCtx<'e>,
-            vals: &[Operand<'e>; 4]
-        ) -> Operand<'e> {
-            ctx.or(
-                ctx.or(
-                    vals[0],
-                    vals[1],
-                ),
-                ctx.or(
-                    vals[2],
-                    vals[3],
-                ),
-            )
-        }
-
+    fn sse_unpack(&mut self) -> Result<(), Failed> {
+        let byte = self.read_u8(0)?;
+        // 0x14, 0x66 0x14 = low f32/f64
+        // 0x15, 0x66 0x15 = high f32/f64
+        // 0x60, 0x61, 0x62 = low u8/u16/u32
+        // 0x68, 0x69, 0x6a = high u8/u16/u32
+        // 0x6c = low u64
+        // 0x6d = high u64
+        static SIZES: [(MemAccessSize, bool); 0x10] = [
+            (MemAccessSize::Mem8, false), // 0x60
+            (MemAccessSize::Mem16, false), // 0x61
+            (MemAccessSize::Mem32, false), // 0x62
+            (MemAccessSize::Mem8, false), // 3
+            (MemAccessSize::Mem64, false), // 0x14
+            (MemAccessSize::Mem64, true), // 0x15
+            (MemAccessSize::Mem8, false), // 6
+            (MemAccessSize::Mem8, false), // 7
+            (MemAccessSize::Mem8, true), // 0x68
+            (MemAccessSize::Mem16, true), // 0x69
+            (MemAccessSize::Mem32, true), // 0x6a
+            (MemAccessSize::Mem8, false), // b
+            (MemAccessSize::Mem64, false), // 0x6c
+            (MemAccessSize::Mem64, true), // 0x6d
+            (MemAccessSize::Mem8, false), // e
+            (MemAccessSize::Mem8, false), // f
+        ];
+        let (mut size, high) = SIZES[byte as usize & 0xf];
         if !self.has_prefix(0x66) {
-            return Err(self.unknown_opcode());
+            // The non-float non-66 instructions are MMX
+            if byte > 0x15 {
+                return Err(self.unknown_opcode());
+            } else {
+                size = MemAccessSize::Mem32;
+            }
         }
+
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        // Example of operation with Mem8
         // r.0 = (r.0 & ff) | (rm.0 & ff) << 8 | (r.0 & ff00) << 8 | (rm.0 & ff00) << 10
         // r.1 = (r.0 & ff_0000) >> 10 | (rm.0 & ff_0000) >> 8 |
         //      (r.0 & ff00_0000) >> 8 | (rm.0 & ff00_0000)
         // r.2 = (r.1 & ff) | (rm.1 & ff) << 8 | (r.1 & ff00) << 8 | (rm.1 & ff00) << 10
         // r.3 = (r.1 & ff_0000) >> 10 | (rm.1 & ff_0000) >> 8 |
         //      (r.1 & ff00_0000) >> 8 | (rm.1 & ff00_0000)
-        // Do things in reverse to avoid overwriting r0/r1
         let ctx = self.ctx;
-        for i in (0u8..2).rev() {
-            let out0 = r.dest_operand_xmm(i.wrapping_mul(2));
-            let out1 = r.dest_operand_xmm(i.wrapping_mul(2) + 1);
-            let in_r = self.r_to_operand_xmm(r, i);
-            let in_rm = self.rm_to_operand_xmm(&rm, i);
-            let input = [in_r, in_rm];
-            let vals: [Operand<'e>; 4] = array_init::array_init(|i| {
-                static MASKS: [u32; 4] = [0xff_0000, 0xff_0000, 0xff00_0000, 0xff00_0000];
-                static SHIFTS: [u8; 4] = [0x10, 0x8, 0x8, 0x0];
-                rsh_and_const(ctx, input[i & 1], MASKS[i & 3], SHIFTS[i & 3])
-            });
-            self.output_mov(out1, or4(ctx, &vals));
-
-            let vals: [Operand<'e>; 4] = array_init::array_init(|i| {
-                static MASKS: [u32; 4] = [0xff, 0xff, 0xff00, 0xff00];
-                static SHIFTS: [u8; 4] = [0x0, 0x8, 0x8, 0x10];
-                lsh_and_const(ctx, input[i & 1], MASKS[i & 3], SHIFTS[i & 3])
-            });
-            self.output_mov(out0, or4(ctx, &vals));
+        let mut first = self.r_to_operand_xmm_64(r, high as u8);
+        let mut second = self.rm_to_operand_xmm_64(&rm, high as u8);
+        self.output(Operation::Freeze);
+        let mask = size.mask() as u32;
+        let count_per_xmm_op = match size {
+            MemAccessSize::Mem8 => 4,
+            MemAccessSize::Mem16 => 2,
+            MemAccessSize::Mem32 => 1,
+            MemAccessSize::Mem64 => 0,
+        };
+        let shift = size.bits().into();
+        for xmm_word in 0..4 {
+            let mut val = ctx.const_0();
+            let mut current_shift = 0;
+            for _ in 0..(count_per_xmm_op / 2) {
+                // 8 / 16 bit values
+                val = ctx.or(
+                    ctx.or(
+                        ctx.lsh_const(
+                            ctx.and_const(
+                                first,
+                                mask as u64,
+                            ),
+                            current_shift,
+                        ),
+                        ctx.lsh_const(
+                            ctx.and_const(
+                                second,
+                                mask as u64,
+                            ),
+                            current_shift.wrapping_add(shift),
+                        ),
+                    ),
+                    val,
+                );
+                first = ctx.rsh_const(first, shift);
+                second = ctx.rsh_const(second, shift);
+                current_shift = shift.wrapping_mul(2);
+            }
+            if count_per_xmm_op <= 1 {
+                // 32 / 64 bit values
+                val = ctx.and_const(first, 0xffff_ffff);
+                first = ctx.rsh_const(first, 32);
+                if xmm_word == 1 || count_per_xmm_op == 1 {
+                    std::mem::swap(&mut first, &mut second);
+                }
+            }
+            self.output_mov(r.dest_operand_xmm(xmm_word), val);
         }
+        self.output(Operation::Unfreeze);
         Ok(())
     }
 
@@ -2513,8 +2544,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         };
         let (rm, r) = self.parse_modrm(op_size)?;
         let rm_op = self.rm_to_operand(&rm);
-        self.output_mov(r.dest_operand_xmm(0), rm_op);
         let ctx = self.ctx;
+        self.output_mov(r.dest_operand_xmm(0), ctx.and_const(rm_op, 0xffff_ffff));
         let zero = ctx.const_0();
         if op_size == MemAccessSize::Mem64 {
             let rm_high = ctx.rsh_const(rm_op, 0x20);
