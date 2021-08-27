@@ -638,6 +638,27 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         self.inner.analysis.add_unchecked_branch(address, state);
     }
 
+    /// Clears all branches, both analyzed and currently pending.
+    ///
+    /// Similar to clear_unchecked_branches, but also clears all branches that had been
+    /// seen. Effectively same as if a new FuncAnalysis had been started from start of
+    /// current branch, with the state that the branch was reached at.
+    pub fn clear_all_branches(&mut self) {
+        self.clear_unchecked_branches();
+        self.inner.analysis.cfg.clear();
+    }
+
+    /// Clears any pending (unchecked) branches.
+    ///
+    /// Effectively guarantees that any branches that were seen from `Operation::Jump`
+    /// but have not been checked, will not be checked, and only code reachable from
+    /// the currently executing branch will be checked.
+    pub fn clear_unchecked_branches(&mut self) {
+        let analysis = &mut self.inner.analysis;
+        analysis.unchecked_branches.clear();
+        analysis.more_unchecked_branches.clear();
+    }
+
     /// Convenience for cases where `address + CONST * REG_SIZE` is needed
     pub fn const_word_offset(&self, left: Operand<'e>, right: u32) -> Operand<'e> {
         let size = <A::Exec as ExecutionState<'e>>::VirtualAddress::SIZE;

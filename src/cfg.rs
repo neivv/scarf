@@ -27,6 +27,11 @@ impl<'e, S: CfgState> Cfg<'e, S> {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.entry = NodeLink::new(S::VirtualAddress::max_value());
+    }
+
     fn mark_dirty(&mut self) {
         self.node_indices_dirty = true;
     }
