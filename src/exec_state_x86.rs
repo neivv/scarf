@@ -703,20 +703,6 @@ impl<'e> ExecutionState<'e> {
         }
     }
 
-    fn masked_flag_result(&mut self, result: Operand<'e>, size: MemAccessSize) -> Operand<'e> {
-        let ctx = self.ctx;
-        *self.pending_flags_result_masked.get_or_insert_with(|| {
-            if result.relevant_bits().end <= 32 {
-                result
-            } else {
-                ctx.and_const(
-                    result,
-                    (size.sign_bit() << 1).wrapping_sub(1),
-                )
-            }
-        })
-    }
-
     fn realize_pending_flag(&mut self, flag: Flag) {
         use crate::disasm::FlagArith::*;
 
@@ -738,15 +724,21 @@ impl<'e> ExecutionState<'e> {
             }
         };
         let &mut base_result = self.pending_flags_result.get_or_insert_with(|| {
-            ctx.arithmetic(arith_ty, arith.left, arith.right)
+            ctx.and_const(
+                ctx.arithmetic(arith_ty, arith.left, arith.right),
+                size.mask(),
+            )
         });
-        let result = if arith.ty == Adc {
+        let mut result = if arith.ty == Adc {
             ctx.add(base_result, in_carry.unwrap_or_else(|| ctx.const_0()))
         } else if arith.ty == Sbb {
             ctx.sub(base_result, in_carry.unwrap_or_else(|| ctx.const_0()))
         } else {
             base_result
         };
+        if result != base_result && size != MemAccessSize::Mem64 {
+            result = ctx.and_const(result, size.mask());
+        }
 
         match flag {
             Flag::Carry | Flag::Overflow => match arith.ty {
@@ -766,20 +758,17 @@ impl<'e> ExecutionState<'e> {
                 }
             }
             Flag::Zero => {
-                let result_masked = self.masked_flag_result(result, size);
-                let val = ctx.eq_const(result_masked, 0);
+                let val = ctx.eq_const(result, 0);
                 self.state[FLAGS_INDEX + Flag::Zero as usize] = val;
             }
             Flag::Parity => {
-                let result_masked = self.masked_flag_result(result, size);
-                let val = ctx.arithmetic(ArithOpType::Parity, result_masked, ctx.const_0());
+                let val = ctx.arithmetic(ArithOpType::Parity, result, ctx.const_0());
                 self.state[FLAGS_INDEX + Flag::Parity as usize] = val;
             }
             Flag::Sign => {
-                let result_masked = self.masked_flag_result(result, size);
                 let val = ctx.neq_const(
                     ctx.and_const(
-                        result_masked,
+                        result,
                         size.sign_bit(),
                     ),
                     0,

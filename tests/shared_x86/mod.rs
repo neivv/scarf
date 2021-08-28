@@ -658,3 +658,22 @@ fn neg_sets_flags() {
         (ctx.register(2), ctx.constant(0x01)),
     ]);
 }
+
+#[test]
+fn add_minus_one_jne() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x83, 0xc2, 0xff, // add edx, ffff_ffff
+        0x75, 0xfb, // jne start
+        // start2:
+        0x66, 0x81, 0xc1, 0xff, 0xff, // add cx, ffff
+        0x75, 0xf9, // jne start2
+        0x31, 0xc9, // xor ecx, ecx
+        0x31, 0xd2, // xor edx, edx
+        0xc3, // ret
+
+    ], &[
+        (ctx.register(1), ctx.constant(0)),
+        (ctx.register(2), ctx.constant(0)),
+    ]);
+}
