@@ -258,6 +258,14 @@ pub fn simplify_sign_extend<'e>(
     if from.bits() >= to.bits() {
         return ctx.const_0();
     }
+    if val.relevant_bits().end < from.bits() as u8 {
+        return val;
+    }
+    if let Some((inner, inner_from, inner_to)) = val.if_sign_extend() {
+        if inner_to == from {
+            return simplify_sign_extend(inner, inner_from, to, ctx);
+        }
+    }
     // Shouldn't be 64bit constant since then `from` would already be Mem64
     // Obviously such thing could be built, but assuming disasm/users don't..
     if let Some(val) = val.if_constant() {

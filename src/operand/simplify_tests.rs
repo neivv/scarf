@@ -7606,3 +7606,71 @@ fn const_gt_sext_sub_const() {
     assert_eq!(op5, eq5);
     assert_eq!(op6, eq6);
 }
+
+#[test]
+fn sext_chain() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.sign_extend(
+        ctx.sign_extend(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff,
+            ),
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+        ),
+        MemAccessSize::Mem32,
+        MemAccessSize::Mem64,
+    );
+    let eq1 = ctx.sign_extend(
+        ctx.and_const(
+            ctx.register(0),
+            0xffff,
+        ),
+        MemAccessSize::Mem16,
+        MemAccessSize::Mem64,
+    );
+    let op2 = ctx.sign_extend(
+        ctx.sign_extend(
+            ctx.and_const(
+                ctx.register(0),
+                0xff,
+            ),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem32,
+        ),
+        MemAccessSize::Mem32,
+        MemAccessSize::Mem64,
+    );
+    let eq2 = ctx.sign_extend(
+        ctx.and_const(
+            ctx.register(0),
+            0xff,
+        ),
+        MemAccessSize::Mem8,
+        MemAccessSize::Mem64,
+    );
+    let op3 = ctx.sign_extend(
+        ctx.sign_extend(
+            ctx.and_const(
+                ctx.register(0),
+                0xff,
+            ),
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem16,
+        ),
+        MemAccessSize::Mem32,
+        MemAccessSize::Mem64,
+    );
+    let eq3 = ctx.sign_extend(
+        ctx.and_const(
+            ctx.register(0),
+            0xff,
+        ),
+        MemAccessSize::Mem8,
+        MemAccessSize::Mem16,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+    assert_eq!(op3, eq3);
+}
