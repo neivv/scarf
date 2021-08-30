@@ -7674,3 +7674,40 @@ fn sext_chain() {
     assert_eq!(op2, eq2);
     assert_eq!(op3, eq3);
 }
+
+#[test]
+fn f32_arith_unnecessary_mask() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.float_arithmetic(
+            ArithOpType::Add,
+            ctx.register(0),
+            ctx.register(1),
+            MemAccessSize::Mem32,
+        ),
+        0xffff_ffff,
+    );
+    let eq1 = ctx.float_arithmetic(
+        ArithOpType::Add,
+        ctx.register(0),
+        ctx.register(1),
+        MemAccessSize::Mem32,
+    );
+    let op2 = ctx.and_const(
+        ctx.float_arithmetic(
+            ArithOpType::ToInt,
+            ctx.mem32(ctx.register(0)),
+            ctx.const_0(),
+            MemAccessSize::Mem32,
+        ),
+        0xffff_ffff,
+    );
+    let eq2 = ctx.float_arithmetic(
+        ArithOpType::ToInt,
+        ctx.mem32(ctx.register(0)),
+        ctx.const_0(),
+        MemAccessSize::Mem32,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+}

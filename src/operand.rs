@@ -1312,6 +1312,15 @@ impl<'e> OperandType<'e> {
                 }
                 _ => 0..64,
             },
+            OperandType::ArithmeticFloat(ref arith, size) => match arith.ty {
+                // Arithmetic with f32 inputs is always assumed to be f32 output
+                // Note that ToInt(f32) => i32 clamped, ToInt(f64) => i64 clamped
+                // No way to specify ToInt(f32) => i64 other than ToInt(ToDouble(f32)),
+                // guess that's good enough?
+                ArithOpType::ToDouble => 0..64,
+                ArithOpType::ToFloat => 0..32,
+                _ => (0..size.bits() as u8),
+            }
             OperandType::Constant(c) => {
                 let trailing = c.trailing_zeros() as u8;
                 let leading = c.leading_zeros() as u8;
