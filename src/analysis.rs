@@ -1099,23 +1099,34 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
     fn operation(&mut self, control: &mut Control<'exec, '_, '_, Self>, op: &Operation<'exec>) {
         self.inner.operation(&mut control.cast(), op);
         if let Operation::Return(_) = op {
-            match self.state {
-                Some(ref mut state) => {
-                    let new = control.exec_state();
-                    let new_exec = Self::Exec::merge_states(
-                        &mut state.0,
-                        new,
-                        &mut MergeStateCache::new(),
-                    );
-                    if let Some(new_exec) = new_exec {
-                        state.0 = new_exec;
-                        state.1.merge(control.user_state().clone());
+            if !control.inner.skip_operation || control.inner.end.is_some() {
+                let ctx = control.ctx();
+                let state = control.exec_state();
+                state.move_to(
+                    &crate::DestOperand::Register64(crate::operand::Register(4)),
+                    ctx.add_const(
+                        ctx.register(4),
+                        <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE.into(),
+                    ),
+                );
+                match self.state {
+                    Some(ref mut state) => {
+                        let new = control.exec_state();
+                        let new_exec = Self::Exec::merge_states(
+                            &mut state.0,
+                            new,
+                            &mut MergeStateCache::new(),
+                        );
+                        if let Some(new_exec) = new_exec {
+                            state.0 = new_exec;
+                            state.1.merge(control.user_state().clone());
+                        }
                     }
-                }
-                None => {
-                    let exec = &control.inner.state.0;
-                    let user = &control.inner.state.1;
-                    self.state = Some(clone_state_separate(exec, user));
+                    None => {
+                        let exec = &control.inner.state.0;
+                        let user = &control.inner.state.1;
+                        self.state = Some(clone_state_separate(exec, user));
+                    }
                 }
             }
         }
