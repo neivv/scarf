@@ -1,6 +1,6 @@
 //! 32/64-bit x86 tests
 
-use super::test_inline;
+use super::{test_inline, test_inline_xmm};
 
 use scarf::OperandContext;
 
@@ -675,5 +675,21 @@ fn add_minus_one_jne() {
     ], &[
         (ctx.register(1), ctx.constant(0)),
         (ctx.register(2), ctx.constant(0)),
+    ]);
+}
+
+#[test]
+fn cvtsi2sd_or_ss() {
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0xb8, 0x56, 0x34, 0x12, 0x80, // mov eax, 80123456
+        0xf3, 0x0f, 0x2a, 0xc0, // cvtsi2ss xmm0, eax
+        0xf2, 0x0f, 0x2a, 0xd0, // cvtsi2sd xmm2, eax
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(0x80123456)),
+        (ctx.xmm(0, 0), ctx.constant(0xCEFFDB97)),
+        (ctx.xmm(2, 0), ctx.constant(0xEA800000)),
+        (ctx.xmm(2, 1), ctx.constant(0xC1DFFB72)),
     ]);
 }

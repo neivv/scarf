@@ -2353,20 +2353,42 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn sse_int_to_float(&mut self) -> Result<(), Failed> {
-        if !self.has_prefix(0xf3) {
+        if !self.has_prefix(0xf3) && !self.has_prefix(0xf2) {
             return Err(self.unknown_opcode());
         }
-        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let rm = self.rm_to_operand(&rm);
+        let arith_type = if self.has_prefix(0xf3) {
+            ArithOpType::ToFloat
+        } else {
+            ArithOpType::ToDouble
+        };
+        let op_size = match self.rex_prefix() & 0x8 != 0 {
+            true => MemAccessSize::Mem64,
+            false => MemAccessSize::Mem32,
+        };
+        let (rm, r) = self.parse_modrm(op_size)?;
+        let ctx = self.ctx;
+
+        let mut rm = self.rm_to_operand(&rm);
+        if op_size == MemAccessSize::Mem32 {
+            rm = ctx.sign_extend(rm, MemAccessSize::Mem32, MemAccessSize::Mem64);
+        }
+        let arith = ctx.arithmetic(arith_type, rm, ctx.const_0());
         self.output_mov(
             r.dest_operand_xmm(0),
-            self.ctx.float_arithmetic(
-                ArithOpType::ToFloat,
-                rm,
-                self.ctx.const_0(),
-                MemAccessSize::Mem32
+            ctx.and_const(
+                arith,
+                0xffff_ffff,
             ),
         );
+        if arith_type == ArithOpType::ToDouble {
+            self.output_mov(
+                r.dest_operand_xmm(1),
+                ctx.rsh_const(
+                    arith,
+                    0x20,
+                ),
+            );
+        }
         Ok(())
     }
 
@@ -2427,10 +2449,15 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn cvtdq2ps(&mut self) -> Result<(), Failed> {
         let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let zero = self.ctx.const_0();
+        let ctx = self.ctx;
+        let zero = ctx.const_0();
         for i in 0..4 {
             let dest = r.dest_operand_xmm(i);
-            let rm = self.rm_to_operand_xmm(&rm, i);
+            let rm = ctx.sign_extend(
+                self.rm_to_operand_xmm(&rm, i),
+                MemAccessSize::Mem32,
+                MemAccessSize::Mem64,
+            );
             self.output_arith(dest, ArithOpType::ToFloat, rm, zero);
         }
         Ok(())

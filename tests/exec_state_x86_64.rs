@@ -860,6 +860,27 @@ fn lea_sizes() {
     ]);
 }
 
+#[test]
+fn cvtsi2sd_or_ss_also_r64() {
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0xb8, 0x56, 0x34, 0x12, 0x80, // mov eax, 80123456
+        0xf3, 0x0f, 0x2a, 0xc0, // cvtsi2ss xmm0, eax
+        0xf3, 0x48, 0x0f, 0x2a, 0xc8, // cvtsi2ss xmm1, rax
+        0xf2, 0x0f, 0x2a, 0xd0, // cvtsi2sd xmm2, eax
+        0xf2, 0x48, 0x0f, 0x2a, 0xd8, // cvtsi2sd xmm3, rax
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(0x80123456)),
+        (ctx.xmm(0, 0), ctx.constant(0xCEFFDB97)),
+        (ctx.xmm(1, 0), ctx.constant(0x4F001234)),
+        (ctx.xmm(2, 0), ctx.constant(0xEA800000)),
+        (ctx.xmm(2, 1), ctx.constant(0xC1DFFB72)),
+        (ctx.xmm(3, 0), ctx.constant(0x8AC00000)),
+        (ctx.xmm(3, 1), ctx.constant(0x41E00246)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
@@ -893,6 +914,7 @@ fn test_inner<'e, 'b>(
     file: &'e BinaryFile<VirtualAddress64>,
     func: VirtualAddress64,
     changes: &[(Operand<'b>, Operand<'b>)],
+    xmm: bool,
 ) {
     let ctx = &OperandContext::new();
     let changes = changes.iter().map(|&(a, b)| {
@@ -921,6 +943,37 @@ fn test_inner<'e, 'b>(
             assert_eq!(expected, end, "Register {}: got {} expected {}", i, end, expected);
         }
     }
+    if xmm {
+        for i in 0..16 {
+            for j in 0..4 {
+                let expected = expected_state.resolve(ctx.xmm(i, j));
+                let end = end_state.resolve(ctx.xmm(i, j));
+                if end.iter().any(|x| x.is_undefined()) {
+                    let expected_is_ud = expected.is_undefined();
+                    assert!(expected_is_ud, "XMM {}.{}: got undef {} expected {}", i, j, end, expected);
+                } else {
+                    assert_eq!(expected, end, "XMM {}.{}: got {} expected {}", i, j, end, expected);
+                }
+            }
+        }
+    }
+}
+
+fn test_inline_xmm<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
+    let binary = scarf::raw_bin(VirtualAddress64(0x00400000), vec![BinarySection {
+        name: {
+            // ugh
+            let mut x = [0; 8];
+            for (out, &val) in x.iter_mut().zip(b".text\0\0\0".iter()) {
+                *out = val;
+            }
+            x
+        },
+        virtual_address: VirtualAddress64(0x401000),
+        virtual_size: code.len() as u32,
+        data: code.into(),
+    }]);
+    test_inner(&binary, binary.code_section().virtual_address, changes, true);
 }
 
 fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
@@ -937,12 +990,12 @@ fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
         virtual_size: code.len() as u32,
         data: code.into(),
     }]);
-    test_inner(&binary, binary.code_section().virtual_address, changes);
+    test_inner(&binary, binary.code_section().virtual_address, changes, false);
 }
 
 fn test<'b>(idx: usize, changes: &[(Operand<'b>, Operand<'b>)]) {
     let binary = helpers::raw_bin_64(OsStr::new("test_inputs/exec_state_x86_64.bin")).unwrap();
     let offset = (&binary.code_section().data[idx * 4..]).read_u64::<LittleEndian>().unwrap();
     let func = VirtualAddress64(offset);
-    test_inner(&binary, func, changes);
+    test_inner(&binary, func, changes, false);
 }

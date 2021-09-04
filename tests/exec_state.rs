@@ -717,6 +717,7 @@ fn test_inner<'e, 'b>(
     file: &'e BinaryFile<VirtualAddress>,
     func: VirtualAddress,
     changes: &[(Operand<'b>, Operand<'b>)],
+    xmm: bool,
 ) {
     let ctx = &OperandContext::new();
     let changes = changes.iter().map(|&(a, b)| {
@@ -745,6 +746,37 @@ fn test_inner<'e, 'b>(
             assert_eq!(expected, end, "Register {}: got {} expected {}", i, end, expected);
         }
     }
+    if xmm {
+        for i in 0..8 {
+            for j in 0..4 {
+                let expected = expected_state.resolve(ctx.xmm(i, j));
+                let end = end_state.resolve(ctx.xmm(i, j));
+                if end.iter().any(|x| x.is_undefined()) {
+                    let expected_is_ud = expected.is_undefined();
+                    assert!(expected_is_ud, "XMM {}.{}: got undef {} expected {}", i, j, end, expected);
+                } else {
+                    assert_eq!(expected, end, "XMM {}.{}: got {} expected {}", i, j, end, expected);
+                }
+            }
+        }
+    }
+}
+
+fn test_inline_xmm<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
+    let binary = scarf::raw_bin(VirtualAddress(0x00400000), vec![BinarySection {
+        name: {
+            // ugh
+            let mut x = [0; 8];
+            for (out, &val) in x.iter_mut().zip(b".text\0\0\0".iter()) {
+                *out = val;
+            }
+            x
+        },
+        virtual_address: VirtualAddress(0x401000),
+        virtual_size: code.len() as u32,
+        data: code.into(),
+    }]);
+    test_inner(&binary, binary.code_section().virtual_address, changes, true);
 }
 
 fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
@@ -761,12 +793,12 @@ fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
         virtual_size: code.len() as u32,
         data: code.into(),
     }]);
-    test_inner(&binary, binary.code_section().virtual_address, changes);
+    test_inner(&binary, binary.code_section().virtual_address, changes, false);
 }
 
 fn test<'b>(idx: usize, changes: &[(Operand<'b>, Operand<'b>)]) {
     let binary = helpers::raw_bin(OsStr::new("test_inputs/exec_state.bin")).unwrap();
     let offset = (&binary.code_section().data[idx * 4..]).read_u32::<LittleEndian>().unwrap();
     let func = VirtualAddress(offset);
-    test_inner(&binary, func, changes);
+    test_inner(&binary, func, changes, false);
 }

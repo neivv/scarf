@@ -119,7 +119,7 @@ pub fn simplify_arith<'e>(
         ArithOpType::ToFloat => {
             let val = left;
             if let Some(c) = val.if_constant() {
-                let float = f32::to_bits(c as i32 as f32);
+                let float = f32::to_bits(c as i64 as f32);
                 ctx.constant(float as u64)
             } else {
                 let ty = OperandType::Arithmetic(ArithOperand {
