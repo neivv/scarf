@@ -504,9 +504,7 @@ enum End {
 
 impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     pub fn end_analysis(&mut self) {
-        if self.inner.end.is_none() {
-            self.inner.end = Some(End::Function);
-        }
+        self.inner.end = Some(End::Function);
     }
 
     /// Ends the branch without continuing through anything it leads to
