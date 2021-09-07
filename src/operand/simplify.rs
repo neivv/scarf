@@ -2327,16 +2327,91 @@ fn check_quick_arith_simplify<'e>(
     }
 }
 
+/// Checks for example
+///     - (Undefined - Register) & ffff_ffff
+///     - (Undefined - 2343) & ffff_ffff
+///     - (Mem16 + Register) & ffff_ffff
+/// Which cannot be simplified and should be just returned as is
+/// Assumes: right is continuous mask from 0
+/// These kind of ands are ~30% of all const ands
+fn can_quick_and_simplify_add_sub<'e>(left: Operand<'e>, right: u64) -> bool {
+    /// Checks single part of add/sub chain; not add/sub itself.
+    /// Caller is able to guarantee this from the fact that add/sub chains
+    /// are canonicalized as (((x + y) + z) + c) always
+    fn check<'e>(val: Operand<'e>, right: u64) -> bool {
+        match *val.ty() {
+            OperandType::Memory(ref mem) => {
+                let next_mask = match mem.size {
+                    MemAccessSize::Mem8 => 0x0u32,
+                    MemAccessSize::Mem16 => 0xff,
+                    MemAccessSize::Mem32 => 0xffff,
+                    MemAccessSize::Mem64 => 0xffff_ffff,
+                };
+                u64::from(next_mask) & right != right
+            }
+            ref x => can_quick_simplify_type(x),
+        }
+    }
+
+    fn recurse<'e>(left: Operand<'e>, right: u64) -> bool {
+        if let Some(c) = left.if_constant() {
+            // Can happen for LHS of sub
+            c & right == c
+        } else if let OperandType::Arithmetic(arith) = left.ty() {
+            if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
+                check(arith.right, right) && recurse(arith.left, right)
+            } else {
+                false
+            }
+        } else {
+            check(left, right)
+        }
+    }
+
+    match *left.ty() {
+        OperandType::Arithmetic(ref arith) => {
+            if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
+                if let Some(c) = arith.right.if_constant() {
+                    // Check if c gets simplified by mask
+                    if c & right != c {
+                        return false;
+                    }
+                    // Require simplification to canonicalize (x + ffff) & ffff as (x - 1) & ffff
+                    // etc. x + 8000 or x - 7fff are limits
+                    let mut max = right.wrapping_add(1) >> 1;
+                    if arith.ty == ArithOpType::Sub {
+                        max = max.wrapping_sub(1);
+                    }
+                    if c > max {
+                        return false;
+                    }
+                } else {
+                    if !check(arith.right, right) {
+                        return false;
+                    }
+                }
+                recurse(arith.left, right)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
 fn quick_and_simplify<'e>(
     left: Operand<'e>,
     right: u64,
     ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
-    let left_relbit_mask = left.relevant_bits_mask();
-    if right & left_relbit_mask == left_relbit_mask {
-        return Some(left);
+    let mut ok = can_quick_simplify_type(left.ty());
+    if !ok {
+        let continuous_mask_from_zero = right.wrapping_add(1) & right == 0;
+        if continuous_mask_from_zero {
+            ok = can_quick_and_simplify_add_sub(left, right);
+        }
     }
-    if can_quick_simplify_type(left.ty()) {
+    if ok {
         let left_bits = left.relevant_bits();
         let right = if left_bits.end != 64 {
             let mask = (1 << left_bits.end) - 1;
@@ -2376,11 +2451,43 @@ pub fn simplify_and_const<'e>(
         }
     }
     let left_mask = match left.if_constant() {
-        Some(c) => return ctx.constant(c & right),
+        Some(c) => {
+            if c & right == c {
+                return left;
+            } else {
+                return ctx.constant(c & right);
+            }
+        }
         None => left.relevant_bits_mask(),
     };
-    if left_mask & right == 0 {
+    let common_mask = left_mask & right;
+    if common_mask == 0 {
         return ctx.const_0();
+    }
+    if common_mask == left_mask {
+        // Masking with right doesn't change the result
+        return left;
+    }
+    if let OperandType::Arithmetic(arith) = left.ty() {
+        if arith.ty == ArithOpType::Or || arith.ty == ArithOpType::Xor {
+            // These checks aren't too common out of all and_const simplifications (~3%)
+            // But pretty common to be useful if left is or/xor (~30%)
+            // So probably worth it
+            let inner_right_bits = match arith.right.if_constant() {
+                Some(c) => c,
+                None => arith.right.relevant_bits_mask(),
+            };
+            if inner_right_bits & right == 0 {
+                // Right won't affect the result, use just left
+                return simplify_and_const(arith.left, right, ctx, swzb_ctx);
+            }
+            // Note: Left cannot be constant, it is always canonicalized to outermost right
+            let inner_left_bits = arith.left.relevant_bits_mask();
+            if inner_left_bits & right == 0 {
+                // Left won't affect the result, use just right
+                return simplify_and_const(arith.right, right, ctx, swzb_ctx);
+            }
+        }
     }
     if let Some(result) = quick_and_simplify(left, right, ctx) {
         return result;
