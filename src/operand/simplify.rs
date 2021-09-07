@@ -3719,18 +3719,6 @@ fn simplify_or_merge_mem<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
     }
 }
 
-// Only x + y + c, x - y + c, and x * y + c have a chance of
-// being simplified at all in simplify_collected_add_sub_ops
-fn can_quick_simplify_add_sub(left: Operand<'_>) -> bool {
-    match left.ty() {
-        OperandType::Arithmetic(ref arith) => match arith.ty {
-            ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => false,
-            _ => true,
-        }
-        _ => true,
-    }
-}
-
 pub fn simplify_add_const<'e>(
     mut left: Operand<'e>,
     mut right: u64,
@@ -3761,37 +3749,20 @@ pub fn simplify_add_const<'e>(
     if right == 0 {
         return left;
     }
-    if can_quick_simplify_add_sub(left) {
-        let arith = if right > 0x8000_0000_0000_0000 {
-            ArithOperand {
-                ty: ArithOpType::Sub,
-                left: left,
-                right: ctx.constant(0u64.wrapping_sub(right)),
-            }
-        } else {
-            ArithOperand {
-                ty: ArithOpType::Add,
-                left: left,
-                right: ctx.constant(right),
-            }
-        };
-        return ctx.intern(OperandType::Arithmetic(arith));
-    }
-
-    ctx.simplify_temp_stack()
-        .alloc(|ops| {
-            let const1 = collect_add_ops(left, ops, u64::max_value(), false)?;
-            let const_sum = const1.wrapping_add(right);
-            simplify_collected_add_sub_ops(ops, ctx, const_sum)?;
-            Ok(add_sub_ops_to_tree(ops, ctx))
-        }).unwrap_or_else(|SizeLimitReached| {
-            let arith = ArithOperand {
-                ty: ArithOpType::Add,
-                left: left,
-                right: ctx.constant(right),
-            };
-            return ctx.intern(OperandType::Arithmetic(arith));
-        })
+    let arith = if right > 0x8000_0000_0000_0000 {
+        ArithOperand {
+            ty: ArithOpType::Sub,
+            left: left,
+            right: ctx.constant(0u64.wrapping_sub(right)),
+        }
+    } else {
+        ArithOperand {
+            ty: ArithOpType::Add,
+            left: left,
+            right: ctx.constant(right),
+        }
+    };
+    return ctx.intern(OperandType::Arithmetic(arith));
 }
 
 pub fn simplify_sub_const<'e>(
@@ -3824,37 +3795,20 @@ pub fn simplify_sub_const<'e>(
     if right == 0 {
         return left;
     }
-    if can_quick_simplify_add_sub(left) {
-        let arith = if right > 0x8000_0000_0000_0000 {
-            ArithOperand {
-                ty: ArithOpType::Add,
-                left: left,
-                right: ctx.constant(0u64.wrapping_sub(right)),
-            }
-        } else {
-            ArithOperand {
-                ty: ArithOpType::Sub,
-                left: left,
-                right: ctx.constant(right),
-            }
-        };
-        return ctx.intern(OperandType::Arithmetic(arith));
-    }
-
-    ctx.simplify_temp_stack()
-        .alloc(|ops| {
-            let const1 = collect_add_ops(left, ops, u64::max_value(), false)?;
-            let const_sum = const1.wrapping_sub(right);
-            simplify_collected_add_sub_ops(ops, ctx, const_sum)?;
-            Ok(add_sub_ops_to_tree(ops, ctx))
-        }).unwrap_or_else(|SizeLimitReached| {
-            let arith = ArithOperand {
-                ty: ArithOpType::Add,
-                left: left,
-                right: ctx.constant(right),
-            };
-            return ctx.intern(OperandType::Arithmetic(arith));
-        })
+    let arith = if right > 0x8000_0000_0000_0000 {
+        ArithOperand {
+            ty: ArithOpType::Add,
+            left: left,
+            right: ctx.constant(0u64.wrapping_sub(right)),
+        }
+    } else {
+        ArithOperand {
+            ty: ArithOpType::Sub,
+            left: left,
+            right: ctx.constant(right),
+        }
+    };
+    ctx.intern(OperandType::Arithmetic(arith))
 }
 
 pub fn simplify_add_sub<'e>(
