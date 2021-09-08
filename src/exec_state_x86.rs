@@ -314,8 +314,9 @@ fn as_32bit_value<'e>(value: Operand<'e>, ctx: OperandCtx<'e>) -> Operand<'e> {
         value.clone()
     } else {
         let const_mask = value.if_arithmetic_and()
-            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_constant()));
-        if let Some((0xffff_ffff, other)) = const_mask {
+            .filter(|x| x.1.if_constant() == Some(0xffff_ffff))
+            .map(|x| x.0);
+        if let Some(other) = const_mask {
             if other.is_undefined() || other.if_register().is_some() {
                 other.clone()
             } else {
@@ -949,15 +950,9 @@ impl<'e> State<'e> {
         left: Operand<'e>,
         right: Operand<'e>,
     ) -> Option<Operand<'e>> {
+        let c = right.if_constant()?;
+        let reg = left.if_register()?.0 & 0xf;
         let ctx = self.ctx;
-        let (const_op, c, other) = match left.if_constant() {
-            Some(c) => (left, c, right),
-            _ => match right.if_constant() {
-                Some(c) => (right, c, left),
-                _ => return None,
-            }
-        };
-        let reg = other.if_register()?.0 & 0x7;
         if c <= 0xff {
             let op = match self.cached_low_registers.get_low8(reg) {
                 None => {
@@ -973,7 +968,7 @@ impl<'e> State<'e> {
             if c == 0xff {
                 Some(op)
             } else {
-                Some(ctx.and(op, const_op))
+                Some(ctx.and_const(op, c))
             }
         } else if c <= 0xffff {
             let op = match self.cached_low_registers.get_16(reg) {
@@ -990,7 +985,7 @@ impl<'e> State<'e> {
             if c == 0xffff {
                 Some(op)
             } else {
-                Some(ctx.and(op, const_op))
+                Some(ctx.and_const(op, c))
             }
         } else {
             None

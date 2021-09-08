@@ -839,15 +839,9 @@ impl<'e> State<'e> {
         left: Operand<'e>,
         right: Operand<'e>,
     ) -> Option<Operand<'e>> {
+        let c = right.if_constant()?;
+        let reg = left.if_register()?.0 & 0xf;
         let ctx = self.ctx;
-        let (const_op, c, other) = match left.if_constant() {
-            Some(c) => (left, c, right),
-            _ => match right.if_constant() {
-                Some(c) => (right, c, left),
-                _ => return None,
-            }
-        };
-        let reg = other.if_register()?.0 & 0xf;
         if c <= 0xff {
             let op = match self.cached_low_registers.get_low8(reg) {
                 None => {
@@ -863,7 +857,7 @@ impl<'e> State<'e> {
             if c == 0xff {
                 Some(op)
             } else {
-                Some(ctx.and(op, const_op))
+                Some(ctx.and_const(op, c))
             }
         } else if c <= 0xffff {
             let op = match self.cached_low_registers.get_16(reg) {
@@ -880,7 +874,7 @@ impl<'e> State<'e> {
             if c == 0xffff {
                 Some(op)
             } else {
-                Some(ctx.and(op, const_op))
+                Some(ctx.and_const(op, c))
             }
         } else if c <= 0xffff_ffff {
             let op = match self.cached_low_registers.get_32(reg) {
@@ -897,7 +891,7 @@ impl<'e> State<'e> {
             if c == 0xffff_ffff {
                 Some(op)
             } else {
-                Some(ctx.and(op, const_op))
+                Some(ctx.and_const(op, c))
             }
         } else {
             None
