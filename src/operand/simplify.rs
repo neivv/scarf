@@ -3719,6 +3719,35 @@ fn simplify_or_merge_mem<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
     }
 }
 
+fn is_sub_with_lhs_const<'e>(left: Operand<'e>) -> Option<u64> {
+    let mut pos = left;
+    while let Some((l, _)) = pos.if_arithmetic_sub() {
+        pos = l;
+    }
+    pos.if_constant()
+}
+
+fn simplify_add_sub_const_with_lhs_const<'e>(
+    left: Operand<'e>,
+    right: u64,
+    ty: ArithOpType,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    ctx.simplify_temp_stack()
+        .alloc(|ops| {
+            let c1 = collect_add_ops(left, ops, u64::max_value(), false)?;
+            simplify_collected_add_sub_ops(ops, ctx, right.wrapping_add(c1))?;
+            Ok(add_sub_ops_to_tree(ops, ctx))
+        }).unwrap_or_else(|SizeLimitReached| {
+            let arith = ArithOperand {
+                ty,
+                left: left,
+                right: ctx.constant(right),
+            };
+            ctx.intern(OperandType::Arithmetic(arith))
+        })
+}
+
 pub fn simplify_add_const<'e>(
     mut left: Operand<'e>,
     mut right: u64,
@@ -3727,6 +3756,7 @@ pub fn simplify_add_const<'e>(
     if right == 0 {
         return left;
     }
+    let init_right = right;
     // Check if left is x +/- const
     // Useful since push/pop/esp/ebp offsets are really common.
     match left.ty() {
@@ -3749,7 +3779,16 @@ pub fn simplify_add_const<'e>(
     if right == 0 {
         return left;
     }
-    let arith = if right > 0x8000_0000_0000_0000 {
+    // If right != init_right, there was a constant on right already
+    let negate_right = right > 0x8000_0000_0000_0000;
+    if right == init_right || !negate_right {
+        if let Some(lhs_const) = is_sub_with_lhs_const(left) {
+            if !negate_right || lhs_const != 0 {
+                return simplify_add_sub_const_with_lhs_const(left, right, ArithOpType::Add, ctx);
+            }
+        }
+    }
+    let arith = if negate_right {
         ArithOperand {
             ty: ArithOpType::Sub,
             left: left,
@@ -3773,6 +3812,7 @@ pub fn simplify_sub_const<'e>(
     if right == 0 {
         return left;
     }
+    let init_right = right;
     // Check if left is x +/- const
     // Useful since push/pop/esp/ebp offsets are really common.
     match left.ty() {
@@ -3795,7 +3835,17 @@ pub fn simplify_sub_const<'e>(
     if right == 0 {
         return left;
     }
-    let arith = if right > 0x8000_0000_0000_0000 {
+    // If right != init_right, there was a constant on right already
+    let negate_right = right < 0x8000_0000_0000_0000;
+    if right == init_right || !negate_right {
+        if let Some(lhs_const) = is_sub_with_lhs_const(left) {
+            if !negate_right || lhs_const != 0 {
+                let right = 0u64.wrapping_sub(right);
+                return simplify_add_sub_const_with_lhs_const(left, right, ArithOpType::Sub, ctx);
+            }
+        }
+    }
+    let arith = if !negate_right {
         ArithOperand {
             ty: ArithOpType::Add,
             left: left,

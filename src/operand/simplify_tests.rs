@@ -7711,3 +7711,36 @@ fn f32_arith_unnecessary_mask() {
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
 }
+
+#[test]
+fn simplify_sub_const_left() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.sub(
+        ctx.sub(
+            ctx.constant(4),
+            ctx.register(2),
+        ),
+        ctx.constant(6),
+    );
+    let eq1 = ctx.sub(
+        ctx.sub(
+            ctx.constant(0),
+            ctx.register(2),
+        ),
+        ctx.constant(2),
+    );
+    assert_eq!(op1, eq1);
+
+    let op2 = ctx.add(
+        ctx.sub(
+            ctx.constant(0),
+            ctx.register(2),
+        ),
+        ctx.constant(6),
+    );
+    let eq2 = ctx.sub(
+        ctx.constant(6),
+        ctx.register(2),
+    );
+    assert_eq!(op2, eq2);
+}
