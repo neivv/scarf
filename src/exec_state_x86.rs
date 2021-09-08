@@ -1,6 +1,8 @@
 use std::fmt;
 use std::rc::Rc;
 
+use copyless::BoxHelper;
+
 use crate::analysis;
 use crate::disasm::{FlagArith, Disassembler32, DestOperand, FlagUpdate, Operation};
 use crate::exec_state::{self, Constraint, FreezeOperation, Memory, MergeStateCache};
@@ -17,113 +19,49 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     const WORD_SIZE: MemAccessSize = MemAccessSize::Mem32;
 
     fn maybe_convert_memory_immutable(&mut self, limit: usize) {
-        self.memory.maybe_convert_immutable(limit);
+        self.inner.memory.maybe_convert_immutable(limit);
     }
 
     fn add_resolved_constraint(&mut self, constraint: Constraint<'e>) {
-        self.resolved_constraint = Some(constraint);
-        let ctx = self.ctx();
-        if let OperandType::Arithmetic(ref arith) = *constraint.0.ty() {
-            if arith.left.if_constant().is_some() {
-                if let Some((addr, mut size)) =
-                    self.memory.fast_reverse_lookup(ctx, arith.right, 0xffff_ffff)
-                {
-                    if size == MemAccessSize::Mem64 {
-                        size = MemAccessSize::Mem32;
-                    }
-                    let val = ctx.mem_variable_rc(size, addr);
-                    self.add_memory_constraint(ctx.arithmetic(arith.ty, arith.left, val));
-                }
-            } else if arith.right.if_constant().is_some() {
-                if let Some((addr, mut size)) =
-                    self.memory.fast_reverse_lookup(ctx, arith.left, 0xffff_ffff)
-                {
-                    if size == MemAccessSize::Mem64 {
-                        size = MemAccessSize::Mem32;
-                    }
-                    let val = ctx.mem_variable_rc(size, addr);
-                    self.add_memory_constraint(ctx.arithmetic(arith.ty, val, arith.right));
-                }
-            }
-        }
-        for i in 0..6 {
-            let flag = ctx.flag_by_index(i);
-            let value = self.resolve(flag);
-            if value == constraint.0 {
-                self.state[FLAGS_INDEX + i] = ctx.const_1();
-            }
-        }
+        self.inner.add_resolved_constraint(constraint);
     }
 
     fn add_unresolved_constraint(&mut self, constraint: Constraint<'e>) {
-        self.unresolved_constraint = Some(constraint);
+        self.inner.unresolved_constraint = Some(constraint);
     }
 
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
-        let ctx = self.ctx();
-        let resolved = self.resolve(value);
-        if self.frozen {
-            let dest = self.resolve_dest(dest);
-            self.freeze_buffer.push(FreezeOperation::Move(dest, resolved));
-        } else {
-            let dest = self.get_dest_invalidate_constraints(dest);
-            dest.set(resolved, ctx);
-        }
+        self.inner.move_to(dest, value);
     }
 
     fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
-        let ctx = self.ctx;
-        if self.frozen {
-            self.freeze_buffer.push(FreezeOperation::Move(*dest, value));
-        } else {
-            self.unresolved_constraint = None;
-            let dest = self.get_dest(dest, true);
-            dest.set(value, ctx);
-        }
+        self.inner.move_resolved(dest, value);
     }
 
     fn set_flags_resolved(&mut self, arith: &FlagUpdate<'e>, carry: Option<Operand<'e>>) {
-        if self.frozen {
-            self.freeze_buffer.push(FreezeOperation::SetFlags(*arith, carry));
-        } else {
-            self.pending_flags = Some((*arith, carry));
-            self.pending_flag_bits = 0x1f;
-            self.pending_flags_result = None;
-            self.pending_flags_result_masked = None;
-            // Could try to do smarter invalidation, but since in practice unresolved
-            // constraints always are bunch of flags, invalidate it completely.
-            self.unresolved_constraint = None;
-        }
+        self.inner.set_flags_resolved(arith, carry);
     }
 
     #[inline]
     fn ctx(&self) -> OperandCtx<'e> {
-        self.ctx
+        self.inner.ctx
     }
 
     fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e> {
-        self.resolve(operand)
+        self.inner.resolve(operand)
     }
 
     fn update(&mut self, operation: &Operation<'e>) {
         self.update(operation)
     }
 
-    fn resolve_apply_constraints(&mut self, mut op: Operand<'e>) -> Operand<'e> {
-        if let Some(ref constraint) = self.unresolved_constraint {
-            op = constraint.apply_to(self.ctx, op);
-        }
-        let val = self.resolve(op);
-        if let Some(ref constraint) = self.resolved_constraint {
-            constraint.apply_to(self.ctx, val)
-        } else {
-            val
-        }
+    fn resolve_apply_constraints(&mut self, op: Operand<'e>) -> Operand<'e> {
+        self.inner.resolve_apply_constraints(op)
     }
 
     fn read_memory(&mut self, address: Operand<'e>, size: MemAccessSize) -> Operand<'e> {
-        self.read_memory_impl(address, size)
-            .unwrap_or_else(|| self.ctx.mem_variable_rc(size, address))
+        self.inner.read_memory_impl(address, size)
+            .unwrap_or_else(|| self.ctx().mem_variable_rc(size, address))
     }
 
     fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>> {
@@ -139,11 +77,11 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         new: &mut Self,
         cache: &mut MergeStateCache<'e>,
     ) -> Option<Self> {
-        merge_states(old, new, cache)
+        merge_states(&mut old.inner, &mut new.inner, cache)
     }
 
     fn apply_call(&mut self, ret: VirtualAddress) {
-        let ctx = self.ctx;
+        let ctx = self.ctx();
         let esp = ctx.register_ref(4);
         self.move_to(
             &DestOperand::from_oper(esp),
@@ -203,17 +141,17 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     }
 
     fn value_limits(&mut self, mut value: Operand<'e>) -> (u64, u64) {
+        let ctx = self.ctx();
         if value.relevant_bits().end > 32 {
-            value = self.ctx.and_const(value, 0xffff_ffff);
+            value = ctx.and_const(value, 0xffff_ffff);
         }
         let mut result = (0, u64::max_value());
-        if let Some(constraint) = self.resolved_constraint {
+        if let Some(constraint) = self.inner.resolved_constraint {
             let new = crate::exec_state::value_limits(constraint.0, value);
             result.0 = result.0.max(new.0);
             result.1 = result.1.min(new.1);
         }
-        if let Some(constraint) = self.memory_constraint {
-            let ctx = self.ctx();
+        if let Some(constraint) = self.inner.memory_constraint {
             let transformed = ctx.transform(constraint.0, 8, |op| match *op.ty() {
                 OperandType::Memory(ref mem) => {
                     Some(ctx.and_const(self.read_memory(mem.address, mem.size), 0xffff_ffff))
@@ -229,38 +167,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
 
     unsafe fn clone_to(&self, out: *mut Self) {
         use std::ptr::write;
-        let Self {
-            memory,
-            cached_low_registers,
-            xmm_fpu,
-            state,
-            resolved_constraint,
-            unresolved_constraint,
-            memory_constraint,
-            ctx,
-            binary,
-            pending_flags,
-            pending_flag_bits,
-            pending_flags_result,
-            pending_flags_result_masked,
-            freeze_buffer,
-            frozen,
-        } = self;
-        write(&mut (*out).memory, memory.clone());
-        write(&mut (*out).cached_low_registers, cached_low_registers.clone());
-        write(&mut (*out).xmm_fpu, xmm_fpu.clone());
-        write(&mut (*out).freeze_buffer, freeze_buffer.clone());
-        write(&mut (*out).state, *state);
-        write(&mut (*out).resolved_constraint, *resolved_constraint);
-        write(&mut (*out).unresolved_constraint, *unresolved_constraint);
-        write(&mut (*out).memory_constraint, *memory_constraint);
-        write(&mut (*out).ctx, *ctx);
-        write(&mut (*out).binary, *binary);
-        write(&mut (*out).pending_flags, *pending_flags);
-        write(&mut (*out).pending_flag_bits, *pending_flag_bits);
-        write(&mut (*out).pending_flags_result, *pending_flags_result);
-        write(&mut (*out).pending_flags_result_masked, *pending_flags_result_masked);
-        write(&mut (*out).frozen, *frozen);
+        write(out, (*self).clone());
     }
 }
 
@@ -270,6 +177,10 @@ const FLAGS_INDEX: usize = 8;
 const STATE_OPERANDS: usize = FLAGS_INDEX + 6;
 
 pub struct ExecutionState<'e> {
+    inner: Box<State<'e>>,
+}
+
+struct State<'e> {
     // 8 registers, 8 fpu registers, 8 xmm registers with 4 parts each, 6 flags
     state: [Operand<'e>; 0x8 + 0x6],
     xmm_fpu: Rc<[Operand<'e>; 0x8 + 0x8 * 4]>,
@@ -290,8 +201,16 @@ pub struct ExecutionState<'e> {
     frozen: bool,
 }
 
-// Manual impl since derive adds an unwanted inline hint
 impl<'e> Clone for ExecutionState<'e> {
+    fn clone(&self) -> Self {
+        ExecutionState {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+// Manual impl since derive adds an unwanted inline hint
+impl<'e> Clone for State<'e> {
     fn clone(&self) -> Self {
         Self {
             // Codegen optimization: memory cloning isn't a memcpy,
@@ -363,7 +282,7 @@ enum Destination<'a, 'e> {
     Register16(&'a mut Operand<'e>),
     Register8High(&'a mut Operand<'e>),
     Register8Low(&'a mut Operand<'e>),
-    Memory(&'a mut ExecutionState<'e>, Operand<'e>, MemAccessSize),
+    Memory(&'a mut State<'e>, Operand<'e>, MemAccessSize),
 }
 
 /// Removes 0xffff_ffff masks from registers/undefined,
@@ -587,7 +506,7 @@ impl<'e> ExecutionState<'e> {
         }
         // Direction
         state[FLAGS_INDEX + 5] = ctx.const_0();
-        ExecutionState {
+        let inner = Box::alloc().init(State {
             state,
             xmm_fpu,
             cached_low_registers: CachedLowRegisters::new(),
@@ -603,6 +522,9 @@ impl<'e> ExecutionState<'e> {
             pending_flags_result_masked: None,
             freeze_buffer: Vec::new(),
             frozen: false,
+        });
+        ExecutionState {
+            inner,
         }
     }
 
@@ -611,11 +533,53 @@ impl<'e> ExecutionState<'e> {
         ctx: OperandCtx<'b>,
     ) -> ExecutionState<'b> {
         let mut result = ExecutionState::new(ctx);
-        result.binary = Some(binary);
+        result.inner.binary = Some(binary);
         result
     }
 
     pub fn update(&mut self, operation: &Operation<'e>) {
+        self.inner.update(operation);
+    }
+
+    /// Makes all of memory undefined
+    pub fn clear_memory(&mut self) {
+        self.inner.memory = Memory::new();
+    }
+
+    /// Tries to find an register/memory address corresponding to a resolved value.
+    pub fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>> {
+        // TODO: Could also check xmm but who honestly uses it for unique storage
+        for (reg, &val2) in self.inner.state.iter().enumerate().take(8) {
+            if val == val2 {
+                let ctx = self.ctx();
+                return Some(ctx.register(reg as u8));
+            }
+        }
+        None
+    }
+
+    /// Tries to find an memory address corresponding to a resolved value.
+    pub fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>> {
+        let ctx = self.ctx();
+        self.inner.memory.reverse_lookup(val).map(|x| ctx.mem32(x))
+    }
+
+    pub fn memory(&self) -> &Memory<'e> {
+        &self.inner.memory
+    }
+
+    pub fn replace_memory(&mut self, new: Memory<'e>) {
+        self.inner.memory = new;
+    }
+}
+
+impl<'e> State<'e> {
+    #[inline]
+    fn ctx(&self) -> OperandCtx<'e> {
+        self.ctx
+    }
+
+    fn update(&mut self, operation: &Operation<'e>) {
         let ctx = self.ctx;
         match *operation {
             Operation::Move(ref dest, value, cond) => {
@@ -703,6 +667,56 @@ impl<'e> ExecutionState<'e> {
         }
     }
 
+    fn resolve_dest(
+        &mut self,
+        dest: &DestOperand<'e>,
+    ) -> DestOperand<'e> {
+        match *dest {
+            DestOperand::Memory(ref mem) => {
+                let address = self.resolve(mem.address);
+                DestOperand::Memory(MemAccess { address, size: mem.size })
+            }
+            x => x,
+        }
+    }
+
+    fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
+        let ctx = self.ctx();
+        let resolved = self.resolve(value);
+        if self.frozen {
+            let dest = self.resolve_dest(dest);
+            self.freeze_buffer.push(FreezeOperation::Move(dest, resolved));
+        } else {
+            let dest = self.get_dest_invalidate_constraints(dest);
+            dest.set(resolved, ctx);
+        }
+    }
+
+    fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
+        let ctx = self.ctx;
+        if self.frozen {
+            self.freeze_buffer.push(FreezeOperation::Move(*dest, value));
+        } else {
+            self.unresolved_constraint = None;
+            let dest = self.get_dest(dest, true);
+            dest.set(value, ctx);
+        }
+    }
+
+    fn set_flags_resolved(&mut self, arith: &FlagUpdate<'e>, carry: Option<Operand<'e>>) {
+        if self.frozen {
+            self.freeze_buffer.push(FreezeOperation::SetFlags(*arith, carry));
+        } else {
+            self.pending_flags = Some((*arith, carry));
+            self.pending_flag_bits = 0x1f;
+            self.pending_flags_result = None;
+            self.pending_flags_result_masked = None;
+            // Could try to do smarter invalidation, but since in practice unresolved
+            // constraints always are bunch of flags, invalidate it completely.
+            self.unresolved_constraint = None;
+        }
+    }
+
     fn realize_pending_flag(&mut self, flag: Flag) {
         use crate::disasm::FlagArith::*;
 
@@ -776,91 +790,6 @@ impl<'e> ExecutionState<'e> {
                 self.state[FLAGS_INDEX + Flag::Sign as usize] = val;
             }
             Flag::Direction => (),
-        }
-    }
-
-    /// Makes all of memory undefined
-    pub fn clear_memory(&mut self) {
-        self.memory = Memory::new();
-    }
-
-    fn get_dest_invalidate_constraints<'s>(
-        &'s mut self,
-        dest: &DestOperand<'e>,
-    ) -> Destination<'s, 'e> {
-        let ctx = self.ctx();
-        self.unresolved_constraint = match self.unresolved_constraint {
-            Some(ref s) => s.invalidate_dest_operand(ctx, dest),
-            None => None,
-        };
-        if let DestOperand::Memory(_) = dest {
-            if let Some(ref mut s) = self.resolved_constraint {
-                if s.invalidate_memory(ctx) == crate::exec_state::ConstraintFullyInvalid::Yes {
-                    self.resolved_constraint = None;
-                }
-            }
-            self.memory_constraint = None;
-        }
-        self.get_dest(dest, false)
-    }
-
-    fn get_dest<'s>(
-        &'s mut self,
-        dest: &DestOperand<'e>,
-        dest_is_resolved: bool,
-    ) -> Destination<'s, 'e> {
-        match *dest {
-            DestOperand::Register32(reg) | DestOperand::Register64(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Oper(&mut self.state[reg.0 as usize & 7])
-            }
-            DestOperand::Register16(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register16(&mut self.state[reg.0 as usize & 7])
-            }
-            DestOperand::Register8High(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register8High(&mut self.state[reg.0 as usize & 7])
-            }
-            DestOperand::Register8Low(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register8Low(&mut self.state[reg.0 as usize & 7])
-            }
-            DestOperand::Fpu(id) => {
-                let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
-                Destination::Oper(&mut xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize])
-            }
-            DestOperand::Xmm(reg, word) => {
-                let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
-                Destination::Oper(&mut xmm_fpu[
-                    XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize
-                ])
-            }
-            DestOperand::Flag(flag) => {
-                self.pending_flag_bits &= !(1 << flag as usize);
-                Destination::Oper(&mut self.state[FLAGS_INDEX + flag as usize])
-            }
-            DestOperand::Memory(ref mem) => {
-                let address = if dest_is_resolved {
-                    mem.address.clone()
-                } else {
-                    self.resolve(mem.address)
-                };
-                Destination::Memory(self, address, mem.size)
-            }
-        }
-    }
-
-    fn resolve_dest(
-        &mut self,
-        dest: &DestOperand<'e>,
-    ) -> DestOperand<'e> {
-        match *dest {
-            DestOperand::Memory(ref mem) => {
-                let address = self.resolve(mem.address);
-                DestOperand::Memory(MemAccess { address, size: mem.size })
-            }
-            x => x,
         }
     }
 
@@ -1121,28 +1050,119 @@ impl<'e> ExecutionState<'e> {
         }
     }
 
-    /// Tries to find an register/memory address corresponding to a resolved value.
-    pub fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>> {
-        // TODO: Could also check xmm but who honestly uses it for unique storage
-        for (reg, &val2) in self.state.iter().enumerate().take(8) {
-            if val == val2 {
-                return Some(self.ctx.register(reg as u8));
+    fn resolve_apply_constraints(&mut self, mut op: Operand<'e>) -> Operand<'e> {
+        let ctx = self.ctx();
+        if let Some(ref constraint) = self.unresolved_constraint {
+            op = constraint.apply_to(ctx, op);
+        }
+        let val = self.resolve(op);
+        if let Some(ref constraint) = self.resolved_constraint {
+            constraint.apply_to(ctx, val)
+        } else {
+            val
+        }
+    }
+
+    fn get_dest_invalidate_constraints<'s>(
+        &'s mut self,
+        dest: &DestOperand<'e>,
+    ) -> Destination<'s, 'e> {
+        let ctx = self.ctx();
+        self.unresolved_constraint = match self.unresolved_constraint {
+            Some(ref s) => s.invalidate_dest_operand(ctx, dest),
+            None => None,
+        };
+        if let DestOperand::Memory(_) = dest {
+            if let Some(ref mut s) = self.resolved_constraint {
+                if s.invalidate_memory(ctx) == crate::exec_state::ConstraintFullyInvalid::Yes {
+                    self.resolved_constraint = None;
+                }
+            }
+            self.memory_constraint = None;
+        }
+        self.get_dest(dest, false)
+    }
+
+    fn get_dest<'s>(
+        &'s mut self,
+        dest: &DestOperand<'e>,
+        dest_is_resolved: bool,
+    ) -> Destination<'s, 'e> {
+        match *dest {
+            DestOperand::Register32(reg) | DestOperand::Register64(reg) => {
+                self.cached_low_registers.invalidate(reg.0);
+                Destination::Oper(&mut self.state[reg.0 as usize & 7])
+            }
+            DestOperand::Register16(reg) => {
+                self.cached_low_registers.invalidate(reg.0);
+                Destination::Register16(&mut self.state[reg.0 as usize & 7])
+            }
+            DestOperand::Register8High(reg) => {
+                self.cached_low_registers.invalidate(reg.0);
+                Destination::Register8High(&mut self.state[reg.0 as usize & 7])
+            }
+            DestOperand::Register8Low(reg) => {
+                self.cached_low_registers.invalidate(reg.0);
+                Destination::Register8Low(&mut self.state[reg.0 as usize & 7])
+            }
+            DestOperand::Fpu(id) => {
+                let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
+                Destination::Oper(&mut xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize])
+            }
+            DestOperand::Xmm(reg, word) => {
+                let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
+                Destination::Oper(&mut xmm_fpu[
+                    XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize
+                ])
+            }
+            DestOperand::Flag(flag) => {
+                self.pending_flag_bits &= !(1 << flag as usize);
+                Destination::Oper(&mut self.state[FLAGS_INDEX + flag as usize])
+            }
+            DestOperand::Memory(ref mem) => {
+                let address = if dest_is_resolved {
+                    mem.address.clone()
+                } else {
+                    self.resolve(mem.address)
+                };
+                Destination::Memory(self, address, mem.size)
             }
         }
-        None
     }
 
-    /// Tries to find an memory address corresponding to a resolved value.
-    pub fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>> {
-        self.memory.reverse_lookup(val).map(|x| self.ctx.mem32(x))
-    }
-
-    pub fn memory(&self) -> &Memory<'e> {
-        &self.memory
-    }
-
-    pub fn replace_memory(&mut self, new: Memory<'e>) {
-        self.memory = new;
+    fn add_resolved_constraint(&mut self, constraint: Constraint<'e>) {
+        self.resolved_constraint = Some(constraint);
+        let ctx = self.ctx();
+        if let OperandType::Arithmetic(ref arith) = *constraint.0.ty() {
+            if arith.left.if_constant().is_some() {
+                if let Some((addr, mut size)) =
+                    self.memory.fast_reverse_lookup(ctx, arith.right, 0xffff_ffff)
+                {
+                    if size == MemAccessSize::Mem64 {
+                        size = MemAccessSize::Mem32;
+                    }
+                    let val = ctx.mem_variable_rc(size, addr);
+                    self.add_memory_constraint(ctx.arithmetic(arith.ty, arith.left, val));
+                }
+            } else if arith.right.if_constant().is_some() {
+                if let Some((addr, mut size)) =
+                    self.memory.fast_reverse_lookup(ctx, arith.left, 0xffff_ffff)
+                {
+                    if size == MemAccessSize::Mem64 {
+                        size = MemAccessSize::Mem32;
+                    }
+                    let val = ctx.mem_variable_rc(size, addr);
+                    self.add_memory_constraint(ctx.arithmetic(arith.ty, val, arith.right));
+                }
+            }
+        }
+        for i in 0..6 {
+            let flag = ctx.flag_by_index(i);
+            let value = self.resolve(flag);
+            if value == constraint.0 {
+                self.state[FLAGS_INDEX + i] = ctx.const_1();
+            }
+        }
     }
 
     fn add_memory_constraint(&mut self, constraint: Operand<'e>) {
@@ -1157,9 +1177,9 @@ impl<'e> ExecutionState<'e> {
 
 /// If `old` and `new` have different fields, and the old field is not undefined,
 /// return `ExecutionState` which has the differing fields replaced with (a separate) undefined.
-pub fn merge_states<'a: 'r, 'r>(
-    old: &'r mut ExecutionState<'a>,
-    new: &'r mut ExecutionState<'a>,
+fn merge_states<'a: 'r, 'r>(
+    old: &'r mut State<'a>,
+    new: &'r mut State<'a>,
     cache: &'r mut MergeStateCache<'a>,
 ) -> Option<ExecutionState<'a>> {
     let ctx = old.ctx;
@@ -1266,26 +1286,28 @@ pub fn merge_states<'a: 'r, 'r>(
         }
         let memory = cache.merge_memory(&old.memory, &new.memory, ctx);
         let result = Some(ExecutionState {
-            state,
-            xmm_fpu,
-            cached_low_registers,
-            memory,
-            unresolved_constraint: merged_ljec.unwrap_or_else(|| {
-                // They were same, just use one from old
-                old.unresolved_constraint.clone()
-            }),
-            resolved_constraint,
-            memory_constraint,
-            pending_flags: None,
-            pending_flag_bits: 0,
-            pending_flags_result: None,
-            pending_flags_result_masked: None,
-            ctx,
-            binary: old.binary,
-            // Freeze buffer is intended to be empty at merge points,
-            // not going to support merging it
-            freeze_buffer: Vec::new(),
-            frozen: false,
+            inner: Box::alloc().init(State {
+                state,
+                xmm_fpu,
+                cached_low_registers,
+                memory,
+                unresolved_constraint: merged_ljec.unwrap_or_else(|| {
+                    // They were same, just use one from old
+                    old.unresolved_constraint.clone()
+                }),
+                resolved_constraint,
+                memory_constraint,
+                pending_flags: None,
+                pending_flag_bits: 0,
+                pending_flags_result: None,
+                pending_flags_result_masked: None,
+                ctx,
+                binary: old.binary,
+                // Freeze buffer is intended to be empty at merge points,
+                // not going to support merging it
+                freeze_buffer: Vec::new(),
+                frozen: false,
+            })
         });
         result
     } else {
@@ -1305,9 +1327,14 @@ fn merge_state_constraints_eq() {
     state_a.assume_jump_flag(sign_eq_overflow_flag, true);
     state_b.move_to(&DestOperand::from_oper(ctx.flag_o()), ctx.constant(1));
     state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
-    let merged = merge_states(&mut state_b, &mut state_a, &mut MergeStateCache::new()).unwrap();
+    let merged = merge_states(
+        &mut state_b.inner,
+        &mut state_a.inner,
+        &mut MergeStateCache::new(),
+    ).unwrap();
+    let merged = &merged.inner;
     assert!(merged.unresolved_constraint.is_some());
-    assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
+    assert_eq!(merged.unresolved_constraint, state_a.inner.unresolved_constraint);
 }
 
 #[test]
@@ -1321,19 +1348,34 @@ fn merge_state_constraints_or() {
     );
     state_a.assume_jump_flag(sign_or_overflow_flag, true);
     state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
-    let merged = merge_states(&mut state_b, &mut state_a, &mut MergeStateCache::new()).unwrap();
+    let merged = merge_states(
+        &mut state_b.inner,
+        &mut state_a.inner,
+        &mut MergeStateCache::new(),
+    ).unwrap();
+    let merged = &merged.inner;
     assert!(merged.unresolved_constraint.is_some());
-    assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
+    assert_eq!(merged.unresolved_constraint, state_a.inner.unresolved_constraint);
     // Should also happen other way, though then state_a must have something that is converted
     // to undef.
-    let merged = merge_states(&mut state_a, &mut state_b, &mut MergeStateCache::new()).unwrap();
+    let merged = merge_states(
+        &mut state_a.inner,
+        &mut state_b.inner,
+        &mut MergeStateCache::new(),
+    ).unwrap();
+    let merged = &merged.inner;
     assert!(merged.unresolved_constraint.is_some());
-    assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
+    assert_eq!(merged.unresolved_constraint, state_a.inner.unresolved_constraint);
 
     state_a.move_to(&DestOperand::from_oper(ctx.flag_c()), ctx.constant(1));
-    let merged = merge_states(&mut state_a, &mut state_b, &mut MergeStateCache::new()).unwrap();
+    let merged = merge_states(
+        &mut state_a.inner,
+        &mut state_b.inner,
+        &mut MergeStateCache::new(),
+    ).unwrap();
+    let merged = &merged.inner;
     assert!(merged.unresolved_constraint.is_some());
-    assert_eq!(merged.unresolved_constraint, state_a.unresolved_constraint);
+    assert_eq!(merged.unresolved_constraint, state_a.inner.unresolved_constraint);
 }
 
 #[test]

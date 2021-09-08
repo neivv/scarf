@@ -2,8 +2,6 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::mem;
 
-use copyless::BoxHelper;
-
 use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
 use crate::disasm::{Operation};
 use crate::exec_state::{self, Constraint, Disassembler, ExecutionState, MergeStateCache};
@@ -18,7 +16,7 @@ pub type Cfg<'a, E, S> = cfg::Cfg<'a, CfgState<'a, E, S>>;
 
 #[derive(Debug)]
 pub struct CfgState<'a, E: ExecutionState<'a>, S: AnalysisState> {
-    data: Box<(E, S)>,
+    data: (E, S),
     phantom: std::marker::PhantomData<&'a ()>,
 }
 
@@ -432,7 +430,7 @@ impl AnalysisState for DefaultState {
 pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     binary: &'a BinaryFile<Exec::VirtualAddress>,
     cfg: Cfg<'a, Exec, State>,
-    unchecked_branches: BTreeMap<Exec::VirtualAddress, Box<(Exec, State)>>,
+    unchecked_branches: BTreeMap<Exec::VirtualAddress, (Exec, State)>,
     // Branches which are before current address.
     // The goal is to reduce amount of work when a switch jumps backwards
     // at end of the case, doing all unchecked_branches before promoting
@@ -475,7 +473,7 @@ pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     //      dec eax
     //      jne loop2
     // as it'll run to the end once, then starts from loop1 again
-    more_unchecked_branches: BTreeMap<Exec::VirtualAddress, Box<(Exec, State)>>,
+    more_unchecked_branches: BTreeMap<Exec::VirtualAddress, (Exec, State)>,
     current_branch: Exec::VirtualAddress,
     operand_ctx: OperandCtx<'a>,
     merge_state_cache: MergeStateCache<'a>,
@@ -486,7 +484,7 @@ pub struct Control<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> {
 }
 
 struct ControlInner<'e: 'b, 'b, Exec: ExecutionState<'e> + 'b, State: AnalysisState> {
-    state: Box<(Exec, State)>,
+    state: (Exec, State),
     analysis: &'b mut FuncAnalysis<'e, Exec, State>,
     // Set by Analyzer callback if it wants an early exit
     end: Option<End>,
@@ -560,7 +558,7 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     ) {
         let current_instruction_end = self.current_instruction_end();
         let inner = &mut *self.inner;
-        let mut state = clone_state(&inner.state);
+        let mut state = inner.state.clone();
         let ctx = inner.analysis.operand_ctx;
         let binary = inner.analysis.binary;
         state.0.apply_call(current_instruction_end);
@@ -581,7 +579,7 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     ) {
         let current_instruction_end = self.current_instruction_end();
         let inner = &mut *self.inner;
-        let mut state = clone_state(&inner.state);
+        let mut state = inner.state.clone();
         let ctx = inner.analysis.operand_ctx;
         let binary = inner.analysis.binary;
         state.0.apply_call(current_instruction_end);
@@ -699,7 +697,7 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
             unchecked_branches: {
                 let user_state = DefaultState::default();
                 let init_state = Exec::initial_state(operand_ctx, binary);
-                let state = Box::alloc().init((init_state, user_state));
+                let state = (init_state, user_state);
                 let mut map = BTreeMap::new();
                 map.insert(start_address, state);
                 map
@@ -723,7 +721,7 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
             unchecked_branches: {
                 let mut map = BTreeMap::new();
                 let user_state = DefaultState::default();
-                let state = Box::alloc().init((state, user_state));
+                let state = (state, user_state);
                 map.insert(start_address, state);
                 map
             },
@@ -743,15 +741,15 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         exec_state: Exec,
         analysis_state: State,
     ) -> FuncAnalysis<'a, Exec, State> {
-        let boxed = Box::alloc().init((exec_state, analysis_state));
-        FuncAnalysis::custom_state_boxed(binary, operand_ctx, start_address, boxed)
+        let state = (exec_state, analysis_state);
+        FuncAnalysis::custom_state_boxed(binary, operand_ctx, start_address, state)
     }
 
     fn custom_state_boxed(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
         operand_ctx: OperandCtx<'a>,
         start_address: Exec::VirtualAddress,
-        state: Box<(Exec, State)>,
+        state: (Exec, State),
     ) -> FuncAnalysis<'a, Exec, State> {
         FuncAnalysis {
             binary,
@@ -770,7 +768,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
     fn pop_next_branch_merge_with_cfg(
         &mut self,
-    ) -> Option<(Exec::VirtualAddress, Box<(Exec, State)>)> {
+    ) -> Option<(Exec::VirtualAddress, (Exec, State))> {
         while let Some((addr, mut branch_state)) = self.pop_next_branch() {
             match self.cfg.get_state(addr) {
                 Some(state) => {
@@ -784,7 +782,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                         Some(s) => {
                             let mut user_state = state.data.1.clone();
                             user_state.merge(branch_state.1);
-                            return Some((addr, Box::new((s, user_state))));
+                            return Some((addr, (s, user_state)));
                         }
                         // No change, take another branch
                         None => (),
@@ -799,7 +797,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     fn pop_next_branch_and_set_disasm(
         &mut self,
         disasm: &mut Exec::Disassembler,
-    ) -> Option<(Exec::VirtualAddress, Box<(Exec, State)>)> {
+    ) -> Option<(Exec::VirtualAddress, (Exec, State))> {
         while let Some((addr, state)) = self.pop_next_branch_merge_with_cfg() {
             if self.disasm_set_pos(disasm, addr).is_ok() {
                 return Some((addr, state));
@@ -837,7 +835,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         analyzer: &mut A,
         disasm: &mut Exec::Disassembler,
         addr: Exec::VirtualAddress,
-        state: Box<(Exec, State)>,
+        state: (Exec, State),
     ) -> Option<End> {
         // update_analysis_for_operation is a small function, which would be cleaner
         // to inline here if it keeping it separate wasn't good for binary size
@@ -869,13 +867,13 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         // Create CfgNode in advance to avoid some small moves.
         // state doesn't get changed after creation, other fields do.
         let mut node = Some(CfgNode {
+            state: CfgState {
+                phantom: Default::default(),
+                data: control.inner.state.clone(),
+            },
             out_edges: CfgOutEdges::None,
             end_address: Exec::VirtualAddress::from_u64(0),
             distance: 0,
-            state: CfgState {
-                phantom: Default::default(),
-                data: clone_state(&control.inner.state),
-            }
         });
         loop {
             let address = disasm.address();
@@ -913,7 +911,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     fn add_unchecked_branch(
         &mut self,
         addr: Exec::VirtualAddress,
-        mut state: Box<(Exec, State)>,
+        mut state: (Exec, State),
     ) {
         use std::collections::btree_map::Entry;
         let queue = match addr < self.current_branch {
@@ -938,7 +936,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     }
 
     fn pop_next_branch(&mut self) ->
-        Option<(Exec::VirtualAddress, Box<(Exec, State)>)>
+        Option<(Exec::VirtualAddress, (Exec, State))>
     {
         if self.unchecked_branches.is_empty() {
             std::mem::swap(&mut self.unchecked_branches, &mut self.more_unchecked_branches);
@@ -984,37 +982,6 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             analyzer.result
         });
         cfg
-    }
-}
-
-/// Meant for cloning and boxing &(ExecutionState, AnalysisState)
-///
-/// Avoids any stack allocations/copies by using E::clone_to with Box<MaybeUninit<(A, B)>>.
-fn clone_state<'e, A: Clone + ExecutionState<'e>, B: Clone>(val: &(A, B)) -> Box<(A, B)> {
-    clone_state_separate(&val.0, &val.1)
-}
-
-fn clone_state_separate<'e, A: Clone + ExecutionState<'e>, B: Clone>(
-    exec: &A,
-    rest: &B,
-) -> Box<(A, B)> {
-    use std::alloc;
-    use std::mem::MaybeUninit;
-
-    fn box_new_uninit<T>() -> Box<MaybeUninit<T>> {
-        let layout = alloc::Layout::new::<MaybeUninit<T>>();
-        unsafe {
-            let ptr = alloc::alloc(layout);
-            Box::from_raw(ptr as *mut MaybeUninit<T>)
-        }
-    }
-
-    let mut boxed = box_new_uninit::<(A, B)>();
-    let out = boxed.as_mut_ptr();
-    unsafe {
-        exec.clone_to(&mut (*out).0);
-        std::ptr::write(&mut (*out).1, rest.clone());
-        Box::from_raw(Box::into_raw(boxed) as *mut (A, B))
     }
 }
 
@@ -1071,7 +1038,7 @@ where F: FnMut(&Operation<'e>, &mut Exec, Exec::VirtualAddress)
 /// Merges states at return operations, used for following calls.
 struct CollectReturnsAnalyzer<'a, 'e: 'a, A: Analyzer<'e>> {
     inner: &'a mut A,
-    state: Option<Box<(A::Exec, A::State)>>,
+    state: Option<(A::Exec, A::State)>,
 }
 
 impl<'a, 'e: 'a, A: Analyzer<'e>> CollectReturnsAnalyzer<'a, 'e, A> {
@@ -1123,7 +1090,7 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
                     None => {
                         let exec = &control.inner.state.0;
                         let user = &control.inner.state.1;
-                        self.state = Some(clone_state_separate(exec, user));
+                        self.state = Some((exec.clone(), user.clone()));
                     }
                 }
             }
@@ -1133,7 +1100,7 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
 
 fn try_add_branch<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     analysis: &mut FuncAnalysis<'e, Exec, S>,
-    state: Box<(Exec, S)>,
+    state: (Exec, S),
     to: Operand<'e>,
     address: Exec::VirtualAddress,
 ) -> Option<Exec::VirtualAddress> {
@@ -1233,7 +1200,7 @@ where E: ExecutionState<'e> + 'b,
 
 fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     analysis: &mut FuncAnalysis<'e, Exec, S>,
-    mut state: Box<(Exec, S)>,
+    mut state: (Exec, S),
     condition: Operand<'e>,
     to: Operand<'e>,
     address: Exec::VirtualAddress,
@@ -1338,7 +1305,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                         .map(Exec::VirtualAddress::from_u64)
                         .filter(|&x| x >= code_offset && x < code_offset + code_len);
                     if let Some(case) = addr {
-                        analysis.add_unchecked_branch(case, clone_state(&state));
+                        analysis.add_unchecked_branch(case, state.clone());
                         cases.push(NodeLink::new(case));
                     } else {
                         break;
@@ -1358,7 +1325,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         }
         None => {
             let no_jump_addr = address + instruction_len;
-            let mut jump_state = clone_state(&state);
+            let mut jump_state = state.clone();
             jump_state.0.assume_jump_flag(condition, true);
             state.0.assume_jump_flag(condition, false);
             let to = jump_state.0.resolve(to);
