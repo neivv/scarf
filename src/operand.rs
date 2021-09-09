@@ -276,6 +276,7 @@ pub struct OperandContext<'e> {
     // Contains 0x41 small constants, 0x10 registers, 0x6 flags
     common_operands: Box<[OperandSelfRef; 0x41 + 0x10 + 0x6]>,
     interner: intern::Interner<'e>,
+    const_interner: intern::ConstInterner<'e>,
     undef_interner: intern::UndefInterner,
     invariant_lifetime: PhantomData<&'e mut &'e ()>,
     simplify_temp_stack: SliceStack,
@@ -454,6 +455,7 @@ impl<'e> OperandContext<'e> {
             next_undefined: Cell::new(0),
             common_operands,
             interner: intern::Interner::new(),
+            const_interner: intern::ConstInterner::new(),
             undef_interner: intern::UndefInterner::new(),
             invariant_lifetime: PhantomData,
             simplify_temp_stack: SliceStack::new(),
@@ -465,8 +467,10 @@ impl<'e> OperandContext<'e> {
         // Accessing interner here would force the invariant lifetime 'e to this stack frame.
         // Cast the interner reference to arbitrary lifetime to allow returning the result.
         let interner: &intern::Interner<'_> = unsafe { std::mem::transmute(&result.interner) };
+        let const_interner: &intern::ConstInterner<'_> =
+            unsafe { std::mem::transmute(&result.const_interner) };
         for i in 0..0x41 {
-            common_operands[i] = interner.intern(OperandType::Constant(i as u64)).self_ref();
+            common_operands[i] = const_interner.intern(i as u64).self_ref();
         }
         let base = 0x41;
         for i in 0..0x10 {
@@ -548,7 +552,7 @@ impl<'e> OperandContext<'e> {
                 OperandType::SignExtend(self.copy_operand_small(a, recurse_limit), b, c)
             }
         };
-        self.intern(ty)
+        self.intern_any(ty)
     }
 
     fn copy_operand_large<'other>(
@@ -593,7 +597,7 @@ impl<'e> OperandContext<'e> {
                 OperandType::SignExtend(self.copy_operand_large(a, cache), b, c)
             }
         };
-        let result = self.intern(ty);
+        let result = self.intern_any(ty);
         cache.insert(key, result);
         result
     }
@@ -619,8 +623,20 @@ impl<'e> OperandContext<'e> {
         const_ffffffff, 0xffffffff,
     }
 
+    /// Interns operand on the default interner. Shouldn't be used for constants or undefined
     fn intern(&'e self, ty: OperandType<'e>) -> Operand<'e> {
         self.interner.intern(ty)
+    }
+
+    fn intern_any(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+        if let OperandType::Constant(c) = ty {
+            self.constant(c)
+        } else {
+            // Undefined has to go here since UndefInterner is just array that things get
+            // pushed to and then looked up.. Maybe it would be better for copy_operand
+            // to map existing Undefined to new undefined if it meets any?
+            self.interner.intern(ty)
+        }
     }
 
     pub fn new_undef(&'e self) -> Operand<'e> {
@@ -704,7 +720,7 @@ impl<'e> OperandContext<'e> {
         if value <= 0x40 {
             unsafe { self.common_operands[value as usize].cast() }
         } else {
-            self.intern(OperandType::Constant(value))
+            self.const_interner.intern(value)
         }
     }
 
@@ -1122,7 +1138,8 @@ impl<'e> OperandContext<'e> {
 
     /// Gets amount of operands interned. Intented for debug / diagnostic info.
     pub fn interned_count(&self) -> usize {
-        self.interner.interned_count() + self.next_undefined.get() as usize
+        self.interner.interned_count() + self.next_undefined.get() as usize +
+            self.const_interner.interned_count()
     }
 
     pub(crate) fn simplify_temp_stack(&'e self) -> &'e SliceStack {
@@ -1321,16 +1338,18 @@ impl<'e> OperandType<'e> {
                 ArithOpType::ToFloat => 0..32,
                 _ => (0..size.bits() as u8),
             }
-            OperandType::Constant(c) => {
-                if c == 0 {
-                    0..0
-                } else {
-                    let trailing = c.trailing_zeros() as u8;
-                    let leading = c.leading_zeros() as u8;
-                    trailing..(64u8.wrapping_sub(leading))
-                }
-            }
+            // Note: constants not handled here; const_relevant_bits instead
             _ => 0..(self.expr_size().bits() as u8),
+        }
+    }
+
+    fn const_relevant_bits(c: u64) -> Range<u8> {
+        if c == 0 {
+            0..0
+        } else {
+            let trailing = c.trailing_zeros() as u8;
+            let leading = c.leading_zeros() as u8;
+            trailing..(64u8.wrapping_sub(leading))
         }
     }
 
@@ -1371,9 +1390,15 @@ impl<'e> OperandType<'e> {
                     (FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE)
             }
             Xmm(..) | Flag(..) | Fpu(..) | Register(..) => FLAG_NEEDS_RESOLVE,
+            // Note: constants not handled here; const_flags instead
             Constant(..) | Custom(..) => 0,
             Undefined(..) => FLAG_CONTAINS_UNDEFINED,
         }
+    }
+
+    #[inline]
+    fn const_flags() -> u8 {
+        0
     }
 
     /// Returns whether the operand is 8, 16, 32, or 64 bits.

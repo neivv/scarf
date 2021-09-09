@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use std::mem;
 
 use arrayvec::ArrayVec;
+use fxhash::FxHasher;
 use hashbrown::hash_map::{HashMap, RawEntryMut};
 use typed_arena::Arena;
 
@@ -16,6 +17,11 @@ pub struct Interner<'e> {
     // with `InternHashOperand.operand`.
     interned_operands: RefCell<HashMap<InternHashOperand, (), BuildHasherDefault<DummyHasher>>>,
     // Using static lifetime as cannot refer to 'self.
+    arena: Arena<OperandBase<'e>>,
+}
+
+pub struct ConstInterner<'e> {
+    interned_operands: RefCell<HashMap<u64, Operand<'static>, BuildHasherDefault<ConstFxHasher>>>,
     arena: Arena<OperandBase<'e>>,
 }
 
@@ -74,12 +80,51 @@ impl<'e> Interner<'e> {
     }
 }
 
+impl<'e> ConstInterner<'e> {
+    pub fn new() -> ConstInterner<'e> {
+        ConstInterner {
+            interned_operands:
+                RefCell::new(HashMap::with_capacity_and_hasher(0x2000, Default::default())),
+            arena: Arena::new(),
+        }
+    }
+
+    pub fn intern(&'e self, value: u64) -> Operand<'e> {
+        let mut map = self.interned_operands.borrow_mut();
+        let entry = map.entry(value);
+        let op = *entry.or_insert_with(|| {
+            let relevant_bits = OperandType::const_relevant_bits(value);
+            let min_zero_bit_simplify_size = 0;
+            let flags = OperandType::const_flags();
+            let base = OperandBase {
+                ty: OperandType::Constant(value),
+                min_zero_bit_simplify_size,
+                relevant_bits,
+                flags,
+            };
+            let operand: Operand<'static> = Operand(
+                unsafe { mem::transmute(self.arena.alloc(base)) },
+                PhantomData,
+            );
+            operand
+        });
+        unsafe { mem::transmute::<Operand<'static>, Operand<'e>>(op) }
+    }
+
+    pub fn interned_count(&self) -> usize {
+        self.interned_operands.borrow().len()
+    }
+}
+
 fn operand_type_hash(ty: &OperandType<'_>) -> usize {
-    let mut hasher = fxhash::FxHasher::default();
+    let mut hasher = FxHasher::default();
     std::mem::discriminant(ty).hash(&mut hasher);
     match *ty {
-        OperandType::Constant(c) => c.hash(&mut hasher),
-        OperandType::Undefined(u) => u.0.hash(&mut hasher),
+        // Should be handled by const interner
+        OperandType::Constant(_) => unreachable!(),
+        // Note: copy_operand requires being able to copy undef, so it may get
+        // interned by this -- even if it doesn't behave too well for comparisions.
+        OperandType::Undefined(s) => s.0.hash(&mut hasher),
         OperandType::Custom(c) => c.hash(&mut hasher),
         OperandType::Flag(f) => (f as u8).hash(&mut hasher),
         OperandType::Fpu(f) => f.hash(&mut hasher),
@@ -177,6 +222,44 @@ impl Hasher for DummyHasher {
 
     fn write_u64(&mut self, value: u64) {
         self.value = value;
+    }
+}
+
+/// Fxhash seems to be bit better for single integers when the result is xored with
+/// itself shifted.
+#[derive(Default)]
+struct ConstFxHasher {
+    hasher: FxHasher,
+}
+
+impl Hasher for ConstFxHasher {
+    fn finish(&self) -> u64 {
+        let val = self.hasher.finish();
+        val ^ (val.rotate_left(mem::size_of::<usize>() as u32 * 4))
+    }
+
+    fn write(&mut self, data: &[u8]) {
+        self.hasher.write(data);
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.hasher.write_u8(value);
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        self.hasher.write_u16(value);
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.hasher.write_u32(value);
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.hasher.write_u64(value);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.hasher.write_usize(value);
     }
 }
 
