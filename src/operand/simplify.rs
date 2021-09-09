@@ -7,7 +7,7 @@ use crate::bit_misc::{bits_overlap, one_bit_ranges, zero_bit_ranges};
 use crate::heapsort;
 
 use super::{
-    ArithOperand, ArithOpType, MemAccessSize, Operand, OperandType, OperandCtx,
+    ArithOperand, ArithOpType, MemAccess, MemAccessSize, Operand, OperandType, OperandCtx,
 };
 use super::slice_stack::{self, SizeLimitReached};
 
@@ -2435,6 +2435,30 @@ fn quick_and_simplify<'e>(
     None
 }
 
+/// Mem[x] & mask is pretty common so have a faster path for it.
+///
+/// Assumes: Mem[x] & nop_mask has been already checked by the caller (simplify_and_const)
+fn simplify_and_const_mem<'e>(
+    left: Operand<'e>,
+    right: u64,
+    ctx: OperandCtx<'e>,
+) -> Option<Operand<'e>> {
+    let mem = left.if_memory()?;
+    let new = simplify_with_and_mask_mem(left, mem, right, ctx);
+    let new_mask = new.relevant_bits_mask();
+    let new_common = new_mask & right;
+    if new_common != new_mask {
+        let arith = ArithOperand {
+            ty: ArithOpType::And,
+            left: new,
+            right: ctx.constant(new_common),
+        };
+        Some(ctx.intern(OperandType::Arithmetic(arith)))
+    } else {
+        Some(new)
+    }
+}
+
 /// Having a bitwise and with a constant is really common.
 pub fn simplify_and_const<'e>(
     mut left: Operand<'e>,
@@ -2492,6 +2516,9 @@ pub fn simplify_and_const<'e>(
         }
     }
     if let Some(result) = quick_and_simplify(left, right, ctx) {
+        return result;
+    }
+    if let Some(result) = simplify_and_const_mem(left, right, ctx) {
         return result;
     }
     ctx.simplify_temp_stack().alloc(|slice| {
@@ -4650,41 +4677,7 @@ fn simplify_with_and_mask_inner<'e>(
             }
         }
         OperandType::Memory(ref mem) => {
-            let mask = mem.size.mask() & mask;
-            // Try to do conversions such as Mem32[x] & 00ff_ff00 => Mem16[x + 1] << 8,
-            // but also Mem32[x] & 003f_5900 => (Mem16[x + 1] & 3f59) << 8.
-
-            // Round down to 8 -> convert to bytes
-            let mask_low = mask.trailing_zeros() / 8;
-            // Round up to 8 -> convert to bytes
-            let mask_high = (64 - mask.leading_zeros() + 7) / 8;
-            if mask_high <= mask_low {
-                return op;
-            }
-            let mask_size = mask_high - mask_low;
-            let mem_size = mem.size.bits();
-            let new_size;
-            if mask_size <= 1 && mem_size > 8 {
-                new_size = MemAccessSize::Mem8;
-            } else if mask_size <= 2 && mem_size > 16 {
-                new_size = MemAccessSize::Mem16;
-            } else if mask_size <= 4 && mem_size > 32 {
-                new_size = MemAccessSize::Mem32;
-            } else {
-                return op;
-            }
-            let new_addr = if mask_low == 0 {
-                mem.address.clone()
-            } else {
-                ctx.add_const(mem.address, mask_low as u64)
-            };
-            let mem = ctx.mem_variable_rc(new_size, new_addr);
-            let shifted = if mask_low == 0 {
-                mem
-            } else {
-                ctx.lsh_const(mem, mask_low as u64 * 8)
-            };
-            shifted
+            simplify_with_and_mask_mem(op, mem, mask, ctx)
         }
         OperandType::Constant(c) => if c & mask != c {
             ctx.constant(c & mask)
@@ -4701,6 +4694,50 @@ fn simplify_with_and_mask_inner<'e>(
         }
         _ => op,
     }
+}
+
+/// Assumes: `mem` is part of `op`.
+fn simplify_with_and_mask_mem<'e>(
+    op: Operand<'e>,
+    mem: &MemAccess<'e>,
+    mask: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    let mask = mem.size.mask() & mask;
+    // Try to do conversions such as Mem32[x] & 00ff_ff00 => Mem16[x + 1] << 8,
+    // but also Mem32[x] & 003f_5900 => (Mem16[x + 1] & 3f59) << 8.
+
+    // Round down to 8 -> convert to bytes
+    let mask_low = mask.trailing_zeros() / 8;
+    // Round up to 8 -> convert to bytes
+    let mask_high = (64 - mask.leading_zeros() + 7) / 8;
+    if mask_high <= mask_low {
+        return op;
+    }
+    let mask_size = mask_high - mask_low;
+    let mem_size = mem.size.bits();
+    let new_size;
+    if mask_size <= 1 && mem_size > 8 {
+        new_size = MemAccessSize::Mem8;
+    } else if mask_size <= 2 && mem_size > 16 {
+        new_size = MemAccessSize::Mem16;
+    } else if mask_size <= 4 && mem_size > 32 {
+        new_size = MemAccessSize::Mem32;
+    } else {
+        return op;
+    }
+    let new_addr = if mask_low == 0 {
+        mem.address.clone()
+    } else {
+        ctx.add_const(mem.address, mask_low as u64)
+    };
+    let mem = ctx.mem_variable_rc(new_size, new_addr);
+    let shifted = if mask_low == 0 {
+        mem
+    } else {
+        ctx.lsh_const(mem, mask_low as u64 * 8)
+    };
+    shifted
 }
 
 /// If `a` is subset of or equal to `b`
