@@ -271,10 +271,12 @@ impl<'e> ArithOperand<'e> {
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub struct UndefinedId(#[cfg_attr(feature = "serde", serde(skip))] pub u32);
 
+const SMALL_CONSTANT_COUNT: usize = 0x110;
+
 pub struct OperandContext<'e> {
     next_undefined: Cell<u32>,
-    // Contains 0x41 small constants, 0x10 registers, 0x6 flags
-    common_operands: Box<[OperandSelfRef; 0x41 + 0x10 + 0x6]>,
+    // Contains SMALL_CONSTANT_COUNT small constants, 0x10 registers, 0x6 flags
+    common_operands: Box<[OperandSelfRef; SMALL_CONSTANT_COUNT + 0x10 + 0x6]>,
     interner: intern::Interner<'e>,
     const_interner: intern::ConstInterner<'e>,
     undef_interner: intern::UndefInterner,
@@ -422,11 +424,7 @@ macro_rules! operand_context_const_methods {
             // just an array read which is known to be in bounds.
             #[inline]
             pub fn $name(&$lt self) -> Operand<$lt> {
-                if ($val as u64) <= 0x40 {
-                    unsafe { self.common_operands[$val & 0x3f].cast() }
-                } else {
-                    self.constant($val)
-                }
+                unsafe { self.common_operands[$val].cast() }
             }
         )*
     }
@@ -450,7 +448,8 @@ pub fn check_tls_simplification_incomplete() -> bool {
 impl<'e> OperandContext<'e> {
     pub fn new() -> OperandContext<'e> {
         use std::ptr::null_mut;
-        let common_operands = Box::alloc().init([OperandSelfRef(null_mut()); 0x41 + 0x10 + 0x6]);
+        let common_operands =
+            Box::alloc().init([OperandSelfRef(null_mut()); SMALL_CONSTANT_COUNT + 0x10 + 0x6]);
         let mut result: OperandContext<'e> = OperandContext {
             next_undefined: Cell::new(0),
             common_operands,
@@ -469,15 +468,15 @@ impl<'e> OperandContext<'e> {
         let interner: &intern::Interner<'_> = unsafe { std::mem::transmute(&result.interner) };
         let const_interner: &intern::ConstInterner<'_> =
             unsafe { std::mem::transmute(&result.const_interner) };
-        for i in 0..0x41 {
+        for i in 0..SMALL_CONSTANT_COUNT {
             common_operands[i] = const_interner.intern(i as u64).self_ref();
         }
-        let base = 0x41;
+        let base = SMALL_CONSTANT_COUNT;
         for i in 0..0x10 {
             common_operands[base + i] =
                 interner.intern(OperandType::Register(Register(i as u8))).self_ref();
         }
-        let base = 0x41 + 0x10;
+        let base = SMALL_CONSTANT_COUNT + 0x10;
         common_operands[base + 0] =
             interner.intern(OperandType::Flag(Flag::Zero)).self_ref();
         common_operands[base + 1] =
@@ -609,18 +608,6 @@ impl<'e> OperandContext<'e> {
         const_2, 0x2,
         const_4, 0x4,
         const_8, 0x8,
-        const_1f, 0x1f,
-        const_20, 0x20,
-        const_7f, 0x7f,
-        const_ff, 0xff,
-        const_7fff, 0x7fff,
-        const_ff00, 0xff00,
-        const_ffff, 0xffff,
-        const_ffff0000, 0xffff0000,
-        const_ffffff00, 0xffffff00,
-        const_ffff00ff, 0xffff00ff,
-        const_7fffffff, 0x7fffffff,
-        const_ffffffff, 0xffffffff,
     }
 
     /// Interns operand on the default interner. Shouldn't be used for constants or undefined
@@ -687,13 +674,13 @@ impl<'e> OperandContext<'e> {
 
     pub(crate) fn flag_by_index(&'e self, index: usize) -> Operand<'e> {
         assert!(index < 6);
-        unsafe { self.common_operands[0x41 + 0x10 + index as usize].cast() }
+        unsafe { self.common_operands[SMALL_CONSTANT_COUNT + 0x10 + index as usize].cast() }
     }
 
     #[inline]
     pub fn register(&'e self, index: u8) -> Operand<'e> {
-        if index <= 0x10 {
-            unsafe { self.common_operands[0x41 + index as usize].cast() }
+        if index < 0x10 {
+            unsafe { self.common_operands[SMALL_CONSTANT_COUNT + index as usize].cast() }
         } else {
             self.intern(OperandType::Register(Register(index)))
         }
@@ -717,7 +704,7 @@ impl<'e> OperandContext<'e> {
     }
 
     pub fn constant(&'e self, value: u64) -> Operand<'e> {
-        if value <= 0x40 {
+        if value < SMALL_CONSTANT_COUNT as u64 {
             unsafe { self.common_operands[value as usize].cast() }
         } else {
             self.const_interner.intern(value)

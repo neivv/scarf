@@ -2603,11 +2603,11 @@ fn simplify_sub_self_masked() {
     let op1 = ctx.sub(
         ctx.and(
             ud,
-            ctx.const_ffffffff(),
+            ctx.constant(0xffff_ffff),
         ),
         ctx.and(
             ud,
-            ctx.const_ffffffff(),
+            ctx.constant(0xffff_ffff),
         ),
     );
     let eq1 = ctx.const_0();
@@ -2638,18 +2638,18 @@ fn simplify_or_64() {
         ctx.lsh(
             ctx.and(
                 ctx.constant(0),
-                ctx.const_ffffffff(),
+                ctx.constant(0xffff_ffff),
             ),
             ctx.constant(0x20),
         ),
         ctx.and(
             ctx.register(0),
-            ctx.const_ffffffff(),
+            ctx.constant(0xffff_ffff),
         ),
     );
     let eq1 = ctx.and(
         ctx.register(0),
-        ctx.const_ffffffff(),
+        ctx.constant(0xffff_ffff),
     );
     let ne1 = ctx.register(0);
     assert_eq!(op1, eq1);
