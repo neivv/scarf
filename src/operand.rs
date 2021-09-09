@@ -1322,12 +1322,12 @@ impl<'e> OperandType<'e> {
                 _ => (0..size.bits() as u8),
             }
             OperandType::Constant(c) => {
-                let trailing = c.trailing_zeros() as u8;
-                let leading = c.leading_zeros() as u8;
-                if 64 - leading < trailing {
+                if c == 0 {
                     0..0
                 } else {
-                    trailing..(64 - leading)
+                    let trailing = c.trailing_zeros() as u8;
+                    let leading = c.leading_zeros() as u8;
+                    trailing..(64u8.wrapping_sub(leading))
                 }
             }
             _ => 0..(self.expr_size().bits() as u8),

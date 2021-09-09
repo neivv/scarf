@@ -30,7 +30,7 @@ impl<'e> Interner<'e> {
     pub fn new() -> Interner<'e> {
         Interner {
             interned_operands:
-                RefCell::new(HashMap::with_capacity_and_hasher(160, Default::default())),
+                RefCell::new(HashMap::with_capacity_and_hasher(0x4000, Default::default())),
             arena: Arena::new(),
         }
     }
