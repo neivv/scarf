@@ -597,11 +597,13 @@ fn simplify_xor_ops<'e>(
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum ^ x);
         ops.retain(|x| x.if_constant().is_none());
-        heapsort::sort(ops);
-        simplify_xor_remove_reverting(ops);
-        simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
-        simplify_or_merge_child_ands(ops, ctx, ArithOpType::Xor)?;
-        simplify_xor_merge_ands_with_same_mask(ops, false, ctx, swzb_ctx);
+        if ops.len() > 1 {
+            heapsort::sort(ops);
+            simplify_xor_remove_reverting(ops);
+            simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
+            simplify_or_merge_child_ands(ops, ctx, ArithOpType::Xor)?;
+            simplify_xor_merge_ands_with_same_mask(ops, false, ctx, swzb_ctx);
+        }
         if ops.is_empty() {
             return Ok(ctx.constant(const_val));
         }
@@ -2565,10 +2567,12 @@ fn simplify_and_main<'e>(
         let crem_high_zeros = const_remain.leading_zeros();
         low_const_remain = low_const_remain << crem_high_zeros >> crem_high_zeros;
 
-        heapsort::sort(ops);
-        ops.dedup();
-        simplify_and_remove_unnecessary_ors(ops, const_remain);
-        simplify_demorgan(ops, ctx, ArithOpType::Or);
+        if ops.len() > 1 {
+            heapsort::sort(ops);
+            ops.dedup();
+            simplify_and_remove_unnecessary_ors(ops, const_remain);
+            simplify_demorgan(ops, ctx, ArithOpType::Or);
+        }
 
         // Prefer (rax & 0xff) << 1 over (rax << 1) & 0x1fe.
         // Should this be limited to only when all ops are lsh?
@@ -4332,12 +4336,14 @@ fn simplify_or_ops<'e>(
         for bits in one_bit_ranges(const_val) {
             slice_filter_map(ops, |op| simplify_with_one_bits(op, &bits, ctx));
         }
-        simplify_or_merge_child_ands(ops, ctx, ArithOpType::Or)?;
-        simplify_or_merge_xors(ops, ctx, swzb_ctx);
-        simplify_or_merge_mem(ops, ctx);
-        simplify_or_merge_comparisions(ops, ctx);
-        simplify_xor_merge_ands_with_same_mask(ops, true, ctx, swzb_ctx);
-        simplify_demorgan(ops, ctx, ArithOpType::And);
+        if ops.len() > 1 {
+            simplify_or_merge_child_ands(ops, ctx, ArithOpType::Or)?;
+            simplify_or_merge_xors(ops, ctx, swzb_ctx);
+            simplify_or_merge_mem(ops, ctx);
+            simplify_or_merge_comparisions(ops, ctx);
+            simplify_xor_merge_ands_with_same_mask(ops, true, ctx, swzb_ctx);
+            simplify_demorgan(ops, ctx, ArithOpType::And);
+        }
 
         let mut i = 0;
         let mut end = ops.len();
