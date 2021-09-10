@@ -4192,7 +4192,7 @@ fn simplify_eq_consistency10() {
 #[test]
 fn simplify_eq_consistency11() {
     let ctx = &OperandContext::new();
-    // x << 1 != 0 and x & 0x7fff_ffff_ffff_fff != 0
+    // x << 1 != 0 and x & 0x7fff_ffff_ffff_ffff != 0
     // are both true iff any of the 63 lowest bits is nonzero
     let op1 = ctx.gt(
         ctx.lsh(

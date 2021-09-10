@@ -272,11 +272,20 @@ impl<'e> ArithOperand<'e> {
 pub struct UndefinedId(#[cfg_attr(feature = "serde", serde(skip))] pub u32);
 
 const SMALL_CONSTANT_COUNT: usize = 0x110;
+const SIGN_AND_MASK_NEARBY_CONSTS: usize = 0x11;
+const SIGN_AND_MASK_NEARBY_CONSTS_FIRST: usize = SMALL_CONSTANT_COUNT + 0x10 + 0x6;
+const COMMON_OPERANDS_COUNT: usize = SMALL_CONSTANT_COUNT + 0x10 + 0x6 +
+    SIGN_AND_MASK_NEARBY_CONSTS * 5 + SIGN_AND_MASK_NEARBY_CONSTS / 2;
+
+#[inline]
+const fn sign_mask_const_index(group: usize) -> usize {
+    SIGN_AND_MASK_NEARBY_CONSTS_FIRST + group * SIGN_AND_MASK_NEARBY_CONSTS
+}
 
 pub struct OperandContext<'e> {
     next_undefined: Cell<u32>,
     // Contains SMALL_CONSTANT_COUNT small constants, 0x10 registers, 0x6 flags
-    common_operands: Box<[OperandSelfRef; SMALL_CONSTANT_COUNT + 0x10 + 0x6]>,
+    common_operands: Box<[OperandSelfRef; COMMON_OPERANDS_COUNT]>,
     interner: intern::Interner<'e>,
     const_interner: intern::ConstInterner<'e>,
     undef_interner: intern::UndefInterner,
@@ -449,7 +458,7 @@ impl<'e> OperandContext<'e> {
     pub fn new() -> OperandContext<'e> {
         use std::ptr::null_mut;
         let common_operands =
-            Box::alloc().init([OperandSelfRef(null_mut()); SMALL_CONSTANT_COUNT + 0x10 + 0x6]);
+            Box::alloc().init([OperandSelfRef(null_mut()); COMMON_OPERANDS_COUNT]);
         let mut result: OperandContext<'e> = OperandContext {
             next_undefined: Cell::new(0),
             common_operands,
@@ -489,6 +498,24 @@ impl<'e> OperandContext<'e> {
             interner.intern(OperandType::Flag(Flag::Sign)).self_ref();
         common_operands[base + 5] =
             interner.intern(OperandType::Flag(Flag::Direction)).self_ref();
+        let sign_mask_consts = [
+            0x7fffu64, 0xffff, 0x7fff_ffff, 0xffff_ffff, 0x7fff_ffff_ffff_ffff,
+            0xffff_ffff_ffff_ffff
+        ];
+        let mut pos = SIGN_AND_MASK_NEARBY_CONSTS_FIRST;
+        for mid in sign_mask_consts {
+            let count = if mid == 0xffff_ffff_ffff_ffff {
+                SIGN_AND_MASK_NEARBY_CONSTS / 2
+            } else {
+                SIGN_AND_MASK_NEARBY_CONSTS
+            };
+            let start = mid.wrapping_sub(SIGN_AND_MASK_NEARBY_CONSTS as u64 / 2).wrapping_add(1);
+            for val in 0..count {
+                let n = start.wrapping_add(val as u64);
+                common_operands[pos] = const_interner.intern(n as u64).self_ref();
+                pos += 1;
+            }
+        }
         result
     }
 
@@ -707,6 +734,28 @@ impl<'e> OperandContext<'e> {
         if value < SMALL_CONSTANT_COUNT as u64 {
             unsafe { self.common_operands[value as usize].cast() }
         } else {
+            // Fast path for values near sign bits or word masks
+            // 7ff8 ..= 8008
+            // fff8 ..= 1_0008
+            // 7fff_fff8 ..= 8000_0008
+            // ffff_fff8 ..= 1_0000_0008
+            // 7fff_ffff_ffff_fff8 ..= 8000_0000_0000_0008
+            // ffff_ffff_ffff_fff8 ..= ffff_ffff_ffff_ffff
+            let index = ((value as u32 & 0x7fff).wrapping_add(0x8)) & 0x7fff;
+            if index < SIGN_AND_MASK_NEARBY_CONSTS as u32 {
+                let rest = value.wrapping_add(8) & 0xffff_ffff_ffff_8000;
+                let offset = match rest {
+                    0x8000 => sign_mask_const_index(0),
+                    0x1_0000 => sign_mask_const_index(1),
+                    0x8000_0000 => sign_mask_const_index(2),
+                    0x1_0000_0000 => sign_mask_const_index(3),
+                    0x8000_0000_0000_0000 => sign_mask_const_index(4),
+                    0x0 => sign_mask_const_index(5),
+                    _ => return self.const_interner.intern(value),
+                };
+                let index = offset.wrapping_add(index as usize);
+                return unsafe { self.common_operands[index].cast() };
+            }
             self.const_interner.intern(value)
         }
     }
