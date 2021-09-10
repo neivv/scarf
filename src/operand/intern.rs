@@ -53,18 +53,7 @@ impl<'e> Interner<'e> {
             match entry {
                 RawEntryMut::Occupied(e) => e.key().transmute_operand_lifetime(),
                 RawEntryMut::Vacant(e) => {
-                    let relevant_bits = ty.calculate_relevant_bits();
-                    let min_zero_bit_simplify_size =
-                        ty.min_zero_bit_simplify_size(relevant_bits.clone());
-                    let flags = ty.flags();
-                    let base = OperandBase {
-                        ty,
-                        min_zero_bit_simplify_size,
-                        relevant_bits,
-                        flags,
-                    };
-                    let operand: Operand<'static> =
-                        Operand(mem::transmute(self.arena.alloc(base)), PhantomData);
+                    let operand: Operand<'static> = mem::transmute(self.add_operand(ty));
                     e.insert(InternHashOperand {
                         hash,
                         operand,
@@ -75,8 +64,28 @@ impl<'e> Interner<'e> {
         }
     }
 
+    /// Adds an Operand to the arena that the caller intends to *never* pass to intern()
+    /// (Or it would intern a separate copy of it)
+    pub fn add_uninterned(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+        self.add_operand(ty)
+    }
+
     pub fn interned_count(&self) -> usize {
         self.interned_operands.borrow().len()
+    }
+
+    fn add_operand(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+        let relevant_bits = ty.calculate_relevant_bits();
+        let min_zero_bit_simplify_size =
+            ty.min_zero_bit_simplify_size(relevant_bits.clone());
+        let flags = ty.flags();
+        let base = OperandBase {
+            ty,
+            min_zero_bit_simplify_size,
+            relevant_bits,
+            flags,
+        };
+        Operand(self.arena.alloc(base), PhantomData)
     }
 }
 
@@ -93,26 +102,31 @@ impl<'e> ConstInterner<'e> {
         let mut map = self.interned_operands.borrow_mut();
         let entry = map.entry(value);
         let op = *entry.or_insert_with(|| {
-            let relevant_bits = OperandType::const_relevant_bits(value);
-            let min_zero_bit_simplify_size = 0;
-            let flags = OperandType::const_flags();
-            let base = OperandBase {
-                ty: OperandType::Constant(value),
-                min_zero_bit_simplify_size,
-                relevant_bits,
-                flags,
-            };
-            let operand: Operand<'static> = Operand(
-                unsafe { mem::transmute(self.arena.alloc(base)) },
-                PhantomData,
-            );
-            operand
+            let op = self.add_operand(value);
+            unsafe { mem::transmute::<Operand<'e>, Operand<'static>>(op) }
         });
         unsafe { mem::transmute::<Operand<'static>, Operand<'e>>(op) }
     }
 
+    pub fn add_uninterned(&'e self, value: u64) -> Operand<'e> {
+        self.add_operand(value)
+    }
+
     pub fn interned_count(&self) -> usize {
         self.interned_operands.borrow().len()
+    }
+
+    fn add_operand(&'e self, value: u64) -> Operand<'e> {
+        let relevant_bits = OperandType::const_relevant_bits(value);
+        let min_zero_bit_simplify_size = 0;
+        let flags = OperandType::const_flags();
+        let base = OperandBase {
+            ty: OperandType::Constant(value),
+            min_zero_bit_simplify_size,
+            relevant_bits,
+            flags,
+        };
+        Operand(self.arena.alloc(base), PhantomData)
     }
 }
 

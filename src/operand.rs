@@ -478,26 +478,20 @@ impl<'e> OperandContext<'e> {
         let const_interner: &intern::ConstInterner<'_> =
             unsafe { std::mem::transmute(&result.const_interner) };
         for i in 0..SMALL_CONSTANT_COUNT {
-            common_operands[i] = const_interner.intern(i as u64).self_ref();
+            common_operands[i] = const_interner.add_uninterned(i as u64).self_ref();
         }
         let base = SMALL_CONSTANT_COUNT;
         for i in 0..0x10 {
             common_operands[base + i] =
-                interner.intern(OperandType::Register(Register(i as u8))).self_ref();
+                interner.add_uninterned(OperandType::Register(Register(i as u8))).self_ref();
         }
         let base = SMALL_CONSTANT_COUNT + 0x10;
-        common_operands[base + 0] =
-            interner.intern(OperandType::Flag(Flag::Zero)).self_ref();
-        common_operands[base + 1] =
-            interner.intern(OperandType::Flag(Flag::Carry)).self_ref();
-        common_operands[base + 2] =
-            interner.intern(OperandType::Flag(Flag::Overflow)).self_ref();
-        common_operands[base + 3] =
-            interner.intern(OperandType::Flag(Flag::Parity)).self_ref();
-        common_operands[base + 4] =
-            interner.intern(OperandType::Flag(Flag::Sign)).self_ref();
-        common_operands[base + 5] =
-            interner.intern(OperandType::Flag(Flag::Direction)).self_ref();
+        let flags = [
+            Flag::Zero, Flag::Carry, Flag::Overflow, Flag::Parity, Flag::Sign, Flag::Direction,
+        ];
+        for (i, &f) in flags.iter().enumerate() {
+            common_operands[base + i] = interner.add_uninterned(OperandType::Flag(f)).self_ref();
+        }
         let sign_mask_consts = [
             0x7fffu64, 0xffff, 0x7fff_ffff, 0xffff_ffff, 0x7fff_ffff_ffff_ffff,
             0xffff_ffff_ffff_ffff
@@ -512,7 +506,7 @@ impl<'e> OperandContext<'e> {
             let start = mid.wrapping_sub(SIGN_AND_MASK_NEARBY_CONSTS as u64 / 2).wrapping_add(1);
             for val in 0..count {
                 let n = start.wrapping_add(val as u64);
-                common_operands[pos] = const_interner.intern(n as u64).self_ref();
+                common_operands[pos] = const_interner.add_uninterned(n as u64).self_ref();
                 pos += 1;
             }
         }
@@ -645,6 +639,10 @@ impl<'e> OperandContext<'e> {
     fn intern_any(&'e self, ty: OperandType<'e>) -> Operand<'e> {
         if let OperandType::Constant(c) = ty {
             self.constant(c)
+        } else if let OperandType::Register(r) = ty {
+            self.register(r.0)
+        } else if let OperandType::Flag(f) = ty {
+            self.flag(f)
         } else {
             // Undefined has to go here since UndefInterner is just array that things get
             // pushed to and then looked up.. Maybe it would be better for copy_operand
