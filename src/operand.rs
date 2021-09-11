@@ -742,17 +742,19 @@ impl<'e> OperandContext<'e> {
             let index = ((value as u32 & 0x7fff).wrapping_add(0x8)) & 0x7fff;
             if index < SIGN_AND_MASK_NEARBY_CONSTS as u32 {
                 let rest = value.wrapping_add(8) & 0xffff_ffff_ffff_8000;
-                let offset = match rest {
-                    0x8000 => sign_mask_const_index(0),
-                    0x1_0000 => sign_mask_const_index(1),
-                    0x8000_0000 => sign_mask_const_index(2),
-                    0x1_0000_0000 => sign_mask_const_index(3),
-                    0x8000_0000_0000_0000 => sign_mask_const_index(4),
-                    0x0 => sign_mask_const_index(5),
-                    _ => return self.const_interner.intern(value),
-                };
-                let index = offset.wrapping_add(index as usize);
-                return unsafe { self.common_operands[index].cast() };
+                if rest.wrapping_sub(1) & rest == 0 {
+                    let offset = match rest {
+                        0x8000 => sign_mask_const_index(0),
+                        0x1_0000 => sign_mask_const_index(1),
+                        0x8000_0000 => sign_mask_const_index(2),
+                        0x1_0000_0000 => sign_mask_const_index(3),
+                        0x8000_0000_0000_0000 => sign_mask_const_index(4),
+                        0x0 => sign_mask_const_index(5),
+                        _ => return self.const_interner.intern(value),
+                    };
+                    let index = offset.wrapping_add(index as usize);
+                    return unsafe { self.common_operands[index].cast() };
+                }
             }
             self.const_interner.intern(value)
         }
