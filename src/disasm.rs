@@ -249,14 +249,18 @@ struct RegisterCache<'e> {
     register8_high: [Option<Operand<'e>>; 4],
     register16: [Option<Operand<'e>>; 16],
     register32: [Option<Operand<'e>>; 16],
+    esp_mem_word: Operand<'e>,
     ctx: OperandCtx<'e>,
 }
 
 impl<'e> RegisterCache<'e> {
     fn new(ctx: OperandCtx<'e>, is_64: bool) -> RegisterCache<'e> {
+        let esp_mem_word;
         if is_64 {
+            esp_mem_word = ctx.mem64(ctx.register(4));
             ctx.resize_offset_cache(16);
         } else {
+            esp_mem_word = ctx.mem32(ctx.register(4));
             ctx.resize_offset_cache(8);
         }
         RegisterCache {
@@ -265,6 +269,7 @@ impl<'e> RegisterCache<'e> {
             register8_high: [None; 4],
             register16: [None; 16],
             register32: [None; 16],
+            esp_mem_word,
         }
     }
 
@@ -297,6 +302,10 @@ impl<'e> RegisterCache<'e> {
         *self.register32[i as usize & 15].get_or_insert_with(|| {
             ctx.and_const(ctx.register(i as u8), 0xffff_ffff)
         })
+    }
+
+    fn esp_mem_word(&mut self) -> Operand<'e> {
+        self.esp_mem_word
     }
 
     fn register_offset_const(&mut self, register: u8, offset: i32) -> Operand<'e> {
@@ -3061,17 +3070,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn pop_rm(&mut self) -> Result<(), Failed> {
         let (rm, _) = self.parse_modrm(self.mem16_32())?;
-        let esp = self.ctx.register(4);
         let rm_dest = self.rm_to_dest_operand(&rm);
-        if Va::SIZE == 4 {
-            self.output_mov(rm_dest, self.ctx.mem32(esp));
-            let new_esp = self.register_cache.register_offset_const(4, 4);
-            self.output_mov_to_reg(4, new_esp);
-        } else {
-            self.output_mov(rm_dest, self.ctx.mem64(esp));
-            let new_esp = self.register_cache.register_offset_const(4, 8);
-            self.output_mov_to_reg(4, new_esp);
-        }
+        let esp_mem = self.register_cache.esp_mem_word();
+        self.output_mov(rm_dest, esp_mem);
+        let new_esp = self.register_cache.register_offset_const(4, Va::SIZE as i32);
+        self.output_mov_to_reg(4, new_esp);
         Ok(())
     }
 
@@ -3265,15 +3268,10 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 }
             }
             false => {
-                if Va::SIZE == 4 {
-                    self.output_mov_to_reg(reg, self.ctx.mem32(esp));
-                    let new_esp = self.register_cache.register_offset_const(4, 4);
-                    self.output_mov_to_reg(4, new_esp);
-                } else {
-                    self.output_mov_to_reg(reg, self.ctx.mem64(esp));
-                    let new_esp = self.register_cache.register_offset_const(4, 8);
-                    self.output_mov_to_reg(4, new_esp);
-                }
+                let esp_mem = self.register_cache.esp_mem_word();
+                self.output_mov_to_reg(reg, esp_mem);
+                let new_esp = self.register_cache.register_offset_const(4, Va::SIZE as i32);
+                self.output_mov_to_reg(4, new_esp);
             }
         }
         Ok(())
