@@ -4,8 +4,7 @@ use quick_error::quick_error;
 
 use crate::exec_state::{VirtualAddress};
 use crate::operand::{
-    self, ArithOpType, Flag, MemAccess, Operand, OperandCtx, OperandType, Register,
-    MemAccessSize,
+    self, ArithOpType, Flag, MemAccess, Operand, OperandCtx, OperandType, MemAccessSize,
 };
 use crate::VirtualAddress as VirtualAddress32;
 use crate::VirtualAddress64;
@@ -885,7 +884,7 @@ enum BitTest {
 
 fn x87_variant<'e>(ctx: OperandCtx<'e>, op: Operand<'e>, offset: i8) -> Operand<'e> {
     match *op.ty() {
-        OperandType::Register(Register(r)) => ctx.register_fpu((r as i8 + offset) as u8 & 7),
+        OperandType::Register(r) => ctx.register_fpu((r as i8 + offset) as u8 & 7),
         _ => op,
     }
 }
@@ -913,7 +912,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     #[inline(never)]
     fn output_mov_to_reg(&mut self, dest: u8, value: Operand<'e>) {
-        self.out.push(Operation::Move(DestOperand::Register64(Register(dest)), value, None));
+        self.out.push(Operation::Move(DestOperand::Register64(dest), value, None));
     }
 
     fn output_flag_set(&mut self, flag: Flag, value: Operand<'e>) {
@@ -1036,15 +1035,15 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
     }
 
-    fn reg_variable_size(&mut self, register: Register, op_size: MemAccessSize) -> Operand<'e> {
-        if register.0 >= 4 && self.rex_prefix() == 0 && op_size == MemAccessSize::Mem8 {
-            self.register_cache.register8_high(register.0 - 4)
+    fn reg_variable_size(&mut self, register: u8, op_size: MemAccessSize) -> Operand<'e> {
+        if register >= 4 && self.rex_prefix() == 0 && op_size == MemAccessSize::Mem8 {
+            self.register_cache.register8_high(register - 4)
         } else {
             match op_size {
-                MemAccessSize::Mem8 => self.register_cache.register8_low(register.0),
-                MemAccessSize::Mem16 => self.register_cache.register16(register.0),
-                MemAccessSize::Mem32 => self.register_cache.register32(register.0),
-                MemAccessSize::Mem64 => self.ctx.register_ref(register.0),
+                MemAccessSize::Mem8 => self.register_cache.register8_low(register),
+                MemAccessSize::Mem16 => self.register_cache.register16(register),
+                MemAccessSize::Mem32 => self.register_cache.register32(register),
+                MemAccessSize::Mem64 => self.ctx.register(register),
             }
         }
     }
@@ -1055,7 +1054,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             RegisterSize::High8 => self.register_cache.register8_high(r.0),
             RegisterSize::R16 => self.register_cache.register16(r.0),
             RegisterSize::R32 => self.register_cache.register32(r.0),
-            RegisterSize::R64 => self.ctx.register_ref(r.0),
+            RegisterSize::R64 => self.ctx.register(r.0),
         }
     }
 
@@ -1084,23 +1083,23 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         match r.1 {
             RegisterSize::R64 => {
                 op = self.ctx.register(r.0);
-                dest = DestOperand::Register64(Register(r.0));
+                dest = DestOperand::Register64(r.0);
             }
             RegisterSize::R32 => {
                 op = self.register_cache.register32(r.0);
-                dest = DestOperand::Register32(Register(r.0));
+                dest = DestOperand::Register32(r.0);
             }
             RegisterSize::R16 => {
                 op = self.register_cache.register16(r.0);
-                dest = DestOperand::Register16(Register(r.0));
+                dest = DestOperand::Register16(r.0);
             }
             RegisterSize::Low8 => {
                 op = self.register_cache.register8_low(r.0);
-                dest = DestOperand::Register8Low(Register(r.0));
+                dest = DestOperand::Register8Low(r.0);
             }
             RegisterSize::High8 => {
                 op = self.register_cache.register8_high(r.0);
-                dest = DestOperand::Register8High(Register(r.0));
+                dest = DestOperand::Register8High(r.0);
             }
         }
         DestAndOperand {
@@ -1497,7 +1496,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let is_inc = byte < 0x48;
         let reg_id = byte & 0x7;
         let op_size = self.mem16_32();
-        let reg = self.reg_variable_size(Register(reg_id), op_size);
+        let reg = self.reg_variable_size(reg_id, op_size);
         let dest = DestAndOperand {
             op: reg.clone(),
             dest: DestOperand::reg_variable_size(reg_id, op_size),
@@ -1618,7 +1617,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             self.read_u8(0)? & 0x7
         };
         let ctx = self.ctx;
-        let reg_op = ctx.register_ref(register);
+        let reg_op = ctx.register(register);
         let mut shift;
         let halfway;
         let size = self.mem16_32();
@@ -1721,7 +1720,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     fn lahf(&mut self) -> Result<(), Failed> {
         // TODO implement
         self.output_mov(
-            DestOperand::Register8High(Register(0)),
+            DestOperand::Register8High(0),
             self.ctx.new_undef(),
         );
         Ok(())
@@ -2068,8 +2067,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             }
             4 | 5 => {
                 // TODO signed mul
-                let eax = self.reg_variable_size(Register(0), op_size);
-                let edx = self.reg_variable_size(Register(2), op_size);
+                let eax = self.reg_variable_size(0, op_size);
+                let edx = self.reg_variable_size(2, op_size);
                 let multiply = ctx.mul(eax, rm.op);
                 self.output(Operation::Freeze);
                 if op_size == MemAccessSize::Mem64 {
@@ -2097,8 +2096,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             // Div, idiv
             6 | 7 => {
                 // edx = edx:eax % rm, eax = edx:eax / rm
-                let eax = self.reg_variable_size(Register(0), op_size);
-                let edx = self.reg_variable_size(Register(2), op_size);
+                let eax = self.reg_variable_size(0, op_size);
+                let edx = self.reg_variable_size(2, op_size);
                 let div;
                 let modulo;
                 if op_size == MemAccessSize::Mem64 || variant == 7 {
@@ -3101,7 +3100,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let (mut rm, _) = self.parse_modrm(op_size)?;
         let shift_count = match self.read_u8(0)? & 2 {
             0 => self.ctx.const_1(),
-            _ => self.reg_variable_size(Register(1), operand::MemAccessSize::Mem8).clone(),
+            _ => self.reg_variable_size(1, operand::MemAccessSize::Mem8).clone(),
         };
         let arith = BITWISE_ARITH_OPS[((self.read_u8(1)? >> 3) & 0x7) as usize]
             .ok_or_else(|| self.unknown_opcode())?;
@@ -3284,7 +3283,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             _ => MemAccessSize::Mem8,
         };
         let constant = self.read_variable_size_32(1, imm_size)? as u32;
-        let esp = self.ctx.register_ref(4);
+        let esp = self.ctx.register(4);
         // TODO is this right on 64bit? Probably not
         let new_esp = self.register_cache.register_offset_const(4, -4);
         self.output_mov_to_reg(4, new_esp);
@@ -3366,11 +3365,11 @@ fn is_rm_short_r_register(rm: &ModRm_Rm, r: ModRm_R) -> bool {
 }
 
 pub mod operation_helpers {
-    use crate::operand::{Operand, MemAccessSize, Register};
+    use crate::operand::{Operand, MemAccessSize};
     use super::{DestOperand, Operation};
 
     pub fn mov_to_reg<'e>(dest: u8, from: Operand<'e>) -> Operation<'e> {
-        Operation::Move(DestOperand::Register64(Register(dest)), from, None)
+        Operation::Move(DestOperand::Register64(dest), from, None)
     }
 
     pub fn mov_to_reg_variable_size<'e>(
@@ -3379,10 +3378,10 @@ pub mod operation_helpers {
         from: Operand<'e>,
     ) -> Operation<'e> {
         let dest = match size {
-            MemAccessSize::Mem8 => DestOperand::Register8Low(Register(dest)),
-            MemAccessSize::Mem16 => DestOperand::Register16(Register(dest)),
-            MemAccessSize::Mem32 => DestOperand::Register32(Register(dest)),
-            MemAccessSize::Mem64 => DestOperand::Register64(Register(dest)),
+            MemAccessSize::Mem8 => DestOperand::Register8Low(dest),
+            MemAccessSize::Mem16 => DestOperand::Register16(dest),
+            MemAccessSize::Mem32 => DestOperand::Register32(dest),
+            MemAccessSize::Mem64 => DestOperand::Register64(dest),
         };
         Operation::Move(dest, from, None)
     }
@@ -3536,7 +3535,7 @@ impl RegisterSize {
 impl ModRm_R {
     #[inline(never)]
     fn dest_operand<'e>(self) -> DestOperand<'e> {
-        let reg = Register(self.0);
+        let reg = self.0;
         [
             DestOperand::Register8Low(reg),
             DestOperand::Register8High(reg),
@@ -3606,11 +3605,11 @@ impl<'e> Clone for DestAndOperand<'e> {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DestOperand<'e> {
-    Register64(Register),
-    Register32(Register),
-    Register16(Register),
-    Register8High(Register),
-    Register8Low(Register),
+    Register64(u8),
+    Register32(u8),
+    Register16(u8),
+    Register8High(u8),
+    Register8Low(u8),
     Xmm(u8, u8),
     Fpu(u8),
     Flag(Flag),
@@ -3620,10 +3619,10 @@ pub enum DestOperand<'e> {
 impl<'e> DestOperand<'e> {
     pub fn reg_variable_size(reg: u8, size: MemAccessSize) -> DestOperand<'e> {
         match size {
-            MemAccessSize::Mem8 => DestOperand::Register8Low(Register(reg)),
-            MemAccessSize::Mem16 => DestOperand::Register16(Register(reg)),
-            MemAccessSize::Mem32 => DestOperand::Register32(Register(reg)),
-            MemAccessSize::Mem64 => DestOperand::Register64(Register(reg)),
+            MemAccessSize::Mem8 => DestOperand::Register8Low(reg),
+            MemAccessSize::Mem16 => DestOperand::Register16(reg),
+            MemAccessSize::Mem32 => DestOperand::Register32(reg),
+            MemAccessSize::Mem64 => DestOperand::Register64(reg),
         }
     }
 
@@ -3633,14 +3632,14 @@ impl<'e> DestOperand<'e> {
 
     pub fn as_operand(&self, ctx: OperandCtx<'e>) -> Operand<'e> {
         match *self {
-            DestOperand::Register32(x) => ctx.and_const(ctx.register_ref(x.0), 0xffff_ffff),
-            DestOperand::Register16(x) => ctx.and_const(ctx.register_ref(x.0), 0xffff),
+            DestOperand::Register32(x) => ctx.and_const(ctx.register(x), 0xffff_ffff),
+            DestOperand::Register16(x) => ctx.and_const(ctx.register(x), 0xffff),
             DestOperand::Register8High(x) => ctx.rsh_const(
-                ctx.and_const(ctx.register(x.0), 0xffff),
+                ctx.and_const(ctx.register(x), 0xffff),
                 8,
             ),
-            DestOperand::Register8Low(x) => ctx.and_const(ctx.register_ref(x.0), 0xff),
-            DestOperand::Register64(x) => ctx.register(x.0),
+            DestOperand::Register8Low(x) => ctx.and_const(ctx.register(x), 0xff),
+            DestOperand::Register64(x) => ctx.register(x),
             DestOperand::Xmm(x, y) => ctx.xmm(x, y),
             DestOperand::Fpu(x) => ctx.register_fpu(x),
             DestOperand::Flag(x) => ctx.flag(x).clone(),

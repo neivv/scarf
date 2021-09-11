@@ -609,24 +609,24 @@ impl<'e> State<'e> {
     ) -> Destination<'s, 'e> {
         match *dest {
             DestOperand::Register64(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Oper(&mut self.state[(reg.0 & 0xf) as usize])
+                self.cached_low_registers.invalidate(reg);
+                Destination::Oper(&mut self.state[(reg & 0xf) as usize])
             }
             DestOperand::Register32(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register32(&mut self.state[(reg.0 & 0xf) as usize])
+                self.cached_low_registers.invalidate(reg);
+                Destination::Register32(&mut self.state[(reg & 0xf) as usize])
             }
             DestOperand::Register16(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register16(&mut self.state[(reg.0 & 0xf) as usize])
+                self.cached_low_registers.invalidate(reg);
+                Destination::Register16(&mut self.state[(reg & 0xf) as usize])
             }
             DestOperand::Register8High(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register8High(&mut self.state[(reg.0 & 0xf) as usize])
+                self.cached_low_registers.invalidate(reg);
+                Destination::Register8High(&mut self.state[(reg & 0xf) as usize])
             }
             DestOperand::Register8Low(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register8Low(&mut self.state[(reg.0 & 0xf) as usize])
+                self.cached_low_registers.invalidate(reg);
+                Destination::Register8Low(&mut self.state[(reg & 0xf) as usize])
             }
             DestOperand::Fpu(_) => Destination::Nop,
             DestOperand::Xmm(reg, word) => {
@@ -790,7 +790,7 @@ impl<'e> State<'e> {
         }
         match *value.ty() {
             OperandType::Register(reg) => {
-                self.state[(reg.0 & 0xf) as usize]
+                self.state[(reg & 0xf) as usize]
             }
             OperandType::Xmm(reg, word) => {
                 self.xmm[(reg & 0xf) as usize * 4 + (word & 3) as usize]
@@ -840,7 +840,7 @@ impl<'e> State<'e> {
         right: Operand<'e>,
     ) -> Option<Operand<'e>> {
         let c = right.if_constant()?;
-        let reg = left.if_register()?.0 & 0xf;
+        let reg = left.if_register()? & 0xf;
         let ctx = self.ctx;
         if c <= 0xff {
             let op = match self.cached_low_registers.get_low8(reg) {

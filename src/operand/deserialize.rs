@@ -240,8 +240,8 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                 let (variant, v) = e.variant()?;
                 match variant {
                     Variant::Register => {
-                        let r: super::Register = v.newtype_variant()?;
-                        Ok(self.0.register(r.0))
+                        let r: u8 = v.newtype_variant()?;
+                        Ok(self.0.register(r))
                     }
                     Variant::Fpu => {
                         let r: u8 = v.newtype_variant()?;

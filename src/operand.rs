@@ -114,7 +114,7 @@ impl<'e> fmt::Debug for OperandType<'e> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::OperandType::*;
         match self {
-            Register(r) => write!(f, "Register({})", r.0),
+            Register(r) => write!(f, "Register({})", r),
             Xmm(r, x) => write!(f, "Xmm({}.{})", r, x),
             Fpu(r) => write!(f, "Fpu({})", r),
             Flag(r) => write!(f, "Flag({:?})", r),
@@ -138,7 +138,7 @@ impl<'e> fmt::Display for Operand<'e> {
         use self::ArithOpType::*;
 
         match *self.ty() {
-            OperandType::Register(r) => match r.0 {
+            OperandType::Register(r) => match r {
                 0 => write!(f, "rax"),
                 1 => write!(f, "rcx"),
                 2 => write!(f, "rdx"),
@@ -211,7 +211,7 @@ impl<'e> fmt::Display for Operand<'e> {
 #[cfg_attr(feature = "serde", derive(Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum OperandType<'e> {
-    Register(Register),
+    Register(u8),
     Xmm(u8, u8),
     Fpu(u8),
     Flag(Flag),
@@ -483,7 +483,7 @@ impl<'e> OperandContext<'e> {
         let base = SMALL_CONSTANT_COUNT;
         for i in 0..0x10 {
             common_operands[base + i] =
-                interner.add_uninterned(OperandType::Register(Register(i as u8))).self_ref();
+                interner.add_uninterned(OperandType::Register(i as u8)).self_ref();
         }
         let base = SMALL_CONSTANT_COUNT + 0x10;
         let flags = [
@@ -640,7 +640,7 @@ impl<'e> OperandContext<'e> {
         if let OperandType::Constant(c) = ty {
             self.constant(c)
         } else if let OperandType::Register(r) = ty {
-            self.register(r.0)
+            self.register(r)
         } else if let OperandType::Flag(f) = ty {
             self.flag(f)
         } else {
@@ -707,13 +707,8 @@ impl<'e> OperandContext<'e> {
         if index < 0x10 {
             unsafe { self.common_operands[SMALL_CONSTANT_COUNT + index as usize].cast() }
         } else {
-            self.intern(OperandType::Register(Register(index)))
+            self.intern(OperandType::Register(index))
         }
-    }
-
-    #[inline]
-    pub fn register_ref(&'e self, index: u8) -> Operand<'e> {
-        self.register(index)
     }
 
     pub fn register_fpu(&'e self, index: u8) -> Operand<'e> {
@@ -1664,7 +1659,7 @@ impl<'e> Operand<'e> {
 
     /// Returns `Some(r)` if `self.ty` is `OperandType::Register(r)`
     #[inline]
-    pub fn if_register(self) -> Option<Register> {
+    pub fn if_register(self) -> Option<u8> {
         match *self.ty() {
             OperandType::Register(r) => Some(r),
             _ => None,
@@ -1842,7 +1837,7 @@ impl<'e> Operand<'e> {
     /// with constant.
     ///
     /// Useful for detecting 32-bit register which is represented as `Register(r) & ffff_ffff`.
-    pub fn if_and_masked_register(self) -> Option<(Register, u64)> {
+    pub fn if_and_masked_register(self) -> Option<(u8, u64)> {
         let (l, r) = self.if_arithmetic_and()?;
         let reg = l.if_register()?;
         let c = r.if_constant()?;
@@ -1925,10 +1920,6 @@ impl MemAccessSize {
         1u64.wrapping_shl(self.bits().wrapping_sub(1))
     }
 }
-
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[derive(Clone, Eq, PartialEq, Copy, Debug, Hash, Ord, PartialOrd)]
-pub struct Register(pub u8);
 
 // Flags currently are cast to usize index when stored in ExecutionState,
 // and the index is also used with pending_flags

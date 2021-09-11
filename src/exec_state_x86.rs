@@ -82,7 +82,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
 
     fn apply_call(&mut self, ret: VirtualAddress) {
         let ctx = self.ctx();
-        let esp = ctx.register_ref(4);
+        let esp = ctx.register(4);
         self.move_to(
             &DestOperand::from_oper(esp),
             ctx.sub_const(esp, 4),
@@ -100,7 +100,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         let mut state = ExecutionState::with_binary(binary, ctx);
 
         // Set the return address to somewhere in 0x400000 range
-        let return_address = ctx.mem32(ctx.register_ref(4));
+        let return_address = ctx.mem32(ctx.register(4));
         state.move_to(
             &DestOperand::from_oper(return_address),
             ctx.constant((binary.code_section().virtual_address.0 + 0x4230) as u64),
@@ -951,7 +951,7 @@ impl<'e> State<'e> {
         right: Operand<'e>,
     ) -> Option<Operand<'e>> {
         let c = right.if_constant()?;
-        let reg = left.if_register()?.0 & 0xf;
+        let reg = left.if_register()? & 0xf;
         let ctx = self.ctx;
         if c <= 0xff {
             let op = match self.cached_low_registers.get_low8(reg) {
@@ -998,7 +998,7 @@ impl<'e> State<'e> {
         }
         match *value.ty() {
             OperandType::Register(reg) => {
-                self.state[reg.0 as usize & 7]
+                self.state[reg as usize & 7]
             }
             OperandType::Xmm(reg, word) => {
                 self.xmm_fpu[
@@ -1085,20 +1085,20 @@ impl<'e> State<'e> {
     ) -> Destination<'s, 'e> {
         match *dest {
             DestOperand::Register32(reg) | DestOperand::Register64(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Oper(&mut self.state[reg.0 as usize & 7])
+                self.cached_low_registers.invalidate(reg);
+                Destination::Oper(&mut self.state[reg as usize & 7])
             }
             DestOperand::Register16(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register16(&mut self.state[reg.0 as usize & 7])
+                self.cached_low_registers.invalidate(reg);
+                Destination::Register16(&mut self.state[reg as usize & 7])
             }
             DestOperand::Register8High(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register8High(&mut self.state[reg.0 as usize & 7])
+                self.cached_low_registers.invalidate(reg);
+                Destination::Register8High(&mut self.state[reg as usize & 7])
             }
             DestOperand::Register8Low(reg) => {
-                self.cached_low_registers.invalidate(reg.0);
-                Destination::Register8Low(&mut self.state[reg.0 as usize & 7])
+                self.cached_low_registers.invalidate(reg);
+                Destination::Register8Low(&mut self.state[reg as usize & 7])
             }
             DestOperand::Fpu(id) => {
                 let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);

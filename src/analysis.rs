@@ -1068,7 +1068,7 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
                 let ctx = control.ctx();
                 let state = control.exec_state();
                 state.move_to(
-                    &crate::DestOperand::Register64(crate::operand::Register(4)),
+                    &crate::DestOperand::Register64(4),
                     ctx.add_const(
                         ctx.register(4),
                         <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE.into(),

@@ -146,7 +146,7 @@ fn operand_type_hash(ty: &OperandType<'_>) -> usize {
             a.hash(&mut hasher);
             b.hash(&mut hasher);
         }
-        OperandType::Register(r) => r.0.hash(&mut hasher),
+        OperandType::Register(r) => r.hash(&mut hasher),
         OperandType::Memory(ref mem) => {
             match *mem {
                 MemAccess {
