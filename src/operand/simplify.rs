@@ -1440,8 +1440,30 @@ pub fn simplify_eq_const<'e>(
         // Gt has some extra logic too which needs to be checked first.
         if let OperandType::Arithmetic(ref arith) = left.ty() {
             can_quick_simplify = match arith.ty {
-                ArithOpType::Add | ArithOpType::Sub | ArithOpType::And |
+                ArithOpType::Add | ArithOpType::Sub |
                     ArithOpType::Lsh | ArithOpType::Rsh | ArithOpType::Mul => false,
+                ArithOpType::And => {
+                    // (x << 8) & 800 == 0 gets simplfied to x & 8 == 0
+                    // (x >> 8) & 8 == 0 gets simplfied to x & 800 == 0
+                    // (x + ffff) & ffff == 0 becomes x & ffff == 1
+                    // And similar for sub.
+                    if let Some(c) = arith.right.if_constant() {
+                        if let OperandType::Arithmetic(ref arith) = arith.left.ty() {
+                            match arith.ty {
+                                ArithOpType::Add | ArithOpType::Sub => {
+                                    let continous_mask = c.wrapping_add(1) & c == 0;
+                                    !continous_mask
+                                }
+                                ArithOpType::Lsh | ArithOpType::Rsh | ArithOpType::Mul => false,
+                                _ => true,
+                            }
+                        } else {
+                            true
+                        }
+                    } else {
+                        true
+                    }
+                }
                 ArithOpType::GreaterThan => {
                     // If right > 1, it gets caught by the max_value check above,
                     // if right == 1, it gets caught by the right == 1 check above,
@@ -1459,10 +1481,12 @@ pub fn simplify_eq_const<'e>(
                 true => ctx.const_1(),
                 false => ctx.const_0(),
             }
+        } else if left.if_memory().is_some() {
+            can_quick_simplify = true;
         }
     }
+    let right = ctx.constant(right);
     if can_quick_simplify {
-        let right = ctx.constant(right);
         let arith = ArithOperand {
             ty: ArithOpType::Equal,
             left,
@@ -1470,7 +1494,7 @@ pub fn simplify_eq_const<'e>(
         };
         return ctx.intern(OperandType::Arithmetic(arith));
     }
-    simplify_eq_main(left, ctx.constant(right), ctx)
+    simplify_eq_main(left, right, ctx)
 }
 
 /// Special cases for simplifying `(left > right) == 0`

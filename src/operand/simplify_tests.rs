@@ -7744,3 +7744,50 @@ fn simplify_sub_const_left() {
     );
     assert_eq!(op2, eq2);
 }
+
+#[test]
+fn simplify_mul_masked_eq() {
+    let ctx = &OperandContext::new();
+    // Effectively (rax & f0) << 1 == 0 to (rax & f0) == 0
+    let op1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.mul_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xf0,
+                ),
+                2,
+            ),
+            0xfffe,
+        ),
+        0,
+    );
+    let eq1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.register(0),
+            0xf0,
+        ),
+        0,
+    );
+    assert_eq!(op1, eq1);
+
+    // (rax << 1) & f0 == 0 to (rax & 78) == 0
+    let op1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.mul_const(
+                ctx.register(0),
+                2,
+            ),
+            0xf0,
+        ),
+        0,
+    );
+    let eq1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.register(0),
+            0x78,
+        ),
+        0,
+    );
+    assert_eq!(op1, eq1);
+}
