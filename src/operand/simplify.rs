@@ -2404,6 +2404,7 @@ fn can_quick_and_simplify_add_sub<'e>(left: Operand<'e>, right: u64) -> bool {
 fn quick_and_simplify<'e>(
     left: Operand<'e>,
     right: u64,
+    mut right_op: Option<Operand<'e>>,
     ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
     let mut ok = can_quick_simplify_type(left.ty());
@@ -2417,14 +2418,18 @@ fn quick_and_simplify<'e>(
         let left_bits = left.relevant_bits();
         let right = if left_bits.end != 64 {
             let mask = (1 << left_bits.end) - 1;
-            if right & mask == mask {
+            let masked = right & mask;
+            if masked == mask {
                 return Some(left);
             }
-            right & mask
+            if masked != right {
+                right_op = None;
+            }
+            masked
         } else {
             right
         };
-        let right = ctx.constant(right);
+        let right = right_op.unwrap_or_else(|| ctx.constant(right));
         let arith = ArithOperand {
             ty: ArithOpType::And,
             left,
@@ -2441,6 +2446,7 @@ fn quick_and_simplify<'e>(
 fn simplify_and_const_mem<'e>(
     left: Operand<'e>,
     right: u64,
+    mut right_op: Option<Operand<'e>>,
     ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
     let mem = left.if_memory()?;
@@ -2448,10 +2454,13 @@ fn simplify_and_const_mem<'e>(
     let new_mask = new.relevant_bits_mask();
     let new_common = new_mask & right;
     if new_common != new_mask {
+        if new_common != right {
+            right_op = None;
+        }
         let arith = ArithOperand {
             ty: ArithOpType::And,
             left: new,
-            right: ctx.constant(new_common),
+            right: right_op.unwrap_or_else(|| ctx.constant(new_common)),
         };
         Some(ctx.intern(OperandType::Arithmetic(arith)))
     } else {
@@ -2461,8 +2470,18 @@ fn simplify_and_const_mem<'e>(
 
 /// Having a bitwise and with a constant is really common.
 pub fn simplify_and_const<'e>(
+    left: Operand<'e>,
+    right: u64,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Operand<'e> {
+    simplify_and_const_op(left, right, None, ctx, swzb_ctx)
+}
+
+pub fn simplify_and_const_op<'e>(
     mut left: Operand<'e>,
     mut right: u64,
+    mut right_op: Option<Operand<'e>>,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
@@ -2472,16 +2491,23 @@ pub fn simplify_and_const<'e>(
     // Check if left is x & const
     if let Some((l, r)) = left.if_arithmetic_and() {
         if let Some(c) = r.if_constant() {
-            right &= c;
+            let new = c & right;
+            if new != right {
+                right = new;
+                right_op = None;
+            }
             left = l;
         }
     }
     let left_mask = match left.if_constant() {
         Some(c) => {
-            if c & right == c {
+            let common = c & right;
+            if common == c {
                 return left;
+            } else if common == right {
+                return right_op.unwrap_or_else(|| ctx.constant(right));
             } else {
-                return ctx.constant(c & right);
+                return ctx.constant(common);
             }
         }
         None => left.relevant_bits_mask(),
@@ -2505,20 +2531,20 @@ pub fn simplify_and_const<'e>(
             };
             if inner_right_bits & right == 0 {
                 // Right won't affect the result, use just left
-                return simplify_and_const(arith.left, right, ctx, swzb_ctx);
+                return simplify_and_const_op(arith.left, right, right_op, ctx, swzb_ctx);
             }
             // Note: Left cannot be constant, it is always canonicalized to outermost right
             let inner_left_bits = arith.left.relevant_bits_mask();
             if inner_left_bits & right == 0 {
                 // Left won't affect the result, use just right
-                return simplify_and_const(arith.right, right, ctx, swzb_ctx);
+                return simplify_and_const_op(arith.right, right, right_op, ctx, swzb_ctx);
             }
         }
     }
-    if let Some(result) = quick_and_simplify(left, right, ctx) {
+    if let Some(result) = quick_and_simplify(left, right, right_op, ctx) {
         return result;
     }
-    if let Some(result) = simplify_and_const_mem(left, right, ctx) {
+    if let Some(result) = simplify_and_const_mem(left, right, right_op, ctx) {
         return result;
     }
     ctx.simplify_temp_stack().alloc(|slice| {
@@ -2528,7 +2554,7 @@ pub fn simplify_and_const<'e>(
                 let arith = ArithOperand {
                     ty: ArithOpType::And,
                     left,
-                    right: ctx.constant(right),
+                    right: right_op.unwrap_or_else(|| ctx.constant(right)),
                 };
                 ctx.intern(OperandType::Arithmetic(arith))
             })
@@ -2544,9 +2570,15 @@ pub fn simplify_and<'e>(
     if !bits_overlap(&left.relevant_bits(), &right.relevant_bits()) {
         return ctx.const_0();
     }
-    let const_other = Operand::either(left, right, |x| x.if_constant());
-    if let Some((c, other)) = const_other {
-        return simplify_and_const(other, c, ctx, swzb_ctx);
+    let const_other = match left.if_constant() {
+        Some(c) => Some((c, left, right)),
+        None => match right.if_constant() {
+            Some(c) => Some((c, right, left)),
+            None => None,
+        },
+    };
+    if let Some((c, c_op, other)) = const_other {
+        return simplify_and_const_op(other, c, Some(c_op), ctx, swzb_ctx);
     }
 
     ctx.simplify_temp_stack().alloc(|slice| {
@@ -3780,8 +3812,20 @@ fn simplify_add_sub_const_with_lhs_const<'e>(
 }
 
 pub fn simplify_add_const<'e>(
+    left: Operand<'e>,
+    right: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    simplify_add_const_op(left, right, None, ctx)
+}
+
+/// Allows providing `right_op` if `ctx.constant(right)` is already known.
+/// Seems to be true pretty often due to exec_state.resolve() having to resolve
+/// additions.
+fn simplify_add_const_op<'e>(
     mut left: Operand<'e>,
     mut right: u64,
+    mut right_op: Option<Operand<'e>>,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     if right == 0 {
@@ -3797,10 +3841,12 @@ pub fn simplify_add_const<'e>(
                     // (x + c1) + c2 => x + (c2 + c1)
                     left = arith.left;
                     right = right.wrapping_add(c);
+                    right_op = None;
                 } else if arith.ty == ArithOpType::Sub {
                     // (x - c1) + c2 => x + (c2 - c1)
                     left = arith.left;
                     right = right.wrapping_sub(c);
+                    right_op = None;
                 }
             }
         }
@@ -3829,15 +3875,27 @@ pub fn simplify_add_const<'e>(
         ArithOperand {
             ty: ArithOpType::Add,
             left: left,
-            right: ctx.constant(right),
+            right: right_op.unwrap_or_else(|| ctx.constant(right)),
         }
     };
     return ctx.intern(OperandType::Arithmetic(arith));
 }
 
 pub fn simplify_sub_const<'e>(
+    left: Operand<'e>,
+    right: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    simplify_sub_const_op(left, right, None, ctx)
+}
+
+/// Allows providing `right_op` if `ctx.constant(right)` is already known.
+/// Seems to be true pretty often due to exec_state.resolve() having to resolve
+/// additions.
+fn simplify_sub_const_op<'e>(
     mut left: Operand<'e>,
     mut right: u64,
+    mut right_op: Option<Operand<'e>>,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     if right == 0 {
@@ -3853,10 +3911,12 @@ pub fn simplify_sub_const<'e>(
                     // (x + c1) - c2 => x - (c2 - c1)
                     left = arith.left;
                     right = right.wrapping_sub(c);
+                    right_op = None;
                 } else if arith.ty == ArithOpType::Sub {
                     // (x - c1) - c2 => x - (c1 + c2)
                     left = arith.left;
                     right = c.wrapping_add(right);
+                    right_op = None;
                 }
             }
         }
@@ -3886,7 +3946,7 @@ pub fn simplify_sub_const<'e>(
         ArithOperand {
             ty: ArithOpType::Sub,
             left: left,
-            right: ctx.constant(right),
+            right: right_op.unwrap_or_else(|| ctx.constant(right)),
         }
     };
     ctx.intern(OperandType::Arithmetic(arith))
@@ -3900,14 +3960,14 @@ pub fn simplify_add_sub<'e>(
 ) -> Operand<'e> {
     if !is_sub {
         if let Some(c) = left.if_constant() {
-            return simplify_add_const(right, c, ctx);
+            return simplify_add_const_op(right, c, Some(left), ctx);
         }
     }
     if let Some(c) = right.if_constant() {
         if is_sub {
-            return simplify_sub_const(left, c, ctx);
+            return simplify_sub_const_op(left, c, Some(right), ctx);
         } else {
-            return simplify_add_const(left, c, ctx);
+            return simplify_add_const_op(left, c, Some(right), ctx);
         }
     }
     ctx.simplify_temp_stack().alloc(|ops| {
