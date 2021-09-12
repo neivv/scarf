@@ -434,7 +434,7 @@ fn merge_mem_to_undef() {
         0x0f, 0x94, 0xc2, // sete dl
         0xc3, // ret
     ], &[
-         (ctx.register(0), ctx.mem32(ctx.add_const(ctx.register(4), 4))),
+         (ctx.register(0), ctx.mem32(ctx.register(4), 4)),
          (ctx.register(1), ctx.new_undef()),
          (ctx.register(2), ctx.new_undef()),
     ]);
@@ -459,7 +459,7 @@ fn movdqa() {
          (ctx.register(0), ctx.constant(1)),
          (ctx.register(1), ctx.constant(3)),
          (ctx.register(2), ctx.constant(2)),
-         (ctx.register(3), ctx.mem32(ctx.add_const(ctx.register(4), 0xc))),
+         (ctx.register(3), ctx.mem32(ctx.register(4), 0xc)),
     ]);
 }
 
@@ -620,9 +620,9 @@ fn eq_minus_one() {
 
     ], &[
         (ctx.register(0),
-            ctx.eq_const(ctx.mem32(ctx.add_const(ctx.register(1), 0x24)), 0xffff_ffff)),
+            ctx.eq_const(ctx.mem32(ctx.register(1), 0x24), 0xffff_ffff)),
         (ctx.register(1),
-            ctx.eq_const(ctx.mem16(ctx.add_const(ctx.register(1), 0x24)), 0xffff)),
+            ctx.eq_const(ctx.mem16(ctx.register(1), 0x24), 0xffff)),
     ]);
 }
 

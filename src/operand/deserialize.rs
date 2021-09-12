@@ -273,7 +273,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                     }
                     Variant::Memory => {
                         let mem = v.newtype_variant_seed(DeserializeMemory(self.0))?;
-                        Ok(self.0.mem_variable_rc(mem.size, mem.address))
+                        Ok(self.0.mem_any(mem.size, mem.address, 0))
                     }
                     Variant::Arithmetic => {
                         let arith = v.newtype_variant_seed(DeserializeArith(self.0))?;

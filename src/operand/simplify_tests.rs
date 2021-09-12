@@ -76,13 +76,13 @@ fn simplify_and_or_chain() {
                 ctx.or(
                     ctx.register(4),
                     ctx.lsh(
-                        ctx.mem8(ctx.register(3)),
+                        ctx.mem8(ctx.register(3), 0),
                         ctx.constant(8),
                     ),
                 ),
                 ctx.constant(0xffffff00),
             ),
-            ctx.mem8(ctx.register(2)),
+            ctx.mem8(ctx.register(2), 0),
         ),
         ctx.constant(0xffff00ff),
     );
@@ -92,7 +92,7 @@ fn simplify_and_or_chain() {
                 ctx.register(4),
                 ctx.constant(0xffffff00),
             ),
-            ctx.mem8(ctx.register(2)),
+            ctx.mem8(ctx.register(2), 0),
         ),
         ctx.constant(0xffff00ff),
     );
@@ -132,7 +132,7 @@ fn simplify_or() {
     let ctx = &OperandContext::new();
     // mem8[x] | 0xff == 0xff
     let op1 = ctx.or(
-        ctx.mem8(ctx.register(2)),
+        ctx.mem8(ctx.register(2), 0),
         ctx.constant(0xff),
     );
     assert_eq!(op1, ctx.constant(0xff));
@@ -238,21 +238,21 @@ fn simplify_or_parts() {
     let ctx = &OperandContext::new();
     let op1 = ctx.or(
         ctx.and(
-            ctx.mem32(ctx.register(4)),
+            ctx.mem32(ctx.register(4), 0),
             ctx.constant(0xffff0000),
         ),
         ctx.and(
-            ctx.mem32(ctx.register(4)),
+            ctx.mem32(ctx.register(4), 0),
             ctx.constant(0x0000ffff),
         )
     );
     let op2 = ctx.or(
         ctx.and(
-            ctx.mem32(ctx.register(4)),
+            ctx.mem32(ctx.register(4), 0),
             ctx.constant(0xffff00ff),
         ),
         ctx.and(
-            ctx.mem32(ctx.register(4)),
+            ctx.mem32(ctx.register(4), 0),
             ctx.constant(0x0000ffff),
         )
     );
@@ -270,8 +270,8 @@ fn simplify_or_parts() {
         ctx.register(4),
         ctx.constant(0x00ffffff),
     );
-    assert_eq!(op1, ctx.mem32(ctx.register(4)));
-    assert_eq!(op2, ctx.mem32(ctx.register(4)));
+    assert_eq!(op1, ctx.mem32(ctx.register(4), 0));
+    assert_eq!(op2, ctx.mem32(ctx.register(4), 0));
     assert_eq!(op3, eq3);
 }
 
@@ -414,13 +414,13 @@ fn simplify_pointless_and_masks() {
     let ctx = &OperandContext::new();
     let op = ctx.and(
         ctx.rsh(
-            ctx.mem32(ctx.register(1)),
+            ctx.mem32(ctx.register(1), 0),
             ctx.constant(0x10),
         ),
         ctx.constant(0xffff),
     );
     let eq = ctx.rsh(
-        ctx.mem32(ctx.register(1)),
+        ctx.mem32(ctx.register(1), 0),
         ctx.constant(0x10),
     );
     assert_eq!(op, eq);
@@ -532,16 +532,16 @@ fn simplify_mem_access_and() {
     let ctx = &OperandContext::new();
     let op = ctx.and(
         ctx.constant(0xffff),
-        ctx.mem32(ctx.constant(0x123456)),
+        ctx.mem32(ctx.const_0(), 0x123456),
     );
-    let eq = ctx.mem16(ctx.constant(0x123456));
+    let eq = ctx.mem16(ctx.const_0(), 0x123456);
     let op2 = ctx.and(
         ctx.constant(0xfff),
-        ctx.mem32(ctx.constant(0x123456)),
+        ctx.mem32(ctx.const_0(), 0x123456),
     );
     let eq2 = ctx.and(
         ctx.constant(0xfff),
-        ctx.mem16(ctx.constant(0x123456)),
+        ctx.mem16(ctx.const_0(), 0x123456),
     );
     assert_ne!(op2, eq);
     assert_eq!(op, eq);
@@ -588,7 +588,7 @@ fn simplify_adjacent_ands_advanced() {
                             ctx.constant(0x4200),
                             ctx.register(1),
                         ),
-                        ctx.mem16(ctx.register(2)),
+                        ctx.mem16(ctx.register(2), 0),
                     ),
                 ),
                 ctx.and(
@@ -598,7 +598,7 @@ fn simplify_adjacent_ands_advanced() {
                             ctx.constant(0xa6),
                             ctx.register(1),
                         ),
-                        ctx.mem8(ctx.register(2)),
+                        ctx.mem8(ctx.register(2), 0),
                     ),
                 ),
             ),
@@ -615,7 +615,7 @@ fn simplify_adjacent_ands_advanced() {
                         ctx.constant(0x42a6),
                         ctx.register(1),
                     ),
-                    ctx.mem16(ctx.register(2)),
+                    ctx.mem16(ctx.register(2), 0),
                 ),
             ),
         ),
@@ -690,30 +690,30 @@ fn simplify_shifts() {
     );
     let op5 = ctx.rsh(
         ctx.and(
-            ctx.mem32(ctx.register(1)),
+            ctx.mem32(ctx.register(1), 0),
             ctx.constant(0xffff0000),
         ),
         ctx.constant(0x10),
     );
     let eq5 = ctx.rsh(
-        ctx.mem32(ctx.register(1)),
+        ctx.mem32(ctx.register(1), 0),
         ctx.constant(0x10),
     );
     let op6 = ctx.rsh(
         ctx.and(
-            ctx.mem32(ctx.register(1)),
+            ctx.mem32(ctx.register(1), 0),
             ctx.constant(0xffff1234),
         ),
         ctx.constant(0x10),
     );
     let eq6 = ctx.rsh(
-        ctx.mem32(ctx.register(1)),
+        ctx.mem32(ctx.register(1), 0),
         ctx.constant(0x10),
     );
     let op7 = ctx.and(
         ctx.lsh(
             ctx.and(
-                ctx.mem32(ctx.constant(1)),
+                ctx.mem32(ctx.const_0(), 1),
                 ctx.constant(0xffff),
             ),
             ctx.constant(0x10),
@@ -722,7 +722,7 @@ fn simplify_shifts() {
     );
     let eq7 = ctx.and(
         ctx.lsh(
-            ctx.mem32(ctx.constant(1)),
+            ctx.mem32(ctx.const_0(), 1),
             ctx.constant(0x10),
         ),
         ctx.constant(0xffff_ffff),
@@ -773,13 +773,13 @@ fn simplify_shifts() {
     );
     let op12 = ctx.lsh(
         ctx.and(
-            ctx.mem32(ctx.constant(1)),
+            ctx.mem32(ctx.const_0(), 1),
             ctx.constant(0xffff),
         ),
         ctx.constant(0x10),
     );
     let ne12 = ctx.lsh(
-        ctx.mem32(ctx.constant(1)),
+        ctx.mem32(ctx.const_0(), 1),
         ctx.constant(0x10),
     );
     assert_eq!(op1, eq1);
@@ -801,52 +801,52 @@ fn simplify_mem_zero_bits() {
     let ctx = &OperandContext::new();
     let op1 = ctx.rsh(
         ctx.or(
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
             ctx.lsh(
-                ctx.mem16(ctx.register(1)),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.constant(0x10),
             ),
         ),
         ctx.constant(0x10),
     );
-    let eq1 = ctx.mem16(ctx.register(1));
+    let eq1 = ctx.mem16(ctx.register(1), 0);
     let op2 = ctx.and(
         ctx.or(
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
             ctx.lsh(
-                ctx.mem16(ctx.register(1)),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.constant(0x10),
             ),
         ),
         ctx.constant(0xffff0000),
     );
     let eq2 = ctx.lsh(
-        ctx.mem16(ctx.register(1)),
+        ctx.mem16(ctx.register(1), 0),
         ctx.constant(0x10),
     );
     let op3 = ctx.and(
         ctx.or(
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
             ctx.lsh(
-                ctx.mem16(ctx.register(1)),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.constant(0x10),
             ),
         ),
         ctx.constant(0xffff),
     );
-    let eq3 = ctx.mem16(ctx.register(0));
+    let eq3 = ctx.mem16(ctx.register(0), 0);
     let op4 = ctx.or(
         ctx.or(
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
             ctx.lsh(
-                ctx.mem16(ctx.register(1)),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.constant(0x10),
             ),
         ),
         ctx.constant(0xffff0000),
     );
     let eq4 = ctx.or(
-        ctx.mem16(ctx.register(0)),
+        ctx.mem16(ctx.register(0), 0),
         ctx.constant(0xffff0000),
     );
 
@@ -860,13 +860,13 @@ fn simplify_mem_zero_bits() {
 fn simplify_mem_16_hi_or_mem8() {
     let ctx = &OperandContext::new();
     let op1 = ctx.or(
-        ctx.mem8(ctx.register(1)),
+        ctx.mem8(ctx.register(1), 0),
         ctx.and(
-            ctx.mem16(ctx.register(1)),
+            ctx.mem16(ctx.register(1), 0),
             ctx.constant(0xff00),
         ),
     );
-    let eq1 = ctx.mem16(ctx.register(1));
+    let eq1 = ctx.mem16(ctx.register(1), 0);
     assert_eq!(op1, eq1);
 }
 
@@ -963,20 +963,20 @@ fn simplify_merge_and_xor() {
         ctx.and(
             ctx.xor(
                 ctx.xor(
-                    ctx.mem32(ctx.constant(1234)),
+                    ctx.mem32(ctx.const_0(), 1234),
                     ctx.constant(0x1123),
                 ),
-                ctx.mem32(ctx.constant(3333)),
+                ctx.mem32(ctx.const_0(), 3333),
             ),
             ctx.constant(0xff00),
         ),
         ctx.and(
             ctx.xor(
                 ctx.xor(
-                    ctx.mem32(ctx.constant(1234)),
+                    ctx.mem32(ctx.const_0(), 1234),
                     ctx.constant(0x666666),
                 ),
-                ctx.mem32(ctx.constant(3333)),
+                ctx.mem32(ctx.const_0(), 3333),
             ),
             ctx.constant(0xff),
         ),
@@ -985,8 +985,8 @@ fn simplify_merge_and_xor() {
         ctx.constant(0xffff),
         ctx.xor(
             ctx.xor(
-                ctx.mem16(ctx.constant(1234)),
-                ctx.mem16(ctx.constant(3333)),
+                ctx.mem16(ctx.const_0(), 1234),
+                ctx.mem16(ctx.const_0(), 3333),
             ),
             ctx.constant(0x1166),
         ),
@@ -1015,13 +1015,13 @@ fn simplify_sub_eq_zero() {
     let op1 = ctx.eq(
         ctx.constant(0),
         ctx.sub(
-            ctx.mem32(ctx.register(1)),
-            ctx.mem32(ctx.register(2)),
+            ctx.mem32(ctx.register(1), 0),
+            ctx.mem32(ctx.register(2), 0),
         ),
     );
     let eq1 = ctx.eq(
-        ctx.mem32(ctx.register(1)),
-        ctx.mem32(ctx.register(2)),
+        ctx.mem32(ctx.register(1), 0),
+        ctx.mem32(ctx.register(2), 0),
     );
     assert_eq!(op1, eq1);
 }
@@ -1067,7 +1067,7 @@ fn simplify_x_eq_x_add() {
     );
     let eq1 = ctx.constant(0);
     let op2 = ctx.eq(
-        ctx.mem8(ctx.constant(555)),
+        ctx.mem8(ctx.const_0(), 555),
         ctx.and(
             ctx.add(
                 ctx.or(
@@ -1075,7 +1075,7 @@ fn simplify_x_eq_x_add() {
                         ctx.register(2),
                         ctx.constant(0xffffff00),
                     ),
-                    ctx.mem8(ctx.constant(555)),
+                    ctx.mem8(ctx.const_0(), 555),
                 ),
                 ctx.constant(1),
             ),
@@ -1115,14 +1115,14 @@ fn simplify_and_not_mem32() {
     let ctx = &OperandContext::new();
     let op1 = ctx.and_const(
         ctx.xor_const(
-            ctx.mem32(ctx.constant(0x123)),
+            ctx.mem32(ctx.const_0(), 0x123),
             0xffff_ffff_ffff_ffff,
         ),
         0xffff,
     );
     let eq1 = ctx.and_const(
         ctx.xor_const(
-            ctx.mem16(ctx.constant(0x123)),
+            ctx.mem16(ctx.const_0(), 0x123),
             0xffff_ffff_ffff_ffff,
         ),
         0xffff,
@@ -1279,16 +1279,16 @@ fn simplify_gt2() {
 fn simplify_mem32_rsh() {
     let ctx = &OperandContext::new();
     let op1 = ctx.rsh(
-        ctx.mem32(ctx.constant(0x123)),
+        ctx.mem32(ctx.const_0(), 0x123),
         ctx.constant(0x10),
     );
-    let eq1 = ctx.mem16(ctx.constant(0x125));
+    let eq1 = ctx.mem16(ctx.const_0(), 0x125);
     let op2 = ctx.rsh(
-        ctx.mem32(ctx.constant(0x123)),
+        ctx.mem32(ctx.const_0(), 0x123),
         ctx.constant(0x11),
     );
     let eq2 = ctx.rsh(
-        ctx.mem16(ctx.constant(0x125)),
+        ctx.mem16(ctx.const_0(), 0x125),
         ctx.constant(0x1),
     );
     assert_eq!(op1, eq1);
@@ -1301,51 +1301,39 @@ fn simplify_mem_or() {
     let op1 = ctx.or(
         ctx.rsh(
             ctx.mem64(
-                ctx.add(
-                    ctx.register(0),
-                    ctx.constant(0x120),
-                ),
+                ctx.register(0),
+                0x120,
             ),
             ctx.constant(0x8),
         ),
         ctx.lsh(
             ctx.mem64(
-                ctx.add(
-                    ctx.register(0),
-                    ctx.constant(0x128),
-                ),
+                ctx.register(0),
+                0x128,
             ),
             ctx.constant(0x38),
         ),
     );
     let eq1 = ctx.mem64(
-        ctx.add(
-            ctx.register(0),
-            ctx.constant(0x121),
-        ),
+        ctx.register(0),
+        0x121,
     );
     let op2 = ctx.or(
         ctx.mem16(
-            ctx.add(
-                ctx.register(0),
-                ctx.constant(0x122),
-            ),
+            ctx.register(0),
+            0x122,
         ),
         ctx.lsh(
             ctx.mem16(
-                ctx.add(
-                    ctx.register(0),
-                    ctx.constant(0x124),
-                ),
+                ctx.register(0),
+                0x124,
             ),
             ctx.constant(0x10),
         ),
     );
     let eq2 = ctx.mem32(
-        ctx.add(
-            ctx.register(0),
-            ctx.constant(0x122),
-        ),
+        ctx.register(0),
+        0x122,
     );
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
@@ -1399,7 +1387,7 @@ fn simplify_mem32_or() {
                 ctx.or(
                     ctx.constant(0x123400),
                     ctx.and(
-                        ctx.mem32(ctx.register(1)),
+                        ctx.mem32(ctx.register(1), 0),
                         ctx.constant(0xff000000),
                     ),
                 ),
@@ -1466,11 +1454,11 @@ fn simplify_and_or_rsh() {
         ctx.constant(0xffffff00),
         ctx.or(
             ctx.rsh(
-                ctx.mem32(ctx.register(1)),
+                ctx.mem32(ctx.register(1), 0),
                 ctx.constant(0x18),
             ),
             ctx.rsh(
-                ctx.mem32(ctx.register(4)),
+                ctx.mem32(ctx.register(4), 0),
                 ctx.constant(0x18),
             ),
         ),
@@ -1522,26 +1510,20 @@ fn simplify_mem_misalign2() {
     let ctx = &OperandContext::new();
     let op1 = ctx.or(
         ctx.rsh(
-            ctx.mem32(
-                ctx.register(1),
-            ),
+            ctx.mem32(ctx.register(1), 0),
             ctx.constant(0x8),
         ),
         ctx.lsh(
             ctx.mem8(
-                ctx.add(
-                    ctx.constant(0x4),
-                    ctx.register(1),
-                ),
+                ctx.register(1),
+                4,
             ),
             ctx.constant(0x18),
         ),
     );
     let eq1 = ctx.mem32(
-        ctx.add(
-            ctx.register(1),
-            ctx.constant(1),
-        ),
+        ctx.register(1),
+        1,
     );
     let op2 = ctx.or(
         ctx.rsh(
@@ -1550,13 +1532,12 @@ fn simplify_mem_misalign2() {
                     ctx.register(1),
                     ctx.constant(0x4),
                 ),
+                0,
             ),
             ctx.constant(0x8),
         ),
         ctx.lsh(
-            ctx.mem8(
-                ctx.register(1),
-            ),
+            ctx.mem8(ctx.register(1), 0),
             ctx.constant(0x18),
         ),
     );
@@ -1565,6 +1546,7 @@ fn simplify_mem_misalign2() {
             ctx.register(1),
             ctx.constant(3),
         ),
+        0,
     );
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
@@ -1578,13 +1560,13 @@ fn simplify_and_shift_overflow_bug() {
             ctx.rsh(
                 ctx.or(
                     ctx.rsh(
-                        ctx.mem8(ctx.register(1)),
+                        ctx.mem8(ctx.register(1), 0),
                         ctx.constant(7),
                     ),
                     ctx.and(
                         ctx.constant(0xff000000),
                         ctx.lsh(
-                            ctx.mem8(ctx.register(2)),
+                            ctx.mem8(ctx.register(2), 0),
                             ctx.constant(0x11),
                         ),
                     ),
@@ -1592,7 +1574,7 @@ fn simplify_and_shift_overflow_bug() {
                 ctx.constant(0x10),
             ),
             ctx.lsh(
-                ctx.mem32(ctx.register(4)),
+                ctx.mem32(ctx.register(4), 0),
                 ctx.constant(0x10),
             ),
         ),
@@ -1602,13 +1584,13 @@ fn simplify_and_shift_overflow_bug() {
         ctx.rsh(
             ctx.or(
                 ctx.rsh(
-                    ctx.mem8(ctx.register(1)),
+                    ctx.mem8(ctx.register(1), 0),
                     ctx.constant(7),
                 ),
                 ctx.and(
                     ctx.constant(0xff000000),
                     ctx.lsh(
-                        ctx.mem8(ctx.register(2)),
+                        ctx.mem8(ctx.register(2), 0),
                         ctx.constant(0x11),
                     ),
                 ),
@@ -1929,16 +1911,16 @@ fn simplify_xor_and_xor() {
                 ctx.constant(0xfff),
                 ctx.xor(
                     ctx.constant(0x423),
-                    ctx.mem32(ctx.register(1)),
+                    ctx.mem32(ctx.register(1), 0),
                 ),
             ),
             ctx.and(
                 ctx.constant(0xffff_f000),
-                ctx.mem32(ctx.register(1)),
+                ctx.mem32(ctx.register(1), 0),
             ),
         )
     );
-    let eq2 = ctx.mem32(ctx.register(1));
+    let eq2 = ctx.mem32(ctx.register(1), 0);
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
 }
@@ -1950,13 +1932,13 @@ fn simplify_or_mem_bug2() {
     let _ = ctx.or(
         ctx.and(
             ctx.rsh(
-                ctx.mem32(ctx.sub(ctx.register(2), ctx.constant(0x1))),
+                ctx.mem32(ctx.sub(ctx.register(2), ctx.constant(0x1)), 0),
                 ctx.constant(8),
             ),
             ctx.constant(0x00ff_ffff),
         ),
         ctx.and(
-            ctx.mem32(ctx.sub(ctx.register(2), ctx.constant(0x14))),
+            ctx.mem32(ctx.sub(ctx.register(2), ctx.constant(0x14)), 0),
             ctx.constant(0xff00_0000),
         ),
     );
@@ -1974,7 +1956,7 @@ fn simplify_panic() {
                     ctx.eq(
                         ctx.and(
                             ctx.constant(1),
-                            ctx.mem8(ctx.register(3)),
+                            ctx.mem8(ctx.register(3), 0),
                         ),
                         ctx.constant(0),
                     ),
@@ -1995,8 +1977,8 @@ fn shift_xor_parts() {
         ctx.xor(
             ctx.constant(0xffe60000),
             ctx.xor(
-                ctx.lsh(ctx.mem16(ctx.register(5)), ctx.constant(0x10)),
-                ctx.mem32(ctx.register(5)),
+                ctx.lsh(ctx.mem16(ctx.register(5), 0), ctx.constant(0x10)),
+                ctx.mem32(ctx.register(5), 0),
             ),
         ),
         ctx.constant(0x10),
@@ -2004,20 +1986,20 @@ fn shift_xor_parts() {
     let eq1 = ctx.xor(
         ctx.constant(0xffe6),
         ctx.xor(
-            ctx.mem16(ctx.register(5)),
-            ctx.rsh(ctx.mem32(ctx.register(5)), ctx.constant(0x10)),
+            ctx.mem16(ctx.register(5), 0),
+            ctx.rsh(ctx.mem32(ctx.register(5), 0), ctx.constant(0x10)),
         ),
     );
     let op2 = ctx.lsh(
         ctx.xor(
             ctx.constant(0xffe6),
-            ctx.mem16(ctx.register(5)),
+            ctx.mem16(ctx.register(5), 0),
         ),
         ctx.constant(0x10),
     );
     let eq2 = ctx.xor(
         ctx.constant(0xffe60000),
-        ctx.lsh(ctx.mem16(ctx.register(5)), ctx.constant(0x10)),
+        ctx.lsh(ctx.mem16(ctx.register(5), 0), ctx.constant(0x10)),
     );
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
@@ -2030,7 +2012,7 @@ fn lea_mul_9() {
         ctx.constant(0xc),
         ctx.and(
             ctx.constant(0xffff_ff7f),
-            ctx.mem32(ctx.register(1)),
+            ctx.mem32(ctx.register(1), 0),
         ),
     );
     let op1 = ctx.add(
@@ -2053,12 +2035,12 @@ fn lsh_mul() {
     let op1 = ctx.lsh(
         ctx.mul(
             ctx.constant(0x9),
-            ctx.mem32(ctx.register(1)),
+            ctx.mem32(ctx.register(1), 0),
         ),
         ctx.constant(0x2),
     );
     let eq1 = ctx.mul(
-        ctx.mem32(ctx.register(1)),
+        ctx.mem32(ctx.register(1), 0),
         ctx.constant(0x24),
     );
     assert_eq!(op1, eq1);
@@ -2068,7 +2050,7 @@ fn lsh_mul() {
 fn lea_mul_negative() {
     let ctx = &OperandContext::new();
     let base = ctx.sub(
-        ctx.mem16(ctx.register(3)),
+        ctx.mem16(ctx.register(3), 0),
         ctx.constant(1),
     );
     let op1 = ctx.add(
@@ -2081,7 +2063,7 @@ fn lea_mul_negative() {
     let eq1 = ctx.add(
         ctx.constant(0x1230),
         ctx.mul(
-            ctx.mem16(ctx.register(3)),
+            ctx.mem16(ctx.register(3), 0),
             ctx.constant(0x4),
         ),
     );
@@ -2114,10 +2096,10 @@ fn and_64() {
     );
     let eq1 = ctx.constant(0x12456);
     let op2 = ctx.and(
-        ctx.mem32(ctx.register(0)),
+        ctx.mem32(ctx.register(0), 0),
         ctx.constant(!0),
     );
-    let eq2 = ctx.mem32(ctx.register(0));
+    let eq2 = ctx.mem32(ctx.register(0), 0);
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
 }
@@ -2126,8 +2108,8 @@ fn and_64() {
 fn short_and_is_32() {
     let ctx = &OperandContext::new();
     let op1 = ctx.and(
-        ctx.mem32(ctx.register(0)),
-        ctx.mem32(ctx.register(1)),
+        ctx.mem32(ctx.register(0), 0),
+        ctx.mem32(ctx.register(1), 0),
     );
     match op1.ty() {
         OperandType::Arithmetic(..) => (),
@@ -2140,9 +2122,9 @@ fn and_32bit() {
     let ctx = &OperandContext::new();
     let op1 = ctx.and(
         ctx.constant(0xffff_ffff),
-        ctx.mem32(ctx.register(1)),
+        ctx.mem32(ctx.register(1), 0),
     );
-    let eq1 = ctx.mem32(ctx.register(1));
+    let eq1 = ctx.mem32(ctx.register(1), 0);
     assert_eq!(op1, eq1);
 }
 
@@ -2152,11 +2134,11 @@ fn mem8_mem32_shift_eq() {
     let op1 = ctx.and(
         ctx.constant(0xff),
         ctx.rsh(
-            ctx.mem32(ctx.add(ctx.register(1), ctx.constant(0x4c))),
+            ctx.mem32(ctx.register(1), 0x4c),
             ctx.constant(0x8),
         ),
     );
-    let eq1 = ctx.mem8(ctx.add(ctx.register(1), ctx.constant(0x4d)));
+    let eq1 = ctx.mem8(ctx.register(1), 0x4d);
     assert_eq!(op1, eq1);
 }
 
@@ -2228,6 +2210,7 @@ fn and_bug_64() {
                             ),
                         ),
                     ),
+                    0,
                 ),
                 ctx.constant(0xffffffffffffffda),
             ),
@@ -2364,13 +2347,13 @@ fn simplify_bug_xor_and_u32_max() {
     let unk = ctx.new_undef();
     let op1 = ctx.xor(
         ctx.and(
-            ctx.mem32(unk),
+            ctx.mem32(unk, 0),
             ctx.constant(0xffff_ffff),
         ),
         ctx.constant(0xffff_ffff),
     );
     let eq1 = ctx.xor(
-        ctx.mem32(unk),
+        ctx.mem32(unk, 0),
         ctx.constant(0xffff_ffff),
     );
     assert_eq!(op1, eq1);
@@ -2405,11 +2388,11 @@ fn simplify_read_middle_u16_from_mem32() {
     let op1 = ctx.and(
         ctx.constant(0xffff),
         ctx.rsh(
-            ctx.mem32(ctx.constant(0x11230)),
+            ctx.mem32(ctx.const_0(), 0x11230),
             ctx.constant(8),
         ),
     );
-    let eq1 = ctx.mem16(ctx.constant(0x11231));
+    let eq1 = ctx.mem16(ctx.const_0(), 0x11231);
     assert_eq!(op1, eq1);
 }
 
@@ -2419,7 +2402,7 @@ fn simplify_unnecessary_shift_in_eq_zero() {
     let op1 = ctx.eq(
         ctx.lsh(
             ctx.and(
-                ctx.mem8(ctx.register(4)),
+                ctx.mem8(ctx.register(4), 0),
                 ctx.constant(8),
             ),
             ctx.constant(0xc),
@@ -2428,7 +2411,7 @@ fn simplify_unnecessary_shift_in_eq_zero() {
     );
     let eq1 = ctx.eq(
         ctx.and(
-            ctx.mem8(ctx.register(4)),
+            ctx.mem8(ctx.register(4), 0),
             ctx.constant(8),
         ),
         ctx.constant(0),
@@ -2436,7 +2419,7 @@ fn simplify_unnecessary_shift_in_eq_zero() {
     let op2 = ctx.eq(
         ctx.rsh(
             ctx.and(
-                ctx.mem8(ctx.register(4)),
+                ctx.mem8(ctx.register(4), 0),
                 ctx.constant(8),
             ),
             ctx.constant(1),
@@ -2445,20 +2428,20 @@ fn simplify_unnecessary_shift_in_eq_zero() {
     );
     let eq2 = ctx.eq(
         ctx.and(
-            ctx.mem8(ctx.register(4)),
+            ctx.mem8(ctx.register(4), 0),
             ctx.constant(8),
         ),
         ctx.constant(0),
     );
     let op3 = ctx.eq(
         ctx.and(
-            ctx.mem8(ctx.register(4)),
+            ctx.mem8(ctx.register(4), 0),
             ctx.constant(8),
         ),
         ctx.constant(0),
     );
     let ne3 = ctx.eq(
-        ctx.mem8(ctx.register(4)),
+        ctx.mem8(ctx.register(4), 0),
         ctx.constant(0),
     );
     assert_eq!(op1, eq1);
@@ -2472,7 +2455,7 @@ fn simplify_unnecessary_and_in_shifts() {
     let op1 = ctx.rsh(
         ctx.and(
             ctx.lsh(
-                ctx.mem8(ctx.constant(0x100)),
+                ctx.mem8(ctx.constant(0x100), 0),
                 ctx.constant(0xd),
             ),
             ctx.constant(0x1f0000),
@@ -2480,7 +2463,7 @@ fn simplify_unnecessary_and_in_shifts() {
         ctx.constant(0x10),
     );
     let eq1 = ctx.rsh(
-        ctx.mem8(ctx.constant(0x100)),
+        ctx.mem8(ctx.constant(0x100), 0),
         ctx.constant(0x3),
     );
     assert_eq!(op1, eq1);
@@ -2491,13 +2474,13 @@ fn simplify_set_bit_masked() {
     let ctx = &OperandContext::new();
     let op1 = ctx.or(
         ctx.and(
-            ctx.mem16(ctx.constant(0x1000)),
+            ctx.mem16(ctx.constant(0x1000), 0),
             ctx.constant(0xffef),
         ),
         ctx.constant(0x10),
     );
     let eq1 = ctx.or(
-        ctx.mem16(ctx.constant(0x1000)),
+        ctx.mem16(ctx.constant(0x1000), 0),
         ctx.constant(0x10),
     );
     assert_eq!(op1, eq1);
@@ -2509,7 +2492,7 @@ fn simplify_masked_mul_lsh() {
     let op1 = ctx.lsh(
         ctx.and(
             ctx.mul(
-                ctx.mem32(ctx.constant(0x1000)),
+                ctx.mem32(ctx.constant(0x1000), 0),
                 ctx.constant(9),
             ),
             ctx.constant(0x3fff_ffff),
@@ -2518,7 +2501,7 @@ fn simplify_masked_mul_lsh() {
     );
     let eq1 = ctx.and(
         ctx.mul(
-            ctx.mem32(ctx.constant(0x1000)),
+            ctx.mem32(ctx.constant(0x1000), 0),
             ctx.constant(0x24),
         ),
         ctx.constant(0xffff_ffff),
@@ -2555,41 +2538,41 @@ fn simplify_add_to_const_0() {
     let op1 = ctx.add(
         ctx.add(
             ctx.constant(1),
-            ctx.mem32(ctx.constant(0x5000)),
+            ctx.mem32(ctx.constant(0x5000), 0),
         ),
         ctx.constant(u64::max_value()),
     );
-    let eq1 = ctx.mem32(ctx.constant(0x5000));
+    let eq1 = ctx.mem32(ctx.constant(0x5000), 0);
     let op2 = ctx.and(
         ctx.add(
             ctx.add(
                 ctx.constant(1),
-                ctx.mem32(ctx.constant(0x5000)),
+                ctx.mem32(ctx.constant(0x5000), 0),
             ),
             ctx.constant(0xffff_ffff),
         ),
         ctx.constant(0xffff_ffff),
     );
-    let eq2 = ctx.mem32(ctx.constant(0x5000));
+    let eq2 = ctx.mem32(ctx.constant(0x5000), 0);
     let op3 = ctx.and(
         ctx.add(
             ctx.add(
                 ctx.constant(1),
-                ctx.mem32(ctx.constant(0x5000)),
+                ctx.mem32(ctx.constant(0x5000), 0),
             ),
             ctx.constant(0xffff_ffff),
         ),
         ctx.constant(0xffff_ffff),
     );
-    let eq3 = ctx.mem32(ctx.constant(0x5000));
+    let eq3 = ctx.mem32(ctx.constant(0x5000), 0);
     let op4 = ctx.add(
         ctx.add(
             ctx.constant(1),
-            ctx.mem32(ctx.constant(0x5000)),
+            ctx.mem32(ctx.constant(0x5000), 0),
         ),
         ctx.constant(0xffff_ffff_ffff_ffff),
     );
-    let eq4 = ctx.mem32(ctx.constant(0x5000));
+    let eq4 = ctx.mem32(ctx.constant(0x5000), 0);
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
     assert_eq!(op3, eq3);
@@ -2619,13 +2602,13 @@ fn simplify_and_rsh() {
     let ctx = &OperandContext::new();
     let op1 = ctx.rsh(
         ctx.and(
-            ctx.mem8(ctx.constant(0x900)),
+            ctx.mem8(ctx.constant(0x900), 0),
             ctx.constant(0xf8),
         ),
         ctx.constant(3),
     );
     let eq1 = ctx.rsh(
-        ctx.mem8(ctx.constant(0x900)),
+        ctx.mem8(ctx.constant(0x900), 0),
         ctx.constant(3),
     );
     assert_eq!(op1, eq1);
@@ -2779,9 +2762,9 @@ fn simplify_lsh_and_rsh2() {
     let ctx = &OperandContext::new();
     let op1 = ctx.and(
         ctx.sub(
-            ctx.mem16(ctx.register(2)),
+            ctx.mem16(ctx.register(2), 0),
             ctx.lsh(
-                ctx.mem16(ctx.register(1)),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.constant(0x9),
             ),
         ),
@@ -2791,9 +2774,9 @@ fn simplify_lsh_and_rsh2() {
         ctx.and(
             ctx.lsh(
                 ctx.sub(
-                    ctx.mem16(ctx.register(2)),
+                    ctx.mem16(ctx.register(2), 0),
                     ctx.lsh(
-                        ctx.mem16(ctx.register(1)),
+                        ctx.mem16(ctx.register(1), 0),
                         ctx.constant(0x9),
                     ),
                 ),
@@ -2812,7 +2795,7 @@ fn simplify_ne_shifted_and() {
     let op1 = ctx.eq(
         ctx.and(
             ctx.lsh(
-                ctx.mem8(ctx.register(2)),
+                ctx.mem8(ctx.register(2), 0),
                 ctx.constant(0x8),
             ),
             ctx.constant(0x800),
@@ -2821,7 +2804,7 @@ fn simplify_ne_shifted_and() {
     );
     let eq1 = ctx.eq(
         ctx.and(
-            ctx.mem8(ctx.register(2)),
+            ctx.mem8(ctx.register(2), 0),
             ctx.constant(0x8),
         ),
         ctx.constant(0),
@@ -2838,7 +2821,7 @@ fn xor_shift_bug() {
                 ctx.constant(0xffff_a987_5678),
                 ctx.lsh(
                     ctx.rsh(
-                        ctx.mem8(ctx.constant(0x223345)),
+                        ctx.mem8(ctx.constant(0x223345), 0),
                         ctx.constant(3),
                     ),
                     ctx.constant(0x10),
@@ -2851,7 +2834,7 @@ fn xor_shift_bug() {
     let eq1 = ctx.xor(
         ctx.constant(0xa987),
         ctx.rsh(
-            ctx.mem8(ctx.constant(0x223345)),
+            ctx.mem8(ctx.constant(0x223345), 0),
             ctx.constant(3),
         ),
     );
@@ -2902,15 +2885,15 @@ fn simplify_rotate_mask() {
         ),
         ctx.constant(0xffff_ffff),
     );
-    let subst = ctx.substitute(op1, ctx.register(0), ctx.mem32(ctx.constant(0x1234)), 100);
+    let subst = ctx.substitute(op1, ctx.register(0), ctx.mem32(ctx.const_0(), 0x1234), 100);
     let with_mem = ctx.and(
         ctx.or(
             ctx.rsh(
-                ctx.mem32(ctx.constant(0x1234)),
+                ctx.mem32(ctx.const_0(), 0x1234),
                 ctx.constant(0xb),
             ),
             ctx.lsh(
-                ctx.mem32(ctx.constant(0x1234)),
+                ctx.mem32(ctx.const_0(), 0x1234),
                 ctx.constant(0x15),
             ),
         ),
@@ -3091,10 +3074,10 @@ fn simplify_eq_consistency2() {
 fn simplify_and_fully() {
     let ctx = &OperandContext::new();
     let op1 = ctx.and(
-        ctx.mem64(ctx.register(0)),
-        ctx.mem8(ctx.register(0)),
+        ctx.mem64(ctx.register(0), 0),
+        ctx.mem8(ctx.register(0), 0),
     );
-    let eq1 = ctx.mem8(ctx.register(0));
+    let eq1 = ctx.mem8(ctx.register(0), 0);
     assert_eq!(op1, eq1);
 }
 
@@ -3214,17 +3197,17 @@ fn simplify_mul_consistency4() {
 fn simplify_and_consistency1() {
     let ctx = &OperandContext::new();
     let op1 = ctx.eq(
-        ctx.mem64(ctx.register(0)),
+        ctx.mem64(ctx.register(0), 0),
         ctx.and(
             ctx.or(
                 ctx.constant(0xfd0700002ff4004b),
-                ctx.mem8(ctx.register(5)),
+                ctx.mem8(ctx.register(5), 0),
             ),
             ctx.constant(0x293b00be00),
         ),
     );
     let eq1 = ctx.eq(
-        ctx.mem64(ctx.register(0)),
+        ctx.mem64(ctx.register(0), 0),
         ctx.constant(0x2b000000),
     );
     assert_eq!(op1, eq1);
@@ -3234,7 +3217,7 @@ fn simplify_and_consistency1() {
 fn simplify_and_consistency2() {
     let ctx = &OperandContext::new();
     let op1 = ctx.and(
-        ctx.mem8(ctx.register(0)),
+        ctx.mem8(ctx.register(0), 0),
         ctx.or(
             ctx.and(
                 ctx.constant(0xfeffffffffffff24),
@@ -3247,7 +3230,7 @@ fn simplify_and_consistency2() {
         ),
     );
     let eq1 = ctx.and(
-        ctx.mem8(ctx.register(0)),
+        ctx.mem8(ctx.register(0), 0),
         ctx.and(
             ctx.register(0),
             ctx.constant(0x24),
@@ -3294,7 +3277,7 @@ fn simplify_and_consistency3() {
     let op1 = ctx.and(
         ctx.or(
             ctx.or(
-                ctx.mem16(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
                 ctx.constant(0x4eff0001004107),
             ),
             ctx.constant(0x231070100fa00de),
@@ -3393,13 +3376,13 @@ fn simplify_1bit_sum() {
                     ctx.register(0),
                 ),
                 ctx.add(
-                    ctx.mem8(ctx.register(0)),
-                    ctx.mem32(ctx.register(1)),
+                    ctx.mem8(ctx.register(0), 0),
+                    ctx.mem32(ctx.register(1), 0),
                 ),
             ),
             ctx.add(
-                ctx.mem16(ctx.register(0)),
-                ctx.mem64(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
+                ctx.mem64(ctx.register(0), 0),
             ),
         ),
     );
@@ -3409,8 +3392,8 @@ fn simplify_1bit_sum() {
             ctx.register(4),
         ),
         ctx.add(
-            ctx.mem8(ctx.register(0)),
-            ctx.mem8(ctx.register(1)),
+            ctx.mem8(ctx.register(0), 0),
+            ctx.mem8(ctx.register(1), 0),
         ),
     );
     assert_eq!(op1, eq1);
@@ -3424,14 +3407,14 @@ fn simplify_masked_add() {
     // (fffff & ffff6ff24) + 1400 == 71324
     let op1 = ctx.and(
         ctx.add(
-            ctx.mem32(ctx.register(0)),
+            ctx.mem32(ctx.register(0), 0),
             ctx.constant(0x1400),
         ),
         ctx.constant(0xffff6ff24),
     );
     let ne1 = ctx.add(
         ctx.and(
-            ctx.mem32(ctx.register(0)),
+            ctx.mem32(ctx.register(0), 0),
             ctx.constant(0xffff6ff24),
         ),
         ctx.constant(0x1400),
@@ -3440,7 +3423,7 @@ fn simplify_masked_add() {
         ctx.register(1),
         ctx.and(
             ctx.add(
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
                 ctx.constant(0x1400),
             ),
             ctx.constant(0xffff6ff24),
@@ -3450,7 +3433,7 @@ fn simplify_masked_add() {
         ctx.register(1),
         ctx.add(
             ctx.and(
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
                 ctx.constant(0xffff6ff24),
             ),
             ctx.constant(0x1400),
@@ -3470,7 +3453,7 @@ fn simplify_masked_add2() {
         ctx.constant(0x4700000014fef910),
         ctx.and(
             ctx.add(
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
                 ctx.constant(0x1400),
             ),
             ctx.constant(0xffff6ff24),
@@ -3480,7 +3463,7 @@ fn simplify_masked_add2() {
         ctx.constant(0x4700000014fef910),
         ctx.add(
             ctx.and(
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
                 ctx.constant(0xffff6ff24),
             ),
             ctx.constant(0x1400),
@@ -3526,12 +3509,12 @@ fn simplify_or_consistency3() {
     let op1 = ctx.and(
         ctx.or(
             ctx.constant(0x854e00e501001007),
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
         ),
         ctx.constant(0x28004000d2000010),
     );
     let eq1 = ctx.and(
-        ctx.mem8(ctx.register(0)),
+        ctx.mem8(ctx.register(0), 0),
         ctx.constant(0x10),
     );
     assert_eq!(op1, eq1);
@@ -3549,10 +3532,10 @@ fn simplify_eq_consistency3() {
             ),
             ctx.register(1),
         ),
-        ctx.mem8(ctx.register(2)),
+        ctx.mem8(ctx.register(2), 0),
     );
     let eq1 = ctx.eq(
-        ctx.mem8(ctx.register(2)),
+        ctx.mem8(ctx.register(2), 0),
         ctx.constant(0),
     );
     assert_eq!(op1, eq1);
@@ -3567,14 +3550,14 @@ fn simplify_or_consistency4() {
                 ctx.constant(0x80000000000002),
                 ctx.xmm(2, 1),
             ),
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
         ),
         ctx.constant(0x40ffffffff3fff7f),
     );
     let eq1 = ctx.or(
         ctx.and(
             ctx.xmm(2, 1),
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
         ),
         ctx.constant(0x40ffffffff3fff7f),
     );
@@ -3596,7 +3579,7 @@ fn simplify_or_infinite_recurse_bug() {
                     ctx.constant(0xffff_fe00),
                 ),
             ),
-            ctx.mem32(ctx.register(0)),
+            ctx.mem32(ctx.register(0), 0),
         ),
         ctx.constant(0xff_ffff_fe00),
     );
@@ -3609,9 +3592,9 @@ fn simplify_eq_consistency4() {
     let op1 = ctx.eq(
         ctx.add(
             ctx.constant(0x7014b0001050500),
-            ctx.mem32(ctx.register(0)),
+            ctx.mem32(ctx.register(0), 0),
         ),
-        ctx.mem32(ctx.register(1)),
+        ctx.mem32(ctx.register(1), 0),
     );
     assert_eq!(op1, ctx.const_0());
 }
@@ -3620,10 +3603,10 @@ fn simplify_eq_consistency4() {
 fn simplify_eq_consistency5() {
     let ctx = &OperandContext::new();
     let op1 = ctx.eq(
-        ctx.mem32(ctx.register(1)),
+        ctx.mem32(ctx.register(1), 0),
         ctx.add(
             ctx.constant(0x5a00000001),
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
         ),
     );
     assert_eq!(op1, ctx.const_0());
@@ -3637,7 +3620,7 @@ fn simplify_eq_consistency6() {
         ctx.add(
             ctx.register(0),
             ctx.rsh(
-                ctx.mem16(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
                 ctx.constant(5),
             ),
         ),
@@ -3645,14 +3628,14 @@ fn simplify_eq_consistency6() {
     let eq1a = ctx.eq(
         ctx.constant(0),
         ctx.rsh(
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
             ctx.constant(5),
         ),
     );
     let eq1b = ctx.eq(
         ctx.constant(0),
         ctx.and(
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
             ctx.constant(0xffe0),
         ),
     );
@@ -3666,9 +3649,9 @@ fn simplify_eq_consistency7() {
     let op1 = ctx.eq(
         ctx.constant(0x4000000000570000),
         ctx.add(
-            ctx.mem32(ctx.register(0)),
+            ctx.mem32(ctx.register(0), 0),
             ctx.add(
-                ctx.mem32(ctx.register(1)),
+                ctx.mem32(ctx.register(1), 0),
                 ctx.constant(0x7e0000fffc01),
             ),
         ),
@@ -3676,8 +3659,8 @@ fn simplify_eq_consistency7() {
     let eq1 = ctx.eq(
         ctx.constant(0x3fff81ffff5703ff),
         ctx.add(
-            ctx.mem32(ctx.register(0)),
-            ctx.mem32(ctx.register(1)),
+            ctx.mem32(ctx.register(0), 0),
+            ctx.mem32(ctx.register(1), 0),
         ),
     );
     assert_eq!(op1, eq1);
@@ -3758,14 +3741,14 @@ fn simplify_or_consistency5() {
     let op1 = ctx.or(
         ctx.constant(0xffff7024_ffffffff),
         ctx.and(
-            ctx.mem64(ctx.constant(0x100)),
+            ctx.mem64(ctx.const_0(), 0x100),
             ctx.constant(0x0500ff04_ffff0000),
         ),
     );
     let eq1 = ctx.or(
         ctx.constant(0xffff7024ffffffff),
         ctx.lsh(
-            ctx.mem8(ctx.constant(0x105)),
+            ctx.mem8(ctx.const_0(), 0x105),
             ctx.constant(0x28),
         ),
     );
@@ -3826,7 +3809,7 @@ fn simplify_or_consistency8() {
     let op1 = ctx.or(
         ctx.constant(0x40ff_ffff_ffff_3fff),
         ctx.and(
-            ctx.mem64(ctx.register(0)),
+            ctx.mem64(ctx.register(0), 0),
             ctx.or(
                 ctx.xmm(0, 0),
                 ctx.constant(0x0080_0000_0000_0002),
@@ -3836,7 +3819,7 @@ fn simplify_or_consistency8() {
     let eq1 = ctx.or(
         ctx.constant(0x40ff_ffff_ffff_3fff),
         ctx.and(
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
             ctx.xmm(0, 0),
         ),
     );
@@ -3848,7 +3831,7 @@ fn simplify_and_consistency5() {
     let ctx = &OperandContext::new();
     let op1 = ctx.and(
         ctx.and(
-            ctx.mem8(ctx.register(1)),
+            ctx.mem8(ctx.register(1), 0),
             ctx.or(
                 ctx.constant(0x22),
                 ctx.xmm(0, 0),
@@ -3872,7 +3855,7 @@ fn simplify_and_consistency6() {
         ),
         ctx.or(
             ctx.constant(0xf3fb000091010e03),
-            ctx.mem8(ctx.register(1)),
+            ctx.mem8(ctx.register(1), 0),
         ),
     );
     check_simplification_consistency(ctx, op1);
@@ -3884,7 +3867,7 @@ fn simplify_or_consistency9() {
     let op1 = ctx.or(
         ctx.constant(0x47000000140010ff),
         ctx.or(
-            ctx.mem16(ctx.constant(0x100)),
+            ctx.mem16(ctx.const_0(), 0x100),
             ctx.or(
                 ctx.constant(0x2a00000100100730),
                 ctx.mul(
@@ -3898,7 +3881,7 @@ fn simplify_or_consistency9() {
         ctx.constant(0x6f000001141017ff),
         ctx.or(
             ctx.lsh(
-                ctx.mem8(ctx.constant(0x101)),
+                ctx.mem8(ctx.const_0(), 0x101),
                 ctx.constant(8),
             ),
             ctx.mul(
@@ -3923,7 +3906,7 @@ fn simplify_and_consistency7() {
         ),
         ctx.or(
             ctx.constant(0xc04ffff6efef1f6),
-            ctx.mem8(ctx.register(1)),
+            ctx.mem8(ctx.register(1), 0),
         ),
     );
     check_simplification_consistency(ctx, op1);
@@ -3971,7 +3954,7 @@ fn simplify_eq_consistency8() {
                     ctx.constant(1),
                     ctx.modulo(
                         ctx.register(0),
-                        ctx.mem8(ctx.register(0)),
+                        ctx.mem8(ctx.register(0), 0),
                     ),
                 ),
                 ctx.div(
@@ -3999,7 +3982,7 @@ fn simplify_eq_consistency8() {
                     ctx.constant(1),
                     ctx.modulo(
                         ctx.register(0),
-                        ctx.mem8(ctx.register(0)),
+                        ctx.mem8(ctx.register(0), 0),
                     ),
                 ),
                 ctx.div(
@@ -4259,7 +4242,7 @@ fn simplify_eq_consistency13() {
                     ctx.constant(0xffff),
                     ctx.register(1),
                 ),
-                ctx.mem8(ctx.register(0)),
+                ctx.mem8(ctx.register(0), 0),
             ),
             ctx.xmm(0, 0),
         ),
@@ -4281,7 +4264,7 @@ fn simplify_eq_consistency13() {
                 ctx.register(3),
                 ctx.constant(0x7f),
             ),
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
         ),
     );
     assert_eq!(op1, eq1);
@@ -4624,13 +4607,13 @@ fn masked_sign_extend() {
     );
     let op2 = ctx.and(
         ctx.sign_extend(
-            ctx.mem16(ctx.constant(0x100)),
+            ctx.mem16(ctx.const_0(), 0x100),
             MemAccessSize::Mem16,
             MemAccessSize::Mem32,
         ),
         ctx.constant(0xffff),
     );
-    let eq2 = ctx.mem16(ctx.constant(0x100));
+    let eq2 = ctx.mem16(ctx.const_0(), 0x100);
     assert_eq!(op1, eq1);
     assert_eq!(op2, eq2);
 }
@@ -4641,16 +4624,16 @@ fn gt_masked_mem() {
     let op1 = ctx.gt(
         ctx.and_const(
             ctx.sub(
-                ctx.mem8(ctx.register(0)),
+                ctx.mem8(ctx.register(0), 0),
                 ctx.constant(0xc),
             ),
             0xff,
         ),
-        ctx.mem8(ctx.register(0)),
+        ctx.mem8(ctx.register(0), 0),
     );
     let eq1 = ctx.gt(
         ctx.constant(0xc),
-        ctx.mem8(ctx.register(0)),
+        ctx.mem8(ctx.register(0), 0),
     );
     assert_eq!(op1, eq1);
 }
@@ -4661,16 +4644,16 @@ fn gt_masked_mem2() {
     let op1 = ctx.gt(
         ctx.and_const(
             ctx.sub(
-                ctx.mem8(ctx.register(0)),
+                ctx.mem8(ctx.register(0), 0),
                 ctx.constant(0xc),
             ),
             0xffff,
         ),
-        ctx.mem8(ctx.register(0)),
+        ctx.mem8(ctx.register(0), 0),
     );
     let eq1 = ctx.gt(
         ctx.constant(0xc),
-        ctx.mem8(ctx.register(0)),
+        ctx.mem8(ctx.register(0), 0),
     );
     assert_eq!(op1, eq1);
 }
@@ -4964,15 +4947,15 @@ fn merge_mem_or() {
     let ctx = &OperandContext::new();
     let op1 = ctx.or(
         ctx.and_const(
-            ctx.mem32(ctx.constant(0x1230)),
+            ctx.mem32(ctx.const_0(), 0x1230),
             0xff_ffff,
         ),
         ctx.lsh_const(
-            ctx.mem8(ctx.constant(0x1233)),
+            ctx.mem8(ctx.const_0(), 0x1233),
             0x18,
         ),
     );
-    let eq1 = ctx.mem32(ctx.constant(0x1230));
+    let eq1 = ctx.mem32(ctx.const_0(), 0x1230);
     assert_eq!(op1, eq1);
 }
 
@@ -5016,16 +4999,16 @@ fn lsh_or_lsh_rsh() {
         ctx.or(
             ctx.or(
                 ctx.lsh_const(
-                    ctx.mem8(ctx.register(1)),
+                    ctx.mem8(ctx.register(1), 0),
                     8,
                 ),
                 ctx.lsh_const(
-                    ctx.mem16(ctx.register(2)),
+                    ctx.mem16(ctx.register(2), 0),
                     0x10,
                 ),
             ),
             ctx.lsh_const(
-                ctx.mem8(ctx.register(3)),
+                ctx.mem8(ctx.register(3), 0),
                 0x18,
             ),
         ),
@@ -5033,14 +5016,14 @@ fn lsh_or_lsh_rsh() {
     );
     let eq1 = ctx.or(
         ctx.or(
-            ctx.mem8(ctx.register(1)),
+            ctx.mem8(ctx.register(1), 0),
             ctx.lsh_const(
-                ctx.mem16(ctx.register(2)),
+                ctx.mem16(ctx.register(2), 0),
                 0x8,
             ),
         ),
         ctx.lsh_const(
-            ctx.mem8(ctx.register(3)),
+            ctx.mem8(ctx.register(3), 0),
             0x10,
         ),
     );
@@ -5054,7 +5037,7 @@ fn remove_and_from_gt() {
         60,
         ctx.and_const(
             ctx.sub_const(
-                ctx.mem16(ctx.register(6)),
+                ctx.mem16(ctx.register(6), 0),
                 8,
             ),
             0xffff_ffff,
@@ -5063,7 +5046,7 @@ fn remove_and_from_gt() {
     let eq1 = ctx.gt_const_left(
         60,
         ctx.sub_const(
-            ctx.mem16(ctx.register(6)),
+            ctx.mem16(ctx.register(6), 0),
             8,
         ),
     );
@@ -5071,7 +5054,7 @@ fn remove_and_from_gt() {
         600,
         ctx.and_const(
             ctx.sub_const(
-                ctx.mem32(ctx.register(6)),
+                ctx.mem32(ctx.register(6), 0),
                 0x800000,
             ),
             0xf_ffff_ffff,
@@ -5080,7 +5063,7 @@ fn remove_and_from_gt() {
     let eq2 = ctx.gt_const_left(
         600,
         ctx.sub_const(
-            ctx.mem32(ctx.register(6)),
+            ctx.mem32(ctx.register(6), 0),
             0x800000,
         ),
     );
@@ -5088,7 +5071,7 @@ fn remove_and_from_gt() {
         600,
         ctx.and_const(
             ctx.sub_const(
-                ctx.mem32(ctx.register(6)),
+                ctx.mem32(ctx.register(6), 0),
                 0x800000,
             ),
             0xffff_ffff,
@@ -5097,7 +5080,7 @@ fn remove_and_from_gt() {
     let eq3 = ctx.gt_const_left(
         600,
         ctx.sub_const(
-            ctx.mem32(ctx.register(6)),
+            ctx.mem32(ctx.register(6), 0),
             0x800000,
         ),
     );
@@ -5107,7 +5090,7 @@ fn remove_and_from_gt() {
         0xd000_0000,
         ctx.and_const(
             ctx.sub_const(
-                ctx.mem32(ctx.register(6)),
+                ctx.mem32(ctx.register(6), 0),
                 0x4000_0000,
             ),
             0xffff_ffff,
@@ -5116,42 +5099,42 @@ fn remove_and_from_gt() {
     let ne4 = ctx.gt_const_left(
         0xd000_0000,
         ctx.sub_const(
-            ctx.mem32(ctx.register(6)),
+            ctx.mem32(ctx.register(6), 0),
             0x4000_0000,
         ),
     );
     let op5 = ctx.gt(
-        ctx.mem16(ctx.register(4)),
+        ctx.mem16(ctx.register(4), 0),
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(ctx.register(6)),
-                ctx.mem16(ctx.register(1)),
+                ctx.mem16(ctx.register(6), 0),
+                ctx.mem16(ctx.register(1), 0),
             ),
             0xffff_ffff,
         ),
     );
     let eq5 = ctx.gt(
-        ctx.mem16(ctx.register(4)),
+        ctx.mem16(ctx.register(4), 0),
         ctx.sub(
-            ctx.mem16(ctx.register(6)),
-            ctx.mem16(ctx.register(1)),
+            ctx.mem16(ctx.register(6), 0),
+            ctx.mem16(ctx.register(1), 0),
         ),
     );
     let op6 = ctx.gt(
-        ctx.mem16(ctx.register(4)),
+        ctx.mem16(ctx.register(4), 0),
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(ctx.register(6)),
-                ctx.mem32(ctx.register(1)),
+                ctx.mem16(ctx.register(6), 0),
+                ctx.mem32(ctx.register(1), 0),
             ),
             0xffff_ffff,
         ),
     );
     let ne6 = ctx.gt(
-        ctx.mem16(ctx.register(4)),
+        ctx.mem16(ctx.register(4), 0),
         ctx.sub(
-            ctx.mem16(ctx.register(6)),
-            ctx.mem32(ctx.register(1)),
+            ctx.mem16(ctx.register(6), 0),
+            ctx.mem32(ctx.register(1), 0),
         ),
     );
     assert_eq!(op1, eq1);
@@ -5195,7 +5178,7 @@ fn lsh_to_mul_when_sensible() {
     let op1 = ctx.lsh_const(
         ctx.add_const(
             ctx.mul_const(
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
                 0x3,
             ),
             0x1234,
@@ -5204,7 +5187,7 @@ fn lsh_to_mul_when_sensible() {
     );
     let eq1 = ctx.add_const(
         ctx.mul_const(
-            ctx.mem32(ctx.register(0)),
+            ctx.mem32(ctx.register(0), 0),
             0x30,
         ),
         0x12340,
@@ -5218,7 +5201,7 @@ fn masked_sub_to_masked_add() {
     let op1 = ctx.and_const(
         ctx.sub_const(
             ctx.mul_const(
-                ctx.mem16(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
                 0x2,
             ),
             0xf000,
@@ -5228,7 +5211,7 @@ fn masked_sub_to_masked_add() {
     let eq1 = ctx.and_const(
         ctx.add_const(
             ctx.mul_const(
-                ctx.mem16(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
                 0x2,
             ),
             0x1000,
@@ -5277,7 +5260,7 @@ fn masked_sub_to_masked_add2() {
         ctx.rsh_const(
             ctx.sub_const(
                 ctx.mul_const(
-                    ctx.mem32(ctx.register(0)),
+                    ctx.mem32(ctx.register(0), 0),
                     0x2,
                 ),
                 0xf000_0000,
@@ -5290,7 +5273,7 @@ fn masked_sub_to_masked_add2() {
         ctx.rsh_const(
             ctx.add_const(
                 ctx.mul_const(
-                    ctx.mem32(ctx.register(0)),
+                    ctx.mem32(ctx.register(0), 0),
                     0x2,
                 ),
                 0x1000_0000,
@@ -5309,12 +5292,12 @@ fn masked_low_word_of_operation() {
         ctx.add_const(
             ctx.or(
                 ctx.rsh_const(
-                    ctx.mem32(ctx.constant(0x4242)),
+                    ctx.mem32(ctx.const_0(), 0x4242),
                     0xb,
                 ),
                 ctx.and_const(
                     ctx.lsh_const(
-                        ctx.mem16(ctx.constant(0x4242)),
+                        ctx.mem16(ctx.const_0(), 0x4242),
                         0x15,
                     ),
                     0xffe0_0000,
@@ -5327,7 +5310,7 @@ fn masked_low_word_of_operation() {
     let eq1 = ctx.and_const(
         ctx.add_const(
             ctx.rsh_const(
-                ctx.mem32(ctx.constant(0x4242)),
+                ctx.mem32(ctx.const_0(), 0x4242),
                 0xb,
             ),
             0xec43,
@@ -5343,7 +5326,7 @@ fn lsh_rsh() {
     let op1 = ctx.rsh_const(
         ctx.lsh_const(
             ctx.add_const(
-                ctx.mem32(ctx.constant(0x4242)),
+                ctx.mem32(ctx.const_0(), 0x4242),
                 0x1234,
             ),
             0x10,
@@ -5351,7 +5334,7 @@ fn lsh_rsh() {
         0x10,
     );
     let eq1 = ctx.add_const(
-        ctx.mem32(ctx.constant(0x4242)),
+        ctx.mem32(ctx.const_0(), 0x4242),
         0x1234,
     );
     assert_eq!(op1, eq1);
@@ -5376,7 +5359,7 @@ fn mul_lsh() {
 fn invalid_lsh_bug() {
     let ctx = &OperandContext::new();
     let op1 = ctx.lsh(
-        ctx.mem8(ctx.register(1)),
+        ctx.mem8(ctx.register(1), 0),
         ctx.constant(0xffff_ffff_ffff_ff83),
     );
     let eq1 = ctx.constant(0);
@@ -5412,14 +5395,14 @@ fn masked_xors2() {
         ctx.and_const(
             ctx.xor(
                 ctx.register(1),
-                ctx.mem16(ctx.register(2)),
+                ctx.mem16(ctx.register(2), 0),
             ),
             0xffff,
         ),
         ctx.and_const(
             ctx.xor(
                 ctx.register(3),
-                ctx.mem16(ctx.register(2)),
+                ctx.mem16(ctx.register(2), 0),
             ),
             0x1_ffff,
         ),
@@ -5454,7 +5437,7 @@ fn masked_xors3() {
                 0xffff,
             ),
         ),
-        ctx.mem16(ctx.register(2)),
+        ctx.mem16(ctx.register(2), 0),
     );
     let eq1 = ctx.and_const(
         ctx.xor(
@@ -5465,7 +5448,7 @@ fn masked_xors3() {
                 ),
                 ctx.register(1),
             ),
-            ctx.mem16(ctx.register(2)),
+            ctx.mem16(ctx.register(2), 0),
         ),
         0xffff,
     );
@@ -5479,11 +5462,11 @@ fn medium_sized_and_simplify() {
         ctx.sub_const(
             ctx.or(
                 ctx.rsh_const(
-                    ctx.mem32(ctx.register(0)),
+                    ctx.mem32(ctx.register(0), 0),
                     0xb,
                 ),
                 ctx.lsh_const(
-                    ctx.mem32(ctx.register(0)),
+                    ctx.mem32(ctx.register(0), 0),
                     0x15,
                 ),
             ),
@@ -5493,17 +5476,17 @@ fn medium_sized_and_simplify() {
     );
     let key2 = ctx.sub(
         ctx.mul_const(
-            ctx.mem16(ctx.register(1)),
+            ctx.mem16(ctx.register(1), 0),
             2,
         ),
         ctx.lsh_const(
-            ctx.mem8(ctx.register(2)),
+            ctx.mem8(ctx.register(2), 0),
             9,
         ),
     );
     let key3 = ctx.xor(
-        ctx.mem16(ctx.register(3)),
-        ctx.mem16(ctx.register(4)),
+        ctx.mem16(ctx.register(3), 0),
+        ctx.mem16(ctx.register(4), 0),
     );
     let joined = ctx.and_const(
         ctx.xor(
@@ -5521,13 +5504,13 @@ fn medium_sized_and_simplify() {
                 ctx.xor_const(
                     ctx.xor(
                         ctx.mul_const(
-                            ctx.mem16(ctx.register(5)),
+                            ctx.mem16(ctx.register(5), 0),
                             2,
                         ),
                         ctx.sub_const(
                             ctx.and_const(
                                 ctx.rsh_const(
-                                    ctx.mem32(ctx.register(6)),
+                                    ctx.mem32(ctx.register(6), 0),
                                     0xa,
                                 ),
                                 0x3ffffe,
@@ -5540,7 +5523,7 @@ fn medium_sized_and_simplify() {
                 0x1fffe,
             ),
             ctx.lsh_const(
-                ctx.mem16(ctx.register(7)),
+                ctx.mem16(ctx.register(7), 0),
                 9,
             ),
         ),
@@ -5588,7 +5571,7 @@ fn masked_xors4() {
                 0xffff,
             ),
         ),
-        ctx.mem16(ctx.register(2)),
+        ctx.mem16(ctx.register(2), 0),
     );
     let eq1 = ctx.and_const(
         ctx.xor(
@@ -5599,7 +5582,7 @@ fn masked_xors4() {
                 ),
                 ctx.register(1),
             ),
-            ctx.mem16(ctx.register(2)),
+            ctx.mem16(ctx.register(2), 0),
         ),
         0xffff,
     );
@@ -5663,14 +5646,14 @@ fn masked_xors6() {
     let op1 = ctx.xor(
         ctx.and_const(
             ctx.sub(
-                ctx.mem8(ctx.register(0)),
+                ctx.mem8(ctx.register(0), 0),
                 ctx.constant(0x34),
             ),
             0xff,
         ),
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
                 ctx.constant(0x1234),
             ),
             0xff00,
@@ -5678,7 +5661,7 @@ fn masked_xors6() {
     );
     let eq1 = ctx.and_const(
         ctx.sub(
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
             ctx.constant(0x1234),
         ),
         0xffff,
@@ -5695,7 +5678,7 @@ fn masked_xors7() {
         ctx.and_const(
             ctx.sub(
                 ctx.mul_const(
-                    ctx.mem8(ctx.register(0)),
+                    ctx.mem8(ctx.register(0), 0),
                     2,
                 ),
                 ctx.constant(0x34),
@@ -5705,7 +5688,7 @@ fn masked_xors7() {
         ctx.and_const(
             ctx.sub(
                 ctx.mul_const(
-                    ctx.mem16(ctx.register(0)),
+                    ctx.mem16(ctx.register(0), 0),
                     2,
                 ),
                 ctx.constant(0x1234),
@@ -5716,7 +5699,7 @@ fn masked_xors7() {
     let eq1 = ctx.and_const(
         ctx.sub(
             ctx.mul_const(
-                ctx.mem16(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
                 2,
             ),
             ctx.constant(0x1234),
@@ -5735,7 +5718,7 @@ fn masked_xors8() {
         ctx.and_const(
             ctx.sub(
                 ctx.and_const(
-                    ctx.mem8(ctx.register(0)),
+                    ctx.mem8(ctx.register(0), 0),
                     0x80,
                 ),
                 ctx.constant(0x34),
@@ -5745,7 +5728,7 @@ fn masked_xors8() {
         ctx.and_const(
             ctx.sub(
                 ctx.and_const(
-                    ctx.mem16(ctx.register(0)),
+                    ctx.mem16(ctx.register(0), 0),
                     0x8080,
                 ),
                 ctx.constant(0x1234),
@@ -5756,7 +5739,7 @@ fn masked_xors8() {
     let eq1 = ctx.and_const(
         ctx.sub(
             ctx.and_const(
-                ctx.mem16(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
                 0x8080,
             ),
             ctx.constant(0x1234),
@@ -5771,17 +5754,13 @@ fn lsh_rsh2() {
     let ctx = &OperandContext::new();
     let op1 = ctx.rsh_const(
         ctx.lsh_const(
-            ctx.mem32(
-                ctx.constant(0x34),
-            ),
+            ctx.mem32(ctx.const_0(), 0x34),
             0x4,
         ),
         0x10,
     );
     let eq1 = ctx.rsh_const(
-        ctx.mem32(
-            ctx.constant(0x34),
-        ),
+        ctx.mem32(ctx.const_0(), 0x34),
         0xc,
     );
     assert_eq!(op1, eq1);
@@ -5792,15 +5771,15 @@ fn masked_xors9() {
     let ctx = &OperandContext::new();
     let op1 = ctx.xor(
         ctx.and_const(
-            ctx.mem32(ctx.register(1)),
+            ctx.mem32(ctx.register(1), 0),
             0xffff,
         ),
-        ctx.mem8(ctx.register(3)),
+        ctx.mem8(ctx.register(3), 0),
     );
     let eq1 = ctx.and_const(
         ctx.xor(
-            ctx.mem32(ctx.register(1)),
-            ctx.mem8(ctx.register(3)),
+            ctx.mem32(ctx.register(1), 0),
+            ctx.mem8(ctx.register(3), 0),
         ),
         0xffff,
     );
@@ -5808,7 +5787,7 @@ fn masked_xors9() {
     let op2 = ctx.xor(
         ctx.and_const(
             ctx.xor(
-                ctx.mem32(ctx.register(1)),
+                ctx.mem32(ctx.register(1), 0),
                 ctx.constant(0x1111),
             ),
             0xffff,
@@ -5817,7 +5796,7 @@ fn masked_xors9() {
     );
     let eq2 = ctx.and_const(
         ctx.xor(
-            ctx.mem32(ctx.register(1)),
+            ctx.mem32(ctx.register(1), 0),
             ctx.constant(0x5e5e),
         ),
         0xffff,
@@ -5831,7 +5810,7 @@ fn masked_xors10() {
     let op1 = ctx.xor(
         ctx.and_const(
             ctx.sub_const(
-                ctx.mem32(ctx.register(1)),
+                ctx.mem32(ctx.register(1), 0),
                 0x1234,
             ),
             0xffff,
@@ -5841,7 +5820,7 @@ fn masked_xors10() {
     let eq1 = ctx.and_const(
         ctx.xor(
             ctx.sub_const(
-                ctx.mem32(ctx.register(1)),
+                ctx.mem32(ctx.register(1), 0),
                 0x1234,
             ),
             ctx.constant(0xe4e4),
@@ -5914,8 +5893,8 @@ fn eq_simplify_const_right() {
 fn simplify_eq3() {
     let ctx = &OperandContext::new();
     let sub = ctx.sub(
-        ctx.mem32(ctx.constant(0x29a)),
-        ctx.mem32(ctx.register(2)),
+        ctx.mem32(ctx.const_0(), 0x29a),
+        ctx.mem32(ctx.register(2), 0),
     );
     let op1 = ctx.eq_const(
         sub,
@@ -5930,8 +5909,8 @@ fn simplify_eq4() {
     let ctx = &OperandContext::new();
     let and = ctx.and_const(
         ctx.sub(
-            ctx.mem32(ctx.constant(0x29a)),
-            ctx.mem32(ctx.register(2)),
+            ctx.mem32(ctx.const_0(), 0x29a),
+            ctx.mem32(ctx.register(2), 0),
         ),
         0xffff_ffff,
     );
@@ -6005,7 +5984,7 @@ fn simplify_eq6() {
     let op1 = ctx.eq_const(
         ctx.and_const(
             ctx.add_const(
-                ctx.mem32(ctx.constant(0x100)),
+                ctx.mem32(ctx.const_0(), 0x100),
                 0x1,
             ),
             0xffff_ffff,
@@ -6013,7 +5992,7 @@ fn simplify_eq6() {
         0,
     );
     let eq1 = ctx.eq_const(
-        ctx.mem32(ctx.constant(0x100)),
+        ctx.mem32(ctx.const_0(), 0x100),
         0xffff_ffff,
     );
     assert_eq!(op1, eq1);
@@ -6026,7 +6005,7 @@ fn simplify_eq7() {
         ctx.sub_const_left(
             0,
             ctx.gt_const(
-                ctx.mem32(ctx.constant(0x100)),
+                ctx.mem32(ctx.const_0(), 0x100),
                 3,
             ),
         ),
@@ -6043,7 +6022,7 @@ fn simplify_eq7() {
         0,
     );
     let eq1 = ctx.gt_const(
-        ctx.mem32(ctx.constant(0x100)),
+        ctx.mem32(ctx.const_0(), 0x100),
         3,
     );
     assert_eq!(op1, eq1);
@@ -6055,10 +6034,8 @@ fn simplify_xor_mem_merge() {
     let op1 = ctx.xor(
         ctx.xor_const(
             ctx.mem32(
-                ctx.add_const(
-                    ctx.mem64(ctx.constant(0x80)),
-                    0x18,
-                ),
+                ctx.mem64(ctx.const_0(), 0x80),
+                0x18,
             ),
             0x45451212,
         ),
@@ -6066,19 +6043,15 @@ fn simplify_xor_mem_merge() {
             ctx.xor(
                 ctx.lsh_const(
                     ctx.mem32(
-                        ctx.add_const(
-                            ctx.mem64(ctx.constant(0x80)),
-                            0x1c,
-                        ),
+                        ctx.mem64(ctx.const_0(), 0x80),
+                        0x1c,
                     ),
                     0x20,
                 ),
                 ctx.lsh_const(
                     ctx.mem32(
-                        ctx.add_const(
-                            ctx.mem64(ctx.constant(0x80)),
-                            0x18,
-                        ),
+                        ctx.mem64(ctx.const_0(), 0x80),
+                        0x18,
                     ),
                     0x20,
                 ),
@@ -6090,18 +6063,14 @@ fn simplify_xor_mem_merge() {
         ctx.xor(
             ctx.lsh_const(
                 ctx.mem32(
-                    ctx.add_const(
-                        ctx.mem64(ctx.constant(0x80)),
-                        0x18,
-                    ),
+                    ctx.mem64(ctx.const_0(), 0x80),
+                    0x18,
                 ),
                 0x20,
             ),
             ctx.mem64(
-                ctx.add_const(
-                    ctx.mem64(ctx.constant(0x80)),
-                    0x18,
-                ),
+                ctx.mem64(ctx.const_0(), 0x80),
+                0x18,
             ),
         ),
         0x45000012,
@@ -6143,7 +6112,7 @@ fn merge_or_complex() {
                 ctx.and_const(
                     ctx.rsh_const(
                         ctx.mul_const(
-                            ctx.mem16(ctx.register(0)),
+                            ctx.mem16(ctx.register(0), 0),
                             0x21dd,
                         ),
                         2,
@@ -6159,7 +6128,7 @@ fn merge_or_complex() {
                 ctx.and_const(
                     ctx.rsh_const(
                         ctx.mul_const(
-                            ctx.mem16(ctx.register(0)),
+                            ctx.mem16(ctx.register(0), 0),
                             0x21dd,
                         ),
                         2,
@@ -6176,7 +6145,7 @@ fn merge_or_complex() {
             ctx.and_const(
                 ctx.rsh_const(
                     ctx.mul_const(
-                        ctx.mem16(ctx.register(0)),
+                        ctx.mem16(ctx.register(0), 0),
                         0x21dd,
                     ),
                     2,
@@ -6198,11 +6167,11 @@ fn merge_xor_complex() {
             ctx.add_const(
                 ctx.or(
                     ctx.rsh_const(
-                        ctx.mem32(ctx.register(0)),
+                        ctx.mem32(ctx.register(0), 0),
                         0xb,
                     ),
                     ctx.lsh_const(
-                        ctx.mem8(ctx.register(0)),
+                        ctx.mem8(ctx.register(0), 0),
                         0x15,
                     ),
                 ),
@@ -6214,11 +6183,11 @@ fn merge_xor_complex() {
             ctx.add_const(
                 ctx.or(
                     ctx.rsh_const(
-                        ctx.mem32(ctx.register(0)),
+                        ctx.mem32(ctx.register(0), 0),
                         0xb,
                     ),
                     ctx.lsh_const(
-                        ctx.mem16(ctx.register(0)),
+                        ctx.mem16(ctx.register(0), 0),
                         0x15,
                     ),
                 ),
@@ -6231,11 +6200,11 @@ fn merge_xor_complex() {
         ctx.add_const(
             ctx.or(
                 ctx.rsh_const(
-                    ctx.mem32(ctx.register(0)),
+                    ctx.mem32(ctx.register(0), 0),
                     0xb,
                 ),
                 ctx.lsh_const(
-                    ctx.mem16(ctx.register(0)),
+                    ctx.mem16(ctx.register(0), 0),
                     0x15,
                 ),
             ),
@@ -6252,19 +6221,19 @@ fn merge_xor_complex2() {
     let op1 = ctx.xor(
         ctx.and_const(
             ctx.sub_const(
-                ctx.mem16(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
                 0x6400,
             ),
             0xff00,
         ),
         ctx.and_const(
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
             0xff,
         ),
     );
     let eq1 = ctx.and_const(
         ctx.sub_const(
-            ctx.mem16(ctx.register(0)),
+            ctx.mem16(ctx.register(0), 0),
             0x6400,
         ),
         0xffff,
@@ -6314,7 +6283,7 @@ fn gt_sub_mask() {
                     ctx.register(0),
                     0xffff,
                 ),
-                ctx.mem32(ctx.register(2)),
+                ctx.mem32(ctx.register(2), 0),
             ),
             0xffff_ffff,
         ),
@@ -6329,7 +6298,7 @@ fn gt_sub_mask() {
                 ctx.register(0),
                 0xffff,
             ),
-            ctx.mem32(ctx.register(2)),
+            ctx.mem32(ctx.register(2), 0),
         ),
         ctx.and_const(
             ctx.register(0),
@@ -6345,7 +6314,7 @@ fn gt_sub_mask() {
                     ctx.register(0),
                     0xffff,
                 ),
-                ctx.mem64(ctx.register(2)),
+                ctx.mem64(ctx.register(2), 0),
             ),
             0xffff_ffff,
         ),
@@ -6360,7 +6329,7 @@ fn gt_sub_mask() {
                 ctx.register(0),
                 0xffff,
             ),
-            ctx.mem64(ctx.register(2)),
+            ctx.mem64(ctx.register(2), 0),
         ),
         ctx.and_const(
             ctx.register(0),
@@ -6373,7 +6342,7 @@ fn gt_sub_mask() {
                 ctx.register(0),
                 0xffff,
             ),
-            ctx.mem32(ctx.register(2)),
+            ctx.mem32(ctx.register(2), 0),
         ),
         ctx.and_const(
             ctx.register(0),
@@ -6395,7 +6364,7 @@ fn signed_gt_normalize() {
         ctx.and_const(
             ctx.sub(
                 ctx.constant(0x50),
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
             ),
             0xffff_ffff,
         ),
@@ -6404,7 +6373,7 @@ fn signed_gt_normalize() {
     let eq1 = ctx.gt(
         ctx.constant(0x7fff_ffaf),
         ctx.sub(
-            ctx.mem32(ctx.register(0)),
+            ctx.mem32(ctx.register(0), 0),
             ctx.constant(0x51),
         ),
     );
@@ -6420,14 +6389,14 @@ fn merge_signed_gt_ne() {
             ctx.and_const(
                 ctx.sub(
                     ctx.constant(0x50),
-                    ctx.mem32(ctx.register(0)),
+                    ctx.mem32(ctx.register(0), 0),
                 ),
                 0xffff_ffff,
             ),
             ctx.constant(0x8000_0050),
         ),
         ctx.neq_const(
-            ctx.mem32(ctx.register(0)),
+            ctx.mem32(ctx.register(0), 0),
             0x51,
         ),
     );
@@ -6436,7 +6405,7 @@ fn merge_signed_gt_ne() {
         ctx.and_const(
             ctx.sub(
                 ctx.constant(0x51),
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
             ),
             0xffff_ffff,
         ),
@@ -6482,7 +6451,7 @@ fn signed_gt_normalize2() {
         ctx.and_const(
             ctx.sub(
                 ctx.constant(0x50),
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
             ),
             0xffff_ffff,
         ),
@@ -6491,7 +6460,7 @@ fn signed_gt_normalize2() {
     let eq1 = ctx.gt(
         ctx.and_const(
             ctx.add_const(
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
                 0x8000_0000,
             ),
             0xffff_ffff,
@@ -6562,50 +6531,38 @@ fn simplify_or_merge_shifted_mem() {
     let op1 = ctx.or(
         ctx.lsh_const(
             ctx.mem8(
-                ctx.add_const(
-                    ctx.register(1),
-                    0xd,
-                ),
+                ctx.register(1),
+                0xd,
             ),
             0x18
         ),
         ctx.lsh_const(
             ctx.mem8(
-                ctx.add_const(
-                    ctx.register(1),
-                    0xc,
-                ),
+                ctx.register(1),
+                0xc,
             ),
             0x10
         ),
     );
     let eq1 = ctx.lsh_const(
         ctx.mem16(
-            ctx.add_const(
-                ctx.register(1),
-                0xc,
-            ),
+            ctx.register(1),
+            0xc,
         ),
         0x10,
     );
     let op2 = ctx.or(
         ctx.lsh_const(
-            ctx.mem8(
-                ctx.constant(0xd),
-            ),
+            ctx.mem8(ctx.const_0(), 0xd),
             0x18
         ),
         ctx.lsh_const(
-            ctx.mem8(
-                ctx.constant(0xc),
-            ),
+            ctx.mem8(ctx.const_0(), 0xc),
             0x10
         ),
     );
     let eq2 = ctx.lsh_const(
-        ctx.mem16(
-            ctx.constant(0xc),
-        ),
+        ctx.mem16(ctx.const_0(), 0xc),
         0x10,
     );
     assert_eq!(op1, eq1);
@@ -6618,29 +6575,23 @@ fn simplify_or_merge_shifted_mem2() {
     let op1 = ctx.or(
         ctx.lsh_const(
             ctx.mem8(
-                ctx.add_const(
-                    ctx.register(1),
-                    0xf,
-                ),
+                ctx.register(1),
+                0xf,
             ),
             0x18
         ),
         ctx.and_const(
             ctx.mem32(
-                ctx.add_const(
-                    ctx.register(1),
-                    0xc,
-                ),
+                ctx.register(1),
+                0xc,
             ),
             0xf0_fff0,
         ),
     );
     let eq1 = ctx.and_const(
         ctx.mem32(
-            ctx.add_const(
-                ctx.register(1),
-                0xc,
-            ),
+            ctx.register(1),
+            0xc,
         ),
         0xfff0_fff0,
     );
@@ -6653,10 +6604,8 @@ fn simplify_or_merge_shifted_mem3() {
     let op1 = ctx.or(
         ctx.lsh_const(
             ctx.mem8(
-                ctx.add_const(
-                    ctx.register(1),
-                    0xf,
-                ),
+                ctx.register(1),
+                0xf,
             ),
             0x18
         ),
@@ -6664,10 +6613,8 @@ fn simplify_or_merge_shifted_mem3() {
             ctx.or(
                 ctx.register(0),
                 ctx.mem32(
-                    ctx.add_const(
-                        ctx.register(1),
-                        0xc,
-                    ),
+                    ctx.register(1),
+                    0xc,
                 ),
             ),
             0xff_ffff,
@@ -6675,10 +6622,8 @@ fn simplify_or_merge_shifted_mem3() {
     );
     let eq1 = ctx.or(
         ctx.mem32(
-            ctx.add_const(
-                ctx.register(1),
-                0xc,
-            ),
+            ctx.register(1),
+            0xc,
         ),
         ctx.and_const(
             ctx.register(0),
@@ -6695,12 +6640,8 @@ fn simplify_xor_merge() {
         ctx.and_const(
             ctx.lsh_const(
                 ctx.sub(
-                    ctx.mem16(
-                        ctx.register(1),
-                    ),
-                    ctx.mem16(
-                        ctx.register(2),
-                    ),
+                    ctx.mem16(ctx.register(1), 0),
+                    ctx.mem16(ctx.register(2), 0),
                 ),
                 0x10,
             ),
@@ -6709,12 +6650,8 @@ fn simplify_xor_merge() {
         ctx.and_const(
             ctx.lsh_const(
                 ctx.sub(
-                    ctx.mem16(
-                        ctx.register(1),
-                    ),
-                    ctx.mem16(
-                        ctx.register(2),
-                    ),
+                    ctx.mem16(ctx.register(1), 0),
+                    ctx.mem16(ctx.register(2), 0),
                 ),
                 0x10,
             ),
@@ -6724,12 +6661,8 @@ fn simplify_xor_merge() {
     let eq1 = ctx.and_const(
         ctx.lsh_const(
             ctx.sub(
-                ctx.mem16(
-                    ctx.register(1),
-                ),
-                ctx.mem16(
-                    ctx.register(2),
-                ),
+                ctx.mem16(ctx.register(1), 0),
+                ctx.mem16(ctx.register(2), 0),
             ),
             0x10,
         ),
@@ -6744,13 +6677,9 @@ fn simplify_xor_merge2() {
     let op1 = ctx.xor(
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(
-                    ctx.register(1),
-                ),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.xor_const(
-                    ctx.mem16(
-                        ctx.register(2),
-                    ),
+                    ctx.mem16(ctx.register(2), 0),
                     0x1234,
                 ),
             ),
@@ -6758,13 +6687,9 @@ fn simplify_xor_merge2() {
         ),
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(
-                    ctx.register(1),
-                ),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.xor_const(
-                    ctx.mem16(
-                        ctx.register(2),
-                    ),
+                    ctx.mem16(ctx.register(2), 0),
                     0x1234,
                 ),
             ),
@@ -6773,13 +6698,9 @@ fn simplify_xor_merge2() {
     );
     let eq1 = ctx.and_const(
         ctx.sub(
-            ctx.mem16(
-                ctx.register(1),
-            ),
+            ctx.mem16(ctx.register(1), 0),
             ctx.xor_const(
-                ctx.mem16(
-                    ctx.register(2),
-                ),
+                ctx.mem16(ctx.register(2), 0),
                 0x1234,
             ),
         ),
@@ -6794,17 +6715,11 @@ fn simplify_xor_merge3() {
     let op1 = ctx.xor(
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(
-                    ctx.register(1),
-                ),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.xor_const(
                     ctx.sub(
-                        ctx.mem16(
-                            ctx.register(2),
-                        ),
-                        ctx.mem16(
-                            ctx.register(3),
-                        ),
+                        ctx.mem16(ctx.register(2), 0),
+                        ctx.mem16(ctx.register(3), 0),
                     ),
                     0x1234,
                 ),
@@ -6813,17 +6728,11 @@ fn simplify_xor_merge3() {
         ),
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(
-                    ctx.register(1),
-                ),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.xor_const(
                     ctx.sub(
-                        ctx.mem16(
-                            ctx.register(2),
-                        ),
-                        ctx.mem16(
-                            ctx.register(3),
-                        ),
+                        ctx.mem16(ctx.register(2), 0),
+                        ctx.mem16(ctx.register(3), 0),
                     ),
                     0x1234,
                 ),
@@ -6833,17 +6742,11 @@ fn simplify_xor_merge3() {
     );
     let eq1 = ctx.and_const(
         ctx.sub(
-            ctx.mem16(
-                ctx.register(1),
-            ),
+            ctx.mem16(ctx.register(1), 0),
             ctx.xor_const(
                 ctx.sub(
-                    ctx.mem16(
-                        ctx.register(2),
-                    ),
-                    ctx.mem16(
-                        ctx.register(3),
-                    ),
+                    ctx.mem16(ctx.register(2), 0),
+                    ctx.mem16(ctx.register(3), 0),
                 ),
                 0x1234,
             ),
@@ -6859,14 +6762,10 @@ fn simplify_xor_merge4() {
     let op1 = ctx.xor(
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(
-                    ctx.register(1),
-                ),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.xor_const(
                     ctx.and_const(
-                        ctx.mem16(
-                            ctx.register(2),
-                        ),
+                        ctx.mem16(ctx.register(2), 0),
                         0xfffe,
                     ),
                     0x1234,
@@ -6876,14 +6775,10 @@ fn simplify_xor_merge4() {
         ),
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(
-                    ctx.register(1),
-                ),
+                ctx.mem16(ctx.register(1), 0),
                 ctx.xor_const(
                     ctx.and_const(
-                        ctx.mem16(
-                            ctx.register(2),
-                        ),
+                        ctx.mem16(ctx.register(2), 0),
                         0xfffe,
                     ),
                     0x1234,
@@ -6894,14 +6789,10 @@ fn simplify_xor_merge4() {
     );
     let eq1 = ctx.and_const(
         ctx.sub(
-            ctx.mem16(
-                ctx.register(1),
-            ),
+            ctx.mem16(ctx.register(1), 0),
             ctx.xor_const(
                 ctx.and_const(
-                    ctx.mem16(
-                        ctx.register(2),
-                    ),
+                    ctx.mem16(ctx.register(2), 0),
                     0xfffe,
                 ),
                 0x1234,
@@ -6920,12 +6811,8 @@ fn simplify_xor_merge5() {
             ctx.sub(
                 ctx.lsh_const(
                     ctx.sub(
-                        ctx.mem16(
-                            ctx.register(1),
-                        ),
-                        ctx.mem16(
-                            ctx.register(4),
-                        ),
+                        ctx.mem16(ctx.register(1), 0),
+                        ctx.mem16(ctx.register(4), 0),
                     ),
                     0x10,
                 ),
@@ -6937,12 +6824,8 @@ fn simplify_xor_merge5() {
             ctx.sub(
                 ctx.lsh_const(
                     ctx.sub(
-                        ctx.mem16(
-                            ctx.register(1),
-                        ),
-                        ctx.mem16(
-                            ctx.register(4),
-                        ),
+                        ctx.mem16(ctx.register(1), 0),
+                        ctx.mem16(ctx.register(4), 0),
                     ),
                     0x10,
                 ),
@@ -6955,12 +6838,8 @@ fn simplify_xor_merge5() {
         ctx.sub(
             ctx.lsh_const(
                 ctx.sub(
-                    ctx.mem16(
-                        ctx.register(1),
-                    ),
-                    ctx.mem16(
-                        ctx.register(4),
-                    ),
+                    ctx.mem16(ctx.register(1), 0),
+                    ctx.mem16(ctx.register(4), 0),
                 ),
                 0x10,
             ),
@@ -7080,7 +6959,7 @@ fn simplify_mul_high() {
     let ctx = &OperandContext::new();
     let op1 = ctx.mul_high(
         ctx.constant(0x5555_6666),
-        ctx.mem32(ctx.register(5)),
+        ctx.mem32(ctx.register(5), 0),
     );
     assert_eq!(op1, ctx.const_0());
     let op2 = ctx.mul_high(
@@ -7108,7 +6987,7 @@ fn simplify_sub_sext() {
     let op1 = ctx.sign_extend(
         ctx.and_const(
             ctx.sub(
-                ctx.mem16(ctx.register(0)),
+                ctx.mem16(ctx.register(0), 0),
                 ctx.constant(0x555),
             ),
             0xffff_ffff,
@@ -7117,7 +6996,7 @@ fn simplify_sub_sext() {
         MemAccessSize::Mem64,
     );
     let eq1 = ctx.sub(
-        ctx.mem16(ctx.register(0)),
+        ctx.mem16(ctx.register(0), 0),
         ctx.constant(0x555),
     );
     assert_eq!(op1, eq1);
@@ -7126,7 +7005,7 @@ fn simplify_sub_sext() {
         ctx.and_const(
             ctx.sub(
                 ctx.constant(0x555),
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
             ),
             0xffff_ffff,
         ),
@@ -7138,7 +7017,7 @@ fn simplify_sub_sext() {
             assert_eq!(val, ctx.and_const(
                 ctx.sub(
                     ctx.constant(0x555),
-                    ctx.mem32(ctx.register(0)),
+                    ctx.mem32(ctx.register(0), 0),
                 ),
                 0xffff_ffff,
             ));
@@ -7149,7 +7028,7 @@ fn simplify_sub_sext() {
     let op1 = ctx.sign_extend(
         ctx.and_const(
             ctx.sub(
-                ctx.mem32(ctx.register(0)),
+                ctx.mem32(ctx.register(0), 0),
                 ctx.constant(0x555),
             ),
             0xffff_ffff,
@@ -7161,7 +7040,7 @@ fn simplify_sub_sext() {
         OperandType::SignExtend(val, MemAccessSize::Mem32, MemAccessSize::Mem64) => {
             assert_eq!(val, ctx.and_const(
                 ctx.sub(
-                    ctx.mem32(ctx.register(0)),
+                    ctx.mem32(ctx.register(0), 0),
                     ctx.constant(0x555),
                 ),
                 0xffff_ffff,
@@ -7183,7 +7062,7 @@ fn simplify_sub_sext2() {
         ctx.and_const(
             ctx.sub(
                 ctx.sign_extend(
-                    ctx.mem8(ctx.register(0)),
+                    ctx.mem8(ctx.register(0), 0),
                     MemAccessSize::Mem8,
                     MemAccessSize::Mem32,
                 ),
@@ -7196,7 +7075,7 @@ fn simplify_sub_sext2() {
     );
     let eq1 = ctx.sub(
         ctx.sign_extend(
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
             MemAccessSize::Mem8,
             MemAccessSize::Mem64,
         ),
@@ -7210,12 +7089,12 @@ fn simplify_sub_sext2() {
         ctx.and_const(
             ctx.sub(
                 ctx.sign_extend(
-                    ctx.mem8(ctx.register(0)),
+                    ctx.mem8(ctx.register(0), 0),
                     MemAccessSize::Mem8,
                     MemAccessSize::Mem32,
                 ),
                 ctx.rsh_const(
-                    ctx.mem32(ctx.register(5)),
+                    ctx.mem32(ctx.register(5), 0),
                     2,
                 ),
             ),
@@ -7226,12 +7105,12 @@ fn simplify_sub_sext2() {
     );
     let eq1 = ctx.sub(
         ctx.sign_extend(
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
             MemAccessSize::Mem8,
             MemAccessSize::Mem64,
         ),
         ctx.rsh_const(
-            ctx.mem32(ctx.register(5)),
+            ctx.mem32(ctx.register(5), 0),
             2,
         ),
     );
@@ -7242,12 +7121,12 @@ fn simplify_sub_sext2() {
         ctx.and_const(
             ctx.sub(
                 ctx.sign_extend(
-                    ctx.mem8(ctx.register(0)),
+                    ctx.mem8(ctx.register(0), 0),
                     MemAccessSize::Mem8,
                     MemAccessSize::Mem32,
                 ),
                 ctx.rsh_const(
-                    ctx.mem32(ctx.register(5)),
+                    ctx.mem32(ctx.register(5), 0),
                     1,
                 ),
             ),
@@ -7261,12 +7140,12 @@ fn simplify_sub_sext2() {
             assert_eq!(val, ctx.and_const(
                 ctx.sub(
                     ctx.sign_extend(
-                        ctx.mem8(ctx.register(0)),
+                        ctx.mem8(ctx.register(0), 0),
                         MemAccessSize::Mem8,
                         MemAccessSize::Mem32,
                     ),
                     ctx.rsh_const(
-                        ctx.mem32(ctx.register(5)),
+                        ctx.mem32(ctx.register(5), 0),
                         1,
                     ),
                 ),
@@ -7472,7 +7351,7 @@ fn eq_masked_sub() {
         ctx.sub_const(
             ctx.and_const(
                 ctx.sub_const(
-                    ctx.mem32(ctx.register(6)),
+                    ctx.mem32(ctx.register(6), 0),
                     0x41,
                 ),
                 0xffff_ffff
@@ -7482,7 +7361,7 @@ fn eq_masked_sub() {
         0x0,
     );
     let eq1 = ctx.eq_const(
-        ctx.mem32(ctx.register(6)),
+        ctx.mem32(ctx.register(6), 0),
         0x78
     );
     assert_eq!(op1, eq1);
@@ -7696,7 +7575,7 @@ fn f32_arith_unnecessary_mask() {
     let op2 = ctx.and_const(
         ctx.float_arithmetic(
             ArithOpType::ToInt,
-            ctx.mem32(ctx.register(0)),
+            ctx.mem32(ctx.register(0), 0),
             ctx.const_0(),
             MemAccessSize::Mem32,
         ),
@@ -7704,7 +7583,7 @@ fn f32_arith_unnecessary_mask() {
     );
     let eq2 = ctx.float_arithmetic(
         ArithOpType::ToInt,
-        ctx.mem32(ctx.register(0)),
+        ctx.mem32(ctx.register(0), 0),
         ctx.const_0(),
         MemAccessSize::Mem32,
     );

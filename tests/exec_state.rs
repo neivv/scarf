@@ -184,8 +184,8 @@ fn read_ffffffff() {
         0xc3, //ret
     ], &[
         (ctx.register(0), ctx.or(
-            ctx.mem8(ctx.constant(0xffff_ffff)),
-            ctx.and_const(ctx.lsh_const(ctx.mem32(ctx.constant(0)), 0x8), 0xffff_ff00),
+            ctx.mem8(ctx.const_0(), 0xffff_ffff),
+            ctx.and_const(ctx.lsh_const(ctx.mem32(ctx.const_0(), 0), 0x8), 0xffff_ff00),
         )),
     ]);
 }
@@ -203,7 +203,7 @@ fn read_this() {
         (ctx.register(1), ctx.constant(0xc300_4010)),
         (ctx.register(2), ctx.or(
             ctx.constant(0x40),
-            ctx.and_const(ctx.lsh_const(ctx.mem32(ctx.constant(0x401010)), 0x8), 0xffff_ff00),
+            ctx.and_const(ctx.lsh_const(ctx.mem32(ctx.const_0(), 0x401010), 0x8), 0xffff_ff00),
         )),
     ]);
 }
@@ -365,7 +365,7 @@ fn movzx_mem8() {
         0x0f, 0xb6, 0x56, 0x4d, // movzx edx, byte [esi + 4d]
         0xc3, //ret
     ], &[
-         (ctx.register(2), ctx.mem8(ctx.add(ctx.register(6), ctx.constant(0x4d)))),
+         (ctx.register(2), ctx.mem8(ctx.register(6), 0x4d)),
     ]);
 }
 
@@ -456,8 +456,8 @@ fn negative_offset() {
         0xc3, // ret
     ], &[
          (ctx.register(0), ctx.constant(9)),
-         (ctx.register(1), ctx.add(ctx.mem32(ctx.constant(0x123400)), ctx.constant(1))),
-         (ctx.register(2), ctx.mem32(ctx.constant(0x123400))),
+         (ctx.register(1), ctx.add(ctx.mem32(ctx.const_0(), 0x123400), ctx.constant(1))),
+         (ctx.register(2), ctx.mem32(ctx.const_0(), 0x123400)),
     ]);
 }
 
@@ -528,7 +528,7 @@ fn mov_al() {
         0xa0, 0x78, 0x56, 0x34, 0x12, // mov al, [12345678]
         0xc3, // ret
     ], &[
-         (ctx.register(0), ctx.mem8(ctx.constant(0x12345678))),
+         (ctx.register(0), ctx.mem8(ctx.const_0(), 0x12345678)),
          (ctx.register(1), ctx.constant(0x55)),
     ]);
 }
@@ -592,7 +592,7 @@ fn move_mem_in_parts() {
         0x8b, 0x00, // mov eax, [eax]
         0xc3, // ret
     ], &[
-         (ctx.register(0), ctx.mem32(ctx.constant(0x1230))),
+         (ctx.register(0), ctx.mem32(ctx.const_0(), 0x1230)),
          (ctx.register(1), ctx.constant(0)),
          (ctx.register(6), ctx.constant(0)),
     ]);
@@ -613,7 +613,7 @@ fn jump_eq() {
         0x0f, 0x94, 0xc0, // sete al (eax = eax > ecx)
         0xc3, // ret
     ], &[
-         (ctx.register(0), ctx.gt(ctx.mem32(ctx.constant(0x1234)), ctx.constant(3))),
+         (ctx.register(0), ctx.gt(ctx.mem32(ctx.const_0(), 0x1234), ctx.constant(3))),
          (ctx.register(1), ctx.constant(3)),
     ]);
 }

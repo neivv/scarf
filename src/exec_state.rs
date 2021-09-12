@@ -11,6 +11,7 @@ use crate::analysis;
 use crate::disasm::{FlagArith, DestOperand, FlagUpdate, Instruction, Operation};
 use crate::operand::{
     ArithOpType, Operand, OperandType, OperandCtx, OperandHashByAddress, MemAccessSize,
+    MemAccess,
 };
 use crate::operand::slice_stack::Slice;
 
@@ -44,6 +45,12 @@ pub trait ExecutionState<'e> : Clone + 'e {
     fn set_flags_resolved(&mut self, flags: &FlagUpdate<'e>, carry: Option<Operand<'e>>);
     fn ctx(&self) -> OperandCtx<'e>;
     fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e>;
+    fn resolve_mem(&mut self, mem: &MemAccess<'e>) -> MemAccess<'e> {
+        MemAccess {
+            address: self.resolve(mem.address),
+            size: mem.size,
+        }
+    }
     fn resolve_apply_constraints(&mut self, operand: Operand<'e>) -> Operand<'e>;
     /// Reads memory for which the `address` is a resolved `Operand`.
     fn read_memory(&mut self, address: Operand<'e>, size: MemAccessSize) -> Operand<'e>;
@@ -65,11 +72,11 @@ pub trait ExecutionState<'e> : Clone + 'e {
     fn apply_call(&mut self, ret: Self::VirtualAddress);
 
     /// Creates an Mem[addr] with MemAccessSize of VirtualAddress size
-    fn operand_mem_word(ctx: OperandCtx<'e>, address: Operand<'e>) -> Operand<'e> {
+    fn operand_mem_word(ctx: OperandCtx<'e>, address: Operand<'e>, offset: u64) -> Operand<'e> {
         if <Self::VirtualAddress as VirtualAddress>::SIZE == 4 {
-            ctx.mem32(address)
+            ctx.mem32(address, offset)
         } else {
-            ctx.mem64(address)
+            ctx.mem64(address, offset)
         }
     }
 
@@ -1688,12 +1695,12 @@ fn merge_memory_undef() {
     let mut a = Memory::new();
     let mut b = Memory::new();
     let addr = ctx.sub_const(ctx.new_undef(), 8);
-    a.set(addr, ctx.mem32(ctx.constant(4)));
-    b.set(addr, ctx.mem32(ctx.constant(4)));
+    a.set(addr, ctx.mem32(ctx.constant(4), 0));
+    b.set(addr, ctx.mem32(ctx.constant(4), 0));
     a.map.convert_immutable();
     let mut cache = MergeStateCache::new();
     let mut new = cache.merge_memory(&a, &b, ctx);
-    assert_eq!(new.get(addr).unwrap(), ctx.mem32(ctx.constant(4)));
+    assert_eq!(new.get(addr).unwrap(), ctx.mem32(ctx.constant(4), 0));
 }
 
 #[test]
@@ -1743,10 +1750,10 @@ fn merge_memory_undef2() {
     let mut a = Memory::new();
     let addr = ctx.sub_const(ctx.register(5), 8);
     let addr2 = ctx.sub_const(ctx.register(5), 16);
-    a.set(addr, ctx.mem32(ctx.constant(4)));
+    a.set(addr, ctx.mem32(ctx.constant(4), 0));
     a.map.convert_immutable();
     let mut b = a.clone();
-    b.set(addr, ctx.mem32(ctx.constant(9)));
+    b.set(addr, ctx.mem32(ctx.constant(9), 0));
     b.map.convert_immutable();
     a.set(addr, ctx.new_undef());
     a.set(addr2, ctx.new_undef());
@@ -1777,7 +1784,7 @@ fn merge_memory_undef3() {
     let mut a = Memory::new();
     let addr = ctx.sub_const(ctx.register(5), 8);
     let addr2 = ctx.sub_const(ctx.register(5), 16);
-    a.set(addr, ctx.mem32(ctx.constant(4)));
+    a.set(addr, ctx.mem32(ctx.constant(4), 0));
     a.map.convert_immutable();
     let mut b = a.clone();
     b.set(addr2, ctx.new_undef());
@@ -1802,7 +1809,7 @@ fn merge_memory_undef4() {
     let mut a = Memory::new();
     let addr = ctx.sub_const(ctx.register(5), 8);
     let addr2 = ctx.sub_const(ctx.register(5), 16);
-    a.set(addr, ctx.mem32(ctx.constant(4)));
+    a.set(addr, ctx.mem32(ctx.constant(4), 0));
     a.map.convert_immutable();
     let mut b = a.clone();
     b.set(addr2, ctx.new_undef());
@@ -2042,17 +2049,17 @@ fn value_limits_sext() {
     let constraint = ctx.gt_const_left(
         0x38,
         ctx.sub_const(
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
             0x41,
         ),
     );
-    let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0)));
+    let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0), 0));
     assert_eq!(low, 0x41);
     assert_eq!(high, 0x78);
     let (low, high) = value_limits(
         constraint,
         ctx.sign_extend(
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
             MemAccessSize::Mem8,
             MemAccessSize::Mem32,
         ),
@@ -2063,17 +2070,17 @@ fn value_limits_sext() {
     let constraint = ctx.gt_const_left(
         0x42,
         ctx.sub_const(
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
             0x41,
         ),
     );
-    let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0)));
+    let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0), 0));
     assert_eq!(low, 0x41);
     assert_eq!(high, 0x82);
     let (low, high) = value_limits(
         constraint,
         ctx.sign_extend(
-            ctx.mem8(ctx.register(0)),
+            ctx.mem8(ctx.register(0), 0),
             MemAccessSize::Mem8,
             MemAccessSize::Mem32,
         ),

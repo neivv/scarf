@@ -604,7 +604,7 @@ fn mov_al() {
         0xa0, 0x88, 0x77, 0x66, 0x55, 0x78, 0x56, 0x34, 0x12, // mov al, [1234567855667788]
         0xc3, // ret
     ], &[
-         (ctx.register(0), ctx.mem8(ctx.constant(0x1234567855667788))),
+         (ctx.register(0), ctx.mem8(ctx.const_0(), 0x1234567855667788)),
          (ctx.register(1), ctx.constant(0x55)),
     ]);
 }
@@ -714,7 +714,7 @@ fn move_mem_in_parts() {
         0x8b, 0x00, // mov eax, [rax]
         0xc3, // ret
     ], &[
-         (ctx.register(0), ctx.mem32(ctx.constant(0x1230))),
+         (ctx.register(0), ctx.mem32(ctx.const_0(), 0x1230)),
          (ctx.register(1), ctx.constant(0)),
          (ctx.register(6), ctx.constant(0)),
     ]);
@@ -759,7 +759,7 @@ fn jump_eq() {
         0x0f, 0x94, 0xc0, // sete al (eax = eax > ecx)
         0xc3, // ret
     ], &[
-         (ctx.register(0), ctx.gt(ctx.mem32(ctx.constant(0x1234)), ctx.constant(3))),
+         (ctx.register(0), ctx.gt(ctx.mem32(ctx.const_0(), 0x1234), ctx.constant(3))),
          (ctx.register(1), ctx.constant(3)),
     ]);
 }
@@ -825,7 +825,7 @@ fn absolute_address() {
         0x48, 0x8b, 0x0c, 0x25, 0x34, 0x12, 0x00, 0x00, // mov rcx, [1234]
         0xc3, // ret
     ], &[
-         (ctx.register(1), ctx.mem64(ctx.constant(0x1234))),
+         (ctx.register(1), ctx.mem64(ctx.const_0(), 0x1234)),
     ]);
 }
 

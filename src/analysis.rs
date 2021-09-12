@@ -7,7 +7,7 @@ use crate::disasm::{Operation};
 use crate::exec_state::{self, Constraint, Disassembler, ExecutionState, MergeStateCache};
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::light_byteorder::ReadLittleEndian;
-use crate::operand::{MemAccessSize, Operand, OperandCtx};
+use crate::operand::{MemAccess, MemAccessSize, Operand, OperandCtx};
 use crate::{BinaryFile, BinarySection, VirtualAddress, VirtualAddress64};
 
 pub use crate::disasm::Error;
@@ -532,6 +532,10 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         self.inner.state.0.resolve(val)
     }
 
+    pub fn resolve_mem(&mut self, val: &MemAccess<'e>) -> MemAccess<'e> {
+        self.inner.state.0.resolve_mem(val)
+    }
+
     pub fn resolve_apply_constraints(&mut self, val: Operand<'e>) -> Operand<'e> {
         self.inner.state.0.resolve_apply_constraints(val)
     }
@@ -663,8 +667,8 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     }
 
     /// Convenience for cases where `Mem[address]` is needed
-    pub fn mem_word(&self, addr: Operand<'e>) -> Operand<'e> {
-        A::Exec::operand_mem_word(self.ctx(), addr)
+    pub fn mem_word(&self, addr: Operand<'e>, offset: u64) -> Operand<'e> {
+        A::Exec::operand_mem_word(self.ctx(), addr, offset)
     }
 
     /// Either `op.if_mem32()` or `op.if_mem64()`, depending on word size
@@ -1268,11 +1272,10 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
             .map(move |index| {
                 ctx.add(
                     base,
-                    ctx.mem_variable_rc(
+                    ctx.mem_any(
                         mem_size,
-                        ctx.constant(
-                            switch_table_addr.as_u64() + (index as u64 * case_size as u64)
-                        ),
+                        ctx.const_0(),
+                        switch_table_addr.as_u64() + (index as u64 * case_size as u64),
                     ),
                 )
             })

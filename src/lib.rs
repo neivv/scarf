@@ -17,7 +17,7 @@ pub mod operand;
 pub use crate::analysis::{Analyzer};
 pub use crate::disasm::{DestOperand, Operation, FlagArith, FlagUpdate, operation_helpers};
 pub use crate::operand::{
-    ArithOpType, MemAccessSize, Operand, OperandType, OperandContext, OperandCtx,
+    ArithOpType, MemAccess, MemAccessSize, Operand, OperandType, OperandContext, OperandCtx,
 };
 
 pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;

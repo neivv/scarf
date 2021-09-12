@@ -985,8 +985,8 @@ pub fn simplify_rsh<'e>(
     let default = || {
         let arith = ArithOperand {
             ty: ArithOpType::Rsh,
-            left: left.clone(),
-            right: right.clone(),
+            left: left,
+            right: right,
         };
         ctx.intern(OperandType::Arithmetic(arith))
     };
@@ -1138,49 +1138,40 @@ pub fn simplify_rsh<'e>(
             }
         },
         OperandType::Memory(ref mem) => {
-            match mem.size {
+            let (address, offset) = mem.address();
+            let (size, offset_add) = match mem.size {
                 MemAccessSize::Mem64 => {
                     if constant >= 56 {
-                        let addr = ctx.add_const(mem.address, 7);
-                        let c = ctx.constant((constant - 56).into());
-                        let new = ctx.mem8(addr);
-                        return simplify_rsh(new, c, ctx, swzb_ctx);
+                        (MemAccessSize::Mem8, 7u8)
                     } else if constant >= 48 {
-                        let addr = ctx.add_const(mem.address, 6);
-                        let c = ctx.constant((constant - 48).into());
-                        let new = ctx.mem16(addr);
-                        return simplify_rsh(new, c, ctx, swzb_ctx);
+                        (MemAccessSize::Mem16, 6)
                     } else if constant >= 32 {
-                        let addr = ctx.add_const(mem.address, 4);
-                        let c = ctx.constant((constant - 32).into());
-                        let new = ctx.mem32(addr);
-                        return simplify_rsh(new, c, ctx, swzb_ctx);
+                        (MemAccessSize::Mem32, 4)
+                    } else {
+                        return default();
                     }
                 }
                 MemAccessSize::Mem32 => {
                     if constant >= 24 {
-                        let addr = ctx.add_const(mem.address, 3);
-                        let c = ctx.constant((constant - 24).into());
-                        let new = ctx.mem8(addr);
-                        return simplify_rsh(new, c, ctx, swzb_ctx);
+                        (MemAccessSize::Mem8, 3)
                     } else if constant >= 16 {
-                        let addr = ctx.add_const(mem.address, 2);
-                        let c = ctx.constant((constant - 16).into());
-                        let new = ctx.mem16(addr);
-                        return simplify_rsh(new, c, ctx, swzb_ctx);
+                        (MemAccessSize::Mem16, 2)
+                    } else {
+                        return default();
                     }
                 }
                 MemAccessSize::Mem16 => {
                     if constant >= 8 {
-                        let addr = ctx.add_const(mem.address, 1);
-                        let c = ctx.constant((constant - 8).into());
-                        let new = ctx.mem8(addr);
-                        return simplify_rsh(new, c, ctx, swzb_ctx);
+                        (MemAccessSize::Mem8, 1)
+                    } else {
+                        return default();
                     }
                 }
-                _ => (),
-            }
-            default()
+                _ => return default(),
+            };
+            let c = ctx.constant(u64::from(constant - offset_add * 8));
+            let new = ctx.mem_any(size, address, offset.wrapping_add(u64::from(offset_add)));
+            simplify_rsh(new, c, ctx, swzb_ctx)
         }
         _ => default(),
     }
@@ -3761,15 +3752,14 @@ fn try_merge_memory<'e>(
     if off1.wrapping_add(len1 as u64) != off2 || val_off1.wrapping_add(len1) != val_off2 {
         return None;
     }
-    let addr = ctx.add_const(val, off1);
     let len = (len1 + len2).min(8);
     let mut oper = match len {
-        1 => ctx.mem8(addr),
-        2 => ctx.mem16(addr),
-        3 => ctx.and_const(ctx.mem32(addr), 0x00ff_ffff),
-        4 => ctx.mem32(addr),
-        5 | 6 | 7 => ctx.and_const(ctx.mem64(addr), u64::max_value() >> ((8 - len) << 3)),
-        8 => ctx.mem64(addr),
+        1 => ctx.mem8(val, off1),
+        2 => ctx.mem16(val, off1),
+        3 => ctx.and_const(ctx.mem32(val, off1), 0x00ff_ffff),
+        4 => ctx.mem32(val, off1),
+        5 | 6 | 7 => ctx.and_const(ctx.mem64(val, off1), u64::max_value() >> ((8 - len) << 3)),
+        8 => ctx.mem64(val, off1),
         _ => return None,
     };
     if val_off1 != 0 {
@@ -4810,12 +4800,8 @@ fn simplify_with_and_mask_mem<'e>(
     } else {
         return op;
     }
-    let new_addr = if mask_low == 0 {
-        mem.address.clone()
-    } else {
-        ctx.add_const(mem.address, mask_low as u64)
-    };
-    let mem = ctx.mem_variable_rc(new_size, new_addr);
+    let (address, offset) = mem.address();
+    let mem = ctx.mem_any(new_size, address, offset.wrapping_add(mask_low as u64));
     let shifted = if mask_low == 0 {
         mem
     } else {
@@ -5036,12 +5022,13 @@ fn simplify_with_zero_bits<'e>(
             if bits.start == 0 && bits.end >= relevant_bits.end {
                 return None;
             } else if bits.end == 64 {
+                let (address, offset) = mem.address();
                 if bits.start <= 8 && relevant_bits.end > 8 {
-                    return Some(ctx.mem8(mem.address));
+                    return Some(ctx.mem8(address, offset));
                 } else if bits.start <= 16 && relevant_bits.end > 16 {
-                    return Some(ctx.mem16(mem.address));
+                    return Some(ctx.mem16(address, offset));
                 } else if bits.start <= 32 && relevant_bits.end > 32 {
-                    return Some(ctx.mem32(mem.address));
+                    return Some(ctx.mem32(address, offset));
                 }
             }
         }
@@ -5166,12 +5153,13 @@ fn simplify_with_one_bits<'e>(
             if bits.start == 0 && bits.end >= max_bits.end {
                 None
             } else if bits.end >= max_bits.end {
+                let (address, offset) = mem.address();
                 if bits.start <= 8 && max_bits.end > 8 {
-                    Some(ctx.mem8(mem.address))
+                    Some(ctx.mem8(address, offset))
                 } else if bits.start <= 16 && max_bits.end > 16 {
-                    Some(ctx.mem16(mem.address))
+                    Some(ctx.mem16(address, offset))
                 } else if bits.start <= 32 && max_bits.end > 32 {
-                    Some(ctx.mem32(mem.address))
+                    Some(ctx.mem32(address, offset))
                 } else {
                     Some(op)
                 }
@@ -5620,7 +5608,7 @@ fn test_sum_valid_range() {
     let ctx = &crate::OperandContext::new();
     assert_eq!(
         sum_valid_range(
-            &[(ctx.mem8(ctx.constant(4)), false), (ctx.mem8(ctx.constant(8)), true)],
+            &[(ctx.mem8(ctx.constant(4), 0), false), (ctx.mem8(ctx.constant(8), 0), true)],
             u64::max_value(),
         ),
         (0xffff_ffff_ffff_ff01, 0xff),

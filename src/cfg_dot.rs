@@ -997,17 +997,17 @@ fn recognize_compare_operands_unsigned() {
                     ctx.and(
                         ctx.sub(
                             ctx.sub(
-                                ctx.mem32(ctx.register(2)),
+                                ctx.mem32(ctx.register(2), 0),
                                 ctx.constant(1234),
                             ),
-                            ctx.mem32(ctx.constant(666)),
+                            ctx.mem32(ctx.const_0(), 666),
                         ),
                         ctx.constant(0xffff_ffff),
                     ),
                     ctx.and(
                         ctx.sub(
-                            ctx.mem32(ctx.register(2)),
-                            ctx.mem32(ctx.constant(666)),
+                            ctx.mem32(ctx.register(2), 0),
+                            ctx.mem32(ctx.const_0(), 666),
                         ),
                         ctx.constant(0xffff_ffff),
                     ),
@@ -1019,10 +1019,10 @@ fn recognize_compare_operands_unsigned() {
             ctx.and(
                 ctx.sub(
                     ctx.sub(
-                        ctx.mem32(ctx.register(2)),
+                        ctx.mem32(ctx.register(2), 0),
                         ctx.constant(1234),
                     ),
-                    ctx.mem32(ctx.constant(666)),
+                    ctx.mem32(ctx.const_0(), 666),
                 ),
                 ctx.constant(0xffff_ffff),
             ),
@@ -1033,8 +1033,8 @@ fn recognize_compare_operands_unsigned() {
         comparision: Comparision::GreaterThan,
         left: ctx.constant(1235),
         right: ctx.sub(
-            ctx.mem32(ctx.register(2)),
-            ctx.mem32(ctx.constant(666)),
+            ctx.mem32(ctx.register(2), 0),
+            ctx.mem32(ctx.const_0(), 666),
         ),
         size: MemAccessSize::Mem32,
     });
