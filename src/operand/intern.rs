@@ -150,10 +150,13 @@ fn operand_type_hash(ty: &OperandType<'_>) -> usize {
         OperandType::Memory(ref mem) => {
             match *mem {
                 MemAccess {
-                    address,
+                    base,
+                    offset,
                     size,
+                    const_base: _,
                 } => {
-                    OperandHashByAddress(address).hash(&mut hasher);
+                    OperandHashByAddress(base).hash(&mut hasher);
+                    offset.hash(&mut hasher);
                     size.hash(&mut hasher);
                 }
             }

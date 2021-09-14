@@ -273,7 +273,8 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                     }
                     Variant::Memory => {
                         let mem = v.newtype_variant_seed(DeserializeMemory(self.0))?;
-                        Ok(self.0.mem_any(mem.size, mem.address, 0))
+                        let (base, offset) = mem.address();
+                        Ok(self.0.mem_any(mem.size, base, offset))
                     }
                     Variant::Arithmetic => {
                         let arith = v.newtype_variant_seed(DeserializeArith(self.0))?;
@@ -298,9 +299,10 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
 impl<'de, 'e> DeserializeSeed<'de> for DeserializeMemory<'e> {
     type Value = MemAccess<'e>;
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
-        const FIELDS: &[&str] = &["address", "size"];
+        const FIELDS: &[&str] = &["base", "offset", "size"];
         enum Field {
-            Address,
+            Base,
+            Offset,
             Size,
         }
 
@@ -321,7 +323,8 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeMemory<'e> {
                         where E: de::Error
                     {
                         match value {
-                            "address" => Ok(Field::Address),
+                            "base" => Ok(Field::Base),
+                            "offset" => Ok(Field::Offset),
                             "size" => Ok(Field::Size),
                             _ => Err(de::Error::unknown_field(value, FIELDS)),
                         }
@@ -343,28 +346,34 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeMemory<'e> {
             fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error>
                 where V: SeqAccess<'de>
             {
-                let address = seq.next_element_seed(DeserializeOperand(self.0))?
+                let base = seq.next_element_seed(DeserializeOperand(self.0))?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let offset = seq.next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;
                 let size = seq.next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                Ok(MemAccess {
-                    address,
-                    size,
-                })
+                Ok(self.0.mem_access(base, offset, size))
             }
 
             fn visit_map<V>(self, mut map: V) -> Result<Self::Value, V::Error>
                 where V: MapAccess<'de>
             {
-                let mut address = None;
+                let mut base = None;
+                let mut offset = None;
                 let mut size = None;
                 while let Some(key) = map.next_key()? {
                     match key {
-                        Field::Address => {
-                            if address.is_some() {
-                                return Err(de::Error::duplicate_field("address"));
+                        Field::Base => {
+                            if base.is_some() {
+                                return Err(de::Error::duplicate_field("base"));
                             }
-                            address = Some(map.next_value_seed(DeserializeOperand(self.0))?);
+                            base = Some(map.next_value_seed(DeserializeOperand(self.0))?);
+                        }
+                        Field::Offset => {
+                            if offset.is_some() {
+                                return Err(de::Error::duplicate_field("offset"));
+                            }
+                            offset = Some(map.next_value()?);
                         }
                         Field::Size => {
                             if size.is_some() {
@@ -374,12 +383,10 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeMemory<'e> {
                         }
                     }
                 }
-                let address = address.ok_or_else(|| de::Error::missing_field("address"))?;
+                let base = base.ok_or_else(|| de::Error::missing_field("base"))?;
+                let offset = offset.ok_or_else(|| de::Error::missing_field("offset"))?;
                 let size = size.ok_or_else(|| de::Error::missing_field("size"))?;
-                Ok(MemAccess {
-                    address,
-                    size,
-                })
+                Ok(self.0.mem_access(base, offset, size))
             }
         }
 

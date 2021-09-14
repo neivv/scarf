@@ -2121,7 +2121,7 @@ fn try_merge_ands_check_add_merge<'e>(
                 a & smaller_mask == b & smaller_mask
             }
             (&OperandType::Memory(ref a_mem), &OperandType::Memory(ref b_mem)) => {
-                if a_mem.address != b_mem.address {
+                if a_mem.address() != b_mem.address() {
                     return false;
                 }
                 if a_mem.size.bits() < b_mem.size.bits() {
@@ -2287,7 +2287,7 @@ fn try_merge_ands<'e>(
         }
         (&OperandType::Memory(ref a_mem), &OperandType::Memory(ref b_mem)) => {
             // Can treat Mem16[x], Mem8[x] as Mem16[x], Mem16[x]
-            if a_mem.address == b_mem.address {
+            if a_mem.address() == b_mem.address() {
                 fn check_mask<'e>(op: Operand<'e>, mask: u64, ok: Operand<'e>) -> Option<Operand<'e>> {
                     if op.relevant_bits().end >= 64 - mask.leading_zeros() as u8 {
                         Some(ok)
@@ -3672,8 +3672,8 @@ fn collect_xor_ops<'e>(
 
 /// Return (base, (offset, len, value_offset))
 ///
-/// E.g. Mem32[x] + 100 => (Mem32[x], (100, 4, 0))
-///     (Mem32[x] + 100) << 20 => (Mem32[x], (100, 4, 4))
+/// E.g. Mem32[x + 100] => (x, (100, 4, 0))
+///     (Mem32[x + 100]) << 20 => (x, (100, 4, 4))
 fn is_offset_mem<'e>(
     op: Operand<'e>,
     ctx: OperandCtx<'e>,
@@ -3723,11 +3723,8 @@ fn is_offset_mem<'e>(
         }
         OperandType::Memory(ref mem) => {
             let len = mem.size.bits() / 8;
-            Some(
-                Operand::const_offset(mem.address, ctx)
-                    .map(|(val, off)| (val, (off, len, 0)))
-                    .unwrap_or_else(|| (mem.address, (0, len, 0)))
-            )
+            let (base, offset) = mem.address();
+            Some((base, (offset, len, 0)))
         }
         _ => None,
     }

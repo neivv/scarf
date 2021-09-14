@@ -540,8 +540,8 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         self.inner.state.0.resolve_apply_constraints(val)
     }
 
-    pub fn read_memory(&mut self, address: Operand<'e>, size: MemAccessSize) -> Operand<'e> {
-        self.inner.state.0.read_memory(address, size)
+    pub fn read_memory(&mut self, mem: &MemAccess<'e>) -> Operand<'e> {
+        self.inner.state.0.read_memory(mem)
     }
 
     pub fn unresolve(&mut self, val: Operand<'e>) -> Option<Operand<'e>> {
@@ -672,12 +672,16 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     }
 
     /// Either `op.if_mem32()` or `op.if_mem64()`, depending on word size
-    pub fn if_mem_word<'a>(&self, op: Operand<'e>) -> Option<Operand<'e>> {
+    pub fn if_mem_word<'a>(&self, op: Operand<'e>) -> Option<&'e MemAccess<'e>> {
         if <A::Exec as ExecutionState<'e>>::VirtualAddress::SIZE == 4 {
             op.if_mem32()
         } else {
             op.if_mem64()
         }
+    }
+
+    pub fn if_mem_word_offset<'a>(&self, op: Operand<'e>, offset: u64) -> Option<Operand<'e>> {
+        self.if_mem_word(op)?.if_offset(offset)
     }
 }
 
@@ -1224,10 +1228,9 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
             None => (0, to),
         };
         mem.if_memory()
-            .and_then(|mem| mem.address.if_arithmetic_add())
-            .and_then(|(l, r)| Operand::either(l, r, |x| x.if_arithmetic_mul()))
-            .and_then(|((l, r), switch_table)| {
-                let switch_table = switch_table.if_constant()?;
+            .and_then(|mem| {
+                let (index, switch_table) = mem.address();
+                let (l, r) = index.if_arithmetic_mul()?;
                 let (c, index) = Operand::either(l, r, {
                     |x| x.if_constant().and_then(|c| u32::try_from(c).ok())
                 })?;

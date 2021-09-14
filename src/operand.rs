@@ -160,12 +160,20 @@ impl<'e> fmt::Display for Operand<'e> {
                 Flag::Direction => write!(f, "d"),
             },
             OperandType::Constant(c) => write!(f, "{:x}", c),
-            OperandType::Memory(ref mem) => write!(f, "Mem{}[{}]", match mem.size {
-                MemAccessSize::Mem8 => "8",
-                MemAccessSize::Mem16 => "16",
-                MemAccessSize::Mem32 => "32",
-                MemAccessSize::Mem64 => "64",
-            }, mem.address),
+            OperandType::Memory(ref mem) => {
+                let (base, offset) = mem.address();
+                if let Some(c) = mem.if_constant_address() {
+                    write!(f, "Mem{}[{:x}]", mem.size.bits(), c)
+                } else if offset == 0 {
+                    write!(f, "Mem{}[{}]", mem.size.bits(), base)
+                } else {
+                    let (sign, offset) = match offset < 0x8000_0000_0000_0000 {
+                        true => ('+', offset),
+                        false => ('-', 0u64.wrapping_sub(offset)),
+                    };
+                    write!(f, "Mem{}[{} {} {:x}]", mem.size.bits(), base, sign, offset)
+                }
+            }
             OperandType::Undefined(id) => write!(f, "Undefined_{:x}", id.0),
             OperandType::Arithmetic(ref arith) | OperandType::ArithmeticFloat(ref arith, _) => {
                 let l = arith.left;
@@ -379,7 +387,7 @@ fn iter_variant_next<'e, T: IterVariant<'e>>(s: &mut T) -> Option<Operand<'e>> {
             inner.stack.push(arith.right);
         },
         Memory(ref m) if T::descend_to_mem_addr() => {
-            inner.pos = m.address;
+            inner.pos = m.address().0;
         }
         SignExtend(val, _, _) => {
             inner.pos = val;
@@ -549,8 +557,10 @@ impl<'e> OperandContext<'e> {
             OperandType::Undefined(c) => OperandType::Undefined(c),
             OperandType::Custom(c) => OperandType::Custom(c),
             OperandType::Memory(ref mem) => OperandType::Memory(MemAccess {
-                address: self.copy_operand_small(mem.address, recurse_limit),
+                base: self.copy_operand_small(mem.base, recurse_limit),
+                offset: mem.offset,
                 size: mem.size,
+                const_base: mem.const_base,
             }),
             OperandType::Arithmetic(ref arith) => {
                 let arith = ArithOperand {
@@ -594,8 +604,10 @@ impl<'e> OperandContext<'e> {
             OperandType::Undefined(c) => OperandType::Undefined(c),
             OperandType::Custom(c) => OperandType::Custom(c),
             OperandType::Memory(ref mem) => OperandType::Memory(MemAccess {
-                address: self.copy_operand_large(mem.address, cache),
+                base: self.copy_operand_large(mem.base, cache),
+                offset: mem.offset,
                 size: mem.size,
+                const_base: mem.const_base,
             }),
             OperandType::Arithmetic(ref arith) => {
                 let arith = ArithOperand {
@@ -1110,9 +1122,12 @@ impl<'e> OperandContext<'e> {
         offset: u64,
         size: MemAccessSize,
     ) -> MemAccess<'e> {
+        let (base, offset2) = self.extract_add_sub_offset(base);
         MemAccess {
-            address: self.add_const(base, offset),
+            base,
+            offset: offset.wrapping_add(offset2),
             size,
+            const_base: base == self.const_0(),
         }
     }
 
@@ -1213,11 +1228,12 @@ impl<'e> OperandContext<'e> {
                 }
             },
             OperandType::Memory(ref m) => {
-                let address = self.transform_internal(m.address, depth_limit - 1, f);
-                if address == m.address {
+                let (base, offset) = m.address();
+                let new_base = self.transform_internal(base, depth_limit - 1, f);
+                if base == new_base {
                     oper
                 } else {
-                    self.mem_any(m.size, address, 0)
+                    self.mem_any(m.size, new_base, offset)
                 }
             }
             OperandType::SignExtend(val, from, to) => {
@@ -1245,7 +1261,7 @@ impl<'e> OperandContext<'e> {
             // but didn't give it too much thought.
             self.transform(oper, depth_limit, |old| {
                 old.if_memory()
-                    .filter(|old| old.address == mem.address)
+                    .filter(|old| old.address() == mem.address())
                     .filter(|old| old.size.bits() <= mem.size.bits())
                     .map(|old| {
                         if mem.size == old.size || old.size == MemAccessSize::Mem64 {
@@ -1490,7 +1506,7 @@ impl<'e> OperandType<'e> {
         use self::OperandType::*;
         match *self {
             Memory(ref mem) => {
-                (mem.address.0.flags & FLAG_CONTAINS_UNDEFINED) | FLAG_NEEDS_RESOLVE
+                (mem.address().0.0.flags & FLAG_CONTAINS_UNDEFINED) | FLAG_NEEDS_RESOLVE
             }
             SignExtend(val, _, _) => {
                 val.0.flags & (FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE)
@@ -1777,52 +1793,102 @@ impl<'e> Operand<'e> {
         }
     }
 
-    /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem64`
     #[inline]
-    pub fn if_mem64(self) -> Option<Operand<'e>> {
+    pub fn if_mem64(self) -> Option<&'e MemAccess<'e>> {
         match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem64 {
-                true => Some(mem.address),
+                true => Some(mem),
                 false => None,
             },
             _ => None,
         }
     }
 
-    /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem32`
     #[inline]
-    pub fn if_mem32(self) -> Option<Operand<'e>> {
+    pub fn if_mem32(self) -> Option<&'e MemAccess<'e>> {
         match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem32 {
-                true => Some(mem.address),
+                true => Some(mem),
                 false => None,
             },
             _ => None,
         }
     }
 
-    /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem16`
     #[inline]
-    pub fn if_mem16(self) -> Option<Operand<'e>> {
+    pub fn if_mem16(self) -> Option<&'e MemAccess<'e>> {
         match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem16 {
-                true => Some(mem.address),
+                true => Some(mem),
                 false => None,
             },
             _ => None,
         }
     }
 
-    /// Returns `Some(mem.addr)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem8`
     #[inline]
-    pub fn if_mem8(self) -> Option<Operand<'e>> {
+    pub fn if_mem8(self) -> Option<&'e MemAccess<'e>> {
         match *self.ty() {
             OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem8 {
-                true => Some(mem.address),
+                true => Some(mem),
+                false => None,
+            },
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn if_mem64_offset(self, offset: u64) -> Option<Operand<'e>> {
+        match *self.ty() {
+            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem64 {
+                true => mem.if_offset(offset),
+                false => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// `mem.size == MemAccessSize::Mem32`
+    #[inline]
+    pub fn if_mem32_offset(self, offset: u64) -> Option<Operand<'e>> {
+        match *self.ty() {
+            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem32 {
+                true => mem.if_offset(offset),
+                false => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// `mem.size == MemAccessSize::Mem16`
+    #[inline]
+    pub fn if_mem16_offset(self, offset: u64) -> Option<Operand<'e>> {
+        match *self.ty() {
+            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem16 {
+                true => mem.if_offset(offset),
+                false => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
+    /// `mem.size == MemAccessSize::Mem8`
+    #[inline]
+    pub fn if_mem8_offset(self, offset: u64) -> Option<Operand<'e>> {
+        match *self.ty() {
+            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem8 {
+                true => mem.if_offset(offset),
                 false => None,
             },
             _ => None,
@@ -1986,59 +2052,65 @@ impl Clone for SelfOwnedOperand {
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize))]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, Ord, PartialOrd)]
 pub struct MemAccess<'e> {
-    pub address: Operand<'e>,
+    base: Operand<'e>,
+    offset: u64,
     pub size: MemAccessSize,
+    /// true means that base == ctx.const_0()
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
+    const_base: bool,
+}
+
+impl<'e> PartialEq for MemAccess<'e> {
+    #[inline]
+    fn eq(&self, other: &MemAccess<'e>) -> bool {
+        match *self {
+            MemAccess { base, offset, size, const_base: _ } => {
+                base == other.base &&
+                    offset == other.offset &&
+                    size == other.size
+            }
+        }
+    }
+}
+
+impl<'e> fmt::Debug for MemAccess<'e> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let sign = if self.offset > 0x8000_0000_0000_0000 { "-" } else { "" };
+        let abs = (self.offset as i64).wrapping_abs();
+        write!(f, "MemAccess({}, {}{:x}, {:?})", self.base, sign, abs, self.size)
+    }
 }
 
 impl<'e> MemAccess<'e> {
     /// Gets base address operand without add/sub offset, and the offset.
     pub fn address(&self) -> (Operand<'e>, u64) {
-        if let OperandType::Arithmetic(ref arith) = self.address.ty() {
-            if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
-                if let Some(c) = arith.right.if_constant() {
-                    if arith.ty == ArithOpType::Add {
-                        return (arith.left, c);
-                    } else {
-                        return (arith.left, 0u64.wrapping_sub(c));
-                    }
-                }
-            }
-        }
-        (self.address, 0)
-    }
-
-    /// To be deleted when address() works correctly
-    pub fn compat_address(&self, ctx: OperandCtx<'e>) -> (Operand<'e>, u64) {
-        let (base, offset) = self.address();
-        if let Some(c) = base.if_constant() {
-            (ctx.const_0(), c)
-        } else {
-            (base, offset)
-        }
+        (self.base, self.offset)
     }
 
     /// Joins the base address and offset to a single operand.
     ///
     /// Same as `ctx.add_const(self.address().0, self.address().1)`.
     pub fn address_op(&self, ctx: OperandCtx<'e>) -> Operand<'e> {
-        let (addr, offset) = self.address();
-        ctx.add_const(addr, offset)
+        ctx.add_const(self.base, self.offset)
     }
 
     /// If the memory has constant address (Base is `ctx.const_0()`), returns the offset
     pub fn if_constant_address(&self) -> Option<u64> {
-        self.address.if_constant()
+        if self.const_base {
+            Some(self.offset)
+        } else {
+            None
+        }
     }
 
     /// Returns `Some(base)` only if offset is 0.
     ///
     /// Note that this means that any constant addresses will return `None`.
     pub fn if_no_offset(&self) -> Option<Operand<'e>> {
-        let (addr, offset) = self.address();
-        if offset == 0 {
-            Some(addr)
+        if self.offset == 0 {
+            Some(self.base)
         } else {
             None
         }
@@ -2046,11 +2118,21 @@ impl<'e> MemAccess<'e> {
 
     /// Returns `Some(base)` if `self.offset` equals `offset` parameter.
     pub fn if_offset(&self, compare: u64) -> Option<Operand<'e>> {
-        let (addr, offset) = self.address();
-        if offset == compare {
-            Some(addr)
+        if self.offset == compare {
+            Some(self.base)
         } else {
             None
+        }
+    }
+
+    /// Creates new `MemAccess` with address offset from `self` by `offset`
+    /// and size set to `size`.
+    pub fn with_offset_size(&self, offset: u64, size: MemAccessSize) -> MemAccess<'e> {
+        MemAccess {
+            base: self.base,
+            offset: self.offset.wrapping_add(offset),
+            size,
+            const_base: self.const_base,
         }
     }
 
@@ -2261,7 +2343,7 @@ mod test {
                     "right": {
                         "ty": {
                             "Memory": {
-                                "address": {
+                                "base": {
                                     "ty": {
                                         "Arithmetic": {
                                             "ty": "Sub",
@@ -2278,6 +2360,7 @@ mod test {
                                         }
                                     }
                                 },
+                                "offset": 0,
                                 "size": "Mem32"
                             }
                         }
