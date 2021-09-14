@@ -299,13 +299,6 @@ pub struct OperandContext<'e> {
     undef_interner: intern::UndefInterner,
     invariant_lifetime: PhantomData<&'e mut &'e ()>,
     simplify_temp_stack: SliceStack,
-    // Caches registers "reg + x" where x can be in range -0x20..=0xdf
-    // for registers other than rsp/rbp, and in range
-    // -0x220..=0xdf for those two.
-    // As such, it takes 0x100 * 6 + 0x300 * 2 = 3072 words of memory for 32-bit, and
-    // 0x100 * 14 + 0x300 * 2 = 5120 words for 64-bit.
-    // Size can be set with OperandCtx::resize_offset_cache
-    offset_cache: RefCell<Vec<Option<Operand<'e>>>>,
     // Keep buffer for ExecutionState's Operation::Freeze handling
     // Unless the user does something weird with intercepting the freeze operations,
     // this should be the only one that gets ever used
@@ -475,7 +468,6 @@ impl<'e> OperandContext<'e> {
             undef_interner: intern::UndefInterner::new(),
             invariant_lifetime: PhantomData,
             simplify_temp_stack: SliceStack::new(),
-            offset_cache: RefCell::new(Vec::new()),
             freeze_buffer: RefCell::new(Vec::new()),
             copy_operand_cache: RefCell::new(FxHashMap::default()),
         };
@@ -1293,54 +1285,6 @@ impl<'e> OperandContext<'e> {
 
     pub(crate) fn simplify_temp_stack(&'e self) -> &'e SliceStack {
         &self.simplify_temp_stack
-    }
-
-    pub(crate) fn resize_offset_cache(&'e self, register_count: usize) {
-        // Optimization trick: resize_with using constant None is more likely to optimize
-        // to memset than usual resize which likely optimizes to a one-at-time loop.
-        let size = (register_count - 2) * 0x100 + 0x300 * 2;
-        let mut offset_cache = self.offset_cache.borrow_mut();
-        if offset_cache.len() < size {
-            offset_cache.resize_with(size, || None);
-        }
-    }
-
-    // Mainly for disasm. Maybe other components could benefit from this cache as well.
-    pub(crate) fn register_offset_const(&'e self, register: u8, offset: i32) -> Operand<'e> {
-        if offset < 0xe0 {
-            if register == 4 || register == 5 {
-                // rsp/rbp
-                if offset >= -0x220 {
-                    let index = (register - 4) as usize * 0x300 + (offset + 0x220) as usize;
-                    if let Ok(mut offset_cache) = self.offset_cache.try_borrow_mut() {
-                        if let Some(maybe_cached) = offset_cache.get_mut(index) {
-                            return *maybe_cached.get_or_insert_with(|| {
-                                self.add_const(self.register(register), offset as i64 as u64)
-                            });
-                        }
-                    }
-                }
-            } else {
-                if offset >= -0x20 {
-                    // 0, 1, 2, 3, 6, 7, ...
-                    let l1_index = if register < 4 {
-                        register as usize
-                    } else {
-                        register as usize - 2
-                    };
-                    let index = 0x600 + l1_index * 0x100 + (offset + 0x20) as usize;
-                    if let Ok(mut offset_cache) = self.offset_cache.try_borrow_mut() {
-                        if let Some(maybe_cached) = offset_cache.get_mut(index) {
-                            return *maybe_cached.get_or_insert_with(|| {
-                                self.add_const(self.register(register), offset as i64 as u64)
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        // Uncached default
-        self.add_const(self.register(register), offset as i64 as u64)
     }
 
     pub(crate) fn swap_freeze_buffer(&'e self, other: &mut Vec<exec_state::FreezeOperation<'e>>) {
