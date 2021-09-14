@@ -155,6 +155,47 @@ pub fn simplify_arith<'e>(
     }
 }
 
+/// If arith result is known to be and masked, applying the mask eagerly to inputs
+/// can save some work.
+/// Mainly useful for signed_gt, but has some other uses as well.
+pub fn simplify_arith_masked<'e>(
+    mut left: Operand<'e>,
+    mut right: Operand<'e>,
+    ty: ArithOpType,
+    mask: u64,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Operand<'e> {
+    match ty {
+        ArithOpType::And | ArithOpType::Or | ArithOpType::Xor => {
+            left = simplify_with_and_mask(left, mask, ctx, swzb_ctx);
+            right = simplify_with_and_mask(right, mask, ctx, swzb_ctx);
+        }
+        ArithOpType::Lsh | ArithOpType::Rsh => {
+            if let Some(c) = right.if_constant() {
+                if c < 64 {
+                    if ty == ArithOpType::Lsh {
+                        left = simplify_with_and_mask(left, mask >> c, ctx, swzb_ctx);
+                    } else {
+                        left = simplify_with_and_mask(left, mask << c, ctx, swzb_ctx);
+                    }
+                }
+            }
+        }
+        ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
+            if mask.wrapping_add(1) & mask == 0 {
+                left = simplify_with_and_mask(left, mask, ctx, swzb_ctx);
+                right = simplify_with_and_mask(right, mask, ctx, swzb_ctx);
+            }
+        }
+        _ => (),
+    }
+    ctx.and_const(
+        simplify_arith(left, right, ty, ctx, swzb_ctx),
+        mask,
+    )
+}
+
 pub fn simplify_float_arith<'e>(
     left: Operand<'e>,
     right: Operand<'e>,

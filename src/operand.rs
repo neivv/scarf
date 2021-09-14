@@ -776,6 +776,17 @@ impl<'e> OperandContext<'e> {
         simplify::simplify_arith(left, right, ty, self, &mut simplify)
     }
 
+    pub fn arithmetic_masked(
+        &'e self,
+        ty: ArithOpType,
+        left: Operand<'e>,
+        right: Operand<'e>,
+        mask: u64,
+    ) -> Operand<'e> {
+        let mut simplify = simplify::SimplifyWithZeroBits::default();
+        simplify::simplify_arith_masked(left, right, ty, mask, self, &mut simplify)
+    }
+
     pub fn float_arithmetic(
         &'e self,
         ty: ArithOpType,
@@ -918,13 +929,18 @@ impl<'e> OperandContext<'e> {
                 );
             }
         };
+        let offset = self.constant(offset);
         self.gt(
-            self.and_const(
-                self.add_const(left, offset),
+            self.arithmetic_masked(
+                ArithOpType::Add,
+                left,
+                offset,
                 mask,
             ),
-            self.and_const(
-                self.add_const(right, offset),
+            self.arithmetic_masked(
+                ArithOpType::Add,
+                right,
+                offset,
                 mask,
             ),
         )

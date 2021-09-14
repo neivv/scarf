@@ -746,10 +746,7 @@ impl<'e> State<'e> {
             }
         };
         let &mut base_result = self.pending_flags_result.get_or_insert_with(|| {
-            ctx.and_const(
-                ctx.arithmetic(arith_ty, arith.left, arith.right),
-                size.mask(),
-            )
+            ctx.arithmetic_masked(arith_ty, arith.left, arith.right, size.mask())
         });
         let mut result = if arith.ty == Adc {
             ctx.add(base_result, in_carry.unwrap_or_else(|| ctx.const_0()))
@@ -1026,6 +1023,14 @@ impl<'e> State<'e> {
                     let r = self.try_resolve_partial_register(op.left, op.right);
                     if let Some(r) = r {
                         return r;
+                    }
+                    // Check for (x op y) & const_mask
+                    if let Some(c) = op.right.if_constant() {
+                        if let OperandType::Arithmetic(ref inner) = op.left.ty() {
+                            let left = self.resolve(inner.left);
+                            let right = self.resolve(inner.right);
+                            return self.ctx.arithmetic_masked(inner.ty, left, right, c);
+                        }
                     }
                 };
                 let left = self.resolve(op.left);
