@@ -10,8 +10,8 @@ use fxhash::FxBuildHasher;
 use crate::analysis;
 use crate::disasm::{FlagArith, DestOperand, FlagUpdate, Instruction, Operation};
 use crate::operand::{
-    ArithOpType, Operand, OperandType, OperandCtx, OperandHashByAddress, MemAccessSize,
-    MemAccess,
+    ArithOperand, ArithOpType, Flag, Operand, OperandType, OperandCtx, OperandHashByAddress,
+    MemAccessSize, MemAccess,
 };
 use crate::operand::slice_stack::Slice;
 
@@ -365,6 +365,40 @@ pub(crate) fn overflow_for_add_sub<'e>(
             ),
         )
     }
+}
+
+/// Function to determine which flags add_resolved_constraint should consider checking
+/// for equaling constraint. As the exec states delay realizing flags, checking all
+/// flags unconditionally causes unnecessary work.
+///
+/// This is only returning flags that are may be set to one from assume_jump_flag
+/// calling add_resolved_constraint. Trying to get good trade-off between work and
+/// results.
+pub(crate) fn flags_for_resolved_constraint_eq_check<'e>(
+    flag_update: &FlagUpdate<'e>,
+    arith: &ArithOperand<'e>,
+    ctx: OperandCtx<'e>,
+) -> &'static [Flag] {
+    let is_sign = arith.right == ctx.const_0() &&
+        arith.left.if_arithmetic_eq()
+            .filter(|x| x.1 == ctx.const_0())
+            .and_then(|x| x.0.if_arithmetic_and()?.1.if_constant())
+            .filter(|x| {
+                matches!(x, 0x80 | 0x8000 | 0x8000_0000 | 0x8000_0000_0000_0000)
+            })
+            .is_some();
+    if is_sign {
+        return &[Flag::Sign, Flag::Zero];
+    } else {
+        if flag_update.ty == FlagArith::Sub || flag_update.ty == FlagArith::Add {
+            return &[Flag::Zero, Flag::Carry];
+        } else if arith.right == ctx.const_0() ||
+            matches!(flag_update.ty, FlagArith::Add | FlagArith::Sub | FlagArith::And)
+        {
+            return &[Flag::Zero];
+        }
+    }
+    &[]
 }
 
 /// The constraint is assumed to be something that can be substituted with 1 if met

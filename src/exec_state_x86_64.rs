@@ -1079,6 +1079,7 @@ impl<'e> State<'e> {
         // heuristic and not a foolproof solution. A complete, but slower way would
         // be having a state merge function that is merges constraints depending on
         // what the values inside constraints were merged to.
+        self.resolved_constraint = Some(constraint);
         let ctx = self.ctx();
         if let OperandType::Arithmetic(ref arith) = *constraint.0.ty() {
             if arith.left.if_constant().is_some() {
@@ -1096,18 +1097,37 @@ impl<'e> State<'e> {
                     self.add_memory_constraint(ctx.arithmetic(arith.ty, val, arith.right));
                 }
             }
+            let maybe_wanted_flags = (1 << Flag::Zero as u8) |
+                (1 << Flag::Carry as u8) |
+                (1 << Flag::Sign as u8);
+            if arith.ty == ArithOpType::Equal &&
+                self.pending_flag_bits & maybe_wanted_flags != 0
+            {
+                if let Some((ref flag_update, _)) = self.pending_flags {
+                    let flags = exec_state::flags_for_resolved_constraint_eq_check(
+                        flag_update,
+                        arith,
+                        ctx,
+                    );
+                    for &flag in flags {
+                        if self.pending_flag_bits & (1 << flag as u32) != 0 {
+                            self.realize_pending_flag(flag);
+                        }
+                    }
+                }
+            }
         }
         // Check if the constraint ends up making a flag always true
         // (Could do more extensive checks in state but this is cheap-ish,
-        // only costing flag realization, and has uses for control flow tautologies)
+        // costing flag realization if it is decided to be needed above,
+        // and has uses for control flow tautologies)
         for i in 0..6 {
-            let flag = ctx.flag_by_index(i);
-            let value = self.resolve(flag);
-            if value == constraint.0 {
-                self.state[FLAGS_INDEX + i] = ctx.const_1();
+            if self.pending_flag_bits & (1 << i) == 0 {
+                if self.state[FLAGS_INDEX + i] == constraint.0 {
+                    self.state[FLAGS_INDEX + i] = ctx.const_1();
+                }
             }
         }
-        self.resolved_constraint = Some(constraint);
     }
 }
 
