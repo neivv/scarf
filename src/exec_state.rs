@@ -45,11 +45,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     fn set_flags_resolved(&mut self, flags: &FlagUpdate<'e>, carry: Option<Operand<'e>>);
     fn ctx(&self) -> OperandCtx<'e>;
     fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e>;
-    fn resolve_mem(&mut self, mem: &MemAccess<'e>) -> MemAccess<'e> {
-        let ctx = self.ctx();
-        let (base, offset) = mem.address();
-        ctx.mem_access(self.resolve(base), offset, mem.size)
-    }
+    fn resolve_mem(&mut self, mem: &MemAccess<'e>) -> MemAccess<'e>;
     fn resolve_apply_constraints(&mut self, operand: Operand<'e>) -> Operand<'e>;
     /// Reads memory for which the `mem` is a resolved `MemAccess`.
     fn read_memory(&mut self, mem: &MemAccess<'e>) -> Operand<'e>;

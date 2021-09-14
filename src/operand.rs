@@ -1168,7 +1168,7 @@ impl<'e> OperandContext<'e> {
         self.add_const(base, offset.wrapping_sub(value))
     }
 
-    fn extract_add_sub_offset(&'e self, value: Operand<'e>) -> (Operand<'e>, u64) {
+    pub(crate) fn extract_add_sub_offset(&'e self, value: Operand<'e>) -> (Operand<'e>, u64) {
         if let OperandType::Arithmetic(arith) = value.ty() {
             if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
                 if let Some(c) = arith.right.if_constant() {
