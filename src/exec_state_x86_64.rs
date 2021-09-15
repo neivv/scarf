@@ -5,7 +5,7 @@ use copyless::BoxHelper;
 
 use crate::analysis;
 use crate::disasm::{FlagArith, Disassembler64, DestOperand, FlagUpdate, Operation};
-use crate::exec_state::{self, Constraint, FreezeOperation, Memory, MergeStateCache};
+use crate::exec_state::{self, Constraint, FreezeOperation, Memory, MergeStateCache, PendingFlags};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{
@@ -36,11 +36,7 @@ struct State<'e> {
     /// they get discarded later.
     /// The separate Operand is for resolved carry for adc/sbb, otherwise dummy value.
     /// (Operands here are resolved)
-    pending_flags: Option<(FlagUpdate<'e>, Option<Operand<'e>>)>,
-    /// Before reading flags, if this has a bit set, it means that the flag has to
-    /// be calculated through pending_flags.
-    pending_flag_bits: u8,
-    pending_flags_result: Option<Operand<'e>>,
+    pending_flags: PendingFlags<'e>,
     freeze_buffer: Vec<FreezeOperation<'e>>,
     frozen: bool,
 }
@@ -72,8 +68,6 @@ impl<'e> Clone for State<'e> {
             ctx: self.ctx,
             binary: self.binary,
             pending_flags: self.pending_flags,
-            pending_flag_bits: self.pending_flag_bits,
-            pending_flags_result: self.pending_flags_result,
             frozen: self.frozen,
         }
     }
@@ -451,9 +445,7 @@ impl<'e> ExecutionState<'e> {
             memory_constraint: None,
             ctx,
             binary: None,
-            pending_flags: None,
-            pending_flag_bits: 0,
-            pending_flags_result: None,
+            pending_flags: PendingFlags::new(),
             freeze_buffer: Vec::new(),
             frozen: false,
         });
@@ -506,37 +498,25 @@ impl<'e> State<'e> {
     fn realize_pending_flag(&mut self, flag: Flag) {
         use crate::disasm::FlagArith::*;
 
-        self.pending_flag_bits &= !(1 << flag as u8);
-        let (arith, in_carry) = match self.pending_flags {
-            Some((ref a, c)) => (a, c),
-            None => return,
-        };
+        self.pending_flags.clear_pending(flag);
 
         let ctx = self.ctx;
-        let size = arith.size;
 
-        let arith_ty = exec_state::flag_arith_to_op_arith(arith.ty);
-        let arith_ty = match arith_ty {
+        let result_pair = match self.pending_flags.get_result(ctx) {
             Some(s) => s,
             None => {
                 self.state[FLAGS_INDEX + flag as usize] = ctx.new_undef();
                 return;
             }
         };
-        let &mut base_result = self.pending_flags_result.get_or_insert_with(|| {
-            ctx.arithmetic_masked(arith_ty, arith.left, arith.right, size.mask())
-        });
-        let mut result = if arith.ty == Adc {
-            ctx.add(base_result, in_carry.unwrap_or_else(|| ctx.const_0()))
-        } else if arith.ty == Sbb {
-            ctx.sub(base_result, in_carry.unwrap_or_else(|| ctx.const_0()))
-        } else {
-            base_result
-        };
-        if result != base_result && size != MemAccessSize::Mem64 {
-            result = ctx.and_const(result, size.mask());
-        }
 
+        let result = result_pair.result;
+        let base_result = result_pair.base_result;
+        let arith = match self.pending_flags.update {
+            Some(ref a) => a,
+            None => return,
+        };
+        let size = arith.size;
         match flag {
             Flag::Carry | Flag::Overflow => match arith.ty {
                 Add | Sub | Adc | Sbb => {
@@ -628,7 +608,7 @@ impl<'e> State<'e> {
                 Destination::Oper(&mut xmm[(reg & 0xf) as usize * 4 + (word & 3) as usize])
             }
             DestOperand::Flag(flag) => {
-                self.pending_flag_bits &= !(1 << flag as usize);
+                self.pending_flags.clear_pending(flag);
                 Destination::Oper(&mut self.state[FLAGS_INDEX + flag as usize])
             }
             DestOperand::Memory(ref mem) => {
@@ -826,7 +806,7 @@ impl<'e> State<'e> {
             }
             OperandType::Fpu(_) => value,
             OperandType::Flag(flag) => {
-                if (1 << (flag as u32)) & self.pending_flag_bits != 0 {
+                if self.pending_flags.is_pending(flag) {
                     self.realize_pending_flag(flag);
                 }
                 self.state[FLAGS_INDEX + flag as usize]
@@ -974,9 +954,7 @@ impl<'e> State<'e> {
         if self.frozen {
             self.freeze_buffer.push(FreezeOperation::SetFlags(*arith, carry));
         } else {
-            self.pending_flags = Some((*arith, carry));
-            self.pending_flag_bits = 0x1f;
-            self.pending_flags_result = None;
+            self.pending_flags.reset(arith, carry);
             // Could try to do smarter invalidation, but since in practice unresolved
             // constraints always are bunch of flags, invalidate it completely.
             self.unresolved_constraint = None;
@@ -1101,16 +1079,16 @@ impl<'e> State<'e> {
                 (1 << Flag::Carry as u8) |
                 (1 << Flag::Sign as u8);
             if arith.ty == ArithOpType::Equal &&
-                self.pending_flag_bits & maybe_wanted_flags != 0
+                self.pending_flags.pending_bits & maybe_wanted_flags != 0
             {
-                if let Some((ref flag_update, _)) = self.pending_flags {
+                if let Some(ref flag_update) = self.pending_flags.update {
                     let flags = exec_state::flags_for_resolved_constraint_eq_check(
                         flag_update,
                         arith,
                         ctx,
                     );
                     for &flag in flags {
-                        if self.pending_flag_bits & (1 << flag as u32) != 0 {
+                        if self.pending_flags.is_pending(flag) {
                             self.realize_pending_flag(flag);
                         }
                     }
@@ -1122,7 +1100,7 @@ impl<'e> State<'e> {
         // costing flag realization if it is decided to be needed above,
         // and has uses for control flow tautologies)
         for i in 0..6 {
-            if self.pending_flag_bits & (1 << i) == 0 {
+            if self.pending_flags.pending_bits & (1 << i) == 0 {
                 if self.state[FLAGS_INDEX + i] == constraint.0 {
                     self.state[FLAGS_INDEX + i] = ctx.const_1();
                 }
@@ -1254,9 +1232,7 @@ fn merge_states<'a: 'r, 'r>(
             }),
             resolved_constraint,
             memory_constraint,
-            pending_flags: None,
-            pending_flag_bits: 0,
-            pending_flags_result: None,
+            pending_flags: PendingFlags::new(),
             ctx,
             binary: old.binary,
             // Freeze buffer is intended to be empty at merge points,

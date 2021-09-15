@@ -367,6 +367,75 @@ pub(crate) fn overflow_for_add_sub<'e>(
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct PendingFlags<'e> {
+    pub update: Option<FlagUpdate<'e>>,
+    pub carry: Option<Operand<'e>>,
+    pub result: Option<Option<PendingFlagsResult<'e>>>,
+    /// Before reading flags, if this has a bit set, it means that the flag has to
+    /// be calculated through pending_flags.
+    pub pending_bits: u8,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct PendingFlagsResult<'e> {
+    pub base_result: Operand<'e>,
+    pub result: Operand<'e>,
+}
+
+impl<'e> PendingFlags<'e> {
+    pub fn new() -> PendingFlags<'e> {
+        PendingFlags {
+            update: None,
+            carry: None,
+            result: None,
+            pending_bits: 0,
+        }
+    }
+
+    pub fn reset(&mut self, update: &FlagUpdate<'e>, carry: Option<Operand<'e>>) {
+        self.update = Some(*update);
+        self.carry = carry;
+        self.result = None;
+        self.pending_bits = 0x1f;
+    }
+
+    pub fn is_pending(&self, flag: Flag) -> bool {
+        self.pending_bits & (1 << flag as u32) != 0
+    }
+
+    pub fn clear_pending(&mut self, flag: Flag) {
+        self.pending_bits &= !(1 << flag as u32);
+    }
+
+    pub fn get_result(&mut self, ctx: OperandCtx<'e>) -> Option<PendingFlagsResult<'e>> {
+        let update = &self.update;
+        let carry = self.carry;
+        *self.result.get_or_insert_with(|| {
+            let arith = update.as_ref()?;
+            let arith_ty = flag_arith_to_op_arith(arith.ty)?;
+            let size = arith.size;
+
+            let base_result =
+                ctx.arithmetic_masked(arith_ty, arith.left, arith.right, size.mask());
+            let mut result = if arith.ty == FlagArith::Adc {
+                ctx.add(base_result, carry.unwrap_or_else(|| ctx.const_0()))
+            } else if arith.ty == FlagArith::Sbb {
+                ctx.sub(base_result, carry.unwrap_or_else(|| ctx.const_0()))
+            } else {
+                base_result
+            };
+            if result != base_result && size != MemAccessSize::Mem64 {
+                result = ctx.and_const(result, size.mask());
+            }
+            Some(PendingFlagsResult {
+                result,
+                base_result,
+            })
+        })
+    }
+}
+
 /// Function to determine which flags add_resolved_constraint should consider checking
 /// for equaling constraint. As the exec states delay realizing flags, checking all
 /// flags unconditionally causes unnecessary work.
