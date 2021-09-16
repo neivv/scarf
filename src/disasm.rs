@@ -3396,7 +3396,7 @@ pub enum Operation<'e> {
     Error(Error),
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct FlagUpdate<'e> {
     pub left: Operand<'e>,
     pub right: Operand<'e>,
