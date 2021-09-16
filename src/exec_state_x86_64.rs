@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::fmt;
 use std::rc::Rc;
 
@@ -495,6 +496,17 @@ impl<'e> State<'e> {
         self.ctx
     }
 
+    fn registers(&self) -> &[Operand<'e>; 0x10] {
+        (&self.state[..0x10]).try_into().unwrap()
+    }
+
+    fn flag_state<'a>(&'a mut self) -> exec_state::FlagState<'a, 'e> {
+        exec_state::FlagState {
+            flags: (&mut self.state[FLAGS_INDEX..][..6]).try_into().unwrap(),
+            pending_flags: &mut self.pending_flags,
+        }
+    }
+
     fn realize_pending_flag(&mut self, flag: Flag) {
         use crate::disasm::FlagArith::*;
 
@@ -608,7 +620,7 @@ impl<'e> State<'e> {
                 Destination::Oper(&mut xmm[(reg & 0xf) as usize * 4 + (word & 3) as usize])
             }
             DestOperand::Flag(flag) => {
-                self.pending_flags.clear_pending(flag);
+                self.pending_flags.make_non_pending(flag);
                 Destination::Oper(&mut self.state[FLAGS_INDEX + flag as usize])
             }
             DestOperand::Memory(ref mem) => {
@@ -1117,17 +1129,6 @@ fn merge_states<'a: 'r, 'r>(
     new: &'r mut State<'a>,
     cache: &'r mut MergeStateCache<'a>,
 ) -> Option<ExecutionState<'a>> {
-    let ctx = old.ctx;
-    for i in 0..5 {
-        // This will always realize any old flags if they were pending
-        let flag = ctx.flag_by_index(i);
-        let old_flag = old.resolve(flag);
-        if !old_flag.is_undefined() {
-            // New flag's value will matter if old isn't undefined, so realize it
-            new.resolve(flag);
-        }
-    }
-
     fn check_eq<'e>(a: Operand<'e>, b: Operand<'e>) -> bool {
         a == b || a.is_undefined()
     }
@@ -1178,7 +1179,7 @@ fn merge_states<'a: 'r, 'r>(
     let memory_constraint =
         exec_state::merge_constraint(ctx, old.memory_constraint, new.memory_constraint);
     let changed = (
-            old.state.iter().zip(new.state.iter())
+            old.registers().iter().zip(new.registers().iter())
                 .any(|(&a, &b)| !check_eq(a, b))
         ) || (
             if old.memory.is_same(&new.memory) {
@@ -1197,9 +1198,20 @@ fn merge_states<'a: 'r, 'r>(
         !xmm_eq ||
         merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) ||
         resolved_constraint != old.resolved_constraint ||
-        memory_constraint != old.memory_constraint;
+        memory_constraint != old.memory_constraint ||
+        exec_state::flags_merge_changed(&mut old.flag_state(), &mut new.flag_state(), ctx);
     if changed {
-        let state = array_init::array_init(|i| merge(ctx, old.state[i], new.state[i]));
+        let zero = ctx.const_0();
+        let mut state = array_init::array_init(|_| zero);
+        for i in 0..16 {
+            state[i] = merge(ctx, old.state[i], new.state[i]);
+        }
+        let pending_flags = exec_state::merge_flags(
+            &mut old.flag_state(),
+            &mut new.flag_state(),
+            (&mut state[FLAGS_INDEX..][..6]).try_into().unwrap(),
+            ctx,
+        );
         let mut cached_low_registers = CachedLowRegisters::new();
         for i in 0..16 {
             let old_reg = &old.cached_low_registers.registers[i];
@@ -1232,7 +1244,7 @@ fn merge_states<'a: 'r, 'r>(
             }),
             resolved_constraint,
             memory_constraint,
-            pending_flags: PendingFlags::new(),
+            pending_flags,
             ctx,
             binary: old.binary,
             // Freeze buffer is intended to be empty at merge points,

@@ -367,6 +367,152 @@ pub(crate) fn overflow_for_add_sub<'e>(
     }
 }
 
+pub(crate) struct FlagState<'a, 'e> {
+    pub flags: &'a mut [Operand<'e>; 6],
+    pub pending_flags: &'a mut PendingFlags<'e>,
+}
+
+
+fn operand_merge_eq<'e>(a: Operand<'e>, b: Operand<'e>) -> bool {
+    a == b || a.is_undefined()
+}
+
+pub(crate) fn flags_merge_changed<'a, 'b, 'e>(
+    old: &mut FlagState<'a, 'e>,
+    new: &mut FlagState<'b, 'e>,
+    ctx: OperandCtx<'e>,
+) -> bool {
+    // Direction
+    if !operand_merge_eq(old.flags[5], new.flags[5]) {
+        return true;
+    }
+    let mut checked_flags = 0u8;
+    let mut check_pending_result_eq = false;
+    if let Some(ref old_update) = old.pending_flags.update {
+        if let Some(ref new_update) = new.pending_flags.update {
+            if old_update == new_update && old.pending_flags.carry == new.pending_flags.carry {
+                // Pending flags equal, no need to check any flags that are still pending
+                // or were resolved from these.
+                checked_flags |= old.pending_flags.flag_bits & new.pending_flags.flag_bits;
+            } else {
+                check_pending_result_eq = true;
+            }
+        }
+    }
+    if check_pending_result_eq {
+        // If the flag inputs weren't equal, check if their results are
+        if old.pending_flags.get_result(ctx).map(|x| x.result) ==
+            new.pending_flags.get_result(ctx).map(|x| x.result)
+        {
+            checked_flags |= old.pending_flags.flag_bits & new.pending_flags.flag_bits;
+        } else {
+            // At least one flag in old is pending and result doesn't match,
+            // it has changed. New being pending doesn't matter necessarily as
+            // old may be undef
+            if old.pending_flags.pending_bits != 0 {
+                return true;
+            }
+        }
+    }
+    if checked_flags != 0x1f {
+        for i in 0..5 {
+            let mask = 1 << i;
+            if checked_flags & mask == 0 {
+                if old.pending_flags.pending_bits & mask != 0 {
+                    return true;
+                }
+                if old.flags[i].is_undefined() {
+                    continue;
+                }
+                if new.pending_flags.pending_bits & mask != 0 {
+                    return true;
+                }
+                if new.flags[i] != old.flags[i] {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn merge_flags<'a, 'b, 'e>(
+    old: &mut FlagState<'a, 'e>,
+    new: &mut FlagState<'b, 'e>,
+    out_flags: &mut [Operand<'e>; 6],
+    ctx: OperandCtx<'e>,
+) -> PendingFlags<'e> {
+    if old.flags[5] == new.flags[5] {
+        out_flags[5] = old.flags[5];
+    } else {
+        out_flags[5] = ctx.new_undef();
+    }
+    let mut flag_bits = 0u8;
+    let mut pending_bits = 0u8;
+    let mut check_pending_result_eq = false;
+    let mut out_pending_flags = PendingFlags::new();
+    if let Some(ref old_update) = old.pending_flags.update {
+        if let Some(ref new_update) = new.pending_flags.update {
+            if old_update == new_update && old.pending_flags.carry == new.pending_flags.carry {
+                // Pending flags equal, no need to check any flags that are still pending
+                // or were resolved from these.
+                flag_bits = old.pending_flags.flag_bits & new.pending_flags.flag_bits;
+                pending_bits = flag_bits &
+                    old.pending_flags.pending_bits & new.pending_flags.pending_bits;
+                out_pending_flags = *old.pending_flags;
+            } else {
+                check_pending_result_eq = true;
+            }
+        }
+    }
+    if check_pending_result_eq {
+        // If the flag inputs weren't equal, check if their results are
+        if old.pending_flags.get_result(ctx).map(|x| x.result) ==
+            new.pending_flags.get_result(ctx).map(|x| x.result)
+        {
+            flag_bits = old.pending_flags.flag_bits & new.pending_flags.flag_bits;
+            pending_bits = flag_bits &
+                old.pending_flags.pending_bits & new.pending_flags.pending_bits;
+            out_pending_flags = *old.pending_flags;
+        }
+    }
+    out_pending_flags.flag_bits = flag_bits;
+    out_pending_flags.pending_bits = pending_bits;
+    if pending_bits != 0x1f {
+        for i in 0..5 {
+            let mask = 1 << i;
+            if pending_bits & mask == 0 {
+                if flag_bits & mask != 0 {
+                    // This flag is in common flags but wasn't pending, so one of the
+                    // old/new should have it calculated
+                    if old.pending_flags.pending_bits & mask == 0 {
+                        // Old has result calculated
+                        out_flags[i] = old.flags[i];
+                    } else {
+                        // Otherwise it should be in new always
+                        debug_assert!(new.pending_flags.pending_bits & mask == 0);
+                        out_flags[i] = new.flags[i];
+                    }
+                } else {
+                    let old_flag = old.flags[i];
+                    if old.pending_flags.pending_bits & mask != 0 {
+                        out_flags[i] = ctx.new_undef();
+                    } else if old_flag.is_undefined() {
+                        out_flags[i] = old_flag;
+                    } else if new.pending_flags.pending_bits & mask != 0 ||
+                        new.flags[i] != old_flag
+                    {
+                        out_flags[i] = ctx.new_undef();
+                    } else {
+                        out_flags[i] = old_flag;
+                    }
+                }
+            }
+        }
+    }
+    out_pending_flags
+}
+
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct PendingFlags<'e> {
     pub update: Option<FlagUpdate<'e>>,
@@ -375,6 +521,9 @@ pub(crate) struct PendingFlags<'e> {
     /// Before reading flags, if this has a bit set, it means that the flag has to
     /// be calculated through pending_flags.
     pub pending_bits: u8,
+    /// Which flags the current update applies to.
+    /// Superset of pending_bits
+    pub flag_bits: u8,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -390,6 +539,7 @@ impl<'e> PendingFlags<'e> {
             carry: None,
             result: None,
             pending_bits: 0,
+            flag_bits: 0,
         }
     }
 
@@ -398,6 +548,7 @@ impl<'e> PendingFlags<'e> {
         self.carry = carry;
         self.result = None;
         self.pending_bits = 0x1f;
+        self.flag_bits = 0x1f;
     }
 
     pub fn is_pending(&self, flag: Flag) -> bool {
@@ -406,6 +557,11 @@ impl<'e> PendingFlags<'e> {
 
     pub fn clear_pending(&mut self, flag: Flag) {
         self.pending_bits &= !(1 << flag as u32);
+    }
+
+    pub fn make_non_pending(&mut self, flag: Flag) {
+        self.pending_bits &= !(1 << flag as u32);
+        self.flag_bits &= !(1 << flag as u32);
     }
 
     pub fn get_result(&mut self, ctx: OperandCtx<'e>) -> Option<PendingFlagsResult<'e>> {
@@ -2196,4 +2352,94 @@ fn value_limits_sext() {
     );
     assert_eq!(low, 0x41);
     assert_eq!(high, 0xffff_ff82);
+}
+
+#[test]
+fn test_merge_flags() {
+    fn test<'e, F: FnOnce(&mut FlagState<'_, 'e>, &mut FlagState<'_, 'e>)>(
+        ctx: OperandCtx<'e>,
+        callback: F,
+    ) {
+        let mut flags1 = array_init::array_init(|i| ctx.register(i as u8));
+        let mut flags2 = array_init::array_init(|i| ctx.register(8 + i as u8));
+        flags1[5] = ctx.const_0();
+        flags2[5] = ctx.const_0();
+        let mut pending1 = PendingFlags::new();
+        let mut pending2 = PendingFlags::new();
+        let update = FlagUpdate {
+            left: ctx.mem32c(0x100),
+            right: ctx.mem32c(0x200),
+            ty: FlagArith::Sub,
+            size: MemAccessSize::Mem32,
+        };
+        pending1.reset(&update, None);
+        pending2.reset(&update, None);
+
+        let mut flag_state1 = FlagState {
+            flags: &mut flags1,
+            pending_flags: &mut pending1,
+        };
+        let mut flag_state2 = FlagState {
+            flags: &mut flags2,
+            pending_flags: &mut pending2,
+        };
+        callback(&mut flag_state1, &mut flag_state2);
+    }
+
+    let ctx = &crate::operand::OperandContext::new();
+    test(ctx, |old, new| {
+        // Should be equal, no changes
+        assert!(flags_merge_changed(old, new, ctx) == false);
+        let mut new_flags = array_init::array_init(|_| ctx.const_0());
+        let new_pending = merge_flags(old, new, &mut new_flags, ctx);
+        assert_eq!(new_pending.pending_bits, 0x1f);
+        assert_eq!(new_pending.update, old.pending_flags.update);
+    });
+    test(ctx, |old, new| {
+        new.pending_flags.clear_pending(Flag::Zero);
+        old.pending_flags.clear_pending(Flag::Carry);
+        let zero_carry_mask = (1 << Flag::Zero as u32) | (1 << Flag::Carry as u32);
+        // Should assume that they're equal and new zero and old carry can be used
+        assert!(flags_merge_changed(old, new, ctx) == false);
+        let mut new_flags = array_init::array_init(|_| ctx.const_0());
+        let new_pending = merge_flags(old, new, &mut new_flags, ctx);
+        assert_eq!(new_pending.flag_bits, 0x1f);
+        assert_eq!(new_pending.pending_bits, 0x1f & !zero_carry_mask);
+        assert_eq!(new_pending.update, old.pending_flags.update);
+        assert_eq!(new_flags[Flag::Zero as usize], new.flags[Flag::Zero as usize]);
+        assert_eq!(new_flags[Flag::Carry as usize], old.flags[Flag::Carry as usize]);
+    });
+    test(ctx, |old, new| {
+        new.pending_flags.clear_pending(Flag::Zero);
+        old.pending_flags.make_non_pending(Flag::Carry);
+        let carry_mask = 1 << Flag::Carry as u32;
+        let zero_carry_mask = (1 << Flag::Zero as u32) | (1 << Flag::Carry as u32);
+        // Now old carry has been assigned from somewhere else than pending FlagUpdate,
+        // should be assumed that new carry isn't same
+        assert!(flags_merge_changed(old, new, ctx) == true);
+        let mut new_flags = array_init::array_init(|_| ctx.const_0());
+        let new_pending = merge_flags(old, new, &mut new_flags, ctx);
+        assert_eq!(new_pending.flag_bits, 0x1f & !carry_mask);
+        assert_eq!(new_pending.pending_bits, 0x1f & !zero_carry_mask);
+        assert_eq!(new_pending.update, old.pending_flags.update);
+        assert_eq!(new_flags[Flag::Zero as usize], new.flags[Flag::Zero as usize]);
+        assert!(new_flags[Flag::Carry as usize].is_undefined());
+    });
+    test(ctx, |old, new| {
+        new.flags[Flag::Carry as usize] = ctx.constant(666);
+        old.flags[Flag::Carry as usize] = ctx.constant(666);
+        new.pending_flags.clear_pending(Flag::Carry);
+        old.pending_flags.make_non_pending(Flag::Carry);
+        let carry_mask = 1 << Flag::Carry as u32;
+        // Carry sources are different but result is same, should not make undefined
+        // or consider changed.
+        assert!(flags_merge_changed(old, new, ctx) == false);
+        let mut new_flags = array_init::array_init(|_| ctx.const_0());
+        let new_pending = merge_flags(old, new, &mut new_flags, ctx);
+        // This could also be 0x1f, but not going to care about it for now
+        assert_eq!(new_pending.flag_bits, 0x1f & !carry_mask);
+        assert_eq!(new_pending.pending_bits, 0x1f & !carry_mask);
+        assert_eq!(new_pending.update, old.pending_flags.update);
+        assert_eq!(new_flags[Flag::Carry as usize], ctx.constant(666));
+    });
 }
