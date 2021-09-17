@@ -815,6 +815,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     }
 
     pub fn analyze<A: Analyzer<'a, State = State, Exec = Exec>>(&mut self, analyzer: &mut A) {
+        let old_undef_pos = self.operand_ctx.get_undef_pos();
         let mut disasm = Exec::Disassembler::new(self.operand_ctx);
 
         while let Some((addr, state)) = self.pop_next_branch_and_set_disasm(&mut disasm) {
@@ -824,6 +825,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                 break;
             }
         }
+        self.operand_ctx.set_undef_pos(old_undef_pos);
     }
 
     fn disasm_set_pos(

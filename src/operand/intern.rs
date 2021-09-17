@@ -303,4 +303,13 @@ impl UndefInterner {
             chunks.push(Box::new(ArrayVec::new()));
         }
     }
+
+    pub(crate) fn get<'e>(&'e self, index: usize) -> Operand<'e> {
+        let chunks = self.chunks.borrow_mut();
+        let index1 = index / UNDEF_CHUNK_SIZE;
+        let index2 = index % UNDEF_CHUNK_SIZE;
+        let base: &OperandBase<'static> = &chunks[index1][index2];
+        let base: &'e OperandBase<'e> = unsafe { mem::transmute(base) };
+        return Operand(base, PhantomData);
+    }
 }

@@ -292,6 +292,7 @@ const fn sign_mask_const_index(group: usize) -> usize {
 
 pub struct OperandContext<'e> {
     next_undefined: Cell<u32>,
+    max_undefined: Cell<u32>,
     // Contains SMALL_CONSTANT_COUNT small constants, 0x10 registers, 0x6 flags
     common_operands: Box<[OperandSelfRef; COMMON_OPERANDS_COUNT]>,
     interner: intern::Interner<'e>,
@@ -462,6 +463,7 @@ impl<'e> OperandContext<'e> {
             Box::alloc().init([OperandSelfRef(null_mut()); COMMON_OPERANDS_COUNT]);
         let mut result: OperandContext<'e> = OperandContext {
             next_undefined: Cell::new(0),
+            max_undefined: Cell::new(0),
             common_operands,
             interner: intern::Interner::new(),
             const_interner: intern::ConstInterner::new(),
@@ -658,12 +660,31 @@ impl<'e> OperandContext<'e> {
     pub fn new_undef(&'e self) -> Operand<'e> {
         let id = self.next_undefined.get();
         self.next_undefined.set(id + 1);
-        self.undef_interner.push(OperandBase {
-            ty: OperandType::Undefined(UndefinedId(id)),
-            min_zero_bit_simplify_size: 0,
-            relevant_bits: 0..64,
-            flags: FLAG_CONTAINS_UNDEFINED,
-        })
+        if id == self.max_undefined.get() {
+            self.max_undefined.set(id + 1);
+            self.undef_interner.push(OperandBase {
+                ty: OperandType::Undefined(UndefinedId(id)),
+                min_zero_bit_simplify_size: 0,
+                relevant_bits: 0..64,
+                flags: FLAG_CONTAINS_UNDEFINED,
+            })
+        } else {
+            self.undef_interner.get(id as usize)
+        }
+    }
+
+    pub(crate) fn get_undef_pos(&'e self) -> u32 {
+        self.next_undefined.get()
+    }
+
+    /// Resets next_undefined; keeps Undefined allocations low when
+    /// same OperandCtx is used for several different analysises.
+    ///
+    /// User code should not rely on Undefined from different FuncAnalysis being
+    /// distinguishable, ideally user code should avoid considering Operands with
+    /// Undefined valid results.
+    pub(crate) fn set_undef_pos(&'e self, val: u32) {
+        self.next_undefined.set(val)
     }
 
     #[inline]
@@ -1294,9 +1315,12 @@ impl<'e> OperandContext<'e> {
     }
 
     /// Gets amount of operands interned. Intented for debug / diagnostic info.
-    pub fn interned_count(&self) -> usize {
-        self.interner.interned_count() + self.next_undefined.get() as usize +
-            self.const_interner.interned_count()
+    pub fn interned_counts(&self) -> InternedCounts {
+        InternedCounts {
+            other: self.interner.interned_count(),
+            undefined: self.max_undefined.get() as usize,
+            constant: self.const_interner.interned_count(),
+        }
     }
 
     pub(crate) fn simplify_temp_stack(&'e self) -> &'e SliceStack {
@@ -1306,6 +1330,18 @@ impl<'e> OperandContext<'e> {
     pub(crate) fn swap_freeze_buffer(&'e self, other: &mut Vec<exec_state::FreezeOperation<'e>>) {
         let mut own = self.freeze_buffer.borrow_mut();
         std::mem::swap(&mut *own, other);
+    }
+}
+
+pub struct InternedCounts {
+    pub undefined: usize,
+    pub constant: usize,
+    pub other: usize,
+}
+
+impl InternedCounts {
+    pub fn total(&self) -> usize {
+        self.undefined + self.constant + self.other
     }
 }
 
