@@ -539,7 +539,7 @@ fn instruction_operations32_main(
         0x118 | 0x119 | 0x11a | 0x11b | 0x11c | 0x11d | 0x11e | 0x11f => Ok(()),
         0x110 | 0x111| 0x113 | 0x128 | 0x129 | 0x12b | 0x16f | 0x17e | 0x17f => s.sse_move(),
         0x12a => s.sse_int_to_float(),
-        0x12c | 0x12d => s.cvttss2si(),
+        0x12c | 0x12d => s.sse_float_to_i32(),
         // ucomiss, comiss, comiss signals exceptions but that isn't simulated
         0x12e | 0x12f => s.sse_compare(),
         // rdtsc
@@ -802,7 +802,7 @@ fn instruction_operations64_main(
             s.sse_unpack()
         }
         0x12a => s.sse_int_to_float(),
-        0x12c | 0x12d => s.cvttss2si(),
+        0x12c | 0x12d => s.sse_float_to_i32(),
         // ucomiss, comiss, comiss signals exceptions but that isn't simulated
         0x12e | 0x12f => s.sse_compare(),
         // rdtsc
@@ -1043,6 +1043,13 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     false => MemAccessSize::Mem32,
                 },
             }
+        }
+    }
+
+    fn mem32_64(&self) -> MemAccessSize {
+        match self.rex_prefix() & 0x8 != 0 {
+            true => MemAccessSize::Mem64,
+            false => MemAccessSize::Mem32,
         }
     }
 
@@ -2369,10 +2376,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         } else {
             ArithOpType::ToDouble
         };
-        let op_size = match self.rex_prefix() & 0x8 != 0 {
-            true => MemAccessSize::Mem64,
-            false => MemAccessSize::Mem32,
-        };
+        let op_size = self.mem32_64();
         let (rm, r) = self.parse_modrm(op_size)?;
         let ctx = self.ctx;
 
@@ -2436,20 +2440,29 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         Ok(())
     }
 
-    fn cvttss2si(&mut self) -> Result<(), Failed> {
+    fn sse_float_to_i32(&mut self) -> Result<(), Failed> {
         // TODO Doesn't actually truncate overflows
-        if !self.has_prefix(0xf3) {
+        // (Opcode 0f, 2c)
+        let src_size = if self.has_prefix(0xf3) {
+            MemAccessSize::Mem32
+        } else if self.has_prefix(0xf2) {
+            MemAccessSize::Mem64
+        } else {
             return Err(self.unknown_opcode());
-        }
-        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
-        let op = self.rm_to_operand_xmm(&rm, 0);
+        };
+        let (rm, r) = self.parse_modrm(self.mem32_64())?;
+        let op = if src_size == MemAccessSize::Mem64 {
+            self.rm_to_operand_xmm_64(&rm, 0)
+        } else {
+            self.rm_to_operand_xmm(&rm, 0)
+        };
         self.output_mov(
             r.dest_operand(),
             self.ctx.float_arithmetic(
                 ArithOpType::ToInt,
                 op,
                 self.ctx.const_0(),
-                MemAccessSize::Mem32
+                src_size,
             ),
         );
         Ok(())

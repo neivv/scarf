@@ -881,6 +881,26 @@ fn cvtsi2sd_or_ss_also_r64() {
     ]);
 }
 
+#[test]
+fn cvtsd2si() {
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0xb8, 0x00, 0x20, 0x67, 0xc0, // mov eax, c0672000
+        0x48, 0xc1, 0xe0, 0x20, // shl rax, 20
+        0x66, 0x48, 0x0f, 0x6e, 0xc0, // movq xmm0, rax
+        0xf2, 0x48, 0x0f, 0x2d, 0xc0, // cvtsd2si rax, xmm0
+        0xf2, 0x0f, 0x2d, 0xc8, // cvtsd2si ecx, xmm0
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(0xffff_ffff_ffff_ff47)),
+        (ctx.register(1), ctx.constant(0xffff_ff47)),
+        (ctx.xmm(0, 0), ctx.constant(0x0)),
+        (ctx.xmm(0, 1), ctx.constant(0xc0672000)),
+        (ctx.xmm(0, 2), ctx.constant(0x0)),
+        (ctx.xmm(0, 3), ctx.constant(0x0)),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
