@@ -608,6 +608,7 @@ fn instruction_operations32_main(
         0x1d3 => s.packed_shift_right(),
         0x1d5 => s.pmullw(),
         0x1d6 => s.mov_sse_d6(),
+        0x1d7 => s.pmovmskb(),
         0x1e6 => s.sse_int_double_conversion(),
         0x1ef => {
             if s.has_prefix(0x66) {
@@ -870,6 +871,7 @@ fn instruction_operations64_main(
         0x1d3 => s.packed_shift_right(),
         0x1d5 => s.pmullw(),
         0x1d6 => s.mov_sse_d6(),
+        0x1d7 => s.pmovmskb(),
         0x1e6 => s.sse_int_double_conversion(),
         0x1ef => {
             if s.has_prefix(0x66) {
@@ -2697,6 +2699,40 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             };
             let dest = self.rm_to_dest_operand_xmm(&rm, i);
             self.output_mov(dest, val);
+        }
+        Ok(())
+    }
+
+    fn pmovmskb(&mut self) -> Result<(), Failed> {
+        if !self.has_prefix(0x66) {
+            return Err(self.unknown_opcode());
+        }
+        // Sign bit of each byte in input
+        // out 0x1 = in 0x80, 0x2 = in 0x8000, 0x4 = 0x80_0000, ...
+        let (rm, src) = self.parse_modrm(MemAccessSize::Mem32)?;
+        if rm.is_memory() {
+            return Err(self.unknown_opcode());
+        }
+        // Going to implement this as a zero rm + chain of ors to rm
+        // Could just do single large assignment but maybe this ends up being nicer?
+        let ctx = self.ctx;
+        let dest = self.rm_to_dest_and_operand(&rm);
+        self.output_mov(dest.dest, ctx.const_0());
+        let mut out_bit_pos = 0i32;
+        for i in 0..4 {
+            let xmm = self.r_to_operand_xmm(src, i);
+            for byte in 0..4 {
+                let value = ctx.and_const(xmm, 0x80 << (byte * 8));
+                let in_bit_pos = 7i32 + byte * 8;
+                let shift = in_bit_pos - out_bit_pos;
+                let value = if shift > 0 {
+                    ctx.rsh_const(value, shift as u64)
+                } else {
+                    ctx.lsh_const(value, (0 - shift) as u64)
+                };
+                self.output_or(dest.clone(), value);
+                out_bit_pos += 1;
+            }
         }
         Ok(())
     }
