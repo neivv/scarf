@@ -2207,12 +2207,22 @@ pub enum MemAccessSize {
 impl MemAccessSize {
     #[inline]
     pub fn bits(self) -> u32 {
-        match self {
-            MemAccessSize::Mem64 => 64,
+        (match self {
+            MemAccessSize::Mem64 => 64u8,
             MemAccessSize::Mem32 => 32,
             MemAccessSize::Mem16 => 16,
             MemAccessSize::Mem8 => 8,
-        }
+        }) as u32
+    }
+
+    #[inline]
+    pub fn bytes(self) -> u32 {
+        (match self {
+            MemAccessSize::Mem64 => 8u8,
+            MemAccessSize::Mem32 => 4,
+            MemAccessSize::Mem16 => 2,
+            MemAccessSize::Mem8 => 1,
+        }) as u32
     }
 
     #[inline]

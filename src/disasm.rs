@@ -549,6 +549,7 @@ fn instruction_operations32_main(
             }
             Ok(())
         }
+        0x138 => s.opcode_0f38(),
         0x140 | 0x141 | 0x142 | 0x143 | 0x144 | 0x145 | 0x146 | 0x147 |
             0x148 | 0x149 | 0x14a | 0x14b | 0x14c | 0x14d | 0x14e | 0x14f => s.cmov(),
         0x157 => s.xorps(),
@@ -813,6 +814,7 @@ fn instruction_operations64_main(
             }
             Ok(())
         }
+        0x138 => s.opcode_0f38(),
         0x140 | 0x141 | 0x142 | 0x143 | 0x144 | 0x145 | 0x146 | 0x147 |
             0x148 | 0x149 | 0x14a | 0x14b | 0x14c | 0x14d | 0x14e | 0x14f => s.cmov(),
         0x157 => s.xorps(),
@@ -1212,6 +1214,44 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             DestOperand::Memory(self.ctx.mem_access(base, offset, MemAccessSize::Mem32))
         } else {
             DestOperand::Xmm(rm.base, i)
+        }
+    }
+
+    fn rm_to_operand_xmm_size(
+        &mut self,
+        rm: &ModRm_Rm,
+        i: u8,
+        size: MemAccessSize,
+    ) -> Operand<'e> {
+        let bytes = size.bytes();
+        let ctx = self.ctx;
+        if rm.is_memory() {
+            let (base, mut offset) = self.rm_address_operand(&rm);
+            offset = offset.wrapping_add(i as u64 * bytes as u64);
+            ctx.mem_any(size, base, offset)
+        } else {
+            if size == MemAccessSize::Mem64 {
+                self.rm_to_operand_xmm_64(rm, i)
+            } else {
+                let shift = match size {
+                    MemAccessSize::Mem8 => 2,
+                    MemAccessSize::Mem16 => 1,
+                    MemAccessSize::Mem32 => 0,
+                    MemAccessSize::Mem64 => 0,
+                };
+                let xmm_word = ctx.xmm(rm.base, i >> shift);
+                if shift != 0 {
+                    let shift = if size == MemAccessSize::Mem8 {
+                        (u64::from(i) & 3) << 3
+                    } else {
+                        // Mem16
+                        (u64::from(i) & 1) << 4
+                    };
+                    ctx.and_const(ctx.rsh_const(xmm_word, shift), size.mask())
+                } else {
+                    xmm_word
+                }
+            }
         }
     }
 
@@ -1987,6 +2027,56 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 }
             }
             self.output_mov(r.dest_operand(), addr);
+        }
+        Ok(())
+    }
+
+    fn opcode_0f38(&mut self) -> Result<(), Failed> {
+        if !self.has_prefix(0x66) {
+            return Err(self.unknown_opcode());
+        }
+        self.data.rotate_left(1);
+        let opcode = self.read_u8(0)?;
+        // Only pmovsx 0f, 38, 20 ..= 25 is implemented
+        let (in_size, out_size) = match opcode {
+            0x20 => (MemAccessSize::Mem8, MemAccessSize::Mem16),
+            0x21 => (MemAccessSize::Mem8, MemAccessSize::Mem32),
+            0x22 => (MemAccessSize::Mem8, MemAccessSize::Mem64),
+            0x23 => (MemAccessSize::Mem16, MemAccessSize::Mem32),
+            0x24 => (MemAccessSize::Mem16, MemAccessSize::Mem64),
+            0x25 => (MemAccessSize::Mem32, MemAccessSize::Mem64),
+            _ => return Err(self.unknown_opcode()),
+        };
+        let (src, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let ctx = self.ctx;
+        let mut in_pos = 0;
+        let mut out_xmm_word = 0;
+        while out_xmm_word < 4 {
+            let dest_op = dest.dest_operand_xmm(out_xmm_word);
+            let in_value = self.rm_to_operand_xmm_size(&src, in_pos, in_size);
+            in_pos += 1;
+            let mut value = ctx.sign_extend(in_value, in_size, out_size);
+            if out_size != MemAccessSize::Mem64 {
+                for i in 0..((32 / out_size.bits()) - 1) {
+                    let in_value = self.rm_to_operand_xmm_size(&src, in_pos, in_size);
+                    let new_value = ctx.sign_extend(in_value, in_size, out_size);
+                    let shifted = ctx.lsh_const(
+                        new_value,
+                        u64::from((i + 1) * out_size.bits()),
+                    );
+                    value = ctx.or(value, shifted);
+                    in_pos += 1;
+                }
+                self.output_mov(dest_op, value);
+                out_xmm_word += 1;
+            } else {
+                self.output_mov(dest_op, ctx.and_const(value, 0xffff_ffff));
+                self.output_mov(
+                    dest.dest_operand_xmm(out_xmm_word + 1),
+                    ctx.rsh_const(value, 32),
+                );
+                out_xmm_word += 2;
+            }
         }
         Ok(())
     }

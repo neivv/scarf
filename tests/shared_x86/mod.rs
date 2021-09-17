@@ -709,3 +709,57 @@ fn pmovmskb() {
         (ctx.register(0), ctx.constant(0xecf0)),
     ]);
 }
+
+#[test]
+fn pmovsx() {
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0xc7, 0x04, 0xe4, 0x78, 0x56, 0x34, 0x12, // mov [esp], 12345678
+        0xc7, 0x44, 0xe4, 0x04, 0x80, 0x80, 0x80, 0x80, // mov [esp + 4], 80808080
+        0xc7, 0x44, 0xe4, 0x08, 0x22, 0x11, 0x99, 0x88, // mov [esp + 8], 88991122
+        0xc7, 0x44, 0xe4, 0x0c, 0x08, 0xef, 0xcd, 0xab, // mov [esp + c], ABCDEF08
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x66, 0x0f, 0x38, 0x20, 0xc8, // pmovsxbw xmm1, xmm0
+        0x66, 0x0f, 0x38, 0x21, 0xd0, // pmovsxbd xmm2, xmm0
+        0x66, 0x0f, 0x38, 0x22, 0xd8, // pmovsxbq xmm3, xmm0
+        0x66, 0x0f, 0x38, 0x23, 0xe0, // pmovsxwd xmm4, xmm0
+        0x66, 0x0f, 0x38, 0x24, 0xe8, // pmovsxwq xmm5, xmm0
+        0x66, 0x0f, 0x38, 0x25, 0xf0, // pmovsxdq xmm6, xmm0
+        0xc3, // ret
+    ], &[
+        (ctx.xmm(0, 0), ctx.constant(0x12345678)),
+        (ctx.xmm(0, 1), ctx.constant(0x80808080)),
+        (ctx.xmm(0, 2), ctx.constant(0x88991122)),
+        (ctx.xmm(0, 3), ctx.constant(0xabcdef08)),
+
+        (ctx.xmm(1, 0), ctx.constant(0x00560078)),
+        (ctx.xmm(1, 1), ctx.constant(0x00120034)),
+        (ctx.xmm(1, 2), ctx.constant(0xff80ff80)),
+        (ctx.xmm(1, 3), ctx.constant(0xff80ff80)),
+
+        (ctx.xmm(2, 0), ctx.constant(0x00000078)),
+        (ctx.xmm(2, 1), ctx.constant(0x00000056)),
+        (ctx.xmm(2, 2), ctx.constant(0x00000034)),
+        (ctx.xmm(2, 3), ctx.constant(0x00000012)),
+
+        (ctx.xmm(3, 0), ctx.constant(0x00000078)),
+        (ctx.xmm(3, 1), ctx.constant(0x00000000)),
+        (ctx.xmm(3, 2), ctx.constant(0x00000056)),
+        (ctx.xmm(3, 3), ctx.constant(0x00000000)),
+
+        (ctx.xmm(4, 0), ctx.constant(0x00005678)),
+        (ctx.xmm(4, 1), ctx.constant(0x00001234)),
+        (ctx.xmm(4, 2), ctx.constant(0xffff8080)),
+        (ctx.xmm(4, 3), ctx.constant(0xffff8080)),
+
+        (ctx.xmm(5, 0), ctx.constant(0x00005678)),
+        (ctx.xmm(5, 1), ctx.constant(0x00000000)),
+        (ctx.xmm(5, 2), ctx.constant(0x00001234)),
+        (ctx.xmm(5, 3), ctx.constant(0x00000000)),
+
+        (ctx.xmm(6, 0), ctx.constant(0x12345678)),
+        (ctx.xmm(6, 1), ctx.constant(0x00000000)),
+        (ctx.xmm(6, 2), ctx.constant(0x80808080)),
+        (ctx.xmm(6, 3), ctx.constant(0xffffffff)),
+    ]);
+}
