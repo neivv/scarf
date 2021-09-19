@@ -847,3 +847,16 @@ fn maxps() {
         (ctx.xmm(2, 3), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn pextrw() {
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0x66, 0x0f, 0xc5, 0xc0, 0x04, // pextrw eax, xmm0, 4
+        0x66, 0x0f, 0xc5, 0xc9, 0x57, // pextrw ecx, xmm1, 57
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.and_const(ctx.xmm(0, 2), 0xffff)),
+        (ctx.register(1), ctx.and_const(ctx.rsh_const(ctx.xmm(1, 3), 0x10), 0xffff)),
+    ]);
+}

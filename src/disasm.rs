@@ -607,6 +607,7 @@ fn instruction_operations32_main(
         0x1be => s.movsx(MemAccessSize::Mem8),
         0x1bf => s.movsx(MemAccessSize::Mem16),
         0x1c0 | 0x1c1 => s.xadd(),
+        0x1c5 => s.pextrw(),
         0x1c8 | 0x1c9 | 0x1ca | 0x1cb | 0x1cc | 0x1cd | 0x1ce | 0x1cf => s.bswap(),
         0x1d3 => s.packed_shift_right(),
         0x1d5 => s.pmullw(),
@@ -873,6 +874,7 @@ fn instruction_operations64_main(
         0x1be => s.movsx(MemAccessSize::Mem8),
         0x1bf => s.movsx(MemAccessSize::Mem16),
         0x1c0 | 0x1c1 => s.xadd(),
+        0x1c5 => s.pextrw(),
         0x1c8 | 0x1c9 | 0x1ca | 0x1cb | 0x1cc | 0x1cd | 0x1ce | 0x1cf => s.bswap(),
         0x1d3 => s.packed_shift_right(),
         0x1d5 => s.pmullw(),
@@ -3065,6 +3067,21 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         // Zero everything if rm.1 is set
         self.packed_shift_right_xmm_u64(dest, rm_0);
         self.zero_xmm_if_rm1_nonzer0(&rm, dest);
+        Ok(())
+    }
+
+    fn pextrw(&mut self) -> Result<(), Failed> {
+        if !self.has_prefix(0x66) {
+            return Err(self.unknown_opcode());
+        }
+        let (rm, dest, imm) = self.parse_modrm_imm(MemAccessSize::Mem32, MemAccessSize::Mem8)?;
+        if rm.is_memory() {
+            return Err(self.unknown_opcode());
+        }
+        if let Some(word) = imm.if_constant() {
+            let op = self.rm_to_operand_xmm_size(&rm, word as u8 & 7, MemAccessSize::Mem16);
+            self.output_mov(dest.dest_operand(), op);
+        }
         Ok(())
     }
 
