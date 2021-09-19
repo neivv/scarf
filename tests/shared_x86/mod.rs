@@ -763,3 +763,27 @@ fn pmovsx() {
         (ctx.xmm(6, 3), ctx.constant(0xffffffff)),
     ]);
 }
+
+#[test]
+fn sse_and_or_xor() {
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0x0f, 0x54, 0xc1, // andps xmm0, xmm1
+        0x66, 0x0f, 0x56, 0xca, // orpd xmm1, xmm2
+        0x0f, 0x57, 0xd3, // xorps xmm2, xmm3
+        0xc3, // ret
+    ], &[
+        (ctx.xmm(0, 0), ctx.and(ctx.xmm(0, 0), ctx.xmm(1, 0))),
+        (ctx.xmm(0, 1), ctx.and(ctx.xmm(0, 1), ctx.xmm(1, 1))),
+        (ctx.xmm(0, 2), ctx.and(ctx.xmm(0, 2), ctx.xmm(1, 2))),
+        (ctx.xmm(0, 3), ctx.and(ctx.xmm(0, 3), ctx.xmm(1, 3))),
+        (ctx.xmm(1, 0), ctx.or(ctx.xmm(1, 0), ctx.xmm(2, 0))),
+        (ctx.xmm(1, 1), ctx.or(ctx.xmm(1, 1), ctx.xmm(2, 1))),
+        (ctx.xmm(1, 2), ctx.or(ctx.xmm(1, 2), ctx.xmm(2, 2))),
+        (ctx.xmm(1, 3), ctx.or(ctx.xmm(1, 3), ctx.xmm(2, 3))),
+        (ctx.xmm(2, 0), ctx.xor(ctx.xmm(2, 0), ctx.xmm(3, 0))),
+        (ctx.xmm(2, 1), ctx.xor(ctx.xmm(2, 1), ctx.xmm(3, 1))),
+        (ctx.xmm(2, 2), ctx.xor(ctx.xmm(2, 2), ctx.xmm(3, 2))),
+        (ctx.xmm(2, 3), ctx.xor(ctx.xmm(2, 3), ctx.xmm(3, 3))),
+    ]);
+}

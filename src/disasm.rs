@@ -552,7 +552,9 @@ fn instruction_operations32_main(
         0x138 => s.opcode_0f38(),
         0x140 | 0x141 | 0x142 | 0x143 | 0x144 | 0x145 | 0x146 | 0x147 |
             0x148 | 0x149 | 0x14a | 0x14b | 0x14c | 0x14d | 0x14e | 0x14f => s.cmov(),
-        0x157 => s.xorps(),
+        0x154 => s.sse_bit_arith(ArithOpType::And),
+        0x156 => s.sse_bit_arith(ArithOpType::Or),
+        0x157 => s.sse_bit_arith(ArithOpType::Xor),
         0x158 => s.sse_float_arith(ArithOpType::Add),
         0x159 => s.sse_float_arith(ArithOpType::Mul),
         0x15a => s.sse_f32_f64_conversion(),
@@ -614,7 +616,7 @@ fn instruction_operations32_main(
         0x1ef => {
             if s.has_prefix(0x66) {
                 // pxor
-                s.xorps()
+                s.sse_bit_arith(ArithOpType::Xor)
             } else {
                 // MMX xor
                 Err(s.unknown_opcode())
@@ -817,7 +819,9 @@ fn instruction_operations64_main(
         0x138 => s.opcode_0f38(),
         0x140 | 0x141 | 0x142 | 0x143 | 0x144 | 0x145 | 0x146 | 0x147 |
             0x148 | 0x149 | 0x14a | 0x14b | 0x14c | 0x14d | 0x14e | 0x14f => s.cmov(),
-        0x157 => s.xorps(),
+        0x154 => s.sse_bit_arith(ArithOpType::And),
+        0x156 => s.sse_bit_arith(ArithOpType::Or),
+        0x157 => s.sse_bit_arith(ArithOpType::Xor),
         0x158 => s.sse_float_arith(ArithOpType::Add),
         0x159 => s.sse_float_arith(ArithOpType::Mul),
         0x15a => s.sse_f32_f64_conversion(),
@@ -878,7 +882,7 @@ fn instruction_operations64_main(
         0x1ef => {
             if s.has_prefix(0x66) {
                 // pxor
-                s.xorps()
+                s.sse_bit_arith(ArithOpType::Xor)
             } else {
                 // MMX xor
                 Err(s.unknown_opcode())
@@ -2388,12 +2392,14 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         Ok(())
     }
 
-    fn xorps(&mut self) -> Result<(), Failed> {
+    fn sse_bit_arith(&mut self, arith_type: ArithOpType) -> Result<(), Failed> {
         let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let ctx = self.ctx;
         for i in 0..4 {
             let dest = self.r_to_dest_and_operand_xmm(dest, i);
             let rhs = self.rm_to_operand_xmm(&rm, i);
-            self.output_xor(dest, rhs);
+            let op = ctx.arithmetic(arith_type, dest.op, rhs);
+            self.output_mov(dest.dest, op);
         }
         Ok(())
     }
