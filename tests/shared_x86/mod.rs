@@ -787,3 +787,63 @@ fn sse_and_or_xor() {
         (ctx.xmm(2, 3), ctx.xor(ctx.xmm(2, 3), ctx.xmm(3, 3))),
     ]);
 }
+
+#[test]
+fn minps() {
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0xc7, 0x04, 0xe4, 0x78, 0x56, 0x34, 0x12, // mov [esp], 12345678
+        0xc7, 0x44, 0xe4, 0x04, 0x80, 0x80, 0x80, 0x80, // mov [esp + 4], 80808080
+        0xc7, 0x44, 0xe4, 0x08, 0x22, 0x11, 0x99, 0x88, // mov [esp + 8], 88991122
+        0xc7, 0x44, 0xe4, 0x0c, 0x08, 0xef, 0xcd, 0xab, // mov [esp + c], ABCDEF08
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x0f, 0x57, 0xc9, // xorps xmm1, xmm1
+        0x0f, 0x57, 0xd2, // xorps xmm2, xmm2
+        0x0f, 0x5d, 0xc8, // minps xmm1, xmm0
+        0x66, 0x0f, 0x5d, 0xc2, // minpd xmm0, xmm2
+        0xc3, // ret
+    ], &[
+        (ctx.xmm(0, 0), ctx.constant(0x12345678)),
+        (ctx.xmm(0, 1), ctx.constant(0x80808080)),
+        (ctx.xmm(0, 2), ctx.constant(0x88991122)),
+        (ctx.xmm(0, 3), ctx.constant(0xabcdef08)),
+        (ctx.xmm(1, 0), ctx.constant(0)),
+        (ctx.xmm(1, 1), ctx.constant(0x80808080)),
+        (ctx.xmm(1, 2), ctx.constant(0x88991122)),
+        (ctx.xmm(1, 3), ctx.constant(0xabcdef08)),
+        (ctx.xmm(2, 0), ctx.constant(0)),
+        (ctx.xmm(2, 1), ctx.constant(0)),
+        (ctx.xmm(2, 2), ctx.constant(0)),
+        (ctx.xmm(2, 3), ctx.constant(0)),
+    ]);
+}
+
+#[test]
+fn maxps() {
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0xc7, 0x04, 0xe4, 0x78, 0x56, 0x34, 0x12, // mov [esp], 12345678
+        0xc7, 0x44, 0xe4, 0x04, 0x80, 0x80, 0x80, 0x80, // mov [esp + 4], 80808080
+        0xc7, 0x44, 0xe4, 0x08, 0x22, 0x11, 0x99, 0x88, // mov [esp + 8], 88991122
+        0xc7, 0x44, 0xe4, 0x0c, 0x08, 0xef, 0xcd, 0xab, // mov [esp + c], ABCDEF08
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x0f, 0x57, 0xc9, // xorps xmm1, xmm1
+        0x0f, 0x57, 0xd2, // xorps xmm2, xmm2
+        0x0f, 0x5f, 0xc8, // maxps xmm1, xmm0
+        0x66, 0x0f, 0x5f, 0xc2, // maxpd xmm0, xmm2
+        0xc3, // ret
+    ], &[
+        (ctx.xmm(0, 0), ctx.constant(0)),
+        (ctx.xmm(0, 1), ctx.constant(0)),
+        (ctx.xmm(0, 2), ctx.constant(0)),
+        (ctx.xmm(0, 3), ctx.constant(0)),
+        (ctx.xmm(1, 0), ctx.constant(0x12345678)),
+        (ctx.xmm(1, 1), ctx.constant(0)),
+        (ctx.xmm(1, 2), ctx.constant(0)),
+        (ctx.xmm(1, 3), ctx.constant(0)),
+        (ctx.xmm(2, 0), ctx.constant(0)),
+        (ctx.xmm(2, 1), ctx.constant(0)),
+        (ctx.xmm(2, 2), ctx.constant(0)),
+        (ctx.xmm(2, 3), ctx.constant(0)),
+    ]);
+}

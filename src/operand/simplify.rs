@@ -234,6 +234,23 @@ pub fn simplify_float_arith<'e>(
                 _ => (),
             }
         }
+        ArithOpType::GreaterThan => {
+            match (left.if_constant(), right.if_constant()) {
+                (Some(l), Some(r)) if size == MemAccessSize::Mem32 => {
+                    let l = f32::from_bits(l as u32);
+                    let r = f32::from_bits(r as u32);
+                    let result = l > r;
+                    return ctx.constant(result as u64);
+                }
+                (Some(l), Some(r)) if size == MemAccessSize::Mem64 => {
+                    let l = f64::from_bits(l);
+                    let r = f64::from_bits(r);
+                    let result = l > r;
+                    return ctx.constant(result as u64);
+                }
+                _ => (),
+            }
+        }
         ArithOpType::ToInt if size == MemAccessSize::Mem32 => {
             let val = left;
             if let Some(c) = val.if_constant() {

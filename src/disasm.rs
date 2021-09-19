@@ -560,8 +560,8 @@ fn instruction_operations32_main(
         0x15a => s.sse_f32_f64_conversion(),
         0x15b => s.cvtdq2ps(),
         0x15c => s.sse_float_arith(ArithOpType::Sub),
+        0x15d | 0x15f => s.sse_float_min_max(),
         0x15e => s.sse_float_arith(ArithOpType::Div),
-        0x15f => s.sse_float_max(),
         0x160 => s.sse_unpack(),
         0x16e => s.mov_sse_6e(),
         0x173 => s.packed_shift_imm(),
@@ -827,8 +827,8 @@ fn instruction_operations64_main(
         0x15a => s.sse_f32_f64_conversion(),
         0x15b => s.cvtdq2ps(),
         0x15c => s.sse_float_arith(ArithOpType::Sub),
+        0x15d | 0x15f => s.sse_float_min_max(),
         0x15e => s.sse_float_arith(ArithOpType::Div),
-        0x15f => s.sse_float_max(),
         0x16e => s.mov_sse_6e(),
         0x173 => s.packed_shift_imm(),
         0x180 | 0x181 | 0x182 | 0x183 | 0x184 | 0x185 | 0x186 | 0x187 |
@@ -2315,7 +2315,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         Ok(())
     }
 
-    fn sse_float_max(&mut self) -> Result<(), Failed> {
+    fn sse_float_min_max(&mut self) -> Result<(), Failed> {
+        let is_min = self.read_u8(0)? == 0x5d;
         let (size, amt) = if self.has_prefix(0xf2) {
             (MemAccessSize::Mem64, 1)
         } else if self.has_prefix(0x66) {
@@ -2331,11 +2332,13 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             for i in 0..amt {
                 let dest = self.r_to_dest_and_operand_xmm(dest, i);
                 let rhs = self.rm_to_operand_xmm(&rm, i);
-                let cmp = ctx.float_arithmetic(ArithOpType::GreaterThan, rhs, dest.op, size);
+                let (gt_l, gt_r) = if is_min { (dest.op, rhs) } else { (rhs, dest.op) };
+                let cmp = ctx.float_arithmetic(ArithOpType::GreaterThan, gt_l, gt_r, size);
                 let op = Operation::Move(dest.dest, rhs, Some(cmp));
                 self.output(op);
             }
         } else {
+            self.output(Operation::Freeze);
             for i in 0..amt {
                 let dest1 = self.r_to_dest_and_operand_xmm(dest, i * 2);
                 let dest2 = self.r_to_dest_and_operand_xmm(dest, i * 2 + 1);
@@ -2346,10 +2349,12 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     ctx.lsh_const(dest2.op, 0x20),
                 );
                 let rhs = self.rm_to_operand_xmm_64(&rm, i);
-                let cmp = ctx.float_arithmetic(ArithOpType::GreaterThan, rhs, dest_op, size);
+                let (gt_l, gt_r) = if is_min { (dest_op, rhs) } else { (rhs, dest_op) };
+                let cmp = ctx.float_arithmetic(ArithOpType::GreaterThan, gt_l, gt_r, size);
                 self.output(Operation::Move(dest1.dest, rhs1, Some(cmp)));
                 self.output(Operation::Move(dest2.dest, rhs2, Some(cmp)));
             }
+            self.output(Operation::Unfreeze);
         }
         Ok(())
     }
@@ -2374,6 +2379,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 self.output_mov(dest.dest, op);
             }
         } else {
+            self.output(Operation::Freeze);
             for i in 0..amt {
                 let dest1 = self.r_to_dest_and_operand_xmm(dest, i << 1);
                 let dest2 = self.r_to_dest_and_operand_xmm(dest, (i << 1) + 1);
@@ -2388,6 +2394,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 let op = ctx.rsh_const(arith, 0x20);
                 self.output_mov(dest2.dest, op);
             }
+            self.output(Operation::Unfreeze);
         }
         Ok(())
     }
