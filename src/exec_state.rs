@@ -39,6 +39,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// Unresolved constraints are useful for knowing that a jump chain such as `jg` followed by
     /// `jle` ends up always jumping at `jle`.
     fn add_unresolved_constraint(&mut self, constraint: Constraint<'e>);
+    fn add_resolved_constraint_from_unresolved(&mut self);
     fn update(&mut self, operation: &Operation<'e>);
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
     fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
@@ -1667,34 +1668,59 @@ pub fn merge_constraint<'e>(
     }
     let old = old?;
     let new = new?;
-    let res = ctx.simplify_temp_stack().alloc(|mut old_parts| {
-        collect_and_ops(old.0, &mut old_parts)?;
+    if let Some((old_l, old_r)) = old.0.if_arithmetic_eq() {
+        if let Some((new_l, new_r)) = new.0.if_arithmetic_eq() {
+            if old_r == ctx.const_0() && new_r == ctx.const_0() {
+                if old_l.relevant_bits().end == 1 && new_l.relevant_bits().end == 1 {
+                    // Use De Morgan's laws
+                    let res = merge_constraint_inner(ctx, old_l, new_l, ArithOpType::Or)?;
+                    return Some(Constraint(ctx.eq_const(res, 0)));
+                }
+            }
+        }
+    }
+    let res = merge_constraint_inner(ctx, old.0, new.0, ArithOpType::And)?;
+    Some(Constraint(res))
+}
+
+fn merge_constraint_inner<'e>(
+    ctx: OperandCtx<'e>,
+    old: Operand<'e>,
+    new: Operand<'e>,
+    ty: ArithOpType,
+) -> Option<Operand<'e>> {
+    ctx.simplify_temp_stack().alloc(|mut old_parts| {
+        collect_ops(old, &mut old_parts, ty)?;
         ctx.simplify_temp_stack().alloc(|mut new_parts| {
-            collect_and_ops(new.0, &mut new_parts)?;
+            collect_ops(new, &mut new_parts, ty)?;
             old_parts.retain(|old_val| {
                 new_parts.iter().any(|&x| x == old_val)
             });
-            join_ands(ctx, old_parts)
+            join_ops(ctx, old_parts, ty)
         })
-    }).map(Constraint);
-    res
+    })
 }
 
-fn join_ands<'e>(ctx: OperandCtx<'e>, parts: &[Operand<'e>]) -> Option<Operand<'e>> {
+fn join_ops<'e>(
+    ctx: OperandCtx<'e>,
+    parts: &[Operand<'e>],
+    ty: ArithOpType,
+) -> Option<Operand<'e>> {
     let mut op = *parts.get(0)?;
     for &next in parts.iter().skip(1) {
-        op = ctx.and(op, next);
+        op = ctx.arithmetic(ty, op, next);
     }
     Some(op)
 }
 
-fn collect_and_ops<'e>(
+fn collect_ops<'e>(
     s: Operand<'e>,
     ops: &mut Slice<'e, Operand<'e>>,
+    ty: ArithOpType,
 ) -> Option<()> {
-    if let Some((l, r)) = s.if_arithmetic_and() {
-        collect_and_ops(l, ops)?;
-        collect_and_ops(r, ops)?;
+    if let Some((l, r)) = s.if_arithmetic(ty) {
+        ops.push(r).ok()?;
+        collect_ops(l, ops, ty)?;
     } else {
         ops.push(s).ok()?;
     }

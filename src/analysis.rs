@@ -796,7 +796,9 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                         None => (),
                     }
                 }
-                None => return Some((addr, branch_state)),
+                None => {
+                    return Some((addr, branch_state));
+                }
             }
         }
         None
@@ -885,6 +887,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             end_address: Exec::VirtualAddress::from_u64(0),
             distance: 0,
         });
+        control.inner.state.0.add_resolved_constraint_from_unresolved();
         loop {
             let address = disasm.address();
             control.inner.address = address;

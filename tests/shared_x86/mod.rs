@@ -860,3 +860,20 @@ fn pextrw() {
         (ctx.register(1), ctx.and_const(ctx.rsh_const(ctx.xmm(1, 3), 0x10), 0xffff)),
     ]);
 }
+
+#[test]
+fn simple_loop() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        // loop:
+        0xff, 0xc0, // inc eax
+        0x83, 0xf8, 0x03, // cmp eax, 3
+        0x7c, 0xf9, // jl loop
+        0x31, 0xc0, // xor eax, eax
+        0xff, 0xc0, // inc eax
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.constant(1)),
+    ]);
+}

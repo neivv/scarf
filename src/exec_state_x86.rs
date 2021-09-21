@@ -28,7 +28,14 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     }
 
     fn add_unresolved_constraint(&mut self, constraint: Constraint<'e>) {
-        self.inner.unresolved_constraint = Some(constraint);
+        self.inner.add_to_unresolved_constraint(constraint.0);
+    }
+
+    fn add_resolved_constraint_from_unresolved(&mut self) {
+        if let Some(c) = self.inner.unresolved_constraint {
+            let res = self.resolve(c.0);
+            self.add_resolved_constraint(Constraint(res));
+        }
     }
 
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
@@ -1123,6 +1130,15 @@ impl<'e> State<'e> {
         }
     }
 
+    fn add_to_unresolved_constraint(&mut self, constraint: Operand<'e>) {
+        if let Some(old) = self.unresolved_constraint {
+            let ctx = self.ctx();
+            self.unresolved_constraint = Some(Constraint(ctx.and(old.0, constraint)));
+        } else {
+            self.unresolved_constraint = Some(Constraint(constraint));
+        }
+    }
+
     fn add_resolved_constraint(&mut self, constraint: Constraint<'e>) {
         self.resolved_constraint = Some(constraint);
         let ctx = self.ctx();
@@ -1137,6 +1153,14 @@ impl<'e> State<'e> {
                     let val = ctx.mem_any(size, base, offset);
                     self.add_memory_constraint(ctx.arithmetic(arith.ty, arith.left, val));
                 }
+                for i in 0..8 {
+                    if self.state[i] == arith.right {
+                        let val = ctx.register(i as u8);
+                        self.add_to_unresolved_constraint(
+                            ctx.arithmetic(arith.ty, arith.left, val)
+                        );
+                    }
+                }
             } else if arith.right.if_constant().is_some() {
                 if let Some((base, offset, mut size)) =
                     self.memory.fast_reverse_lookup(ctx, arith.left, 0xffff_ffff, 2)
@@ -1146,6 +1170,14 @@ impl<'e> State<'e> {
                     }
                     let val = ctx.mem_any(size, base, offset);
                     self.add_memory_constraint(ctx.arithmetic(arith.ty, val, arith.right));
+                }
+                for i in 0..8 {
+                    if self.state[i] == arith.left {
+                        let val = ctx.register(i as u8);
+                        self.add_to_unresolved_constraint(
+                            ctx.arithmetic(arith.ty, val, arith.right)
+                        );
+                    }
                 }
             }
             let maybe_wanted_flags = (1 << Flag::Zero as u8) |
@@ -1207,39 +1239,13 @@ fn merge_states<'a: 'r, 'r>(
         }
     }
 
-    let merged_ljec = if old.unresolved_constraint != new.unresolved_constraint {
-        let mut result = None;
-        // If one state has no constraint but matches the constrait of the other
-        // state, the constraint should be kept on merge.
-        if old.unresolved_constraint.is_none() {
-            if let Some(con) = new.unresolved_constraint {
-                // As long as we're working with flags, limiting to lowest bit
-                // allows simplifying cases like (undef | 1)
-                let lowest_bit = ctx.and_const(con.0, 1);
-                if old.resolve_apply_constraints(lowest_bit) == ctx.const_1() {
-                    result = Some(con);
-                }
-            }
-        }
-        if new.unresolved_constraint.is_none() {
-            if let Some(con) = old.unresolved_constraint {
-                // As long as we're working with flags, limiting to lowest bit
-                // allows simplifying cases like (undef | 1)
-                let lowest_bit = ctx.and_const(con.0, 1);
-                if new.resolve_apply_constraints(lowest_bit) == ctx.const_1() {
-                    result = Some(con);
-                }
-            }
-        }
-        Some(result)
-    } else {
-        None
-    };
     let xmm_fpu_eq = {
         Rc::ptr_eq(&old.xmm_fpu, &new.xmm_fpu) ||
         old.xmm_fpu.iter().zip(new.xmm_fpu.iter())
             .all(|(&a, &b)| check_eq(a, b))
     };
+    let unresolved_constraint =
+        exec_state::merge_constraint(ctx, old.unresolved_constraint, new.unresolved_constraint);
     let resolved_constraint =
         exec_state::merge_constraint(ctx, old.resolved_constraint, new.resolved_constraint);
     let memory_constraint =
@@ -1262,7 +1268,7 @@ fn merge_states<'a: 'r, 'r>(
             }
         ) ||
         !xmm_fpu_eq ||
-        merged_ljec.as_ref().map(|x| *x != old.unresolved_constraint).unwrap_or(false) ||
+        unresolved_constraint != old.unresolved_constraint ||
         resolved_constraint != old.resolved_constraint ||
         memory_constraint != old.memory_constraint ||
         exec_state::flags_merge_changed(&mut old.flag_state(), &mut new.flag_state(), ctx);
@@ -1299,94 +1305,28 @@ fn merge_states<'a: 'r, 'r>(
             }
         }
         let memory = cache.merge_memory(&old.memory, &new.memory, ctx);
-        let result = Some(ExecutionState {
-            inner: Box::alloc().init(State {
-                state,
-                xmm_fpu,
-                cached_low_registers,
-                memory,
-                unresolved_constraint: merged_ljec.unwrap_or_else(|| {
-                    // They were same, just use one from old
-                    old.unresolved_constraint.clone()
-                }),
-                resolved_constraint,
-                memory_constraint,
-                pending_flags,
-                ctx,
-                binary: old.binary,
-                // Freeze buffer is intended to be empty at merge points,
-                // not going to support merging it
-                freeze_buffer: Vec::new(),
-                frozen: false,
-            })
+        let inner = Box::alloc().init(State {
+            state,
+            xmm_fpu,
+            cached_low_registers,
+            memory,
+            unresolved_constraint,
+            resolved_constraint,
+            memory_constraint,
+            pending_flags,
+            ctx,
+            binary: old.binary,
+            // Freeze buffer is intended to be empty at merge points,
+            // not going to support merging it
+            freeze_buffer: Vec::new(),
+            frozen: false,
         });
-        result
+        Some(ExecutionState {
+            inner,
+        })
     } else {
         None
     }
-}
-
-#[test]
-fn merge_state_constraints_eq() {
-    let ctx = &crate::operand::OperandContext::new();
-    let mut state_a = ExecutionState::new(ctx);
-    let mut state_b = ExecutionState::new(ctx);
-    let sign_eq_overflow_flag = ctx.eq(
-        ctx.flag_o(),
-        ctx.flag_s(),
-    );
-    state_a.assume_jump_flag(sign_eq_overflow_flag, true);
-    state_b.move_to(&DestOperand::from_oper(ctx.flag_o()), ctx.constant(1));
-    state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
-    let merged = merge_states(
-        &mut state_b.inner,
-        &mut state_a.inner,
-        &mut MergeStateCache::new(),
-    ).unwrap();
-    let merged = &merged.inner;
-    assert!(merged.unresolved_constraint.is_some());
-    assert_eq!(merged.unresolved_constraint, state_a.inner.unresolved_constraint);
-}
-
-#[test]
-fn merge_state_constraints_or() {
-    let ctx = &crate::operand::OperandContext::new();
-    let mut state_a = ExecutionState::new(ctx);
-    let mut state_b = ExecutionState::new(ctx);
-    let sign_or_overflow_flag = ctx.or(
-        ctx.flag_o(),
-        ctx.flag_s(),
-    );
-    state_a.assume_jump_flag(sign_or_overflow_flag, true);
-    state_b.move_to(&DestOperand::from_oper(ctx.flag_s()), ctx.constant(1));
-    let merged = merge_states(
-        &mut state_b.inner,
-        &mut state_a.inner,
-        &mut MergeStateCache::new(),
-    ).unwrap();
-    let merged = &merged.inner;
-    assert!(merged.unresolved_constraint.is_some());
-    assert_eq!(merged.unresolved_constraint, state_a.inner.unresolved_constraint);
-    // Should also happen other way, though then state_a must have something that is converted
-    // to undef.
-    let merged = merge_states(
-        &mut state_a.inner,
-        &mut state_b.inner,
-        &mut MergeStateCache::new(),
-    ).unwrap();
-    let merged = &merged.inner;
-    assert!(merged.unresolved_constraint.is_some());
-    assert_eq!(merged.unresolved_constraint, state_a.inner.unresolved_constraint);
-
-    state_a.move_to(&DestOperand::from_oper(ctx.flag_c()), ctx.constant(1));
-    let merged = merge_states(
-        &mut state_a.inner,
-        &mut state_b.inner,
-        &mut MergeStateCache::new(),
-    ).unwrap();
-    let merged = &merged.inner;
-    assert!(merged.unresolved_constraint.is_some());
-    assert_eq!(merged.unresolved_constraint, state_a.inner.unresolved_constraint);
 }
 
 #[test]
