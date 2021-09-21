@@ -746,7 +746,8 @@ fn apply_constraint_split<'e>(
     let one = ctx.const_1();
     match constraint.ty() {
         OperandType::Arithmetic(arith) if {
-            arith.ty == ArithOpType::And &&
+            ((arith.ty == ArithOpType::And && with == true) ||
+                (arith.ty == ArithOpType::Or && with == false)) &&
                 arith.left.relevant_bits() == (0..1) &&
                 arith.right.relevant_bits() == (0..1)
         } => {
@@ -781,7 +782,13 @@ fn apply_constraint_split<'e>(
                 if arith.left.relevant_bits() == (0..1) {
                     apply_constraint_split(ctx, arith.left, val, !with)
                 } else if with == true {
-                    ctx.substitute(val, arith.left, zero, 6)
+                    // (x | y) == 0 evaluates to 1, means that both x and y must be 0
+                    if let Some((l, r)) = arith.left.if_arithmetic_or() {
+                        let new = apply_constraint_split(ctx, l, val, false);
+                        apply_constraint_split(ctx, r, new, false)
+                    } else {
+                        ctx.substitute(val, arith.left, zero, 6)
+                    }
                 } else {
                     // (arith.left == 0) is false, that is, arith.left != 0
                     // Transform any check of arith.left == 0 or (arith.left | x) == 0

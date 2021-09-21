@@ -877,3 +877,25 @@ fn simple_loop() {
         (ctx.register(0), ctx.constant(1)),
     ]);
 }
+
+#[test]
+fn jae_jg_jg() {
+    test_inline(&[
+        0x85, 0xce, // test esi, ecx
+        0x73, 0x01, // jae step0
+        0xcc, // int3
+        // step0:
+        0x73, 0x01, // jae step1
+        0xcc, // int3
+        // step1:
+        0x7f, 0x03, // jg step2
+        0x7e, 0x04, // jle end
+        0xcc, // int3
+        // step2:
+        0x7f, 0x01, // jg end
+        0xcc, // int3
+        // end:
+        0xc3, // ret
+    ], &[
+    ]);
+}
