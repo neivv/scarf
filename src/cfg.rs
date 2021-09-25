@@ -793,6 +793,9 @@ impl Predecessors {
         successors: &[NodeLink<Va>],
     ) {
         for succ in successors {
+            if succ.index == u32::MAX {
+                continue;
+            }
             let entry = &mut self.lookup[succ.index as usize];
             if entry.1 == u32::max_value() {
                 // 0 or 1 entries, can just add to the current list
