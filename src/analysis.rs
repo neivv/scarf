@@ -3,7 +3,7 @@ use std::convert::TryFrom;
 use std::mem;
 
 use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
-use crate::disasm::{Operation};
+use crate::disasm::{DestOperand, Operation};
 use crate::exec_state::{self, Constraint, Disassembler, ExecutionState, MergeStateCache};
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::light_byteorder::ReadLittleEndian;
@@ -550,6 +550,14 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
 
     pub fn unresolve_memory(&mut self, val: Operand<'e>) -> Option<Operand<'e>> {
         self.inner.state.0.unresolve_memory(val)
+    }
+
+    pub fn move_unresolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
+        self.inner.state.0.move_to(dest, value);
+    }
+
+    pub fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
+        self.inner.state.0.move_resolved(dest, value);
     }
 
     /// Takes current analysis' state as starting state for a function.
