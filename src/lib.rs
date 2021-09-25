@@ -19,6 +19,7 @@ pub use crate::disasm::{DestOperand, Operation, FlagArith, FlagUpdate, operation
 pub use crate::operand::{
     ArithOpType, MemAccess, MemAccessSize, Operand, OperandType, OperandContext, OperandCtx,
 };
+pub use crate::exec_state::ExecutionState;
 
 pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;
 pub use crate::exec_state_x86_64::ExecutionState as ExecutionStateX86_64;
