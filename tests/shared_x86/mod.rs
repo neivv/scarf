@@ -899,3 +899,105 @@ fn jae_jg_jg() {
     ], &[
     ]);
 }
+
+#[test]
+fn xmm_shifts() {
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0xc7, 0x04, 0xe4, 0x78, 0x56, 0x34, 0x12, // mov [esp], 12345678
+        0xc7, 0x44, 0xe4, 0x04, 0x80, 0x80, 0x80, 0x80, // mov [esp + 4], 80808080
+        0xc7, 0x44, 0xe4, 0x08, 0x22, 0x11, 0x99, 0x88, // mov [esp + 8], 88991122
+        0xc7, 0x44, 0xe4, 0x0c, 0x08, 0xef, 0xcd, 0xab, // mov [esp + c], ABCDEF08
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x0f, 0x10, 0xc8, // movups xmm1, xmm0
+        0x0f, 0x10, 0xd0, // movups xmm2, xmm0
+        0x0f, 0x10, 0xd8, // movups xmm3, xmm0
+        0x0f, 0x10, 0xe0, // movups xmm4, xmm0
+        0x0f, 0x10, 0xe8, // movups xmm5, xmm0
+        0x66, 0x0f, 0x71, 0xd0, 0x05, // psrlw xmm0, 5
+        0x66, 0x0f, 0x71, 0xe1, 0x05, // psraw xmm1, 5
+        0x66, 0x0f, 0x71, 0xf2, 0x05, // psllw xmm2, 5
+        0x66, 0x0f, 0x72, 0xd3, 0x05, // psrld xmm3, 5
+        0x66, 0x0f, 0x72, 0xe4, 0x05, // psrad xmm4, 5
+        0x66, 0x0f, 0x72, 0xf5, 0x05, // pslld xmm5, 5
+        0xc3, // ret
+    ], &[
+        (ctx.xmm(0, 0), ctx.constant(0x009102b3)),
+        (ctx.xmm(0, 1), ctx.constant(0x04040404)),
+        (ctx.xmm(0, 2), ctx.constant(0x04440089)),
+        (ctx.xmm(0, 3), ctx.constant(0x055e0778)),
+        (ctx.xmm(1, 0), ctx.constant(0x009102b3)),
+        (ctx.xmm(1, 1), ctx.constant(0xfc04fc04)),
+        (ctx.xmm(1, 2), ctx.constant(0xfc440089)),
+        (ctx.xmm(1, 3), ctx.constant(0xfd5eff78)),
+        (ctx.xmm(2, 0), ctx.constant(0x4680cf00)),
+        (ctx.xmm(2, 1), ctx.constant(0x10001000)),
+        (ctx.xmm(2, 2), ctx.constant(0x13202440)),
+        (ctx.xmm(2, 3), ctx.constant(0x79a0e100)),
+
+        (ctx.xmm(3, 0), ctx.constant(0x0091a2b3)),
+        (ctx.xmm(3, 1), ctx.constant(0x04040404)),
+        (ctx.xmm(3, 2), ctx.constant(0x0444c889)),
+        (ctx.xmm(3, 3), ctx.constant(0x055e6f78)),
+        (ctx.xmm(4, 0), ctx.constant(0x0091a2b3)),
+        (ctx.xmm(4, 1), ctx.constant(0xfc040404)),
+        (ctx.xmm(4, 2), ctx.constant(0xfc44c889)),
+        (ctx.xmm(4, 3), ctx.constant(0xfd5e6f78)),
+        (ctx.xmm(5, 0), ctx.constant(0x468acf00)),
+        (ctx.xmm(5, 1), ctx.constant(0x10101000)),
+        (ctx.xmm(5, 2), ctx.constant(0x13222440)),
+        (ctx.xmm(5, 3), ctx.constant(0x79bde100)),
+    ]);
+}
+
+#[test]
+fn xmm_shifts_over() {
+    // All of these set result to zeroes (or ones for arithmetic right with negative)
+    // if shift count is greater than elemnt bit size
+    let ctx = &OperandContext::new();
+    test_inline_xmm(&[
+        0xc7, 0x04, 0xe4, 0x78, 0x56, 0x34, 0x12, // mov [esp], 12345678
+        0xc7, 0x44, 0xe4, 0x04, 0x80, 0x80, 0x80, 0x80, // mov [esp + 4], 80808080
+        0xc7, 0x44, 0xe4, 0x08, 0x22, 0x11, 0x99, 0x88, // mov [esp + 8], 88991122
+        0xc7, 0x44, 0xe4, 0x0c, 0x08, 0xef, 0xcd, 0xab, // mov [esp + c], ABCDEF08
+        0x0f, 0x10, 0x04, 0xe4, // movups xmm0, [esp]
+        0x0f, 0x10, 0xc8, // movups xmm1, xmm0
+        0x0f, 0x10, 0xd0, // movups xmm2, xmm0
+        0x0f, 0x10, 0xd8, // movups xmm3, xmm0
+        0x0f, 0x10, 0xe0, // movups xmm4, xmm0
+        0x0f, 0x10, 0xe8, // movups xmm5, xmm0
+        0x66, 0x0f, 0x71, 0xd0, 0x45, // psrlw xmm0, 45
+        0x66, 0x0f, 0x71, 0xe1, 0x45, // psraw xmm1, 45
+        0x66, 0x0f, 0x71, 0xf2, 0x45, // psllw xmm2, 45
+        0x66, 0x0f, 0x72, 0xd3, 0x45, // psrld xmm3, 45
+        0x66, 0x0f, 0x72, 0xe4, 0x45, // psrad xmm4, 45
+        0x66, 0x0f, 0x72, 0xf5, 0x45, // pslld xmm5, 45
+        0xc3, // ret
+    ], &[
+        (ctx.xmm(0, 0), ctx.constant(0)),
+        (ctx.xmm(0, 1), ctx.constant(0)),
+        (ctx.xmm(0, 2), ctx.constant(0)),
+        (ctx.xmm(0, 3), ctx.constant(0)),
+        (ctx.xmm(1, 0), ctx.constant(0)),
+        (ctx.xmm(1, 1), ctx.constant(0xffffffff)),
+        (ctx.xmm(1, 2), ctx.constant(0xffff0000)),
+        (ctx.xmm(1, 3), ctx.constant(0xffffffff)),
+        (ctx.xmm(2, 0), ctx.constant(0)),
+        (ctx.xmm(2, 1), ctx.constant(0)),
+        (ctx.xmm(2, 2), ctx.constant(0)),
+        (ctx.xmm(2, 3), ctx.constant(0)),
+
+        (ctx.xmm(3, 0), ctx.constant(0)),
+        (ctx.xmm(3, 1), ctx.constant(0)),
+        (ctx.xmm(3, 2), ctx.constant(0)),
+        (ctx.xmm(3, 3), ctx.constant(0)),
+        (ctx.xmm(4, 0), ctx.constant(0)),
+        (ctx.xmm(4, 1), ctx.constant(0xffffffff)),
+        (ctx.xmm(4, 2), ctx.constant(0xffffffff)),
+        (ctx.xmm(4, 3), ctx.constant(0xffffffff)),
+        (ctx.xmm(5, 0), ctx.constant(0)),
+        (ctx.xmm(5, 1), ctx.constant(0)),
+        (ctx.xmm(5, 2), ctx.constant(0)),
+        (ctx.xmm(5, 3), ctx.constant(0)),
+    ]);
+}

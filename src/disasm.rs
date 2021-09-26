@@ -55,9 +55,13 @@ fn instruction_length_32(buf: &[u8]) -> usize {
             0
         }
     } else {
-        if buf.len() > 4 && &buf[..3] == &[0x66, 0x0f, 0x73] {
-            // Another lde bug
-            5
+        if buf.len() > 4 && &buf[..2] == &[0x66, 0x0f] {
+            if buf[2] >= 0x71 && buf[2] <= 0x73 {
+                // Another lde bug
+                5
+            } else {
+                length
+            }
         } else {
             length
         }
@@ -77,9 +81,13 @@ fn instruction_length_64(buf: &[u8]) -> usize {
             _ => 0,
         }
     } else {
-        if buf.len() > 4 && &buf[..3] == &[0x66, 0x0f, 0x73] {
-            // Another lde bug
-            5
+        if buf.len() > 4 && &buf[..2] == &[0x66, 0x0f] {
+            if buf[2] >= 0x71 && buf[2] <= 0x73 {
+                // Another lde bug
+                5
+            } else {
+                length
+            }
         } else {
             length
         }
@@ -564,7 +572,7 @@ fn instruction_operations32_main(
         0x15e => s.sse_float_arith(ArithOpType::Div),
         0x160 => s.sse_unpack(),
         0x16e => s.mov_sse_6e(),
-        0x173 => s.packed_shift_imm(),
+        0x171 | 0x172 | 0x173 => s.packed_shift_imm(),
         0x180 | 0x181 | 0x182 | 0x183 | 0x184 | 0x185 | 0x186 | 0x187 |
             0x188 | 0x189 | 0x18a | 0x18b | 0x18c | 0x18d | 0x18e | 0x18f =>
         {
@@ -831,7 +839,7 @@ fn instruction_operations64_main(
         0x15d | 0x15f => s.sse_float_min_max(),
         0x15e => s.sse_float_arith(ArithOpType::Div),
         0x16e => s.mov_sse_6e(),
-        0x173 => s.packed_shift_imm(),
+        0x171 | 0x172 | 0x173 => s.packed_shift_imm(),
         0x180 | 0x181 | 0x182 | 0x183 | 0x184 | 0x185 | 0x186 | 0x187 |
             0x188 | 0x189 | 0x18a | 0x18b | 0x18c | 0x18d | 0x18e | 0x18f =>
         {
@@ -2857,32 +2865,100 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn packed_shift_imm(&mut self) -> Result<(), Failed> {
+        let opcode = self.read_u8(0)?;
         let byte = self.read_u8(1)?;
         if !self.has_prefix(0x66) || byte & 0xc0 != 0xc0 {
             return Err(self.unknown_opcode());
         }
         let variant = (byte >> 3) & 0x7;
-        let dest = ModRm_R(byte & 0x7, RegisterSize::R32);
+        let register = if self.rex_prefix() & 0x1 == 0 {
+            byte & 0x7
+        } else {
+            8 + (byte & 0x7)
+        };
+        let dest = ModRm_R(register, RegisterSize::R32);
         let constant = self.read_u8(2)?;
-        match variant {
-            2 | 6 => {
-                let constant = self.ctx.constant(constant as u64);
-                if variant == 2 {
-                    self.packed_shift_right_xmm_u64(dest, constant)
+        if opcode == 0x73 {
+            match variant {
+                2 | 6 => {
+                    let constant = self.ctx.constant(constant as u64);
+                    if variant == 2 {
+                        self.packed_shift_right_xmm_u64(dest, constant)
+                    } else {
+                        self.packed_shift_left_xmm_u64(dest, constant)
+                    }
+                }
+                3 | 7 => {
+                    // Shift value is in bytes
+                    let constant = constant << 3;
+                    if variant == 3 {
+                        self.packed_shift_right_xmm_u128(dest, constant)
+                    } else {
+                        self.packed_shift_left_xmm_u128(dest, constant)
+                    }
+                }
+                _ => return Err(self.unknown_opcode()),
+            }
+        } else {
+            let size = if opcode == 0x71 { MemAccessSize::Mem16 } else { MemAccessSize::Mem32 };
+            let ctx = self.ctx;
+            let (is_right, is_arithmetic)  = match variant {
+                2 => (true, false),
+                4 => (true, true),
+                6 => (false, false),
+                _ => return Err(self.unknown_opcode()),
+            };
+            let mut keep_mask = if constant >= 0x20 {
+                0
+            } else if is_right {
+                0xffff_ffffu32 >> constant
+            } else {
+                0xffff_ffffu32 << constant
+            };
+            if size == MemAccessSize::Mem16 {
+                if is_right {
+                    keep_mask &= 0xffff_0000;
+                    keep_mask |= keep_mask >> 16;
                 } else {
-                    self.packed_shift_left_xmm_u64(dest, constant)
+                    keep_mask &= 0xffff;
+                    keep_mask |= keep_mask << 16;
                 }
             }
-            3 | 7 => {
-                // Shift value is in bytes
-                let constant = constant << 3;
-                if variant == 3 {
-                    self.packed_shift_right_xmm_u128(dest, constant)
+
+            for i in 0..4 {
+                let input = ctx.xmm(register, i);
+                let mut result = if is_right {
+                    ctx.rsh_const(input, constant.into())
                 } else {
-                    self.packed_shift_left_xmm_u128(dest, constant)
+                    ctx.lsh_const(input, constant.into())
+                };
+                result = ctx.and_const(result, keep_mask.into());
+                if is_arithmetic {
+                    if size == MemAccessSize::Mem16 {
+                        // was_signed_low = (0 - (input >> 0xf) & 1)
+                        // was_signed_high = (0 - (input >> 0x1f))
+                        // result |= was_signed_low & (!keep_mask & ffff)
+                        // result |= was_signed_high & (!keep_mask & ffff_0000)
+                        let was_signed_low =
+                            ctx.sub_const_left(0, ctx.and_const(ctx.rsh_const(input, 0xf), 1));
+                        let was_signed_high = ctx.sub_const_left(0, ctx.rsh_const(input, 0x1f));
+                        result = ctx.or(
+                            result,
+                            ctx.and_const(was_signed_low, u64::from(!keep_mask & 0xffff)),
+                        );
+                        result = ctx.or(
+                            result,
+                            ctx.and_const(was_signed_high, u64::from(!keep_mask & 0xffff_0000)),
+                        );
+                    } else {
+                        // was_signed = (0 - (input >> 0x1f))
+                        // result |= was_signed & !keep_mask
+                        let was_signed = ctx.sub_const_left(0, ctx.rsh_const(input, 0x1f));
+                        result = ctx.or(result, ctx.and_const(was_signed, u64::from(!keep_mask)));
+                    }
                 }
+                self.output_mov(DestOperand::Xmm(register, i), result);
             }
-            _ => return Err(self.unknown_opcode()),
         }
         Ok(())
     }
