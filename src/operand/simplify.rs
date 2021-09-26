@@ -3550,15 +3550,16 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
                                 true => (x, c, x2, c2),
                                 false => (x2, c2, x, c),
                             };
-                            let (y, c2) = gt.if_arithmetic_sub()
+                            let (gt_inner, gt_mask) = Operand::and_masked(gt);
+                            let (y, c2) = gt_inner.if_arithmetic_sub()
                                 .and_then(|(l, r)| {
                                     Some((l, r.if_constant()?))
                                 })
-                                .unwrap_or_else(|| (gt, 0));
+                                .unwrap_or((gt_inner, 0));
                             let constants_match = c1.checked_add(c2)
                                 .filter(|&c| c == eq_c)
                                 .is_some();
-                            if y == eq && constants_match {
+                            if constants_match && (y, gt_mask) == Operand::and_masked(eq) {
                                 // min/max edge cases can be handled by gt simplification,
                                 // don't do them here.
                                 if let Some(new_c) = c1.checked_add(1) {

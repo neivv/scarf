@@ -7670,3 +7670,38 @@ fn simplify_mul_masked_eq() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_u32_range() {
+    let ctx = &OperandContext::new();
+    // (d > ((rcx - d) & ffffffff)) | ((rcx & ffffffff) == 1a)
+    //  => (e > ((rcx - d) & ffffffff))
+    let op1 = ctx.or(
+        ctx.gt_const_left(
+            0xd,
+            ctx.and_const(
+                ctx.sub_const(
+                    ctx.register(1),
+                    0xd,
+                ),
+                0xffff_ffff,
+            ),
+        ),
+        ctx.eq_const(
+            ctx.and_const(ctx.register(1), 0xffff_ffff),
+            0x1a,
+        ),
+    );
+    let eq1 = ctx.gt_const_left(
+        0xe,
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.register(1),
+                0xd,
+            ),
+            0xffff_ffff,
+        ),
+    );
+
+    assert_eq!(op1, eq1);
+}
