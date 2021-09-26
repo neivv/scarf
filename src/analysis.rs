@@ -1235,6 +1235,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     /// E.g. dest = ret.2 + read_'ret.3'_bytes(ret.0 + ret.1 * ret.3)
     fn is_switch_jump<'e, VirtualAddress: exec_state::VirtualAddress>(
         to: Operand<'e>,
+        ctx: OperandCtx<'e>,
     ) -> Option<(VirtualAddress, Operand<'e>, u64, MemAccessSize)> {
         let (base, mem) = match to.if_arithmetic_add() {
             Some((l, r)) => (r.if_constant()?, l),
@@ -1242,18 +1243,42 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         };
         mem.if_memory()
             .and_then(|mem| {
-                let (index, switch_table) = mem.address();
-                let (l, r) = index.if_arithmetic_mul()?;
-                let (c, index) = Operand::either(l, r, {
-                    |x| x.if_constant().and_then(|c| u32::try_from(c).ok())
-                })?;
+                let (mut index, mut switch_table) = mem.address();
+                let mut and_mask = None;
+                if let Some((l, r)) = index.if_arithmetic_and() {
+                    // Index such as (((rcx * 4) - 34) & 3fffffffc) for Mem32
+                    // should be understood as index = rcx, table offset -= 0xd
+                    let mask = r.if_constant()?;
+                    if mask as u32 & mem.size.bytes() - 1 != 0 {
+                        return None;
+                    }
+                    let (inner, offset) = l.if_arithmetic_sub()
+                        .and_then(|(l, r)| {
+                            let c = r.if_constant()?;
+                            Some((l, 0u64.wrapping_sub(c)))
+                        })
+                        .or_else(|| {
+                            let (l, r) = l.if_arithmetic_add()?;
+                            let c = r.if_constant()?;
+                            Some((l, c))
+                        })?;
+                    index = inner;
+                    and_mask = Some(mask);
+                    switch_table = switch_table.wrapping_add(offset);
+                }
+                let (index, r) = index.if_arithmetic_mul()?;
+                let c = u32::try_from(r.if_constant()?).ok()?;
                 if c == VirtualAddress::SIZE || base != 0 {
-                    let mem_size = match c {
-                        1 => MemAccessSize::Mem8,
-                        2 => MemAccessSize::Mem16,
-                        4 => MemAccessSize::Mem32,
-                        8 => MemAccessSize::Mem64,
+                    let (mem_size, shift) = match c {
+                        1 => (MemAccessSize::Mem8, 0),
+                        2 => (MemAccessSize::Mem16, 1),
+                        4 => (MemAccessSize::Mem32, 2),
+                        8 => (MemAccessSize::Mem64, 3),
                         _ => return None,
+                    };
+                    let index = match and_mask {
+                        Some(s) => ctx.and_const(index, s >> shift),
+                        None => index,
                     };
                     Some((VirtualAddress::from_u64(switch_table), index, base, mem_size))
                 } else {
@@ -1308,10 +1333,10 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         }
         Some(_) => {
             let to = state.0.resolve(to);
-            let is_switch = is_switch_jump::<Exec::VirtualAddress>(to);
+            let ctx = analysis.operand_ctx;
+            let is_switch = is_switch_jump::<Exec::VirtualAddress>(to, ctx);
             if let Some((switch_table_addr, index, base_addr, mem_size)) = is_switch {
                 let mut cases = Vec::new();
-                let ctx = analysis.operand_ctx;
                 let binary = analysis.binary;
                 let code_section = binary.code_section();
                 let code_offset = code_section.virtual_address;

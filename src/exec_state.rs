@@ -868,10 +868,13 @@ fn value_limits_recurse<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64
                 ArithOpType::GreaterThan => {
                     // 0 > x and x > u64_max should get simplified to 0
                     if let Some(c) = arith.left.if_constant() {
-                        let (right, offset) = arith.right.if_arithmetic_sub()
+                        let (right_inner, right_mask) = Operand::and_masked(arith.right);
+                        let (right, offset) = right_inner.if_arithmetic_sub()
                             .and_then(|(l, r)| Some((l, r.if_constant()?)))
-                            .unwrap_or_else(|| (arith.right, 0));
-                        if is_subset(value, right) {
+                            .unwrap_or_else(|| (right_inner, 0));
+                        if Operand::and_masked(value) == (right, right_mask) ||
+                            (right_mask == u64::MAX && is_subset(value, right))
+                        {
                             debug_assert!(c != 0);
                             let low = offset;
                             if let Some(high) = c.wrapping_sub(1).checked_add(offset) {

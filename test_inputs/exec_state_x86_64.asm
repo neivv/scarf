@@ -5,6 +5,7 @@ org 0x401000
 
 dq switch_cases_in_memory
 dq switch_different_resolved_constraints_on_branch_end
+dq switch_u32_with_sub
 
 switch_cases_in_memory:
 xor edx, edx
@@ -73,6 +74,58 @@ mov rax, [rax]
 mov r13d, [rax + 8]
 cmp r13d, 2
 jbe .switch_start
+ret
+.fake:
+int3
+
+switch_u32_with_sub:
+.base:
+lea eax, [rcx - 0xd]
+cmp eax, 0xd
+ja .end
+lea r9, [.base]
+mov ecx, [r9 + rax * 4 + .switch_table - .base]
+add rcx, r9
+jmp rcx
+.switch_table:
+dd .zero_eax - .base
+dd .zero_ecx - .base
+dd .zero_edx - .base
+dd .zero_esi - .base
+dd .zero_edi - .base
+dd .zero_r8 - .base
+dd .zero_r8 - .base
+dd .zero_ecx - .base
+dd .zero_ecx - .base
+dd .zero_edx - .base
+dd .zero_esi - .base
+dd .zero_edi - .base
+dd .zero_r8 - .base
+dd .zero_r9 - .base
+dd .fake - .base
+.zero_eax:
+xor eax, eax
+jmp .end
+.zero_ecx:
+xor ecx, ecx
+jmp .end
+.zero_edx:
+xor edx, edx
+jmp .end
+.zero_edi:
+xor edi, edi
+jmp .end
+.zero_esi:
+xor esi, esi
+jmp .end
+.zero_r8:
+xor r8d, r8d
+jmp .end
+.zero_r9:
+xor r9d, r9d
+.end:
+jmp .end2
+.end2:
 ret
 .fake:
 int3

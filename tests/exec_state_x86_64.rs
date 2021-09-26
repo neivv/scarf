@@ -919,6 +919,20 @@ fn switch_different_resolved_constraints_on_branch_end() {
     ]);
 }
 
+#[test]
+fn switch_u32_with_sub() {
+    let ctx = &OperandContext::new();
+    test(2, &[
+         (ctx.register(0), ctx.new_undef()),
+         (ctx.register(1), ctx.new_undef()),
+         (ctx.register(2), ctx.new_undef()),
+         (ctx.register(6), ctx.new_undef()),
+         (ctx.register(7), ctx.new_undef()),
+         (ctx.register(8), ctx.new_undef()),
+         (ctx.register(9), ctx.new_undef()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
