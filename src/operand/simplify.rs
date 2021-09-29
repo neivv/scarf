@@ -3559,7 +3559,15 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
                             let constants_match = c1.checked_add(c2)
                                 .filter(|&c| c == eq_c)
                                 .is_some();
-                            if constants_match && (y, gt_mask) == Operand::and_masked(eq) {
+                            let values_match = if (y, gt_mask) == Operand::and_masked(eq) {
+                                true
+                            } else {
+                                // Can also be that y == eq == (smth & ff),
+                                // in which case the previous check would have done
+                                // (y, u64::MAX) != (smth, ff)
+                                y == eq && gt_mask == u64::MAX
+                            };
+                            if constants_match && values_match {
                                 // min/max edge cases can be handled by gt simplification,
                                 // don't do them here.
                                 if let Some(new_c) = c1.checked_add(1) {

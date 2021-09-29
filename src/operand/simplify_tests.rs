@@ -7705,3 +7705,33 @@ fn simplify_u32_range() {
 
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_u8_range() {
+    let ctx = &OperandContext::new();
+    // ((f > (((rcx >> 10) & ff) - 2)) | (((rcx >> 10) & ff) == 11))
+    //  => (10 > (((rcx >> 10) && ff) - 2))
+    let val = ctx.and_const(ctx.rsh_const(ctx.register(1), 0x10), 0xff);
+    let op1 = ctx.or(
+        ctx.gt_const_left(
+            0xf,
+            ctx.sub_const(
+                val,
+                0x2,
+            ),
+        ),
+        ctx.eq_const(
+            val,
+            0x11,
+        ),
+    );
+    let eq1 = ctx.gt_const_left(
+        0x10,
+        ctx.sub_const(
+            val,
+            0x2,
+        ),
+    );
+
+    assert_eq!(op1, eq1);
+}
