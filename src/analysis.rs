@@ -905,6 +905,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                 control.inner.skip_operation = false;
                 analyzer.operation(&mut control, op);
                 if control.inner.end.is_some() {
+                    update_cfg_for_user_requested_end(&mut control.inner, &mut node);
                     return control.inner.end;
                 }
                 if control.inner.skip_operation {
@@ -1163,6 +1164,21 @@ where E: ExecutionState<'e> + 'b,
 {
     Continue(ControlInner<'e, 'b, E, S>),
     End(Option<End>),
+}
+
+fn update_cfg_for_user_requested_end<'e: 'b, 'b, E, S>(
+    control: &mut ControlInner<'e, 'b, E, S>,
+    // Option so that it can be moved out of. Expected to always be Some
+    cfg_node_opt: &mut Option<CfgNode<'e, CfgState<'e, E, S>>>,
+)
+where E: ExecutionState<'e> + 'b,
+      S: AnalysisState,
+{
+    if let Some(mut cfg_node) = cfg_node_opt.take() {
+        let address = control.address;
+        cfg_node.end_address = address;
+        control.analysis.cfg.add_node(control.branch_start, cfg_node);
+    }
 }
 
 // A separate function to minimize binary size
