@@ -2248,6 +2248,7 @@ fn try_merge_ands_check_add_merge<'e>(
 }
 
 /// Tries to merge (a & a_mask) | (b & b_mask) to (a_mask | b_mask) & result
+/// (Does not mask the result)
 fn try_merge_ands<'e>(
     a: Operand<'e>,
     b: Operand<'e>,
@@ -2266,18 +2267,14 @@ fn try_merge_ands<'e>(
     if let Some((val, shift)) = is_offset_mem(a, ctx) {
         if let Some((other_val, other_shift)) = is_offset_mem(b, ctx) {
             if val == other_val {
-                let a_mask_bytes = 8u32.wrapping_sub(a_mask.leading_zeros() / 8)
-                    .wrapping_sub(a_mask.trailing_zeros() / 8);
-                let b_mask_bytes = 8u32.wrapping_sub(b_mask.leading_zeros() / 8)
-                    .wrapping_sub(b_mask.trailing_zeros() / 8);
                 let shift = (
                     shift.0,
-                    shift.1.min(a_mask_bytes),
+                    shift.1,
                     shift.2,
                 );
                 let other_shift = (
                     other_shift.0,
-                    other_shift.1.min(b_mask_bytes),
+                    other_shift.1,
                     other_shift.2,
                 );
                 let result = try_merge_memory(val, other_shift, shift, ctx);
@@ -3453,11 +3450,11 @@ fn simplify_or_merge_ands_try_merge<'e>(
             if !out.is_empty() {
                 let iter = slice.iter().rev().copied();
                 if let Some(first) = intern_arith_ops_to_tree(ctx, iter, arith_ty) {
-                    out.push(intern_and_const(ctx, first, first_c));
+                    out.push(ctx.and_const(first, first_c));
                 }
                 let iter = other_slice.iter().rev().copied();
                 if let Some(second) = intern_arith_ops_to_tree(ctx, iter, arith_ty) {
-                    out.push(intern_and_const(ctx, second, second_c));
+                    out.push(ctx.and_const(second, second_c));
                 }
             }
             Result::<(), SizeLimitReached>::Ok(())
@@ -3481,16 +3478,6 @@ fn intern_arith_ops_to_tree<'e, I: Iterator<Item = Operand<'e>>>(
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
     Some(tree)
-}
-
-/// Use only sure that the left/right won't simplify each other
-fn intern_and_const<'e>(ctx: OperandCtx<'e>, left: Operand<'e>, right: u64) -> Operand<'e> {
-    let arith = ArithOperand {
-        ty: ArithOpType::And,
-        left: left,
-        right: ctx.constant(right),
-    };
-    ctx.intern(OperandType::Arithmetic(arith))
 }
 
 // Simplify or: merge comparisions
@@ -3813,10 +3800,22 @@ fn try_merge_memory<'e>(
     };
     let (off1, len1, val_off1) = shift;
     let (off2, len2, val_off2) = other_shift;
-    if off1.wrapping_add(len1 as u64) != off2 || val_off1.wrapping_add(len1) != val_off2 {
+    let base = off1.wrapping_sub(u64::from(val_off1));
+    if off2.wrapping_sub(u64::from(val_off2)) != base {
         return None;
     }
-    let len = (len1 + len2).min(8);
+    let len1 = if val_off1.wrapping_add(len1) > 8 {
+        8u32.wrapping_sub(val_off1)
+    } else {
+        len1
+    };
+    let len2 = if val_off2.wrapping_add(len2) > 8 {
+        8u32.wrapping_sub(val_off2)
+    } else {
+        len2
+    };
+    let len = val_off1.wrapping_add(len1).max(val_off2.wrapping_add(len2))
+        .wrapping_sub(val_off1);
     let mut oper = match len {
         1 => ctx.mem8(val, off1),
         2 => ctx.mem16(val, off1),
