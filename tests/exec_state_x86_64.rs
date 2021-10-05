@@ -933,6 +933,30 @@ fn switch_u32_with_sub() {
     ]);
 }
 
+#[test]
+fn call_clears_pending_flags() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x85, 0xc0, // test eax, eax
+        0xff, 0xd1, // call ecx
+        0xb9, 0x00, 0x00, 0x00, 0x00, // mov ecx, 0
+        0x74, 0x03, // je skip_add
+        0x83, 0xc1, 0x03, // add ecx, 3
+        // skip_add:
+        0xeb, 0x00,
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.new_undef()),
+         (ctx.register(1), ctx.new_undef()),
+         (ctx.register(2), ctx.new_undef()),
+         (ctx.register(8), ctx.new_undef()),
+         (ctx.register(9), ctx.new_undef()),
+         (ctx.register(10), ctx.new_undef()),
+         (ctx.register(11), ctx.new_undef()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }

@@ -629,6 +629,7 @@ impl<'e> State<'e> {
                     self.state[FLAGS_INDEX + i] = ctx.new_undef();
                 }
                 self.state[FLAGS_INDEX + Flag::Direction as usize] = ctx.const_0();
+                self.pending_flags = PendingFlags::new();
             }
             Operation::Special(ref code) => {
                 let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
