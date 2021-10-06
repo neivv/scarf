@@ -1132,8 +1132,16 @@ impl<'e> State<'e> {
     }
 
     fn add_to_unresolved_constraint(&mut self, constraint: Operand<'e>) {
+        let ctx = self.ctx();
+        if let Some((flag, value)) = exec_state::is_flag_const_constraint(ctx, constraint) {
+            // If we have just constraint of flag == 0 or flag != 0, assign const 0/1 there
+            // instead of adding it to constraint.
+            // Not doing for non-flags as it'll end up making values such as func
+            // args too eagerly undef once they get compared once.
+            self.move_to(&DestOperand::Flag(flag), value);
+            return;
+        }
         if let Some(old) = self.unresolved_constraint {
-            let ctx = self.ctx();
             self.unresolved_constraint = Some(Constraint(ctx.and(old.0, constraint)));
         } else {
             self.unresolved_constraint = Some(Constraint(constraint));

@@ -1001,3 +1001,26 @@ fn xmm_shifts_over() {
         (ctx.xmm(5, 3), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn flag_constraint_merge_bug() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x85, 0xc0, // test eax, eax
+        0x74, 0x03, // je eax_zero
+        0x83, 0xc1, 0x03, // add ecx, 3
+        // eax_zero:
+        0x89, 0xc1, // mov ecx, eax
+        0x85, 0xc9, // test ecx, ecx
+        0x7a, 0x02, // jp step1
+        0x7b, 0x03, // jnp end
+        // step1:
+        0x7a, 0x01, // jp end
+        0xcc, // int3
+        // end:
+        0x33, 0xc9, // xor ecx, ecx
+        0xc3, // ret
+    ], &[
+         (ctx.register(1), ctx.constant(0)),
+    ]);
+}

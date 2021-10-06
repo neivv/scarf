@@ -833,6 +833,33 @@ fn apply_constraint_split<'e>(
     }
 }
 
+/// For constraint X, return Y:
+/// Assumes that flags are 1bit, which isn't super set in stone elsewhere (yet)
+///     flag == 0 => (flag, 0)
+///     flag != 0 => (flag, 1)
+///     flag == 1 => (flag, 1)
+pub fn is_flag_const_constraint<'e>(
+    ctx: OperandCtx<'e>,
+    constraint: Operand<'e>,
+) -> Option<(Flag, Operand<'e>)> {
+    let (l, r) = constraint.if_arithmetic_eq()?;
+    if let Some((l, r)) = l.if_arithmetic_eq() {
+        if r == ctx.const_0() {
+            // l != 0
+            if let OperandType::Flag(flag) = *l.ty() {
+                return Some((flag, ctx.const_1()));
+            }
+        }
+    } else {
+        if let OperandType::Flag(flag) = *l.ty() {
+            if r == ctx.const_0() || r == ctx.const_1() {
+                return Some((flag, r));
+            }
+        }
+    }
+    None
+}
+
 fn sign_extend(value: u64, from: MemAccessSize, to: MemAccessSize) -> u64 {
     if value > from.mask() / 2 {
         value | (to.mask() & !from.mask())
