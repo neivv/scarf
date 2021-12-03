@@ -261,6 +261,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                         // in input are serialized to a new but same id.
                         //
                         // For now this returns new id every time
+                        let _: super::UndefinedId = v.newtype_variant()?;
                         Ok(self.0.new_undef())
                     }
                     Variant::Custom => {
