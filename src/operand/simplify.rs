@@ -4180,7 +4180,11 @@ pub fn simplify_mul_high<'e>(
         // Multiplication won't overflow to high u64
         return ctx.const_0();
     }
-    let (left, right) = if left.if_constant().is_some() || right < left {
+    let (left, right) = if left.if_constant().is_some() {
+        (right, left)
+    } else if right.if_constant().is_some() {
+        (left, right)
+    } else if right < left {
         (right, left)
     } else {
         (left, right)
