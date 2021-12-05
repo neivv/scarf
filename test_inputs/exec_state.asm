@@ -7,6 +7,7 @@ dd movsx_test
 dd movzx_mem
 dd movsx_mem
 dd switch_cases_in_memory
+dd jump_conditions
 
 movzx_test:
 mov eax, 0x88081001
@@ -69,4 +70,20 @@ cmp edx, 2
 jl .loop_back
 xor eax, eax
 xor edx, edx
+ret
+
+jump_conditions:
+mov eax, [eax]
+cmp esi, eax
+jg .end
+.loop:
+jbe .ok
+xchg bh, bh
+ja .ok
+int3
+.ok:
+add eax, 4
+cmp esi, eax
+jle .loop
+.end:
 ret

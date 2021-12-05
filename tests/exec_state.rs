@@ -705,6 +705,14 @@ fn call_clears_pending_flags() {
     ]);
 }
 
+#[test]
+fn jump_conditions() {
+    let ctx = &OperandContext::new();
+    test(5, &[
+         (ctx.register(0), ctx.new_undef()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }

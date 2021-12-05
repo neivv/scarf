@@ -783,12 +783,13 @@ fn apply_constraint_split<'e>(
                     apply_constraint_split(ctx, arith.left, val, !with)
                 } else if with == true {
                     // (x | y) == 0 evaluates to 1, means that both x and y must be 0
-                    if let Some((l, r)) = arith.left.if_arithmetic_or() {
-                        let new = apply_constraint_split(ctx, l, val, false);
-                        apply_constraint_split(ctx, r, new, false)
-                    } else {
-                        ctx.substitute(val, arith.left, zero, 6)
+                    let mut pos = arith.left;
+                    let mut result = val;
+                    while let Some((l, r)) = pos.if_arithmetic_or() {
+                        result = apply_constraint_split(ctx, r, result, false);
+                        pos = l;
                     }
+                    apply_constraint_split(ctx, pos, result, false)
                 } else {
                     // (arith.left == 0) is false, that is, arith.left != 0
                     // Transform any check of arith.left == 0 or (arith.left | x) == 0
