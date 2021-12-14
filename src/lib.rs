@@ -37,9 +37,19 @@ use serde::{Serialize, Deserialize};
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Rva(pub u32);
 
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct Rva64(pub u64);
+
 impl std::fmt::Debug for Rva {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "Rva({:08x})", self.0)
+    }
+}
+
+impl std::fmt::Debug for Rva64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Rva64({:08x})", self.0)
     }
 }
 
@@ -144,10 +154,10 @@ impl std::ops::Sub<VirtualAddress> for VirtualAddress {
 }
 
 impl std::ops::Sub<VirtualAddress64> for VirtualAddress64 {
-    type Output = u64;
+    type Output = Rva64;
     #[inline]
-    fn sub(self, rhs: VirtualAddress64) -> u64 {
-        self.0 - rhs.0
+    fn sub(self, rhs: VirtualAddress64) -> Rva64 {
+        Rva64(self.0 - rhs.0)
     }
 }
 
@@ -156,6 +166,14 @@ impl std::ops::Add<u32> for Rva {
     #[inline]
     fn add(self, rhs: u32) -> Rva {
         Rva(self.0 + rhs)
+    }
+}
+
+impl std::ops::Add<u32> for Rva64 {
+    type Output = Rva64;
+    #[inline]
+    fn add(self, rhs: u32) -> Rva64 {
+        Rva64(self.0 + rhs as u64)
     }
 }
 
