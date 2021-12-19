@@ -33,10 +33,22 @@ use quick_error::quick_error;
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 
+/// Represents relative virtual address.
+///
+/// Not really used by scarf. User code working with 64-bit binaries may use this
+/// to save a bit of memory storing single 'base' `VirtualAddress64`, and other
+/// addresses `Rva`s, calculating the actual address when needed as `base + rva.0`.
+///
+/// That probably never wnds up being relevant.
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Rva(pub u32);
 
+/// Represents relative virtual address.
+///
+/// Not really used by scarf. Was only defined to have some sort of sensible
+/// result for `VirtualAddress64 - VirtualAddress64` operation, which probably
+/// should just be removed.
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Rva64(pub u64);
@@ -53,10 +65,35 @@ impl std::fmt::Debug for Rva64 {
     }
 }
 
+/// `VirtualAddress` represents a constant 32-bit memory address.
+///
+/// See also [`exec_state::VirtualAddress`] trait for the trait
+/// is used by generic code to operate on either this type or
+/// 64-bit [`VirtualAddress64`]. Due to legacy naming decisions, this type
+/// confusingly has same name as the trait, instead of `VirtualAddress32`.
+///
+/// Most of scarf does not require memory addresses be a integer constant,
+/// using [`Operand`s](Operand) instead. `VirtualAddress` is mainly used when
+/// reading from [`BinaryFile`], and when creating new [`analysis::FuncAnalysis`].
+///
+/// The only notable difference from a plain `u32` is that
+/// addition and subtraction(*) are defined to wrap on overflow.
+///
+/// (*) Subtracting `VirtualAddress - VirtualAddress` does panic on overflow,
+/// Subtracting `VirtualAddress - u32` wraps.
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct VirtualAddress(pub u32);
 
+/// `VirtualAddress64` represents a constant 64-bit memory address.
+///
+/// See also [`exec_state::VirtualAddress`] trait for the trait
+/// is used by generic code to operate on either this type or
+/// 32-bit [`VirtualAddress`].
+///
+/// Most of scarf does not require memory addresses be a integer constant,
+/// using [`Operands`](Operand) instead. `VirtualAddress` is mainly used when
+/// reading from [`BinaryFile`], and when creating new [`analysis::FuncAnalysis`].
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct VirtualAddress64(pub u64);
@@ -211,6 +248,15 @@ impl From<light_byteorder::UnexpectedEof> for OutOfBounds {
     }
 }
 
+/// Contains the binary that is to be analyzed, loaded to memory.
+///
+/// Not much more than a Vec<[BinarySection]>, and functions to read
+/// the correct section in different ways, when given
+/// [`VirtualAddress`](exec_state::VirtualAddress).
+///
+/// [`parse`] and [`parse_x86_64`] can be used to load a `BinaryFile` from Windows
+/// PE executable, [`raw_bin`] can be used to create a `BinaryFile` from arbitrary
+/// sections.
 #[derive(Debug, Clone)]
 pub struct BinaryFile<Va: exec_state::VirtualAddress> {
     pub base: Va,
@@ -218,6 +264,7 @@ pub struct BinaryFile<Va: exec_state::VirtualAddress> {
     relocs: Vec<Va>,
 }
 
+/// Single section of a `[BinaryFile]`.
 #[derive(Debug, Clone)]
 pub struct BinarySection<Va: exec_state::VirtualAddress> {
     pub name: [u8; 8],
@@ -232,12 +279,18 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
         self.base
     }
 
-    /// Panics if code section for some reason would not exist.
-    /// Also bad since assumes only one
+    /// Returns the section named ".text".
+    ///
+    /// Panics if this section for some reason does not exist.
+    ///
+    /// `[code_sections]` should be preferred if the user code wants to handle possibility
+    /// of multiple executable sections... But currently its implementation is bad and
+    /// just returns section named ".text", if it exists...
     pub fn code_section(&self) -> &BinarySection<Va> {
         self.section(b".text\0\0\0").unwrap()
     }
 
+    /// Returns iterator, which yields all `[BinarySection]`s of this `BinaryFile`.
     pub fn sections<'a>(&'a self) -> impl Iterator<Item = &'a BinarySection<Va>> + 'a {
         self.sections.iter()
     }
@@ -246,6 +299,7 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
         self.sections.iter().filter(|x| &x.name[..] == &b".text\0\0\0"[..])
     }
 
+    /// Returns section by name, if it exists.
     pub fn section(&self, name: &[u8; 0x8]) -> Option<&BinarySection<Va>> {
         self.sections.iter().find(|x| x.name[..] == name[..])
     }
@@ -262,6 +316,8 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
         self.slice_from_address(self.base + range.start, range.end - range.start)
     }
 
+    /// Receives a slice of data from address with length `len`, or Err(OutOfBounds)
+    /// if there is no single section containing the entire slice.
     pub fn slice_from_address(&self, start: Va, len: u32) -> Result<&[u8], OutOfBounds> {
         self.section_by_addr(start)
             .and_then(|s| {
@@ -284,6 +340,7 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
             .ok_or_else(|| OutOfBounds)
     }
 
+    /// Searches for section containing `addr`, and reads a little-endian u8 from there.
     pub fn read_u8(&self, addr: Va) -> Result<u8, OutOfBounds> {
         use crate::light_byteorder::ReadLittleEndian;
         self.section_by_addr(addr)
@@ -297,6 +354,7 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
             .ok_or_else(|| OutOfBounds)
     }
 
+    /// Searches for section containing `addr`, and reads a little-endian u16 from there.
     pub fn read_u16(&self, addr: Va) -> Result<u16, OutOfBounds> {
         use crate::light_byteorder::ReadLittleEndian;
         self.section_by_addr(addr)
@@ -310,6 +368,7 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
             .ok_or_else(|| OutOfBounds)
     }
 
+    /// Searches for section containing `addr`, and reads a little-endian u32 from there.
     pub fn read_u32(&self, addr: Va) -> Result<u32, OutOfBounds> {
         use crate::light_byteorder::ReadLittleEndian;
         self.section_by_addr(addr)
@@ -323,6 +382,7 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
             .ok_or_else(|| OutOfBounds)
     }
 
+    /// Searches for section containing `addr`, and reads a little-endian u64 from there.
     pub fn read_u64(&self, addr: Va) -> Result<u64, OutOfBounds> {
         use crate::light_byteorder::ReadLittleEndian;
         self.section_by_addr(addr)
@@ -336,6 +396,8 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
             .ok_or_else(|| OutOfBounds)
     }
 
+    /// Searches for section containing `addr`, and reads a `VirtualAddress`
+    /// (Same size as the addresses of this `BinaryFile` are) from there.
     pub fn read_address(&self, addr: Va) -> Result<Va, OutOfBounds> {
         match Va::SIZE {
             4 => self.read_u32(addr).map(|x| Va::from_u64(x as u64)),
@@ -349,7 +411,7 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
     }
 }
 
-/// Allows loading a BinaryFile from memory buffer(s) representing the binary sections.
+/// Creates a BinaryFile from memory buffer(s) representing the binary sections.
 pub fn raw_bin<Va: exec_state::VirtualAddress>(
     base: Va,
     sections: Vec<BinarySection<Va>>,
@@ -361,6 +423,7 @@ pub fn raw_bin<Va: exec_state::VirtualAddress>(
     }
 }
 
+/// Creates a `BinaryFile` from 32-bit Windows executable at `filename`.
 pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
     use byteorder::{LittleEndian, ReadBytesExt};
     use crate::Error::*;
@@ -417,6 +480,7 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
     })
 }
 
+/// Creates a `BinaryFile` from 64-bit Windows executable at `filename`.
 pub fn parse_x86_64(filename: &OsStr) -> Result<BinaryFile<VirtualAddress64>, Error> {
     use byteorder::{LittleEndian, ReadBytesExt};
     use crate::Error::*;

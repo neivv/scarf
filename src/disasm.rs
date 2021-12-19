@@ -11,15 +11,22 @@ use crate::VirtualAddress64;
 
 quick_error! {
     // NOTE: Try avoid making this have a destructor
+    /// Errors from disassembly ([`Operation`] generation)
     #[derive(Debug, Copy, Clone)]
     pub enum Error {
-        // First 8 bytes of the instruction should be enough information
+        /// Unknown opcode. The tuple is `(opcode_bytes, opcode_len)`.
+        ///
+        /// To keep this `Error`, and by extension any `Result` using `Error`
+        /// as lightweight as possible, at most 8 bytes of the opcode are
+        /// stored in this error.
         UnknownOpcode(op: [u8; 8], len: u8) {
             display("Unknown opcode {:02x?}", &op[..*len as usize])
         }
+        /// Reached end of code section.
         End {
             display("End of file")
         }
+        /// Internal error, there's a bug in scarf :)
         InternalDecodeError {
             display("Internal decode error")
         }
@@ -3615,14 +3622,80 @@ pub mod operation_helpers {
     }
 }
 
+/// A sub-operation of simulated instruction.
+///
+/// As the analysis walks through code, it translates instructions to
+/// zero or more `Operation`s, which are used as input for analysis
+/// to decide which branches are to be analyzed, and to update
+/// [`ExecutionState`](crate::exec_state::ExecutionState).
+///
+/// User-side code gets gets to intercept any `Operation` before it
+/// is otherwise processed in [`Analyzer::operation`](crate::analysis::Analyzer::operation)
+/// callback, which is the usually where most of the logic for user's code is.
+///
+/// In `Analyzer::operation`, [`skip_operation`](crate::analysis::Control::skip_operation)
+/// can be used to prevent the default `Operation` from passsing through(*),
+/// and [`update`](crate::exec_state::ExecutionState::update), as well as
+/// [`move_resolved`](crate::analysis::Control::move_resolved),
+/// [`move_unresolved`](crate::analysis::Control::move_unresolved) can be used to add
+/// additional `Operation`s to be processed by scarf.
+///
+/// (*) `skip_operation` and `update` do not do anything for control flow operations
+/// `Operation::Jump` and `Operation::Return`. This probably should be fixed, but
+/// [`end_branch`](crate::analysis::Control::end_branch) and
+/// [`add_branch_with_current_state`](crate::analysis::Control::add_branch_with_current_state)
+/// can be used to work around this limitation.
+///
+/// All [`Operand`s](Operand) in `Operation` are always [unresolved](fixme_resolved_link).
 #[derive(Clone, Debug)]
 pub enum Operation<'e> {
+    /// Set `DestOperand` to `Operand`.
+    ///
+    /// If `Option<Operand>` exists, it is taken as a condition, and `DestOperand` will only
+    /// be updated if the condition is nonzero.
+    ///
+    /// The conditional moves are generated quite rarely, and in practice they usually
+    /// cause move of [`Undefined`](fixme_undefined_link) to the `DestOperand`.
     Move(DestOperand<'e>, Operand<'e>, Option<Operand<'e>>),
+
+    /// Calls the function at `Operand`.
+    ///
+    /// `ExecutionState` just implements this as a "Clear all non-preserved registers"
+    /// operation, but the user [`Analyzer`](crate::analysis::Analyzer) code can often
+    /// have reasons to handle calls.
+    ///
+    /// Note that for performance and usability reasons, `ExecutionState` only clears registers
+    /// on functions calls. Any memory is assumed to stay unchanged, which sometimes will
+    /// cause analysis to be confused when a function was called to write something to a
+    /// pointer that will be read later. For now, these cases have to be handled by the user
+    /// code if they pop up.
     Call(Operand<'e>),
+
+    /// Jumps to `to` if `condition` is nonzero.
+    ///
+    /// If the analysis is able to determine condition to be constant, it will only
+    /// analyze the branch that is taken. Otherwise both branches will be queued to
+    /// be analyzed.
+    ///
+    /// Note that the analysis calls
+    /// [`resolve_apply_constraints`](crate::exec_state::ExecutionState::resolve_apply_constraints)
+    /// to resolve the condition, which sometimes gives better results, especially with jump
+    /// conditions, than the regular [`resolve`](crate::exec_state::ExecutionState::resolve)
+    /// would.
     Jump { condition: Operand<'e>, to: Operand<'e> },
+    /// Returns to caller.
+    ///
+    /// The `u32` parameter is additional stack bytes popped after the return
+    /// address has been popped. (E.g. x86 stdcall with 3 arguments would pop 12 bytes)
+    ///
+    /// Analysis will consider this operation a branch end.
     Return(u32),
-    /// Special cases like interrupts etc that scarf doesn't want to touch.
-    /// Also rep mov for now
+    /// Special instructions that are not representable by other `Operation`s.
+    /// For example, `rep mov` is represented with `Special`. The bytes ideally
+    /// will represent the instruction bytes, but in the end their interpretation
+    /// is very much up to ExecutionState. `rep mov` for example, is completely
+    /// ignored, but the user [`Analyzer`](crate::analysis::Analyzer) code can recognize
+    /// the instruction bytes and do its own handling if deemed necessary.
     Special(ArrayVec<u8, 8>),
     /// Set flags based on operation type. While Move(..) could handle this
     /// (And it does for odd cases like inc), it would mean generating 5
@@ -3641,6 +3714,8 @@ pub enum Operation<'e> {
     Error(Error),
 }
 
+/// Part of [`Operation`], representing an update to
+/// [`ExecutionState`s](crate::exec_state::ExecutionState) flags.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct FlagUpdate<'e> {
     pub left: Operand<'e>,
@@ -3671,6 +3746,10 @@ enum ArithOperation {
     RightShiftArithmetic,
 }
 
+/// Operations used by `[FlagUpdate]`.
+///
+/// Contains some operations that the 'primary' arithmetic operation
+/// enum [`ArithOpType`] implements in terms of other operations.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 #[repr(u8)]
 pub enum FlagArith {

@@ -67,7 +67,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// A separate function as calls are usually just stepped over.
     fn apply_call(&mut self, ret: Self::VirtualAddress);
 
-    /// Creates an Mem[addr] with MemAccessSize of VirtualAddress size
+    /// Creates an `Mem[addr]` with MemAccessSize of VirtualAddress size.
     fn operand_mem_word(ctx: OperandCtx<'e>, address: Operand<'e>, offset: u64) -> Operand<'e> {
         if <Self::VirtualAddress as VirtualAddress>::SIZE == 4 {
             ctx.mem32(address, offset)
