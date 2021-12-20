@@ -17,7 +17,88 @@ use crate::operand::slice_stack::Slice;
 
 /// A trait that does (most of) arch-specific state handling.
 ///
-/// ExecutionState contains the CPU state that is simulated, so registers, flags.
+/// ExecutionState contains the CPU state that is simulated, so registers and memory.
+///
+/// It is also "the architecture trait" for generic code that wants to handle multiple
+/// CPU architectures, usually as [`Analyzer::Exec`](analysis::Analyzer::Exec).
+///
+/// # Resolved and unresolved operands
+///
+/// `ExecutionState` can be considered a key-value map, where keys are registers and memory,
+/// each containing a single value, [`Operand`]. But instead of providing explicit
+/// `get_register` function, scarf uses `'unresolved' Operand -> 'resolved' Operand`
+/// function [`resolve`](Self::resolve), which replaces all registers and memory in the
+/// input `Operand` with values from `ExecutionState`, and returns the result.
+///
+/// Unresolved operands can be thought to refer the 'current' state, while resolved
+/// operands refer to state at function entry, when the initial ExecutionState was
+/// constructed.
+/// Most of the the user-side analysis code will likely want to just deal with
+/// resolved operands, as they represent same value regardless of what point in analysis
+/// they've been constructed. Unresolved operands are mainly useful when needing to be
+/// concerned with instruction-level details.
+///
+/// As an example, consider the following piece of x86-64 assembly code.
+///
+/// ```text
+/// mov r8, rcx
+/// add r8, 3
+/// sub rcx, r8
+/// ```
+///
+/// Scarf would represent these instructions as 3 `Operation::Move`s, using unresolved operands.
+/// If the ExecutionState was just constructed and these are the first instructions executed,
+/// The resolved values of rcx and r8 are simply the register itself, rcx and r8.
+/// As the instructions get handled, scarf updates the values in ExecutionState:
+///
+/// ```text
+/// mov r8, rcx
+/// Unresolved: r8 = rcx
+///     => `rcx` resolves to `rcx`
+///     => Now resolved r8 = `rcx`
+///
+/// add r8, 3
+/// Unresolved: r8 = r8 + 3
+///     => `r8` resolves to `rcx`; `r8 + 3` resolves to `rcx + 3`
+///     => Now resolved r8 = `rcx + 3`
+///
+/// sub rcx, r8
+/// Unresolved: rcx = rcx - r8
+///     => `rcx` resolves to `rcx`; `r8` resolves to `rcx + 3`; `rcx - r8` resolves to just `-3`
+///     => Now resolved rcx = `-3` (To be precise, 0xffff_ffff_ffff_fffd)
+///     => r8 still resolves to `rcx + 3`
+/// ```
+///
+/// [`Operation`], which represents a (part of a) CPU instruction, without external state,
+/// always contains unresolved operands, and resolving them is usually the first thing
+/// that is done before inspecting them further.
+///
+/// When stating that a [`DestOperand`] is resolved or unresolved, the only behaviour changes
+/// affect handling of `DestOperand::Memory` variant.
+/// [`update`](Self::update) and [`move_to`](Self::move_to) consider it unresolved, and will
+/// resolve it to get the memory address that gets written to.
+/// [`move_resolved`](Self::move_resolved) will consider the memory address be already resolved.
+/// Other variants of `DestOperand` do not change meaning between resolved or unresolved.
+///
+/// # Memory addresses
+///
+/// Scarf splits memory addresses to a 'base' [`Operand`] and 'offset' `u64`. ExecutionState
+/// will make sure that any write and reads with equivalent base and overlapping offsets will
+/// access the same values, simulating little-endian memory. Each unique base operand is
+/// considered a completely separate memory space from each other, which generally is
+/// conservatively correct, and currently there is no way (outside of duplicating memory writes)
+/// to make two separate memory address bases to alias.
+///
+/// Internally the overlapping memory is implemented as a single `Operand` at each
+/// 4- or 8-aligned offset, with bitwise ANDs, ORs, and shifts to make memory reading/writing
+/// work without any additional handling required from outside ExecutionState. However, when
+/// two states are [merged](fixme_state_merge), the entire 4- or 8-byte range will be merged
+/// to `Undefined`, even if only single byte of the range differed. This limitation does
+/// not cause issues too often, but if a function stores multiple single-byte values
+/// next to each other in memory, reading one of those bytes may give `Undefined` instead of
+/// a more useful `Operand`.
+///
+/// See also [`MemAccess`] documentation for an overview of memory address invariants in scarf.
 pub trait ExecutionState<'e> : Clone + 'e {
     type VirtualAddress: VirtualAddress;
     // Technically ExecState shouldn't need to be linked to disassembly code,
@@ -26,46 +107,137 @@ pub trait ExecutionState<'e> : Clone + 'e {
     type Disassembler: Disassembler<'e, VirtualAddress = Self::VirtualAddress>;
     const WORD_SIZE: MemAccessSize;
 
-    /// Bit of abstraction leak, but the memory structure is implemented as an partially
-    /// immutable hashmap to keep clones not getting out of hand. This function is used to
-    /// tell memory that it may be cloned soon, so the latest changes may be made
-    /// immutable-shared if necessary.
-    fn maybe_convert_memory_immutable(&mut self, limit: usize);
+    /// Constructs the `ExecutionState`.
+    fn initial_state(
+        operand_ctx: OperandCtx<'e>,
+        binary: &'e crate::BinaryFile<Self::VirtualAddress>,
+    ) -> Self;
+
+    /// Returns the `OperandCtx` used by `self`.
+    fn ctx(&self) -> OperandCtx<'e>;
+
+    /// Converts unresolved input `Operand` to resolved `Operand`.
+    ///
+    /// That is, all register and memory `Operand`s in the input are replaced
+    /// with what value the state has for this register or memory address.
+    fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e>;
+
+    /// Converts unresolved input `MemAccess` to resolved `MemAccess`.
+    ///
+    /// Note that this is mostly equivalent function to `resolve`, just operating
+    /// in `MemAccess` which saves some work and `Operand` allocations that resolving
+    /// [`mem.address_op()`](MemAccess::address_op) would do.
+    ///
+    /// On the other hand, [`read_memory`](Self::read_memory) operates with a resolved address,
+    /// allowing reading memory which may not be practical to reach from `resolve()` or
+    /// `resolve_mem()`.
+    fn resolve_mem(&mut self, mem: &MemAccess<'e>) -> MemAccess<'e>;
+
+    /// As resolve, but applies constraints, which makes the operation slower
+    /// but can produce more accurate results, especially for jump conditions.
+    ///
+    /// Constraints are usually added to state when analysis reaches a jump, for example
+    /// a branch from `eax > 5` jump, will have a constraint that simplifies later `eax > 5`
+    /// resolves to `1`, if resolve_apply_constraints is used.
+    fn resolve_apply_constraints(&mut self, operand: Operand<'e>) -> Operand<'e>;
+
+    /// Reads memory from a resolved `MemAccess`.
+    ///
+    /// Note that this differs from `resolve` and `resolve_mem`, which will always resolve
+    /// the memory address, often ending up with a different result.
+    ///
+    /// For example, consider a function where we are interested in what the function
+    /// writes to memory pointed by it input argument, passed in register rcx. Calling
+    /// `resolve(Mem64[rcx])` or `resolve_mem({rcx, 0, Mem64})` on function return will
+    /// first resolve rcx, which may no longer hold the input argument, and then read
+    /// memory from there. Whereas `read_memory({rcx, 0, Mem64})` will read the
+    /// memory pointed by input argument, no matter what the rcx register currently holds.
+    ///
+    /// While there is no a explicit `write_memory` method, [`move_resolved`](Self::move_resolved)
+    /// with `DestOperand::Memory(mem)` will handle the corresponding write case.
+    fn read_memory(&mut self, mem: &MemAccess<'e>) -> Operand<'e>;
+
+    /// Applies changes from operation to the state.
+    ///
+    /// This is what the analysis code will do for each non-control-flow-related `Operation`
+    /// generated, if the user does not prevent this by calling
+    /// [`Control::skip_operation`](crate::analysis::Control::skip_operation).
+    fn update(&mut self, operation: &Operation<'e>);
+
+    /// Moves an unresolved value to unresolved destination.
+    ///
+    /// Convenience method for the equivalent but more verbose
+    /// `update(Operation::Move(dest, value, None)`.
+    fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
+
+    /// Moves a resolved value to (resolved) destination.
+    ///
+    /// This is the main way to update state when the value you have is
+    /// already resolved. Note that if destination is a memory address, it will be
+    /// considered to be resolved. To move a resolved value to unresolved memory address,
+    /// resolve the `MemAccess` and call `move_resolved` with that.
+    fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
+
+    /// Sets flags to a value that has already been resolved.
+    ///
+    /// `carry` should contain resolved value of the carry flag, if `FlagUpdate.ty` is
+    /// an operation taking carry as input (Adc or Sbb).
+    fn set_flags_resolved(&mut self, flags: &FlagUpdate<'e>, carry: Option<Operand<'e>>);
+
+    /// Updates state as if the call instruction was executed (Push return address to stack)
+    ///
+    /// A separate function as calls are usually just stepped over.
+    fn apply_call(&mut self, ret: Self::VirtualAddress);
+
     /// Adds an additonal assumption that can't be represented by setting registers/etc.
     /// Resolved constraints are useful limiting possible values a variable can have
-    /// (`value_limits`)
+    /// ([`value_limits`](Self::value_limits))
     fn add_resolved_constraint(&mut self, constraint: Constraint<'e>);
     /// Adds an additonal assumption that can't be represented by setting registers/etc.
     /// Unresolved constraints are useful for knowing that a jump chain such as `jg` followed by
     /// `jle` ends up always jumping at `jle`.
     fn add_unresolved_constraint(&mut self, constraint: Constraint<'e>);
     fn add_resolved_constraint_from_unresolved(&mut self);
-    fn update(&mut self, operation: &Operation<'e>);
-    fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
-    fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
-    fn set_flags_resolved(&mut self, flags: &FlagUpdate<'e>, carry: Option<Operand<'e>>);
-    fn ctx(&self) -> OperandCtx<'e>;
-    fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e>;
-    fn resolve_mem(&mut self, mem: &MemAccess<'e>) -> MemAccess<'e>;
-    fn resolve_apply_constraints(&mut self, operand: Operand<'e>) -> Operand<'e>;
-    /// Reads memory for which the `mem` is a resolved `MemAccess`.
-    fn read_memory(&mut self, mem: &MemAccess<'e>) -> Operand<'e>;
-    fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>>;
-    fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>>;
-    fn initial_state(
-        operand_ctx: OperandCtx<'e>,
-        binary: &'e crate::BinaryFile<Self::VirtualAddress>,
-    ) -> Self;
+
+    /// Returns smallest and largest (inclusive) value a *resolved* `Operand` can have.
+    ///
+    /// This usually just returns (0, u64::MAX), but the state may be able to give
+    /// better guess if a jump earlier has limited the range of possible values
+    /// for the `Operand`.
+    fn value_limits(&mut self, _value: Operand<'e>) -> (u64, u64) {
+        (0, u64::MAX)
+    }
+
+    /// Merges two states to a new state, as described in
+    /// [`FuncAnalysis documentation`](fixme_state_merge).
+    ///
+    /// Returns `None` if the merged state would be equivalent to `old`,
+    /// otherwise the merged state is returned.
     fn merge_states(
         old: &mut Self,
         new: &mut Self,
         cache: &mut MergeStateCache<'e>,
     ) -> Option<Self>;
 
-    /// Updates states as if the call instruction was executed (Push return address to stack)
+    /// Bit of abstraction leak, but the memory structure is implemented as an partially
+    /// immutable hashmap to keep clones not getting out of hand. This function is used to
+    /// tell memory that it may be cloned soon, so the latest changes may be made
+    /// immutable-shared if necessary.
+    fn maybe_convert_memory_immutable(&mut self, limit: usize);
+
+    /// Tries to do reverse lookup to find some unresolved `Operand` for the
+    /// resolved `val`.
     ///
-    /// A separate function as calls are usually just stepped over.
-    fn apply_call(&mut self, ret: Self::VirtualAddress);
+    /// Does not provide good results; user code should implement unresolve
+    /// that meets the accuracy/performance requirements they have itself.
+    fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>>;
+
+    /// Iterates through all memory to try and find unresolved `Operand` for the
+    /// resolved `val`.
+    ///
+    /// Being O(n), and something not used by scarf, this may be removed at some
+    /// point and user code should implement their own reverse lookup instead.
+    fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>>;
 
     /// Creates an `Mem[addr]` with MemAccessSize of VirtualAddress size.
     fn operand_mem_word(ctx: OperandCtx<'e>, address: Operand<'e>, offset: u64) -> Operand<'e> {
@@ -153,12 +325,6 @@ pub trait ExecutionState<'e> : Clone + 'e {
             }
             _ => (),
         }
-    }
-
-    /// Returns smallest and largest (inclusive) value a *resolved* operand can have
-    /// (Mainly meant to use extra constraint information)
-    fn value_limits(&mut self, _value: Operand<'e>) -> (u64, u64) {
-        (0, u64::max_value())
     }
 
     // Analysis functions, default to no-op

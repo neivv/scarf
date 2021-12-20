@@ -693,15 +693,50 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     }
 }
 
-pub trait Analyzer<'exec> : Sized {
+/// The trait that will be implemented by user-side code to hook into [`FuncAnalysis`] to
+/// retrieve whichever results are wanted.
+///
+/// Most commonly the `Analyzer` will implement at least the `operation()` hook,
+/// which will be called for each sub-step of each instruction `FuncAnalysis` is walking through.
+///
+/// During the hooks the `Analyzer` has access to [`Control`], which is used to read and modify
+/// any scarf-side analysis state available to user code, as well as a `&mut self` reference
+/// to the `Analyzer` structure, which can contain any state the user code needs to be shared
+/// across entire analysis. If the user code needs branch-specific state with custom
+/// [state merging](fixme_state_merge) behaviour, [`Analyzer::State`] can be used to easily
+/// implement the state.
+pub trait Analyzer<'e> : Sized {
+    /// The `ExecutionState`, CPU architecture that will be used by this analyzer.
+    type Exec: ExecutionState<'e>;
+
+    /// Additional user-defined state that will be [merged by analysis](fixme_state_merge) when
+    /// two branches of execution join.
+    ///
+    /// If not needed, [`DefaultState`] can be used to get a state which carries no information.
+    ///
+    /// When not using `DefaultState`, call [`FuncAnalysis::custom_state`] to create the
+    /// `FuncAnalysis` struct. The state can be read and modified during all Analyzer hooks with
+    /// [`Control::user_state`].
     type State: AnalysisState;
-    type Exec: ExecutionState<'exec>;
-    fn branch_start(&mut self, _control: &mut Control<'exec, '_, '_, Self>) {}
-    fn branch_end(&mut self, _control: &mut Control<'exec, '_, '_, Self>) {}
-    fn operation(&mut self, _control: &mut Control<'exec, '_, '_, Self>, _op: &Operation<'exec>) {}
+
+    /// Called for each `Operation` of disassembled instruction.
+    ///
+    /// This is the main function for user code's analysis inspection and manipulation.
+    fn operation(&mut self, _control: &mut Control<'e, '_, '_, Self>, _op: &Operation<'e>) {}
+
+    /// Called each time the analysis starts executing instructions from a new branch.
+    fn branch_start(&mut self, _control: &mut Control<'e, '_, '_, Self>) {}
+
+    /// Called each time the analysis has finished a branch, either due to `Operation::Jump`
+    /// or `Operation::Return`.
+    ///
+    /// Not called if user has requested the branch to be stopped through [`Control::end_branch`].
+    fn branch_end(&mut self, _control: &mut Control<'e, '_, '_, Self>) {}
 }
 
 impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
+    /// Creates a new `FuncAnalysis` with default `ExecutionState` and no custom
+    /// user-side state.
     pub fn new(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
         operand_ctx: OperandCtx<'a>,
@@ -725,6 +760,8 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
         }
     }
 
+    /// Creates a new `FuncAnalysis` with user-given `ExecutionState` and no custom
+    /// user-side state.
     pub fn with_state(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
         operand_ctx: OperandCtx<'a>,
@@ -750,6 +787,8 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
 }
 
 impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, State> {
+    /// Creates a new `FuncAnalysis` with user-given `ExecutionState` and custom
+    /// user-side state.
     pub fn custom_state(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
         operand_ctx: OperandCtx<'a>,
@@ -824,6 +863,8 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         None
     }
 
+    /// Runs the analysis, calling the user-defined callbacks defined on [`Analyzer`] trait
+    /// as the code is being stepped thorugh.
     pub fn analyze<A: Analyzer<'a, State = State, Exec = Exec>>(&mut self, analyzer: &mut A) {
         let old_undef_pos = self.operand_ctx.get_undef_pos();
         let mut disasm = Exec::Disassembler::new(self.operand_ctx);
@@ -968,11 +1009,23 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         Some((addr, state))
     }
 
+    /// Runs analyzer to end without any user interaction, producing `Cfg`
+    ///
+    /// Calling this is not necessary if you do not have user for the `Cfg`.
+    ///
+    /// Currently if [`Control::end_analysis`] has been used to stop the analysis,
+    /// any remaining branches (but not the one that was being analyzed on `end_analysis() call!)
+    /// will be walked through to gain a 'better' idea of the control flow graph. This is somewhat
+    /// inconsistent behaviour and should be changed to not analyze any pending branches once
+    /// all users relying on this have migrated.
     pub fn finish(self) -> Cfg<'a, Exec, State> {
         self.finish_with_changes(|_, _, _| {})
     }
 
-    /// As this will run analysis, allows user to manipulate the state during it
+    /// Runs analyzer to end with any user interaction, producing `Cfg`.
+    ///
+    /// Maybe to be removed later? User code should ideally not use `end_analysis` and
+    /// expect that any pending branches get processed by finish().
     pub fn finish_with_changes<F>(
         mut self,
         mut hook: F

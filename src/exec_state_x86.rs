@@ -185,6 +185,9 @@ const XMM_REGISTER_INDEX: usize = FPU_REGISTER_INDEX + 8;
 const FLAGS_INDEX: usize = 8;
 const STATE_OPERANDS: usize = FLAGS_INDEX + 6;
 
+/// ExecutionState for 32-bit x86 architecture.
+/// See [`trait ExecutionState`](ExecutionStateTrait) for documentation
+/// on most of the functionality of this type.
 pub struct ExecutionState<'e> {
     inner: Box<State<'e>>,
 }
@@ -527,7 +530,6 @@ impl<'e> ExecutionState<'e> {
         self.inner.memory = Memory::new();
     }
 
-    /// Tries to find an register/memory address corresponding to a resolved value.
     pub fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>> {
         // TODO: Could also check xmm but who honestly uses it for unique storage
         for (reg, &val2) in self.inner.state.iter().enumerate().take(8) {

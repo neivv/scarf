@@ -3634,9 +3634,9 @@ pub mod operation_helpers {
 /// callback, which is the usually where most of the logic for user's code is.
 ///
 /// In `Analyzer::operation`, [`skip_operation`](crate::analysis::Control::skip_operation)
-/// can be used to prevent the default `Operation` from passsing through(*),
-/// and [`update`](crate::exec_state::ExecutionState::update), as well as
-/// [`move_resolved`](crate::analysis::Control::move_resolved),
+/// can be used to prevent the default `Operation` from passsing through(*).
+/// Whereas [`update`](crate::exec_state::ExecutionState::update), as well as
+/// [`move_resolved`](crate::analysis::Control::move_resolved), and
 /// [`move_unresolved`](crate::analysis::Control::move_unresolved) can be used to add
 /// additional `Operation`s to be processed by scarf.
 ///
@@ -3646,7 +3646,9 @@ pub mod operation_helpers {
 /// [`add_branch_with_current_state`](crate::analysis::Control::add_branch_with_current_state)
 /// can be used to work around this limitation.
 ///
-/// All [`Operand`s](Operand) in `Operation` are always [unresolved](fixme_resolved_link).
+/// As `Operation` is representing CPU instructions without any external state,
+/// all [`Operand`]s and `DestOperand`s in `Operation` are always
+/// [unresolved](exec_state/trait.ExecutionState.html#resolved-and-unresolved-operands).
 #[derive(Clone, Debug)]
 pub enum Operation<'e> {
     /// Set `DestOperand` to `Operand`.

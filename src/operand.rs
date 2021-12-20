@@ -2133,7 +2133,7 @@ impl<'e> MemAccess<'e> {
     }
 
     /// Achieves the following without unnecessary interning:
-    /// ```ignore
+    /// ```text
     /// self.address_op(ctx)
     ///     .if_arithmetic_add()
     ///     .and_then(|(l, r)| Operand::either(l, r, func))
@@ -2165,7 +2165,7 @@ impl<'e> MemAccess<'e> {
     }
 
     /// Achieves the following without unnecessary interning:
-    /// ```ignore
+    /// ```text
     /// self.address_op(ctx)
     ///     .if_arithmetic_add()
     ///     .and_then(|(l, r)| Operand::either(l, r, func))

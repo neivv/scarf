@@ -17,6 +17,9 @@ use crate::{BinaryFile, VirtualAddress64};
 const FLAGS_INDEX: usize = 0x10;
 const STATE_OPERANDS: usize = FLAGS_INDEX + 6;
 
+/// ExecutionState for 64-bit x86 architecture.
+/// See [`trait ExecutionState`](ExecutionStateTrait) for documentation
+/// on most of the functionality of this type.
 pub struct ExecutionState<'e> {
     inner: Box<State<'e>>,
 }
