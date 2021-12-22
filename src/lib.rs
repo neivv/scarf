@@ -14,7 +14,7 @@ mod heapsort;
 mod light_byteorder;
 pub mod operand;
 
-pub use crate::analysis::{Analyzer};
+pub use crate::analysis::{Analyzer, FuncAnalysis};
 pub use crate::disasm::{DestOperand, Operation, FlagArith, FlagUpdate, operation_helpers};
 pub use crate::operand::{
     ArithOpType, MemAccess, MemAccessSize, Operand, OperandType, OperandContext, OperandCtx,
@@ -230,7 +230,8 @@ quick_error! {
     }
 }
 
-/// Error type that is used when reading from BinaryFile by VirtualAddress
+/// Zero-sized error type that is returned when reading from BinaryFile by VirtualAddress cannot
+/// be done.
 #[derive(Copy, Clone, Debug)]
 pub struct OutOfBounds;
 
@@ -254,6 +255,13 @@ impl From<light_byteorder::UnexpectedEof> for OutOfBounds {
 /// the correct section in different ways, when given
 /// [`VirtualAddress`](exec_state::VirtualAddress).
 ///
+/// `BinaryFile` is often passed as by reference `&'e BinaryFile`, using same lifetime as
+/// [`OperandContext`]. This would not be required, as `BinaryFile` does not hold any references
+/// to `OperandContext`, the lifetime was chosen to be same to keep all code interfacing
+/// with scarf simpler, only requiring a single lifetime being passed around. This unfortunately
+/// does require `BinaryFile` to be created so that it outlives the `OperandContext` passed
+/// to [`FuncAnalysis`], which usually should not be a too big of a problem.
+///
 /// [`parse`] and [`parse_x86_64`] can be used to load a `BinaryFile` from Windows
 /// PE executable, [`raw_bin`] can be used to create a `BinaryFile` from arbitrary
 /// sections.
@@ -264,7 +272,7 @@ pub struct BinaryFile<Va: exec_state::VirtualAddress> {
     relocs: Vec<Va>,
 }
 
-/// Single section of a `[BinaryFile]`.
+/// Single section of a [`BinaryFile`].
 #[derive(Debug, Clone)]
 pub struct BinarySection<Va: exec_state::VirtualAddress> {
     pub name: [u8; 8],

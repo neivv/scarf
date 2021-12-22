@@ -371,7 +371,7 @@ pub struct RelocValues<Va: VaTrait> {
     pub value: Va,
 }
 
-/// The returned array is sorted by value
+/// The returned array is sorted by value.
 pub fn relocs_with_values<Va: VaTrait>(
     file: &BinaryFile<Va>,
     mut relocs: &[Va],
@@ -415,10 +415,28 @@ pub fn relocs_with_values<Va: VaTrait>(
     Ok(result)
 }
 
+/// A trait for additional branch-specific analysis state that will be merged by the
+/// analysis when two different branches join.
+///
+/// See [state merging](fixme_state_merge) for more details on how analysis merges states.
+///
+/// At the moment, only differences in `ExecutionState` will cause analysis to merge
+/// and recheck a branch; there is no way yet for `AnalysisState` to declare two states
+/// different to require a recheck when there hasn't been changes in `ExecutionState`.
+///
+/// You can access and modify the `AnalysisState` for current branch in [`Analyzer`] callbacks
+/// by calling [`Control::user_state`].
 pub trait AnalysisState: Clone {
+    /// Called when analysis merges states of two different branches.
+    ///
+    /// The implementation is expected to update `self` with values that are a merge of
+    /// `self` and `newer`, but the implementation may do anything it wants, as scarf does not
+    /// touch `AnalysisState` at all.
     fn merge(&mut self, newer: Self);
 }
 
+/// A no-op zero-sized type implementing [`AnalysisState`] that can be used if there
+/// is no need for user-side mergeable state.
 #[derive(Default, Clone, Debug)]
 pub struct DefaultState;
 
@@ -501,11 +519,52 @@ enum End {
 }
 
 impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
+    /// Retreives the `OperandCtx` that was used to construct `FuncAnalysis`.
+    pub fn ctx(&self) -> OperandCtx<'e> {
+        self.inner.analysis.operand_ctx
+    }
+
+    /// Retreives the `BinaryFile` that was used to construct `FuncAnalysis`.
+    pub fn binary(&self) -> &'e BinaryFile<<A::Exec as ExecutionState<'e>>::VirtualAddress> {
+        self.inner.analysis.binary
+    }
+
+    /// For `operation()` callback, eeturns address of the current instruction that is
+    /// used as a source for the `Operation`.
+    ///
+    /// For `branch_start()` callback, returns the start address of the branch.
+    ///
+    /// For `branch_end()` callback, returns the address of final instruction of branch.
+    pub fn address(&self) -> <A::Exec as ExecutionState<'e>>::VirtualAddress {
+        self.inner.address
+    }
+
+    /// Returns address of the next instruction that will be executed.
+    ///
+    /// Does not return a valid value in `branch_start()` callback.
+    ///
+    /// For `branch_end()` callback, returns the address of instruction after final instruction
+    /// of the branch.
+    pub fn current_instruction_end(&self) -> <A::Exec as ExecutionState<'e>>::VirtualAddress {
+        self.inner.address + self.inner.instruction_length as u32
+    }
+
+    /// Causes the `FuncAnalysis` to end analysis immediately after this hook is returned from.
+    ///
+    /// Currently no-op in `branch_end()` callback.
     pub fn end_analysis(&mut self) {
         self.inner.end = Some(End::Function);
     }
 
-    /// Ends the branch without continuing through anything it leads to
+    /// Causes the `FuncAnalysis` to end the currently simulated branch without executing
+    /// any remaining instructions or adding branches from `Operation::Jump`.
+    ///
+    /// Using `end_branch` together with `add_branch_with_current_state` for each
+    /// jump destination when seeing `Operation::Jump` can be used to customize state
+    /// which will be used for branches after the jump. It is a bit awkward way to do it
+    /// and could use a better designed API though :)
+    ///
+    /// Currently no-op in `branch_end()` callback.
     pub fn end_branch(&mut self) {
         if self.inner.end.is_none() {
             self.inner.end = Some(End::Branch);
@@ -520,42 +579,59 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         self.inner.skip_operation = true;
     }
 
-    pub fn user_state(&mut self) -> &mut A::State {
-        &mut self.inner.state.1
-    }
-
+    /// Returns mutable refence to the current branch's `ExecutionState`.
+    ///
+    /// `Control` includes convenience functions for the most commonly used `ExecutionState`
+    /// functions, which can be used instead of calling this.
     pub fn exec_state(&mut self) -> &mut A::Exec {
         &mut self.inner.state.0
     }
 
+    /// Returns mutable reference to user-defined analyzer state [`Analyzer::State`].
+    pub fn user_state(&mut self) -> &mut A::State {
+        &mut self.inner.state.1
+    }
+
+    /// Convenience function for [`exec_state().resolve()`](ExecutionState::resolve)
     pub fn resolve(&mut self, val: Operand<'e>) -> Operand<'e> {
         self.inner.state.0.resolve(val)
     }
 
+    /// Convenience function for [`exec_state().resolve_mem()`](ExecutionState::resolve_mem)
     pub fn resolve_mem(&mut self, val: &MemAccess<'e>) -> MemAccess<'e> {
         self.inner.state.0.resolve_mem(val)
     }
 
+    /// Convenience function for
+    /// [`exec_state().resolve_apply_constraints()`](ExecutionState::resolve_apply_constraints)
     pub fn resolve_apply_constraints(&mut self, val: Operand<'e>) -> Operand<'e> {
         self.inner.state.0.resolve_apply_constraints(val)
     }
 
+    /// Convenience function for [`exec_state().read_memory()`](ExecutionState::read_memory)
     pub fn read_memory(&mut self, mem: &MemAccess<'e>) -> Operand<'e> {
         self.inner.state.0.read_memory(mem)
     }
 
+    /// Don't use this, will be deprecated at some point. See [`ExecutionState::unresolve`].
     pub fn unresolve(&mut self, val: Operand<'e>) -> Option<Operand<'e>> {
         self.inner.state.0.unresolve(val)
     }
 
+    /// Don't use this, will be deprecated at some point.
+    /// See [`ExecutionState::unresolve_memory`].
     pub fn unresolve_memory(&mut self, val: Operand<'e>) -> Option<Operand<'e>> {
         self.inner.state.0.unresolve_memory(val)
     }
 
+    /// Convenience function for [`exec_state().move_to()`](ExecutionState::move_to),
+    /// with a better name that reminds that this function uses
+    /// [unresolved operands](exec_state/trait.ExecutionState.html#resolved-and-unresolved-operands).
     pub fn move_unresolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         self.inner.state.0.move_to(dest, value);
     }
 
+    /// Convenience function for [`exec_state().move_resolved()`](ExecutionState::move_resolved),
     pub fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         self.inner.state.0.move_resolved(dest, value);
     }
@@ -584,6 +660,12 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     /// NOTE: User is expected to call `ctrl.skip_operation()` if this is during hook
     /// for `Operation::Call`; this is not done automatically as inlining during other
     /// operations is also allowed, even if less useful. (Maybe this is a bit of poor API?)
+    ///
+    /// If the child analyzer uses `end_analysis` or `end_branch` to prevent the inlined analyzer
+    /// reaching `Operation::Return`, this will end up merging only branches that do return.
+    ///
+    /// If any of the branches reaches a return, the state will be updated even if
+    /// `end_analysis` is used later.
     pub fn inline<A2: Analyzer<'e, State = A::State, Exec = A::Exec>>(
         &mut self,
         analyzer: &mut A2,
@@ -601,23 +683,6 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         if let Some(state) = analyzer.state {
             inner.state = state;
         }
-    }
-
-    pub fn ctx(&self) -> OperandCtx<'e> {
-        self.inner.analysis.operand_ctx
-    }
-
-    pub fn binary(&self) -> &'e BinaryFile<<A::Exec as ExecutionState<'e>>::VirtualAddress> {
-        self.inner.analysis.binary
-    }
-
-    pub fn address(&self) -> <A::Exec as ExecutionState<'e>>::VirtualAddress {
-        self.inner.address
-    }
-
-    /// Can be used for determining address for a branch when jump isn't followed and such.
-    pub fn current_instruction_end(&self) -> <A::Exec as ExecutionState<'e>>::VirtualAddress {
-        self.inner.address + self.inner.instruction_length as u32
     }
 
     /// Casts to Control<B: Analyzer> with compatible states.
@@ -674,12 +739,12 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         ctx.add_const(left, right as u64 * size as u64)
     }
 
-    /// Convenience for cases where `Mem[address]` is needed
+    /// Either `ctx.mem32()` or `ctx.mem64()`, depending on ExecutionState word size.
     pub fn mem_word(&self, addr: Operand<'e>, offset: u64) -> Operand<'e> {
         A::Exec::operand_mem_word(self.ctx(), addr, offset)
     }
 
-    /// Either `op.if_mem32()` or `op.if_mem64()`, depending on word size
+    /// Either `op.if_mem32()` or `op.if_mem64()`, depending on ExecutionState word size.
     pub fn if_mem_word<'a>(&self, op: Operand<'e>) -> Option<&'e MemAccess<'e>> {
         if <A::Exec as ExecutionState<'e>>::VirtualAddress::SIZE == 4 {
             op.if_mem32()
