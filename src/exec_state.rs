@@ -1,3 +1,10 @@
+//! Traits for abstracting over different CPU architecture, and code that can be shared
+//! between them.
+//!
+//! Main points of interest are [`ExecutionState`] for the main architecture trait,
+//! and [`VirtualAddress`] for the "Integer representing memory address of word size"
+//! trait.
+
 use std::collections::{hash_map, HashMap};
 use std::fmt;
 use std::mem;

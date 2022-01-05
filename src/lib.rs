@@ -1,3 +1,44 @@
+//! Scarf is a library for analyzing x86 functions.
+//!
+//! The main concept of scarf is that the user gives [`FuncAnalysis`] a function
+//! which will be simulated. `FuncAnalysis` will walk through the function's different
+//! execution paths, while calling [user-defined callbacks](Analyzer), letting the user code
+//! to examine execution to extract information it needs. The callback is also able to
+//! modify state and have some control over execution, allowing scarf to be adapted for cases
+//! where the library is not quite able to handle unusual assmebly patterns.
+//!
+//! Examples of problems that could be answered with scarf:
+//! - Find all child function calls of a function, where one of the arguments is
+//!     constant integer between 0x600 and 0x700
+//! - If the function writes a 64-bit value to `(Base pointer)+0x28`, return the base pointer
+//!     and value which was written to. That is, detect writes to a field of a struct when the
+//!     field offset is known to be 0x28.
+//! - Check if the function reads memory at given constant address, and track non-stack
+//!     locations where the read value is passed to.
+//! - Determine all constant arguments that are passed to a certain function `f`, by analyzing all
+//!     of the functions calling `f`.
+//! - Find a point where the function compares some value `x` to be less than constant 0x100, and
+//!     return what expression `x` is, as well as the jump address and whether it has to be
+//!     changed to always or never to jump in order to always go to `x < 0x100` branch.
+//!
+//! In general, scarf is still relatively low-level in its execution representation.
+//! Good analysis results often require user to handle edge cases, which often requires
+//! iterative improvements to analysis code when you come across an executable that the
+//! analysis quite does not work on. As ultimately the only input to scarf analysis is often
+//! just the executable binary, keeping tests using those binaries to prevent scarf-using code
+//! from suddenly regressing is a good idea.
+//!
+//! Scarf strives to be fast enough to analyze an average function in less than 1 millisecond
+//! even on slower machines. This makes it quite feasible to brute force every function of
+//! even in larger executable in few minutes, as well as have more targeted analysis be fast
+//! enough that it can be ran without anyone noticing. Some of this speed means giving up
+//! accuracy, and if an adversary codegen wanted to explicitly break scarf, it would likely
+//! at least require user callback to actively help scarf from breaking.
+//! The simulation accuracy issues do not seem to cause too much problem in regular
+//! compiler-generated code though.
+//!
+//! The following are main types used by scarf:
+
 #![allow(clippy::style, clippy::bool_comparison, clippy::needless_lifetimes)]
 
 #[macro_use] extern crate log;

@@ -1,3 +1,8 @@
+//! Contains [`FuncAnalysis`] and related types and traits.
+//!
+//! Additionally miscellaneous **heuristic** functions to find function entries and
+//! relocations of [`BinaryFile`] are included.
+
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::mem;
