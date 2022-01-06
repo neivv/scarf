@@ -48,33 +48,31 @@ struct State<'e> {
 }
 
 
+// Manual impl since derive adds an unwanted inline hint
 impl<'e> Clone for ExecutionState<'e> {
     fn clone(&self) -> Self {
+        // Codegen optimization: memory cloning isn't a memcpy,
+        // doing all memcpys at the end, after other function calls
+        // or branching code generally avoids temporaries.
+        let s = &*self.inner;
+        let memory = s.memory.clone();
+        let xmm= s.xmm.clone();
+        let freeze_buffer = s.freeze_buffer.clone();
         ExecutionState {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-// Manual impl since derive adds an unwanted inline hint
-impl<'e> Clone for State<'e> {
-    fn clone(&self) -> Self {
-        Self {
-            // Codegen optimization: memory cloning isn't a memcpy,
-            // doing all memcpys at the end, after other function calls
-            // or branching code generally avoids temporaries.
-            memory: self.memory.clone(),
-            cached_low_registers: self.cached_low_registers.clone(),
-            xmm: self.xmm.clone(),
-            freeze_buffer: self.freeze_buffer.clone(),
-            state: self.state,
-            resolved_constraint: self.resolved_constraint,
-            unresolved_constraint: self.unresolved_constraint,
-            memory_constraint: self.memory_constraint,
-            ctx: self.ctx,
-            binary: self.binary,
-            pending_flags: self.pending_flags,
-            frozen: self.frozen,
+            inner: Box::alloc().init(State {
+                memory,
+                xmm,
+                freeze_buffer,
+                cached_low_registers: s.cached_low_registers,
+                state: s.state,
+                resolved_constraint: s.resolved_constraint,
+                unresolved_constraint: s.unresolved_constraint,
+                memory_constraint: s.memory_constraint,
+                ctx: s.ctx,
+                binary: s.binary,
+                pending_flags: s.pending_flags,
+                frozen: s.frozen,
+            }),
         }
     }
 }
@@ -86,7 +84,7 @@ impl<'e> fmt::Debug for ExecutionState<'e> {
 }
 
 /// Caches eax/ax/al/ah resolving.
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 struct CachedLowRegisters<'e> {
     registers: [[Option<Operand<'e>>; 3]; 0x10],
 }
@@ -361,11 +359,11 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         let ctx = self.ctx();
         let rsp = ctx.register(4);
         self.move_to(
-            &DestOperand::from_oper(rsp),
+            &DestOperand::Register64(4),
             ctx.sub_const(rsp, 8),
         );
         self.move_to(
-            &DestOperand::from_oper(ctx.mem64(rsp, 0)),
+            &DestOperand::Memory(ctx.mem_access(rsp, 0, MemAccessSize::Mem64)),
             ctx.constant(ret.0),
         );
     }
