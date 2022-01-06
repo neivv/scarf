@@ -809,50 +809,32 @@ impl<'a, Exec: ExecutionState<'a>> FuncAnalysis<'a, Exec, DefaultState> {
     /// user-side state.
     pub fn new(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
-        operand_ctx: OperandCtx<'a>,
+        ctx: OperandCtx<'a>,
         start_address: Exec::VirtualAddress,
     ) -> FuncAnalysis<'a, Exec, DefaultState> {
-        FuncAnalysis {
+        let state = Exec::initial_state(ctx, binary);
+        FuncAnalysis::custom_state_boxed(
             binary,
-            cfg: Cfg::new(),
-            unchecked_branches: {
-                let user_state = DefaultState::default();
-                let init_state = Exec::initial_state(operand_ctx, binary);
-                let state = (init_state, user_state);
-                let mut map = BTreeMap::new();
-                map.insert(start_address, state);
-                map
-            },
-            more_unchecked_branches: BTreeMap::new(),
-            current_branch: start_address,
-            operand_ctx,
-            merge_state_cache: MergeStateCache::new(),
-        }
+            ctx,
+            start_address,
+            (state, DefaultState::default()),
+        )
     }
 
     /// Creates a new `FuncAnalysis` with user-given `ExecutionState` and no custom
     /// user-side state.
     pub fn with_state(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
-        operand_ctx: OperandCtx<'a>,
+        ctx: OperandCtx<'a>,
         start_address: Exec::VirtualAddress,
         state: Exec,
     ) -> FuncAnalysis<'a, Exec, DefaultState> {
-        FuncAnalysis {
+        FuncAnalysis::custom_state_boxed(
             binary,
-            cfg: Cfg::new(),
-            unchecked_branches: {
-                let mut map = BTreeMap::new();
-                let user_state = DefaultState::default();
-                let state = (state, user_state);
-                map.insert(start_address, state);
-                map
-            },
-            more_unchecked_branches: BTreeMap::new(),
-            current_branch: start_address,
-            operand_ctx,
-            merge_state_cache: MergeStateCache::new(),
-        }
+            ctx,
+            start_address,
+            (state, DefaultState::default()),
+        )
     }
 }
 
@@ -861,18 +843,18 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     /// user-side state.
     pub fn custom_state(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
-        operand_ctx: OperandCtx<'a>,
+        ctx: OperandCtx<'a>,
         start_address: Exec::VirtualAddress,
         exec_state: Exec,
         analysis_state: State,
     ) -> FuncAnalysis<'a, Exec, State> {
         let state = (exec_state, analysis_state);
-        FuncAnalysis::custom_state_boxed(binary, operand_ctx, start_address, state)
+        FuncAnalysis::custom_state_boxed(binary, ctx, start_address, state)
     }
 
     fn custom_state_boxed(
         binary: &'a BinaryFile<Exec::VirtualAddress>,
-        operand_ctx: OperandCtx<'a>,
+        ctx: OperandCtx<'a>,
         start_address: Exec::VirtualAddress,
         state: (Exec, State),
     ) -> FuncAnalysis<'a, Exec, State> {
@@ -886,7 +868,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             },
             more_unchecked_branches: BTreeMap::new(),
             current_branch: start_address,
-            operand_ctx,
+            operand_ctx: ctx,
             merge_state_cache: MergeStateCache::new(),
         }
     }
