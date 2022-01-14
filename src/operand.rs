@@ -397,7 +397,8 @@ pub enum OperandType<'e> {
     /// inspect constant inputs as floats.
     ArithmeticFloat(ArithOperand<'e>, MemAccessSize),
     /// An "completely unknown" variable, which is result of [merging two
-    /// differing `Operand`s during a `FuncAnalysis` run](fixme_state_merge).
+    /// differing `Operand`s during a `FuncAnalysis`
+    /// run](../analysis/struct.FuncAnalysis.html#state-merging-and-loops).
     Undefined(UndefinedId),
     /// Sign extends the input `Operand` from first `MemAccessSize` to second `MemAccessSize`.
     SignExtend(Operand<'e>, MemAccessSize, MemAccessSize),
@@ -1482,9 +1483,10 @@ impl<'e> OperandContext<'e> {
 
     /// Creates a new `OperandType::Undefined(id)` `Operand`, where the `id` is
     /// unique until all currently ongoing
-    /// `FuncAnalysis::analyze`(crate::analysis::FuncAnalysis::analzye) calls have returned.
+    /// [`FuncAnalysis::analyze`](crate::analysis::FuncAnalysis::analyze) calls have returned.
     ///
-    /// See [FuncAnalysis docs](fixme_undefined_link) for more information about how
+    /// See [FuncAnalysis docs](../analysis/struct.FuncAnalysis.html#state-merging-and-loops)
+    /// for more information about how
     /// `OperandType::Undefined` is used by analysis to determine which branches have
     /// to be rechecked.
     pub fn new_undef(&'e self) -> Operand<'e> {

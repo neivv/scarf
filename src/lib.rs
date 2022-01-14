@@ -38,6 +38,25 @@
 //! compiler-generated code though.
 //!
 //! The following are main types used by scarf:
+//!
+//! - [`FuncAnalysis`] - The entry point for scarf analysis. Walks through and keeps track of
+//!     all branches the execution may take.
+//! - [`trait Analyzer`](Analyzer) - User-implemented trait that `FuncAnalysis` calls back to,
+//!     allowing user code to query and manipulate analysis.
+//! - [`analysis::Control`] - A type passed to `Analyzer` callbacks, providing various
+//!     ways to query and manipulate analysis state.
+//! - [`BinaryFile`] - Contains sections of the binary, including code that is to be simulated.
+//!     - [`BinarySection`] - A single section, practically just `Vec<u8>` and a base address.
+//! - [`VirtualAddress`] / [`VirtualAddress64`] - Integer newtype representing a constant
+//!     address, usually in `BinaryFile`
+//!     - [`trait exec_state::VirtualAddress`](exec_state::VirtualAddress) - A trait allowing
+//!     handling both address sizes generically.
+//! - [`Operand`] - The main value / expression type of scarf.
+//! - [`OperandContext`] - Allocation arena and interner for `Operand`s. Has to outlive
+//!     `FuncAnalysis`, so user code is required to create this and pass to rest of scarf.
+//! - [`trait ExecutionState`](exec_state::ExecutionState) - Holds all of the simulated
+//!     CPU and memory state of one point in analysis's execution.
+//!     Concrete types are [`ExecutionStateX86`] and [`ExecutionStateX86_64`].
 
 #![allow(clippy::style, clippy::bool_comparison, clippy::needless_lifetimes)]
 

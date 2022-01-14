@@ -423,7 +423,8 @@ pub fn relocs_with_values<Va: VaTrait>(
 /// A trait for additional branch-specific analysis state that will be merged by the
 /// analysis when two different branches join.
 ///
-/// See [state merging](fixme_state_merge) for more details on how analysis merges states.
+/// See [state merging](../analysis/struct.FuncAnalysis.html#state-merging-and-loops)
+/// for more details on how analysis merges states.
 ///
 /// At the moment, only differences in `ExecutionState` will cause analysis to merge
 /// and recheck a branch; there is no way yet for `AnalysisState` to declare two states
@@ -450,6 +451,101 @@ impl AnalysisState for DefaultState {
     }
 }
 
+/// The analysis runner of scarf.
+///
+/// `FuncAnalysis` executes through all paths ('branches') of a function, calling
+/// user-defined callbacks in [`Analyzer`] for every state-modifying operation, while
+/// keeping track of what branches have been already executed.
+///
+/// # State merging and loops
+///
+/// When two separate branches of execution converge, `FuncAnalysis` will merge the
+/// [`ExecutionState`] of branches: Any [`Operand`] in registers or in memory that differs
+/// will be replaced with `OperandType::Undefined` if it wasn't `Undefined` already. If this
+/// caused anything in `ExecutionState` to change, the following branch will be analyzed
+/// again, even if analysis had already walked through its instruction once.
+///
+/// Scarf does not have any special understanding of loops, a jump backwards is just another
+/// merge point. This effectively often makes scarf to provide user code an `ExecutionState`
+/// that reports registers to contain constants and jumps to be always/never taken for first
+/// iteration of a loop, and later on run the branch 'correctly' with `Undefined` when the
+/// jump backwards has been seen.
+///
+/// ## Example
+///
+/// The following code is a `strlen` implementation in x86-64 assembly. Register `rcx` has
+/// the null-terminated input string, and `rax` will contain the string length on return.
+///
+/// ```asm
+/// entry:
+///     mov rax, 0
+/// loop:
+///     movzx rdx, byte [rcx]
+///     add rax, 1
+///     add rcx, 1
+///     cmp rdx, 0
+///     jne loop
+/// exit:
+///     sub rax, 1 ; Account for null byte having been counted above
+///     ret
+/// ```
+///
+/// Scarf considers there to 3 branches:
+///     1) Branch from `entry` to `exit`
+///     2) Branch from `loop` to `exit`
+///     3) Branch from `exit` that returns
+///
+/// Note that both branch 1 and 2 include the loop instructions. In this case, the backwards
+/// jump can only be known to be possibly taken after the first branch has already been
+/// simulated, so there would have been no way for scarf to know that `movzx rdx, byte [rcx]`
+/// will be a start of another branch. For consistency, even if a jump to current instruction
+/// has been seen, scarf will walk each branch until it sees a jump or return instruction.
+///
+/// On analysis start, scarf will execute branch 1, seeing that on jump the execution splits
+/// to two new branches. [Resolving](ExecutionState::resolve) `rax` during this will return
+/// constant 0, later on 1, and resolving the jump condition at the end of the branch
+/// gives `(Mem8[rcx] == 0) == 0` - "Jump if first byte of argument `rcx` is nonzero".
+///
+/// After the first branch, both branches 2 and 3 are queued; there is no guarantee
+/// which will be analyzed first. If branch 3 is first, scarf will report the function to
+/// return (resolving `rax`) constant 0. If branch 2 is first, it will be analyzed with similar
+/// 'known' results what branch 1 shows, (`rax` changes from 1 to 2, jump condition is
+/// `(Mem8[rcx + 1] == 0) == 0`) as this is the first time branch has started from there.
+///
+/// As branch 2 analysis reaches the jump, scarf queues branches 2 and 3, and notices that the
+/// values in registers `rax`, `rcx`, and `rdx` differ from what the older branches 2 and 3 had.
+/// Each of those registers will be assigned an `Undefined` value for the new queued branches.
+/// If branch 3 wasn't analyzed yet, the state with `Undefined` overwrites the earlier queued
+/// 'will-return-zero' state.
+///
+/// Finally, scarf walks through branches 2 and 3 with the undefined state (in either order).
+/// At end of this second run of branch 2, `rax` will have value `Undefined_a + 1`, rcx has
+/// `Undefined_b + 1`, and rdx has `Mem8[Undefined_b]`. These do not add anything over the
+/// states where these registers were `Undefined`, so no more branches will be queued.
+///
+/// Since branch 3 contains `sub rax, 1` instruction, the final return value reported by
+/// scarf is the not-very-helpful `Undefined - 1`.
+///
+/// ## Other merge details
+///
+/// In general, [`Operand`] merging is defined as "If old value is undefined or differs from new,
+/// merge to unique undefined value". However, there are few details that are worth noting:
+///
+/// - Undefined values allocated during `FuncAnalysis::analyze` call will get reused after
+///     the call returns. This is mainly worth noting if user code returns results as `Operand`,
+///     and compares them to values from other analysis runs.
+/// - If old or new value is undefined, the merged value may recycle either of those values, or
+///     allocate a new unique undefined.
+/// - When values in memory are merged, a single unit of `Operand` to be merged is not a byte,
+///     but a word (4 or 8 bytes, depending on the `ExecutionState`). This means that if code
+///     has byte-sized globals or structure fields, they may be assigned `Undefined` because
+///     values neighbour address differed. So far this has rarely ended up causing issues, but
+///     it may sometimes need special handling from user code.
+/// - If the address operand of memory contains `Undefined` at all, the merge operation may
+///     drop the value entirely, reverting it back to 'original'.
+///     - That is, while a write of `5` to `Mem32[Undefined + 4]` is guaranteed to resolve to `5`
+///     in same branch as the write, later branches may resolve just to `Mem32[Undefined + 4]`
+///     again.
 pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     binary: &'a BinaryFile<Exec::VirtualAddress>,
     cfg: Cfg<'a, Exec, State>,
@@ -502,6 +598,26 @@ pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     merge_state_cache: MergeStateCache<'a>,
 }
 
+/// Provides access to analysis state when in a [`Analyzer`] callback.
+///
+/// The most common use cases are:
+/// - Access to the current [`ExecutionState`] through [`exec_state`](Control::exec_state),
+///     as well as convenience shortcuts:
+///     - [`resolve`](Control::resolve)
+///     - [`resolve_mem`](Control::resolve_mem)
+///     - [`resolve_apply_constraints`](Control::resolve_apply_constraints)
+///     - [`read_memory`](Control::read_memory)
+///     - [`move_resolved`](Control::move_resolved)
+///     - [`move_unresolved`](Control::move_unresolved)
+/// - Ability to control what branches are analyzed with:
+///     - [`end_branch`](Control::end_branch)
+///     - [`end_analysis`](Control::end_analysis)
+///     - [`add_branch_with_current_state`](Control::add_branch_with_current_state)
+///     - [`clear_unchecked_branches`](Control::clear_unchecked_branches)
+///     - [`clear_all_branches`](Control::clear_all_branches)
+/// - Easy way to create analysis for child function with:
+///     - [`analyze_with_current_state`](Control::analyze_with_current_state)
+///     - [`inline`](Control::inline)
 pub struct Control<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> {
     inner: &'c mut ControlInner<'e, 'b, A::Exec, A::State>,
 }
@@ -631,7 +747,7 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
 
     /// Convenience function for [`exec_state().move_to()`](ExecutionState::move_to),
     /// with a better name that reminds that this function uses
-    /// [unresolved operands](exec_state/trait.ExecutionState.html#resolved-and-unresolved-operands).
+    /// [unresolved operands](../exec_state/trait.ExecutionState.html#resolved-and-unresolved-operands).
     pub fn move_unresolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         self.inner.state.0.move_to(dest, value);
     }
@@ -773,13 +889,14 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
 /// any scarf-side analysis state available to user code, as well as a `&mut self` reference
 /// to the `Analyzer` structure, which can contain any state the user code needs to be shared
 /// across entire analysis. If the user code needs branch-specific state with custom
-/// [state merging](fixme_state_merge) behaviour, [`Analyzer::State`] can be used to easily
-/// implement the state.
+/// [state merging](../analysis/struct.FuncAnalysis.html#state-merging-and-loops) behaviour,
+/// [`Analyzer::State`] can be used to easily implement the state.
 pub trait Analyzer<'e> : Sized {
     /// The `ExecutionState`, CPU architecture that will be used by this analyzer.
     type Exec: ExecutionState<'e>;
 
-    /// Additional user-defined state that will be [merged by analysis](fixme_state_merge) when
+    /// Additional user-defined state that will be
+    /// [merged by analysis](../analysis/struct.FuncAnalysis.html#state-merging-and-loops) when
     /// two branches of execution join.
     ///
     /// If not needed, [`DefaultState`] can be used to get a state which carries no information.

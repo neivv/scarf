@@ -3648,7 +3648,7 @@ pub mod operation_helpers {
 ///
 /// As `Operation` is representing CPU instructions without any external state,
 /// all [`Operand`]s and `DestOperand`s in `Operation` are always
-/// [unresolved](exec_state/trait.ExecutionState.html#resolved-and-unresolved-operands).
+/// [unresolved](../exec_state/trait.ExecutionState.html#resolved-and-unresolved-operands).
 #[derive(Clone, Debug)]
 pub enum Operation<'e> {
     /// Set `DestOperand` to `Operand`.
@@ -3657,7 +3657,8 @@ pub enum Operation<'e> {
     /// be updated if the condition is nonzero.
     ///
     /// The conditional moves are generated quite rarely, and in practice they usually
-    /// cause move of [`Undefined`](fixme_undefined_link) to the `DestOperand`.
+    /// cause move of [`Undefined`](../analysis/struct.FuncAnalysis.html#state-merging-and-loops)
+    /// to the `DestOperand`.
     Move(DestOperand<'e>, Operand<'e>, Option<Operand<'e>>),
 
     /// Calls the function at `Operand`.

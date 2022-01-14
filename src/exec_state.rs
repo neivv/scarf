@@ -99,7 +99,8 @@ use crate::operand::slice_stack::Slice;
 /// Internally the overlapping memory is implemented as a single `Operand` at each
 /// 4- or 8-aligned offset, with bitwise ANDs, ORs, and shifts to make memory reading/writing
 /// work without any additional handling required from outside ExecutionState. However, when
-/// two states are [merged](fixme_state_merge), the entire 4- or 8-byte range will be merged
+/// two states are [merged](../analysis/struct.FuncAnalysis.html#state-merging-and-loops),
+/// the entire 4- or 8-byte range will be merged
 /// to `Undefined`, even if only single byte of the range differed. This limitation does
 /// not cause issues too often, but if a function stores multiple single-byte values
 /// next to each other in memory, reading one of those bytes may give `Undefined` instead of
@@ -216,7 +217,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     }
 
     /// Merges two states to a new state, as described in
-    /// [`FuncAnalysis documentation`](fixme_state_merge).
+    /// [`FuncAnalysis documentation`](../analysis/struct.FuncAnalysis.html#state-merging-and-loops).
     ///
     /// Returns `None` if the merged state would be equivalent to `old`,
     /// otherwise the merged state is returned.
