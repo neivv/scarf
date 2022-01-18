@@ -1941,19 +1941,28 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 let sign_bit = 1u64 << (size.bits() - 1);
                 let logical_rsh = ctx.rsh(dest.op, rhs);
                 let mask = (sign_bit << 1).wrapping_sub(1);
-                let negative_shift_in_bits = ctx.xor_const(
-                    ctx.rsh(
-                        ctx.and_const(
-                            ctx.lsh(
-                                ctx.constant(mask),
-                                rhs,
+                let negative_shift_in_bits = if let Some(rhs) = rhs.if_constant() {
+                    let c = if rhs >= 64 {
+                        u64::MAX
+                    } else {
+                        (((mask << rhs) & mask) >> rhs) ^ mask
+                    };
+                    ctx.constant(c)
+                } else {
+                    ctx.xor_const(
+                        ctx.rsh(
+                            ctx.and_const(
+                                ctx.lsh(
+                                    ctx.constant(mask),
+                                    rhs,
+                                ),
+                                mask,
                             ),
-                            mask,
+                            rhs,
                         ),
-                        rhs,
-                    ),
-                    mask,
-                );
+                        mask,
+                    )
+                };
                 let sign_bit_set_mask = ctx.sub_const(
                     ctx.eq_const(
                         ctx.and_const(
