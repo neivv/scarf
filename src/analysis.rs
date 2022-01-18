@@ -491,9 +491,10 @@ impl AnalysisState for DefaultState {
 /// ```
 ///
 /// Scarf considers there to 3 branches:
-///     1) Branch from `entry` to `exit`
-///     2) Branch from `loop` to `exit`
-///     3) Branch from `exit` that returns
+///
+/// 1) Branch from `entry` to `exit`
+/// 2) Branch from `loop` to `exit`
+/// 3) Branch from `exit` that returns
 ///
 /// Note that both branch 1 and 2 include the loop instructions. In this case, the backwards
 /// jump can only be known to be possibly taken after the first branch has already been
@@ -508,9 +509,9 @@ impl AnalysisState for DefaultState {
 ///
 /// After the first branch, both branches 2 and 3 are queued; there is no guarantee
 /// which will be analyzed first. If branch 3 is first, scarf will report the function to
-/// return (resolving `rax`) constant 0. If branch 2 is first, it will be analyzed with similar
-/// 'known' results what branch 1 shows, (`rax` changes from 1 to 2, jump condition is
-/// `(Mem8[rcx + 1] == 0) == 0`) as this is the first time branch has started from there.
+/// return (resolving `rax`) constant 0. Once branch 2 is analyzed, it will have similar
+/// 'known' results what branch 1 shows (`rax` changes from 1 to 2, jump condition is
+/// `(Mem8[rcx + 1] == 0) == 0`), as this is the first time branch has started from there.
 ///
 /// As branch 2 analysis reaches the jump, scarf queues branches 2 and 3, and notices that the
 /// values in registers `rax`, `rcx`, and `rdx` differ from what the older branches 2 and 3 had.
@@ -1180,10 +1181,10 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
     /// Runs analyzer to end without any user interaction, producing `Cfg`
     ///
-    /// Calling this is not necessary if you do not have user for the `Cfg`.
+    /// Calling this is not necessary if you do not need a `Cfg`.
     ///
     /// Currently if [`Control::end_analysis`] has been used to stop the analysis,
-    /// any remaining branches (but not the one that was being analyzed on `end_analysis() call!)
+    /// any remaining branches (but not the one that was being analyzed on `end_analysis` call!)
     /// will be walked through to gain a 'better' idea of the control flow graph. This is somewhat
     /// inconsistent behaviour and should be changed to not analyze any pending branches once
     /// all users relying on this have migrated.
