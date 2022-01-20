@@ -1211,14 +1211,9 @@ struct MemoryMap<'e> {
     ///      |        |
     ///
     /// This layout allows memory.get() to just follow immutable, no matter which submap is
-    /// used. It can also be assumed that if `slower_immutable` is `Some`, it's immutable_len
-    /// is equal to `self.immutable_len`
+    /// used.
     immutable: Option<Rc<MemoryMap<'e>>>,
     slower_immutable: Option<Rc<MemoryMap<'e>>>,
-    /// Updated once made immutable. Equal to immutable.len()
-    /// (Amount of values in immutable and all its child immutables,
-    /// counting duplicate keys)
-    immutable_len: usize,
     /// How long the immutable chain is.
     /// See above diagram for how it works with the merged maps
     immutable_depth: usize,
@@ -1241,7 +1236,6 @@ impl<'e> Memory<'e> {
                 map: Rc::new(HashMap::with_hasher(Default::default())),
                 immutable: None,
                 slower_immutable: None,
-                immutable_len: 0,
                 immutable_depth: 0,
             },
             cached_addr: None,
@@ -1265,10 +1259,6 @@ impl<'e> Memory<'e> {
         self.map.set((base.hash_by_address(), offset), value);
         self.cached_addr = Some(address);
         self.cached_value = Some(value);
-    }
-
-    pub fn len(&self) -> usize {
-        self.map.len()
     }
 
     /// Does a value -> key lookup (Finds an address containing value)
@@ -1419,8 +1409,8 @@ impl<'e> MemoryMap<'e> {
         map.insert(address, value);
     }
 
-    pub fn len(&self) -> usize {
-        self.map.len() + self.immutable.as_ref().map(|x| x.immutable_len).unwrap_or(0)
+    fn is_empty(&self) -> bool {
+        self.immutable.is_none() && self.map.is_empty()
     }
 
     /// The bool is true if the value is in immutable map
@@ -1560,7 +1550,6 @@ impl<'e> MemoryMap<'e> {
     }
 
     fn convert_immutable(&mut self) {
-        let immutable_len = self.len();
         let map = mem::replace(
             &mut self.map,
             Rc::new(HashMap::with_hasher(Default::default())),
@@ -1571,7 +1560,6 @@ impl<'e> MemoryMap<'e> {
             map,
             immutable: old_immutable,
             slower_immutable: None,
-            immutable_len,
             immutable_depth,
         }));
         self.immutable_depth = immutable_depth.wrapping_add(1);
@@ -1611,7 +1599,6 @@ impl<'e> MemoryMap<'e> {
                 map: Rc::new(merged_map),
                 immutable,
                 slower_immutable,
-                immutable_len,
                 immutable_depth,
             }));
             n = n << 2;
@@ -1653,10 +1640,8 @@ impl<'e> MemoryMap<'e> {
             a.map.len().max(b.map.len()),
             Default::default(),
         );
-        let a_len = a.len();
-        let b_len = b.len();
-        let a_empty = a_len == 0;
-        let b_empty = b_len == 0;
+        let a_empty = a.is_empty();
+        let b_empty = b.is_empty();
         let result_immutable = a.immutable.clone();
         let slower_immutable = a.slower_immutable.clone();
         if (a_empty || b_empty) && a.immutable.is_none() && b.immutable.is_none() {
@@ -1672,7 +1657,6 @@ impl<'e> MemoryMap<'e> {
                 map: Rc::new(result),
                 immutable: result_immutable,
                 slower_immutable,
-                immutable_len: a.immutable_len,
                 immutable_depth: a.immutable_depth,
             };
         }
@@ -1727,7 +1711,6 @@ impl<'e> MemoryMap<'e> {
                 map: Rc::new(result),
                 immutable: result_immutable,
                 slower_immutable,
-                immutable_len: a.immutable_len,
                 immutable_depth: a.immutable_depth,
             }
         } else {
@@ -1798,7 +1781,6 @@ impl<'e> MemoryMap<'e> {
                 map: Rc::new(result),
                 immutable: result_immutable,
                 slower_immutable,
-                immutable_len: a.immutable_len,
                 immutable_depth: a.immutable_depth,
             }
         };
