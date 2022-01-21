@@ -1719,7 +1719,7 @@ impl<'e> MemoryMap<'e> {
             // result, but if it has ones that should become undefined, the undefined has to be
             // inserted to the result instead.
             let common = a.common_immutable(b);
-            for (&key, &b_val, b_is_imm) in b.iter_until_immutable(common) {
+            for (&key, b_val, b_is_imm) in b.iter_until_immutable(common) {
                 if b_is_imm && b.get(&key) != Some(b_val) {
                     // Wasn't newest value
                     continue;
@@ -1754,7 +1754,7 @@ impl<'e> MemoryMap<'e> {
             // The result contains now anything that was in b's unique branch of the memory.
             //
             // Repeat for a's unique branch.
-            for (&key, &a_val, a_is_imm) in a.iter_until_immutable(common) {
+            for (&key, a_val, a_is_imm) in a.iter_until_immutable(common) {
                 if !result.contains_key(&key) {
                     if !a_val.is_undefined() {
                         if a_is_imm && a.get(&key) != Some(a_val) {
@@ -1795,7 +1795,7 @@ impl<'e> MemoryMap<'e> {
             return false;
         }
         let common = a.common_immutable(b);
-        for (&key, &a_val, is_imm) in a.iter_until_immutable(common) {
+        for (&key, a_val, is_imm) in a.iter_until_immutable(common) {
             if !key.0.0.contains_undefined() {
                 if !a_val.is_undefined() {
                     if b.get(&key) != Some(a_val) {
@@ -1811,7 +1811,7 @@ impl<'e> MemoryMap<'e> {
                 }
             }
         }
-        for (&key, &b_val, is_imm) in b.iter_until_immutable(common) {
+        for (&key, b_val, is_imm) in b.iter_until_immutable(common) {
             if !key.0.0.contains_undefined() {
                 let different = match a.get(&key) {
                     Some(a_val) => !a_val.is_undefined() && a_val != b_val,
@@ -1835,10 +1835,10 @@ impl<'e> MemoryMap<'e> {
 
 impl<'a, 'e> Iterator for MemoryIterUntilImm<'a, 'e> {
     /// The bool tells if we're at immutable parts of the calling operand or not
-    type Item = (&'a (OperandHashByAddress<'e>, u64), &'a Operand<'e>, bool);
+    type Item = (&'a (OperandHashByAddress<'e>, u64), Operand<'e>, bool);
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.as_mut()?.next() {
-            Some(s) => Some((s.0, s.1, self.in_immutable)),
+            Some(s) => Some((s.0, *s.1, self.in_immutable)),
             None => {
                 match self.map.immutable {
                     Some(ref i) => {
@@ -2716,7 +2716,7 @@ fn test_iter_until_immutable() {
     assert_eq!(map1.immutable_depth, 1);
 
     let results = map19.iter_until_immutable(Some(map14))
-        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
         ((addr, 0u64), ctx.constant(19), false),
@@ -2725,7 +2725,7 @@ fn test_iter_until_immutable() {
     assert_eq!(results, cmp);
 
     let results = map19.iter_until_immutable(Some(map12))
-        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
         ((addr, 0u64), ctx.constant(19), false),
@@ -2736,7 +2736,7 @@ fn test_iter_until_immutable() {
     assert_eq!(results, cmp);
 
     let results = map19.iter_until_immutable(Some(map11))
-        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
         ((addr, 0u64), ctx.constant(19), false),
@@ -2745,7 +2745,7 @@ fn test_iter_until_immutable() {
     assert_eq!(results, cmp);
 
     let results = map19.iter_until_immutable(Some(map3))
-        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
         ((addr, 0u64), ctx.constant(19), false),
@@ -2756,7 +2756,7 @@ fn test_iter_until_immutable() {
     assert_eq!(results, cmp);
 
     let results = map19.iter_until_immutable(Some(map1))
-        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
         ((addr, 0u64), ctx.constant(19), false),
@@ -2769,7 +2769,7 @@ fn test_iter_until_immutable() {
     assert_eq!(results, cmp);
 
     let results = map14.iter_until_immutable(Some(map1))
-        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
         ((addr, 0u64), ctx.constant(14), false),
