@@ -1435,9 +1435,16 @@ impl<'e> MemoryMap<'e> {
         &'a self,
         limit: Option<&'a MemoryMap<'e>>,
     ) -> MemoryIterUntilImm<'a, 'e> {
-        let limit_is_self = match limit {
-            Some(s) => ptr::eq(self, s),
-            None => false,
+        match limit {
+            Some(s) => if ptr::eq(self, s) {
+                return MemoryIterUntilImm {
+                    iter: None,
+                    map: self,
+                    limit,
+                    in_immutable: false,
+                };
+            },
+            None => (),
         };
 
         // Walk through slower_immutable if they exist to find the map that
@@ -1445,10 +1452,7 @@ impl<'e> MemoryMap<'e> {
         let limit_depth = limit.map(|x| x.immutable_depth).unwrap_or(0);
         let mut pos = self;
         loop {
-            let pos_depth = match pos.immutable.as_ref().map(|x| x.immutable_depth) {
-                Some(s) => s,
-                None => break,
-            };
+            let pos_depth = pos.immutable.as_ref().map(|x| x.immutable_depth).unwrap_or(0);
             if pos_depth >= limit_depth {
                 break;
             }
@@ -1458,10 +1462,7 @@ impl<'e> MemoryMap<'e> {
             };
         }
         MemoryIterUntilImm {
-            iter: match limit_is_self {
-                true => None,
-                false => Some(pos.map.iter()),
-            },
+            iter: Some(pos.map.iter()),
             map: pos,
             limit,
             in_immutable: false,
@@ -2662,4 +2663,122 @@ fn test_merge_flags() {
         assert_eq!(new_pending.update, old.pending_flags.update);
         assert_eq!(new_flags[Flag::Carry as usize], ctx.constant(666));
     });
+}
+
+#[test]
+fn test_iter_until_immutable() {
+    // Building 19-deep map and verifying iter_until_immutable
+    //                      (0)
+    //                      (1)
+    //                      (2)
+    //              (3)---->(3)
+    //               |
+    //               |<-----(4)
+    //               |      (5)
+    //               |      (6)
+    //              (7)---->(7)
+    //               |
+    //               |<-----(8)
+    //               |      (9)
+    //               |      (10)
+    //              (11)--->(11)
+    //               |
+    //               |<-----(12)
+    //               |      (13)
+    //               |      (14)
+    //     (15)---->(15)--->(15)
+    //      |
+    //      |<--------------(16)
+    //      |        |      (17)
+    //      |        |      (18)
+    //      |       (19)--->(19)
+    let ctx = &crate::operand::OperandContext::new();
+    let mut map = Memory::new();
+    let addr = ctx.sub_const(ctx.register(5), 8);
+    let mut maps = Vec::new();
+    for i in 0..20 {
+        map.set(addr, 0, ctx.constant(i));
+        map.map.convert_immutable();
+        maps.push(map.clone());
+    }
+
+    let map19 = maps[19].map.immutable.as_ref().unwrap();
+    assert_eq!(map19.immutable_depth, 19);
+    let map14 = maps[14].map.immutable.as_ref().unwrap();
+    assert_eq!(map14.immutable_depth, 14);
+    let map12 = maps[12].map.immutable.as_ref().unwrap();
+    assert_eq!(map12.immutable_depth, 12);
+    let map11 = maps[11].map.immutable.as_ref().unwrap();
+    assert_eq!(map11.immutable_depth, 11);
+    let map3 = maps[3].map.immutable.as_ref().unwrap();
+    assert_eq!(map3.immutable_depth, 3);
+    let map1 = maps[1].map.immutable.as_ref().unwrap();
+    assert_eq!(map1.immutable_depth, 1);
+
+    let results = map19.iter_until_immutable(Some(map14))
+        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .collect::<Vec<_>>();
+    let cmp = vec![
+        ((addr, 0u64), ctx.constant(19), false),
+        ((addr, 0), ctx.constant(15), true),
+    ];
+    assert_eq!(results, cmp);
+
+    let results = map19.iter_until_immutable(Some(map12))
+        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .collect::<Vec<_>>();
+    let cmp = vec![
+        ((addr, 0u64), ctx.constant(19), false),
+        ((addr, 0), ctx.constant(15), true),
+        ((addr, 0), ctx.constant(14), true),
+        ((addr, 0), ctx.constant(13), true),
+    ];
+    assert_eq!(results, cmp);
+
+    let results = map19.iter_until_immutable(Some(map11))
+        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .collect::<Vec<_>>();
+    let cmp = vec![
+        ((addr, 0u64), ctx.constant(19), false),
+        ((addr, 0), ctx.constant(15), true),
+    ];
+    assert_eq!(results, cmp);
+
+    let results = map19.iter_until_immutable(Some(map3))
+        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .collect::<Vec<_>>();
+    let cmp = vec![
+        ((addr, 0u64), ctx.constant(19), false),
+        ((addr, 0), ctx.constant(15), true),
+        ((addr, 0), ctx.constant(11), true),
+        ((addr, 0), ctx.constant(7), true),
+    ];
+    assert_eq!(results, cmp);
+
+    let results = map19.iter_until_immutable(Some(map1))
+        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .collect::<Vec<_>>();
+    let cmp = vec![
+        ((addr, 0u64), ctx.constant(19), false),
+        ((addr, 0), ctx.constant(15), true),
+        ((addr, 0), ctx.constant(11), true),
+        ((addr, 0), ctx.constant(7), true),
+        ((addr, 0), ctx.constant(3), true),
+        ((addr, 0), ctx.constant(2), true),
+    ];
+    assert_eq!(results, cmp);
+
+    let results = map14.iter_until_immutable(Some(map1))
+        .map(|x| ((x.0.0.0, x.0.1), *x.1, x.2))
+        .collect::<Vec<_>>();
+    let cmp = vec![
+        ((addr, 0u64), ctx.constant(14), false),
+        ((addr, 0), ctx.constant(13), true),
+        ((addr, 0), ctx.constant(12), true),
+        ((addr, 0), ctx.constant(11), true),
+        ((addr, 0), ctx.constant(7), true),
+        ((addr, 0), ctx.constant(3), true),
+        ((addr, 0), ctx.constant(2), true),
+    ];
+    assert_eq!(results, cmp);
 }
