@@ -1755,26 +1755,40 @@ impl<'e> MemoryMap<'e> {
             //
             // Repeat for a's unique branch.
             for (&key, a_val, a_is_imm) in a.iter_until_immutable(common) {
-                if !result.contains_key(&key) {
-                    if !a_val.is_undefined() {
-                        if a_is_imm && a.get(&key) != Some(a_val) {
+                if a_is_imm {
+                    if a_val.is_undefined() {
+                        if let Some(nonimm) = a.get_no_immutable(&key) {
+                            if nonimm.is_undefined() {
+                                // Do nothing, the result will have 'key = a_val'
+                                // instead of 'key = nonimm', but both are undefined anyway
+                                continue;
+                            }
+                            // else continues to `if !result.contains_key(..)`
+                        } else {
+                            // Do nothing, if this is not the newest value it should've
+                            // been skipped anyway, if this is then undef merged with
+                            // anything will still be undef
+                            continue;
+                        }
+                    } else {
+                        if a.get(&key) != Some(a_val) {
                             // Wasn't newest value
                             continue;
                         }
-                        let needs_undef = if let Some(b_val) = b.get(&key) {
-                            a_val != b_val
-                        } else {
-                            true
-                        };
-                        if needs_undef {
-                            // If the key with undefined was in imm, override its value,
-                            // but otherwise just don't bother adding it back.
-                            if !key.0.0.contains_undefined() || !a_is_imm {
-                                result.insert(key, ctx.new_undef());
-                            }
-                        }
+                    }
+                }
+                if !result.contains_key(&key) {
+                    let needs_undef = if let Some(b_val) = b.get(&key) {
+                        a_val != b_val
                     } else {
-                        result.insert(key, a_val);
+                        true
+                    };
+                    if needs_undef {
+                        // If the key with undefined was in imm, override its value,
+                        // but otherwise just don't bother adding it back.
+                        if !key.0.0.contains_undefined() || !a_is_imm {
+                            result.insert(key, ctx.new_undef());
+                        }
                     }
                 }
             }
