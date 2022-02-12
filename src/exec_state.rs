@@ -1217,6 +1217,9 @@ struct MemoryMap<'e> {
     /// How long the immutable chain is.
     /// See above diagram for how it works with the merged maps
     immutable_depth: usize,
+    /// Sum of map.len() of immutable map chain and own `map.len()`, only set when map
+    /// is made immutable.
+    immutable_length: usize,
 }
 
 type MemoryMapTopLevel<'e> = HashMap<(OperandHashByAddress<'e>, u64), Operand<'e>, FxBuildHasher>;
@@ -1237,6 +1240,7 @@ impl<'e> Memory<'e> {
                 immutable: None,
                 slower_immutable: None,
                 immutable_depth: 0,
+                immutable_length: 0,
             },
             cached_addr: None,
             cached_value: None,
@@ -1389,6 +1393,10 @@ impl<'e> MemoryMap<'e> {
         let op = self.map.get(address).cloned()
             .or_else(|| self.immutable.as_ref().and_then(|x| x.get(address)));
         op
+    }
+
+    fn get_no_immutable(&self, address: &(OperandHashByAddress<'e>, u64)) -> Option<Operand<'e>> {
+        self.map.get(address).cloned()
     }
 
     pub fn set(&mut self, address: (OperandHashByAddress<'e>, u64), value: Operand<'e>) {
@@ -1557,11 +1565,14 @@ impl<'e> MemoryMap<'e> {
         );
         let old_immutable = self.immutable.take();
         let immutable_depth = self.immutable_depth;
+        let immutable_length = old_immutable.as_ref().map(|x| x.immutable_length).unwrap_or(0) +
+            map.len();
         self.immutable = Some(Rc::new(MemoryMap {
             map,
             immutable: old_immutable,
             slower_immutable: None,
             immutable_depth,
+            immutable_length,
         }));
         self.immutable_depth = immutable_depth.wrapping_add(1);
         // Merge 4 immutables to one larger map, another layer if we're at 16
@@ -1596,11 +1607,14 @@ impl<'e> MemoryMap<'e> {
             }
             let immutable = pos.cloned();
             let slower_immutable = self.immutable.take();
+            let immutable_length = immutable.as_ref().map(|x| x.immutable_length).unwrap_or(0) +
+                merged_map.len();
             self.immutable = Some(Rc::new(MemoryMap {
                 map: Rc::new(merged_map),
                 immutable,
                 slower_immutable,
                 immutable_depth,
+                immutable_length,
             }));
             n = n << 2;
         }
@@ -1632,8 +1646,27 @@ impl<'e> MemoryMap<'e> {
         //      Not sure if the "*may*" is ever false right now, ideally nobody
         //      should try relying on that.
         //   Otherwise generate a new undefined (obviously)
-        let a = self;
-        let b = new;
+        let self_imm_len = self.immutable.as_ref().map(|x| x.immutable_length).unwrap_or(0);
+        let new_imm_len = new.immutable.as_ref().map(|x| x.immutable_length).unwrap_or(0);
+        let (a, b) = if new_imm_len > self_imm_len.wrapping_add(100) {
+            // Take considerably larger map as a base if either is.
+            // In general if the map sizes differ a lot, the larger one probably has been merged
+            // already and contains undefined values which don't have to be recreated if it is
+            // used as base.
+            //
+            // Maybe tracking amount of undefined values instead of all values
+            // would be better guess though?
+            (new, self)
+        } else if self_imm_len > new_imm_len.wrapping_add(100) {
+            (self, new)
+        } else {
+            // Take one with smaller immutable depth otherwise as base
+            if self.immutable_depth > new.immutable_depth {
+                (new, self)
+            } else {
+                (self, new)
+            }
+        };
         if Rc::ptr_eq(&a.map, &b.map) {
             return a.clone();
         }
@@ -1644,6 +1677,8 @@ impl<'e> MemoryMap<'e> {
         let a_empty = a.is_empty();
         let b_empty = b.is_empty();
         let result_immutable = a.immutable.clone();
+        let result_immutable_len =
+            result_immutable.as_ref().map(|x| x.immutable_length).unwrap_or(0);
         let slower_immutable = a.slower_immutable.clone();
         if (a_empty || b_empty) && a.immutable.is_none() && b.immutable.is_none() {
             let other = if a_empty { b } else { a };
@@ -1654,11 +1689,13 @@ impl<'e> MemoryMap<'e> {
                     result.insert(key, ctx.new_undef());
                 }
             }
+            let immutable_length = result_immutable_len + result.len();
             return MemoryMap {
                 map: Rc::new(result),
                 immutable: result_immutable,
                 slower_immutable,
                 immutable_depth: a.immutable_depth,
+                immutable_length,
             };
         }
         let imm_eq = a.immutable.as_ref().map(|x| &**x as *const MemoryMap) ==
@@ -1708,11 +1745,13 @@ impl<'e> MemoryMap<'e> {
                     result.insert(key, val);
                 }
             }
+            let immutable_length = result_immutable_len + result.len();
             MemoryMap {
                 map: Rc::new(result),
                 immutable: result_immutable,
                 slower_immutable,
                 immutable_depth: a.immutable_depth,
+                immutable_length,
             }
         } else {
             // a's immutable map is used as base, so one which exist there don't get inserted to
@@ -1792,11 +1831,14 @@ impl<'e> MemoryMap<'e> {
                     }
                 }
             }
+            let immutable_length = result_immutable_len + result.len();
+            let map = Rc::new(result);
             MemoryMap {
-                map: Rc::new(result),
+                map,
                 immutable: result_immutable,
                 slower_immutable,
                 immutable_depth: a.immutable_depth,
+                immutable_length,
             }
         };
         result
