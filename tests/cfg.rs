@@ -22,9 +22,6 @@ fn switch_cfg() {
     analysis.analyze(&mut FailOnError);
     let mut cfg = analysis.finish();
     cfg.calculate_distances();
-    for node in cfg.nodes() {
-        println!("Node {:#?}", node);
-    }
     let switch_outs = cfg.nodes().filter_map(|x| match x.node.out_edges {
         CfgOutEdges::Switch(ref cases, _) => Some((x, cases.clone())),
         _ => None,
@@ -55,9 +52,6 @@ fn switch_but_constant_case() {
     analysis.analyze(&mut FailOnError);
     let mut cfg = analysis.finish();
     cfg.calculate_distances();
-    for node in cfg.nodes() {
-        println!("Node {:?}", node);
-    }
     for x in cfg.nodes() {
         match x.node.out_edges {
             CfgOutEdges::Switch(_, _) => {

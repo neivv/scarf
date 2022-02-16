@@ -19,9 +19,9 @@ pub use crate::disasm::Error;
 
 pub type Cfg<'a, E, S> = cfg::Cfg<'a, CfgState<'a, E, S>>;
 
-#[derive(Debug)]
 pub struct CfgState<'a, E: ExecutionState<'a>, S: AnalysisState> {
     data: (E, S),
+    preceding_branch: PrecedingBranchAddr,
     phantom: std::marker::PhantomData<&'a ()>,
 }
 
@@ -550,7 +550,7 @@ impl AnalysisState for DefaultState {
 pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     binary: &'a BinaryFile<Exec::VirtualAddress>,
     cfg: Cfg<'a, Exec, State>,
-    unchecked_branches: BTreeMap<Exec::VirtualAddress, (Exec, State)>,
+    unchecked_branches: BTreeMap<Exec::VirtualAddress, (Exec, State, PrecedingBranchAddr)>,
     // Branches which are before current address.
     // The goal is to reduce amount of work when a switch jumps backwards
     // at end of the case, doing all unchecked_branches before promoting
@@ -593,10 +593,32 @@ pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     //      dec eax
     //      jne loop2
     // as it'll run to the end once, then starts from loop1 again
-    more_unchecked_branches: BTreeMap<Exec::VirtualAddress, (Exec, State)>,
+    more_unchecked_branches: BTreeMap<Exec::VirtualAddress, (Exec, State, PrecedingBranchAddr)>,
     current_branch: Exec::VirtualAddress,
     operand_ctx: OperandCtx<'a>,
     merge_state_cache: MergeStateCache<'a>,
+}
+
+/// The analysis will assume that if only a single branch has lead to a branch,
+/// then merging of execution states can be skipped and it will just be assumed
+/// that `state = merge(old, new)` can be replaced with just `state = new`, e.g.
+/// only thing that should have changed when the single preceding branch is ran a
+/// second time is that more values are now undefined.
+///
+/// If value of this newtype is u32::MAX, then there are multiple preceding branches
+/// and states to branch using this PrecedingBranchAddr have to be merged.
+/// Otherwise this is an address of the preceding branch relative to binary.base().
+#[derive(Copy, Clone)]
+struct PrecedingBranchAddr(u32);
+
+impl PrecedingBranchAddr {
+    fn multiple() -> PrecedingBranchAddr {
+        PrecedingBranchAddr(u32::MAX)
+    }
+
+    fn are_same(self, other: PrecedingBranchAddr) -> bool {
+        self.0 == other.0 && self.0 != u32::MAX
+    }
 }
 
 /// Provides access to analysis state when in a [`Analyzer`] callback.
@@ -981,7 +1003,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             cfg: Cfg::new(),
             unchecked_branches: {
                 let mut map = BTreeMap::new();
-                map.insert(start_address, state);
+                map.insert(start_address, (state.0, state.1, PrecedingBranchAddr::multiple()));
                 map
             },
             more_unchecked_branches: BTreeMap::new(),
@@ -993,28 +1015,39 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
     fn pop_next_branch_merge_with_cfg(
         &mut self,
-    ) -> Option<(Exec::VirtualAddress, (Exec, State))> {
-        while let Some((addr, mut branch_state)) = self.pop_next_branch() {
+    ) -> Option<(Exec::VirtualAddress, (Exec, State), PrecedingBranchAddr)> {
+        while let Some((addr, mut branch_state, preceding)) = self.pop_next_branch() {
             match self.cfg.get_state(addr) {
                 Some(state) => {
-                    state.data.0.maybe_convert_memory_immutable(16);
-                    let merged = Exec::merge_states(
-                        &mut state.data.0,
-                        &mut branch_state.0,
-                        &mut self.merge_state_cache,
-                    );
-                    match merged {
-                        Some(s) => {
-                            let mut user_state = state.data.1.clone();
-                            user_state.merge(branch_state.1);
-                            return Some((addr, (s, user_state)));
+                    if state.preceding_branch.are_same(preceding) {
+                        let mut user_state = state.data.1.clone();
+                        user_state.merge(branch_state.1);
+                        return Some((addr, (branch_state.0, user_state), preceding));
+                    } else {
+                        state.preceding_branch = PrecedingBranchAddr::multiple();
+                        state.data.0.maybe_convert_memory_immutable(16);
+                        let merged = Exec::merge_states(
+                            &mut state.data.0,
+                            &mut branch_state.0,
+                            &mut self.merge_state_cache,
+                        );
+                        match merged {
+                            Some(s) => {
+                                let mut user_state = state.data.1.clone();
+                                user_state.merge(branch_state.1);
+                                return Some((
+                                    addr,
+                                    (s, user_state),
+                                    PrecedingBranchAddr::multiple(),
+                                ));
+                            }
+                            // No change, take another branch
+                            None => (),
                         }
-                        // No change, take another branch
-                        None => (),
                     }
                 }
                 None => {
-                    return Some((addr, branch_state));
+                    return Some((addr, branch_state, preceding));
                 }
             }
         }
@@ -1024,10 +1057,10 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     fn pop_next_branch_and_set_disasm(
         &mut self,
         disasm: &mut Exec::Disassembler,
-    ) -> Option<(Exec::VirtualAddress, (Exec, State))> {
-        while let Some((addr, state)) = self.pop_next_branch_merge_with_cfg() {
+    ) -> Option<(Exec::VirtualAddress, (Exec, State), PrecedingBranchAddr)> {
+        while let Some((addr, state, preceding)) = self.pop_next_branch_merge_with_cfg() {
             if self.disasm_set_pos(disasm, addr).is_ok() {
-                return Some((addr, state));
+                return Some((addr, state, preceding));
             }
         }
         None
@@ -1039,9 +1072,11 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         let old_undef_pos = self.operand_ctx.get_undef_pos();
         let mut disasm = Exec::Disassembler::new(self.operand_ctx);
 
-        while let Some((addr, state)) = self.pop_next_branch_and_set_disasm(&mut disasm) {
+        while let Some((addr, state, preceding)) =
+            self.pop_next_branch_and_set_disasm(&mut disasm)
+        {
             self.current_branch = addr;
-            let end = self.analyze_branch(analyzer, &mut disasm, addr, state);
+            let end = self.analyze_branch(analyzer, &mut disasm, addr, state, preceding);
             if end == Some(End::Function) {
                 break;
             }
@@ -1067,6 +1102,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         disasm: &mut Exec::Disassembler,
         addr: Exec::VirtualAddress,
         state: (Exec, State),
+        preceding_branch: PrecedingBranchAddr,
     ) -> Option<End> {
         // update_analysis_for_operation is a small function, which would be cleaner
         // to inline here if it keeping it separate wasn't good for binary size
@@ -1101,6 +1137,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             state: CfgState {
                 phantom: Default::default(),
                 data: control.inner.state.clone(),
+                preceding_branch,
             },
             out_edges: CfgOutEdges::None,
             end_address: Exec::VirtualAddress::from_u64(0),
@@ -1152,31 +1189,41 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             false => &mut self.unchecked_branches,
         };
 
+        let preceding_addr = self.current_branch.as_u64()
+            .checked_sub(self.binary.base().as_u64())
+            .and_then(|x| Some(PrecedingBranchAddr(u32::try_from(x).ok()?)))
+            .unwrap_or(PrecedingBranchAddr::multiple());
         match queue.entry(addr) {
             Entry::Vacant(e) => {
-                e.insert(state);
+                e.insert((state.0, state.1, preceding_addr));
             }
             Entry::Occupied(mut e) => {
                 let val = e.get_mut();
-                let result =
-                    Exec::merge_states(&mut val.0, &mut state.0, &mut self.merge_state_cache);
-                if let Some(new) = result {
-                    val.0 = new;
+                if preceding_addr.are_same(val.2) {
+                    val.0 = state.0;
                     val.1.merge(state.1);
+                } else {
+                    val.2 = PrecedingBranchAddr::multiple();
+                    let result =
+                        Exec::merge_states(&mut val.0, &mut state.0, &mut self.merge_state_cache);
+                    if let Some(new) = result {
+                        val.0 = new;
+                        val.1.merge(state.1);
+                    }
                 }
             }
         }
     }
 
     fn pop_next_branch(&mut self) ->
-        Option<(Exec::VirtualAddress, (Exec, State))>
+        Option<(Exec::VirtualAddress, (Exec, State), PrecedingBranchAddr)>
     {
         if self.unchecked_branches.is_empty() {
             std::mem::swap(&mut self.unchecked_branches, &mut self.more_unchecked_branches);
         }
         let addr = self.unchecked_branches.keys().next().cloned()?;
         let state = self.unchecked_branches.remove(&addr).unwrap();
-        Some((addr, state))
+        Some((addr, (state.0, state.1), state.2))
     }
 
     /// Runs analyzer to end without any user interaction, producing `Cfg`
@@ -1367,6 +1414,7 @@ fn try_add_branch<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                     state: CfgState {
                         data: state,
                         phantom: Default::default(),
+                        preceding_branch: PrecedingBranchAddr::multiple(),
                     },
                     end_address: address + 1,
                     distance: 0,
