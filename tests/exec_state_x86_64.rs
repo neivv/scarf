@@ -957,6 +957,20 @@ fn call_clears_pending_flags() {
     ]);
 }
 
+#[test]
+fn rdtsc_is_32_bits() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x0f, 0x31, // rdtsc
+        0x48, 0xc1, 0xe8, 0x20, // shr rax, 20
+        0x48, 0xc1, 0xea, 0x20, // shr rdx, 20
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.const_0()),
+         (ctx.register(2), ctx.const_0()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }

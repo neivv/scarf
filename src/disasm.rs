@@ -828,7 +828,7 @@ fn instruction_operations64_main(
         // rdtsc
         0x131 => {
             for &reg in &[0, 2] {
-                s.output_mov_to_reg(reg, s.ctx.new_undef());
+                s.output_mov(DestOperand::Register32(reg), s.ctx.new_undef());
             }
             Ok(())
         }
