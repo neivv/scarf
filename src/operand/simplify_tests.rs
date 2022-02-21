@@ -7852,3 +7852,37 @@ fn simplify_or_merge_bug() {
 
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_lsh_and_masked() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.lsh_const(
+        ctx.and_const(
+            ctx.register(0),
+            0xffff_ffff,
+        ),
+        0x20,
+    );
+    let eq1 = ctx.lsh_const(
+        ctx.register(0),
+        0x20,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_rsh_and_masked() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.rsh_const(
+        ctx.and_const(
+            ctx.register(0),
+            0xffff_ffff_0000_0000,
+        ),
+        0x20,
+    );
+    let eq1 = ctx.rsh_const(
+        ctx.register(0),
+        0x20,
+    );
+    assert_eq!(op1, eq1);
+}

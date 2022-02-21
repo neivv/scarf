@@ -870,19 +870,21 @@ pub fn simplify_lsh_const<'e>(
         }
     };
     if constant == 0 {
-        return left.clone();
+        return left;
     } else if constant >= 64 - left.relevant_bits().start {
         return ctx.const_0();
     }
+
+    let new_left = simplify_with_and_mask(left, u64::MAX >> constant, ctx, swzb_ctx);
     let zero_bits = (64 - constant)..64;
-    match simplify_with_zero_bits(left, &zero_bits, ctx, swzb_ctx) {
+    let new_left = match simplify_with_zero_bits(new_left, &zero_bits, ctx, swzb_ctx) {
         None => return ctx.const_0(),
-        Some(s) => {
-            if s != left {
-                return simplify_lsh_const(s, constant, ctx, swzb_ctx);
-            }
-        }
+        Some(s) => s,
+    };
+    if new_left != left {
+        return simplify_lsh_const(new_left, constant, ctx, swzb_ctx);
     }
+
     match *left.ty() {
         OperandType::Constant(a) => ctx.constant(a << constant),
         OperandType::Arithmetic(ref arith) => {
@@ -1053,19 +1055,20 @@ pub fn simplify_rsh<'e>(
         None => return default(),
     };
     if constant == 0 {
-        return left.clone();
+        return left;
     } else if constant >= left.relevant_bits().end.into() {
         return ctx.const_0();
     }
     let constant = constant as u8;
+
+    let new_left = simplify_with_and_mask(left, u64::MAX << constant, ctx, swzb_ctx);
     let zero_bits = 0..constant;
-    match simplify_with_zero_bits(left, &zero_bits, ctx, swzb_ctx) {
+    let new_left = match simplify_with_zero_bits(new_left, &zero_bits, ctx, swzb_ctx) {
         None => return ctx.const_0(),
-        Some(s) => {
-            if s != left {
-                return simplify_rsh(s, right, ctx, swzb_ctx);
-            }
-        }
+        Some(s) => s,
+    };
+    if new_left != left {
+        return simplify_rsh(new_left, right, ctx, swzb_ctx);
     }
 
     match *left.ty() {
