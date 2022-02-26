@@ -166,34 +166,42 @@ pub fn simplify_arith_masked<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
-    match ty {
-        ArithOpType::And | ArithOpType::Or | ArithOpType::Xor => {
-            left = simplify_with_and_mask(left, mask, ctx, swzb_ctx);
-            right = simplify_with_and_mask(right, mask, ctx, swzb_ctx);
-        }
-        ArithOpType::Lsh | ArithOpType::Rsh => {
-            if let Some(c) = right.if_constant() {
-                if c < 64 {
-                    if ty == ArithOpType::Lsh {
-                        left = simplify_with_and_mask(left, mask >> c, ctx, swzb_ctx);
-                    } else {
-                        left = simplify_with_and_mask(left, mask << c, ctx, swzb_ctx);
-                    }
-                }
-            }
-        }
-        ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
-            if mask.wrapping_add(1) & mask == 0 {
+    let useful_mask = mask != u64::MAX;
+    if useful_mask {
+        match ty {
+            ArithOpType::And | ArithOpType::Or | ArithOpType::Xor => {
                 left = simplify_with_and_mask(left, mask, ctx, swzb_ctx);
                 right = simplify_with_and_mask(right, mask, ctx, swzb_ctx);
             }
+            ArithOpType::Lsh | ArithOpType::Rsh => {
+                if let Some(c) = right.if_constant() {
+                    if c < 64 {
+                        if ty == ArithOpType::Lsh {
+                            left = simplify_with_and_mask(left, mask >> c, ctx, swzb_ctx);
+                        } else {
+                            left = simplify_with_and_mask(left, mask << c, ctx, swzb_ctx);
+                        }
+                    }
+                }
+            }
+            ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
+                if mask.wrapping_add(1) & mask == 0 {
+                    left = simplify_with_and_mask(left, mask, ctx, swzb_ctx);
+                    right = simplify_with_and_mask(right, mask, ctx, swzb_ctx);
+                }
+            }
+            _ => (),
         }
-        _ => (),
     }
-    ctx.and_const(
-        simplify_arith(left, right, ty, ctx, swzb_ctx),
-        mask,
-    )
+    let val = simplify_arith(left, right, ty, ctx, swzb_ctx);
+    if useful_mask {
+        ctx.and_const(
+            val,
+            mask,
+        )
+    } else {
+        val
+    }
 }
 
 pub fn simplify_float_arith<'e>(
@@ -4642,6 +4650,9 @@ fn simplify_with_and_mask<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
+    if mask == u64::MAX {
+        return op;
+    }
     let relevant_mask = op.relevant_bits_mask();
     if relevant_mask & mask == 0 {
         return ctx.const_0();
@@ -4793,6 +4804,7 @@ fn simplify_with_and_mask_inner<'e>(
                     if let Some(c) = arith.right.if_constant() {
                         let c = c & mask;
                         let max = mask.wrapping_add(1);
+                        debug_assert!(max != 0);
                         let limit = max >> 1;
                         if arith.ty == ArithOpType::Add {
                             if c > limit {
