@@ -263,6 +263,7 @@ struct RegisterCache<'e> {
     register8_high: [Option<Operand<'e>>; 4],
     register16: [Option<Operand<'e>>; 16],
     register32: [Option<Operand<'e>>; 16],
+    conditions: [Option<Operand<'e>>; 16],
     esp_mem_word: Operand<'e>,
     esp_pos_word_offset: Operand<'e>,
     esp_neg_word_offset: Operand<'e>,
@@ -283,6 +284,7 @@ impl<'e> RegisterCache<'e> {
             register8_high: [None; 4],
             register16: [None; 16],
             register32: [None; 16],
+            conditions: [None; 16],
             esp_mem_word,
             esp_mem,
             esp_pos_word_offset,
@@ -319,6 +321,48 @@ impl<'e> RegisterCache<'e> {
         *self.register32[i as usize & 15].get_or_insert_with(|| {
             ctx.and_const(ctx.register(i as u8), 0xffff_ffff)
         })
+    }
+
+    fn condition(&mut self, i: u8) -> Operand<'e> {
+        let ctx = self.ctx;
+        let cond_id = i & 0xf;
+        if let Some(cond) = self.conditions[cond_id as usize] {
+            cond
+        } else {
+            let zero = ctx.const_0();
+            let cond = if cond_id & 1 == 0 {
+                let cond = self.condition(cond_id + 1);
+                ctx.eq(cond, ctx.const_0())
+            } else {
+                match (cond_id >> 1) & 7 {
+                    // jo, jno
+                    0x0 => ctx.eq(ctx.flag_o(), zero),
+                    // jb, jnb (jae) (jump if carry)
+                    0x1 => ctx.eq(ctx.flag_c(), zero),
+                    // je, jne
+                    0x2 => ctx.eq(ctx.flag_z(), zero),
+                    // jbe, jnbe (ja)
+                    0x3 => ctx.and(
+                        self.condition(3),
+                        self.condition(5),
+                    ),
+                    // js, jns
+                    0x4 => ctx.eq(ctx.flag_s(), zero),
+                    // jpe, jpo
+                    0x5 => ctx.eq(ctx.flag_p(), zero),
+                    // jl, jnl (jge)
+                    0x6 => ctx.eq(ctx.flag_s(), ctx.flag_o()),
+                    // jle, jnle (jg)
+                    0x7 => ctx.and(
+                        self.condition(5),
+                        ctx.eq(ctx.flag_s(), ctx.flag_o()),
+                    ),
+                    _ => unreachable!(),
+                }
+            };
+            self.conditions[cond_id as usize] = Some(cond);
+            cond
+        }
     }
 
     fn esp_mem_word(&mut self) -> Operand<'e> {
@@ -1599,39 +1643,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn condition(&mut self) -> Result<Operand<'e>, Failed> {
-        let ctx = self.ctx;
-        let cond_id = self.read_u8(0)? & 0xf;
-        let zero = ctx.const_0();
-        let cond = match cond_id >> 1 {
-            // jo, jno
-            0x0 => ctx.eq(ctx.flag_o(), zero),
-            // jb, jnb (jae) (jump if carry)
-            0x1 => ctx.eq(ctx.flag_c(), zero),
-            // je, jne
-            0x2 => ctx.eq(ctx.flag_z(), zero),
-            // jbe, jnbe (ja)
-            0x3 => ctx.and(
-                ctx.eq(ctx.flag_z(), zero),
-                ctx.eq(ctx.flag_c(), zero),
-            ),
-            // js, jns
-            0x4 => ctx.eq(ctx.flag_s(), zero),
-            // jpe, jpo
-            0x5 => ctx.eq(ctx.flag_p(), zero),
-            // jl, jnl (jge)
-            0x6 => ctx.eq(ctx.flag_s(), ctx.flag_o()),
-            // jle, jnle (jg)
-            0x7 => ctx.and(
-                ctx.eq(ctx.flag_z(), zero),
-                ctx.eq(ctx.flag_s(), ctx.flag_o()),
-            ),
-            _ => unreachable!(),
-        };
-        if cond_id & 1 == 0 {
-            Ok(ctx.eq(cond, zero))
-        } else {
-            Ok(cond)
-        }
+        let cond_id = self.read_u8(0)?;
+        Ok(self.register_cache.condition(cond_id))
     }
 
     fn cmov(&mut self) -> Result<(), Failed> {
