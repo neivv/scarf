@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::mem;
 
+use byteorder::{ByteOrder, LittleEndian};
+
 use crate::cfg::{self, CfgNode, CfgOutEdges, NodeLink, OutEdgeCondition};
 use crate::disasm::{DestOperand, Operation};
 use crate::exec_state::{self, Constraint, Disassembler, ExecutionState, MergeStateCache};
@@ -1575,38 +1577,76 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     }
 
     fn switch_cases<'e, Va: VaTrait>(
-        ctx: OperandCtx<'e>,
         binary: &'e BinaryFile<Va>,
         mem_size: MemAccessSize,
         switch_table_addr: Va,
         limits: (u64, u64),
         base_addr: u64,
-    ) -> impl Iterator<Item = Operand<'e>> {
-        let case_size = mem_size.bits() / 8;
-        let base = ctx.constant(base_addr);
+    ) -> Option<impl Iterator<Item = Va> + 'e> {
+        let size_shift = match mem_size {
+            MemAccessSize::Mem8 => 0u8,
+            MemAccessSize::Mem16 => 1,
+            MemAccessSize::Mem32 => 2,
+            MemAccessSize::Mem64 => 3,
+        };
+        let case_size = 1u32 << size_shift;
+        let size_mask = mem_size.mask();
 
-        let start = limits.0.min(u32::max_value() as u64) as u32;
-        let end = limits.1.min(u32::max_value() as u64) as u32;
-        (start..=end)
-            .take_while(move |index| {
-                if !binary.relocs.is_empty() {
-                    let addr = switch_table_addr + index * case_size;
-                    if binary.relocs.binary_search(&addr).is_err() {
-                        return false;
-                    }
+        let code_section = binary.code_section();
+        let code_offset = code_section.virtual_address;
+        let code_len = code_section.data.len() as u32;
+        let code_end = code_offset + code_len;
+
+        let start = limits.0.min(u32::MAX as u64) as u32;
+        let end = limits.1.min(u32::MAX as u64) as u32;
+        let mut pos = start << size_shift;
+        let end = end << size_shift;
+
+        // Handle reads of switch table values as `(u64(data - shift) >> shift) & mask`,
+        // shift is 0 if switch table is right at section start to make `data - shift` not
+        // overflow past start, otherwise it is set so that `u64(data - shift)` won't have
+        // to read past section end in case switch table goes that far.
+        let switch_table_shift;
+        let mut switch_table_data;
+        let switch_table_section = binary.section_by_addr(switch_table_addr)?;
+        let section_relative = (switch_table_addr.as_u64() as usize)
+            .wrapping_sub(switch_table_section.virtual_address.as_u64() as usize)
+            .wrapping_add(pos as usize);
+        if section_relative < 8 {
+            switch_table_shift = 0u32;
+            switch_table_data = switch_table_section.data.get(section_relative..)?;
+        } else {
+            let shift_bytes = 8u32.wrapping_sub(case_size);
+            switch_table_shift = shift_bytes << 3;
+            switch_table_data = switch_table_section.data
+                .get((section_relative - shift_bytes as usize)..)?;
+        }
+
+        Some(std::iter::from_fn(move || {
+            if pos > end {
+                return None;
+            }
+
+            if !binary.relocs.is_empty() {
+                let addr = switch_table_addr + pos;
+                if binary.relocs.binary_search(&addr).is_err() {
+                    return None;
                 }
-                true
-            })
-            .map(move |index| {
-                ctx.add(
-                    base,
-                    ctx.mem_any(
-                        mem_size,
-                        ctx.const_0(),
-                        switch_table_addr.as_u64() + (index as u64 * case_size as u64),
-                    ),
-                )
-            })
+            }
+            pos = pos.wrapping_add(case_size);
+            if switch_table_data.len() < 8 {
+                return None;
+            }
+            let switch_table_value =
+                (LittleEndian::read_u64(&switch_table_data) >> switch_table_shift) & size_mask;
+            switch_table_data = switch_table_data.get((case_size as usize)..)?;
+            let jump_addr = Va::from_u64(base_addr.wrapping_add(switch_table_value));
+            if jump_addr >= code_offset && jump_addr < code_end {
+                Some(jump_addr)
+            } else {
+                None
+            }
+        }))
     }
 
     state.0.maybe_convert_memory_immutable(16);
@@ -1623,28 +1663,24 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
             let ctx = analysis.operand_ctx;
             let is_switch = is_switch_jump::<Exec::VirtualAddress>(to, ctx);
             if let Some((switch_table_addr, index, base_addr, mem_size)) = is_switch {
-                let mut cases = Vec::new();
                 let binary = analysis.binary;
-                let code_section = binary.code_section();
-                let code_offset = code_section.virtual_address;
-                let code_len = code_section.data.len() as u32;
                 let limits = state.0.value_limits(index);
-                let case_iter =
-                    switch_cases(ctx, binary, mem_size, switch_table_addr, limits, base_addr);
-                for case in case_iter {
-                    let addr = state.0.resolve(case).if_constant()
-                        .map(Exec::VirtualAddress::from_u64)
-                        .filter(|&x| x >= code_offset && x < code_offset + code_len);
-                    if let Some(case) = addr {
-                        analysis.add_unchecked_branch(case, state.clone());
-                        cases.push(NodeLink::new(case));
-                    } else {
-                        break;
-                    }
-                }
+                let case_guess = (limits.1.wrapping_sub(limits.0) as usize)
+                    .wrapping_add(1)
+                    .min(128);
+                let mut cases = Vec::with_capacity(case_guess);
 
-                if !cases.is_empty() {
-                    *cfg_out_edge = CfgOutEdges::Switch(cases, index);
+                let mut case_iter =
+                    switch_cases(binary, mem_size, switch_table_addr, limits, base_addr);
+                if let Some(ref mut case_iter) = case_iter {
+                    for addr in case_iter {
+                        analysis.add_unchecked_branch(addr, state.clone());
+                        cases.push(NodeLink::new(addr));
+                    }
+
+                    if !cases.is_empty() {
+                        *cfg_out_edge = CfgOutEdges::Switch(cases, index);
+                    }
                 }
             } else {
                 state.0.add_unresolved_constraint(Constraint::new(condition));
