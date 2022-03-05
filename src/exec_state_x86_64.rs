@@ -96,30 +96,6 @@ impl<'e> CachedLowRegisters<'e> {
         }
     }
 
-    fn get_32(&self, register: u8) -> Option<Operand<'e>> {
-        self.registers[register as usize][2]
-    }
-
-    fn get_16(&self, register: u8) -> Option<Operand<'e>> {
-        self.registers[register as usize][0]
-    }
-
-    fn get_low8(&self, register: u8) -> Option<Operand<'e>> {
-        self.registers[register as usize][1]
-    }
-
-    fn set_32(&mut self, register: u8, value: Operand<'e>) {
-        self.registers[register as usize][2] = Some(value);
-    }
-
-    fn set_16(&mut self, register: u8, value: Operand<'e>) {
-        self.registers[register as usize][0] = Some(value);
-    }
-
-    fn set_low8(&mut self, register: u8, value: Operand<'e>) {
-        self.registers[register as usize][1] = Some(value);
-    }
-
     fn invalidate(&mut self, register: u8) {
         self.registers[register as usize] = [None; 3];
     }
@@ -819,10 +795,10 @@ impl<'e> State<'e> {
         if !value.needs_resolve() {
             return value;
         }
+        if let OperandType::Register(reg) = *value.ty() {
+            return self.state[(reg & 0xf) as usize];
+        }
         match *value.ty() {
-            OperandType::Register(reg) => {
-                self.state[(reg & 0xf) as usize]
-            }
             OperandType::Xmm(reg, word) => {
                 self.xmm[(reg & 0xf) as usize * 4 + (word & 3) as usize]
             }
@@ -834,22 +810,31 @@ impl<'e> State<'e> {
                 self.state[FLAGS_INDEX + flag as usize]
             }
             OperandType::Arithmetic(ref op) => {
+                let left = op.left;
+                let right = op.right;
                 if op.ty == ArithOpType::And {
-                    let r = self.try_resolve_partial_register(op.left, op.right);
-                    if let Some(r) = r {
-                        return r;
-                    }
                     // Check for (x op y) & const_mask
-                    if let Some(c) = op.right.if_constant() {
-                        if let OperandType::Arithmetic(ref inner) = op.left.ty() {
+                    if let Some(c) = right.if_constant() {
+                        let ty = left.ty();
+                        if let OperandType::Register(reg) = *ty {
+                            let r = self.try_resolve_partial_register(reg, c);
+                            if let Some(r) = r {
+                                return r;
+                            }
+                        } else if let OperandType::Arithmetic(ref inner) = *ty {
                             let left = self.resolve(inner.left);
                             let right = self.resolve(inner.right);
                             return self.ctx.arithmetic_masked(inner.ty, left, right, c);
                         }
                     }
                 };
-                let left = self.resolve(op.left);
-                let right = self.resolve(op.right);
+                // Right is often a constant so predict that case before calling resolve
+                let left = self.resolve(left);
+                let right = if right.needs_resolve() {
+                    self.resolve(right)
+                } else {
+                    right
+                };
                 self.ctx.arithmetic(op.ty, left, right)
             }
             OperandType::ArithmeticFloat(ref op, size) => {
@@ -865,7 +850,9 @@ impl<'e> State<'e> {
                 let val = self.resolve(val);
                 self.ctx.sign_extend(val, from, to)
             }
-            OperandType::Undefined(_) | OperandType::Constant(_) | OperandType::Custom(_) => {
+            OperandType::Undefined(_) | OperandType::Constant(_) | OperandType::Custom(_) |
+                OperandType::Register(_) =>
+            {
                 debug_assert!(false, "Should be unreachable due to needs_resolve check");
                 value
             }
@@ -875,62 +862,44 @@ impl<'e> State<'e> {
     /// Checks cached/caches `reg & ff` masks.
     fn try_resolve_partial_register(
         &mut self,
-        left: Operand<'e>,
-        right: Operand<'e>,
+        left: u8,
+        right: u64,
     ) -> Option<Operand<'e>> {
-        let c = right.if_constant()?;
-        let reg = left.if_register()? & 0xf;
-        let ctx = self.ctx;
-        if c <= 0xff {
-            let op = match self.cached_low_registers.get_low8(reg) {
-                None => {
-                    let op = ctx.and_const(
-                        self.state[reg as usize],
-                        0xff,
-                    );
-                    self.cached_low_registers.set_low8(reg, op);
-                    op
+        let c = right;
+        let reg = left;
+        static MASKS: [u32; 3] = [0xff, 0xffff, 0xffff_ffff];
+        // Effectively `MASKS.iter().position(|mask| c <= mask)`
+        // but in reverse so that large masks (more common) are checked first.
+        // Quite silly way to unroll it but gives nicer codegen than otherwise.
+        let i = if c <= MASKS[2] as u64 {
+            if c <= MASKS[1] as u64 {
+                if c <= MASKS[0] as u64 {
+                    0
+                } else {
+                    1
                 }
-                Some(x) => x,
-            };
-            if c == 0xff {
-                Some(op)
             } else {
-                Some(ctx.and_const(op, c))
+                2
             }
-        } else if c <= 0xffff {
-            let op = match self.cached_low_registers.get_16(reg) {
+        } else {
+            3
+        };
+        if i < 3 {
+            let reg = reg & 0xf;
+            let reg_cache = &mut self.cached_low_registers.registers[reg as usize];
+            let mask = MASKS[i] as u64;
+            let op = match reg_cache[i] {
                 None => {
-                    let op = ctx.and_const(
-                        self.state[reg as usize],
-                        0xffff,
-                    );
-                    self.cached_low_registers.set_16(reg, op);
+                    let op = self.ctx.and_const(self.state[reg as usize], mask);
+                    reg_cache[i] = Some(op);
                     op
                 }
                 Some(x) => x,
             };
-            if c == 0xffff {
-                Some(op)
+            if c == mask {
+                return Some(op);
             } else {
-                Some(ctx.and_const(op, c))
-            }
-        } else if c <= 0xffff_ffff {
-            let op = match self.cached_low_registers.get_32(reg) {
-                None => {
-                    let op = ctx.and_const(
-                        self.state[reg as usize],
-                        0xffff_ffff
-                    );
-                    self.cached_low_registers.set_32(reg, op);
-                    op
-                }
-                Some(x) => x,
-            };
-            if c == 0xffff_ffff {
-                Some(op)
-            } else {
-                Some(ctx.and_const(op, c))
+                return Some(self.ctx.and_const(op, c));
             }
         } else {
             None

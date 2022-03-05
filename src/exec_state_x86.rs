@@ -1000,10 +1000,10 @@ impl<'e> State<'e> {
         if !value.needs_resolve() {
             return value;
         }
+        if let OperandType::Register(reg) = *value.ty() {
+            return self.state[(reg & 0x7) as usize];
+        }
         match *value.ty() {
-            OperandType::Register(reg) => {
-                self.state[reg as usize & 7]
-            }
             OperandType::Xmm(reg, word) => {
                 self.xmm_fpu[
                     XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize
@@ -1019,22 +1019,29 @@ impl<'e> State<'e> {
                 self.state[FLAGS_INDEX + flag as usize]
             }
             OperandType::Arithmetic(ref op) => {
+                let left = op.left;
+                let right = op.right;
                 if op.ty == ArithOpType::And {
-                    let r = self.try_resolve_partial_register(op.left, op.right);
+                    let r = self.try_resolve_partial_register(left, right);
                     if let Some(r) = r {
                         return r;
                     }
                     // Check for (x op y) & const_mask
-                    if let Some(c) = op.right.if_constant() {
-                        if let OperandType::Arithmetic(ref inner) = op.left.ty() {
+                    if let Some(c) = right.if_constant() {
+                        if let OperandType::Arithmetic(ref inner) = left.ty() {
                             let left = self.resolve(inner.left);
                             let right = self.resolve(inner.right);
                             return self.ctx.arithmetic_masked(inner.ty, left, right, c);
                         }
                     }
                 };
-                let left = self.resolve(op.left);
-                let right = self.resolve(op.right);
+                // Right is often a constant so predict that case before calling resolve
+                let left = self.resolve(left);
+                let right = if right.needs_resolve() {
+                    self.resolve(right)
+                } else {
+                    right
+                };
                 self.ctx.arithmetic(op.ty, left, right)
             }
             OperandType::ArithmeticFloat(ref op, size) => {
@@ -1050,7 +1057,9 @@ impl<'e> State<'e> {
                 let val = self.resolve(val);
                 self.ctx.sign_extend(val, from, to)
             }
-            OperandType::Undefined(_) | OperandType::Constant(_) | OperandType::Custom(_) => {
+            OperandType::Undefined(_) | OperandType::Constant(_) | OperandType::Custom(_) |
+                OperandType::Register(_) =>
+            {
                 debug_assert!(false, "Should be unreachable due to needs_resolve check");
                 value
             }
