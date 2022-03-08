@@ -407,9 +407,9 @@ fn simplify_gt_lhs_sub<'e>(
         if arith.ty == ArithOpType::Sub || arith.ty == ArithOpType::Add {
             return ctx.simplify_temp_stack().alloc(|right_ops| {
                 // right_ops won't be modified after collecting, so allocate it first
-                let right_const = collect_add_ops(right, right_ops, !0u64, false).ok()?;
+                let right_const = collect_add_ops_no_mask(right, right_ops, false).ok()?;
                 ctx.simplify_temp_stack().alloc(|left_ops| {
-                    let left_const = collect_add_ops(left, left_ops, !0u64, false).ok()?;
+                    let left_const = collect_add_ops_no_mask(left, left_ops, false).ok()?;
                     // x + 5 > x + 9 => (x + 9) - 4 > x + 9
                     // so
                     // x + c1 > x + c2 => (x + c2) - (c2 - c1) > x + c2
@@ -3610,7 +3610,7 @@ fn collect_add_ops<'e>(
     out_mask: u64,
     negate: bool,
 ) -> Result<u64, SizeLimitReached> {
-    fn recurse<'e>(
+    fn recurse_with_mask<'e>(
         s: Operand<'e>,
         ops: &mut AddSlice<'e>,
         out_mask: u64,
@@ -3620,19 +3620,19 @@ fn collect_add_ops<'e>(
             OperandType::Arithmetic(arith) if {
                 arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
             } => {
-                let const1 = recurse(arith.left, ops, out_mask, negate)?;
+                let const1 = recurse_with_mask(arith.left, ops, out_mask, negate)?;
                 let negate_right = match arith.ty {
                     ArithOpType::Add => negate,
                     _ => !negate,
                 };
-                let const2 = recurse(arith.right, ops, out_mask, negate_right)?;
+                let const2 = recurse_with_mask(arith.right, ops, out_mask, negate_right)?;
                 Ok(const1.wrapping_add(const2))
             }
             _ => {
                 if let Some((l, r)) = s.if_arithmetic_and() {
                     if let Some(c) = r.if_constant() {
                         if c & out_mask == out_mask {
-                            return recurse(l, ops, out_mask, negate);
+                            return recurse_with_mask(l, ops, out_mask, negate);
                         }
                     }
                 }
@@ -3649,7 +3649,89 @@ fn collect_add_ops<'e>(
             }
         }
     }
-    recurse(s, ops, out_mask, negate)
+    if out_mask == u64::MAX {
+        collect_add_ops_no_mask(s, ops, negate)
+    } else {
+        recurse_with_mask(s, ops, out_mask, negate)
+    }
+}
+
+fn collect_add_ops_no_mask<'e>(
+    s: Operand<'e>,
+    ops: &mut AddSlice<'e>,
+    negate: bool,
+) -> Result<u64, SizeLimitReached> {
+    // This will rely on simplification guaranteeing that:
+    // 1) Add/sub Operand is formed as (((a + b) + c) - d), rhs of each arithmetic expression
+    //   cannot be an additional add/sub term.
+    // 2) Constant is either the rightmost operand, or if the expression is just subtractions
+    //   and positive constant, it will be the leftmost.
+    match s.ty() {
+        OperandType::Arithmetic(arith) if {
+            arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
+        } => {
+            let mut constant;
+            let mut pos;
+            if let Some(c) = arith.right.if_constant() {
+                let negate_right = match arith.ty {
+                    ArithOpType::Add => negate,
+                    _ => !negate,
+                };
+                if negate_right {
+                    constant = 0u64.wrapping_sub(c);
+                } else {
+                    constant = c;
+                }
+                pos = arith.left;
+            } else {
+                constant = 0;
+                pos = s;
+            };
+            loop {
+                match pos.ty() {
+                    OperandType::Arithmetic(arith) if {
+                        arith.ty == ArithOpType::Add || arith.ty== ArithOpType::Sub
+                    } => {
+                        let negate_right = match arith.ty {
+                            ArithOpType::Add => negate,
+                            _ => !negate,
+                        };
+                        ops.push((arith.right, negate_right))?;
+                        pos = arith.left;
+                    }
+                    _ => {
+                        if let Some(c) = pos.if_constant() {
+                            // Constant as the leftmost term,
+                            // there cannot have been constant on the right then.
+                            // Expect `(0 - rax) - 1` is valid too ._.
+                            // Leftmost constants should probably be removed..
+                            if negate {
+                                constant = constant.wrapping_sub(c);
+                            } else {
+                                constant = constant.wrapping_add(c);
+                            }
+                        } else {
+                            ops.push((pos, negate))?;
+                        }
+                        break;
+                    }
+                }
+            }
+            Ok(constant)
+        }
+        _ => {
+            if let Some(c) = s.if_constant() {
+                if negate {
+                    Ok(0u64.wrapping_sub(c))
+                } else {
+                    Ok(c)
+                }
+            } else {
+                ops.push((s, negate))?;
+                Ok(0)
+            }
+        }
+    }
 }
 
 /// Unwraps a tree chaining arith operation to vector of the operands.
@@ -3886,7 +3968,7 @@ fn simplify_add_sub_const_with_lhs_const<'e>(
 ) -> Operand<'e> {
     ctx.simplify_temp_stack()
         .alloc(|ops| {
-            let c1 = collect_add_ops(left, ops, u64::max_value(), false)?;
+            let c1 = collect_add_ops_no_mask(left, ops, false)?;
             simplify_collected_add_sub_ops(ops, ctx, right.wrapping_add(c1))?;
             Ok(add_sub_ops_to_tree(ops, ctx))
         }).unwrap_or_else(|SizeLimitReached| {
