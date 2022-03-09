@@ -1622,7 +1622,7 @@ impl<'e> MemoryMap<'e> {
 
     /// Does a value -> key lookup (Finds an address containing value)
     pub fn reverse_lookup(&self, value: Operand<'e>) -> Option<(Operand<'e>, u64)> {
-        for (&key, &val) in self.map.iter() {
+        for (key, &val) in self.map.iter() {
             if value == val {
                 return Some((key.0.0, key.1));
             }
@@ -1702,47 +1702,47 @@ impl<'e> MemoryMap<'e> {
             b.immutable.as_ref().map(|x| &**x as *const MemoryMap);
         let result = if imm_eq {
             // Allows just checking a.map.iter() instead of a.iter()
-            for (&key, &a_val) in a.map.iter() {
+            for (key, &a_val) in a.map.iter() {
                 if a_val.is_undefined() {
-                    result.insert(key, a_val);
+                    result.insert(*key, a_val);
                 } else {
-                    if let Some((b_val, is_imm)) = b.get_with_immutable_info(&key) {
+                    if let Some((b_val, is_imm)) = b.get_with_immutable_info(key) {
                         match a_val == b_val {
                             true => {
                                 if !is_imm {
-                                    result.insert(key, a_val);
+                                    result.insert(*key, a_val);
                                 }
                             }
                             false => {
                                 if b_val.is_undefined() {
-                                    result.insert(key, b_val);
+                                    result.insert(*key, b_val);
                                 } else {
-                                    result.insert(key, ctx.new_undef());
+                                    result.insert(*key, ctx.new_undef());
                                 }
                             }
                         }
                     } else {
-                        result.insert(key, ctx.new_undef());
+                        result.insert(*key, ctx.new_undef());
                     }
                 }
             }
-            'b_loop: for (&key, &b_val) in b.map.iter() {
+            'b_loop: for (key, &b_val) in b.map.iter() {
                 // This seems to be slightly faster than using entry()...
                 // Maybe it's just something with different inlining decisions
                 // that won't actually always be better, but it seems consistent
                 // enough that I'm leaving this as is.
-                if !result.contains_key(&key) {
+                if !result.contains_key(key) {
                     let val = if b_val.is_undefined() {
                         b_val
                     } else {
-                        if let Some((a_val, is_imm)) = a.get_with_immutable_info(&key) {
+                        if let Some((a_val, is_imm)) = a.get_with_immutable_info(key) {
                             if is_imm && a_val == b_val {
                                 continue 'b_loop;
                             }
                         }
                         ctx.new_undef()
                     };
-                    result.insert(key, val);
+                    result.insert(*key, val);
                 }
             }
             let immutable_length = result_immutable_len + result.len();
@@ -1758,24 +1758,24 @@ impl<'e> MemoryMap<'e> {
             // result, but if it has ones that should become undefined, the undefined has to be
             // inserted to the result instead.
             let common = a.common_immutable(b);
-            for (&key, b_val, b_is_imm) in b.iter_until_immutable(common) {
-                if b_is_imm && b.get(&key) != Some(b_val) {
+            for (key, b_val, b_is_imm) in b.iter_until_immutable(common) {
+                if b_is_imm && b.get(key) != Some(b_val) {
                     // Wasn't newest value
                     continue;
                 }
-                if let Some((a_val, is_imm)) = a.get_with_immutable_info(&key) {
+                if let Some((a_val, is_imm)) = a.get_with_immutable_info(key) {
                     match a_val == b_val {
                         true => {
                             if !is_imm {
-                                result.insert(key, a_val);
+                                result.insert(*key, a_val);
                             }
                         }
                         false => {
                             if !a_val.is_undefined() {
                                 if b_val.is_undefined() {
-                                    result.insert(key, b_val);
+                                    result.insert(*key, b_val);
                                 } else {
-                                    result.insert(key, ctx.new_undef());
+                                    result.insert(*key, ctx.new_undef());
                                 }
                             }
                         }
@@ -1783,9 +1783,9 @@ impl<'e> MemoryMap<'e> {
                 } else {
                     if !key.0.0.contains_undefined() {
                         if b_val.is_undefined() {
-                            result.insert(key, b_val);
+                            result.insert(*key, b_val);
                         } else {
-                            result.insert(key, ctx.new_undef());
+                            result.insert(*key, ctx.new_undef());
                         }
                     }
                 }
@@ -1793,10 +1793,10 @@ impl<'e> MemoryMap<'e> {
             // The result contains now anything that was in b's unique branch of the memory.
             //
             // Repeat for a's unique branch.
-            for (&key, a_val, a_is_imm) in a.iter_until_immutable(common) {
+            for (key, a_val, a_is_imm) in a.iter_until_immutable(common) {
                 if a_is_imm {
                     if a_val.is_undefined() {
-                        if let Some(nonimm) = a.get_no_immutable(&key) {
+                        if let Some(nonimm) = a.get_no_immutable(key) {
                             if nonimm.is_undefined() {
                                 // Do nothing, the result will have 'key = a_val'
                                 // instead of 'key = nonimm', but both are undefined anyway
@@ -1810,14 +1810,14 @@ impl<'e> MemoryMap<'e> {
                             continue;
                         }
                     } else {
-                        if a.get(&key) != Some(a_val) {
+                        if a.get(key) != Some(a_val) {
                             // Wasn't newest value
                             continue;
                         }
                     }
                 }
-                if !result.contains_key(&key) {
-                    let needs_undef = if let Some(b_val) = b.get(&key) {
+                if !result.contains_key(key) {
+                    let needs_undef = if let Some(b_val) = b.get(key) {
                         a_val != b_val
                     } else {
                         true
@@ -1826,7 +1826,7 @@ impl<'e> MemoryMap<'e> {
                         // If the key with undefined was in imm, override its value,
                         // but otherwise just don't bother adding it back.
                         if !key.0.0.contains_undefined() || !a_is_imm {
-                            result.insert(key, ctx.new_undef());
+                            result.insert(*key, ctx.new_undef());
                         }
                     }
                 }
@@ -1851,14 +1851,14 @@ impl<'e> MemoryMap<'e> {
             return false;
         }
         let common = a.common_immutable(b);
-        for (&key, a_val, is_imm) in a.iter_until_immutable(common) {
+        for (key, a_val, is_imm) in a.iter_until_immutable(common) {
             if !key.0.0.contains_undefined() {
                 if !a_val.is_undefined() {
-                    if b.get(&key) != Some(a_val) {
+                    if b.get(key) != Some(a_val) {
                         let was_newest_value = if !is_imm {
                             true
                         } else {
-                            a.get(&key) == Some(a_val)
+                            a.get(key) == Some(a_val)
                         };
                         if was_newest_value {
                             return true;
@@ -1867,9 +1867,9 @@ impl<'e> MemoryMap<'e> {
                 }
             }
         }
-        for (&key, b_val, is_imm) in b.iter_until_immutable(common) {
+        for (key, b_val, is_imm) in b.iter_until_immutable(common) {
             if !key.0.0.contains_undefined() {
-                let different = match a.get(&key) {
+                let different = match a.get(key) {
                     Some(a_val) => !a_val.is_undefined() && a_val != b_val,
                     None => true,
                 };
@@ -1877,7 +1877,7 @@ impl<'e> MemoryMap<'e> {
                     let was_newest_value = if !is_imm {
                         true
                     } else {
-                        b.get(&key) == Some(b_val)
+                        b.get(key) == Some(b_val)
                     };
                     if was_newest_value {
                         return true;
