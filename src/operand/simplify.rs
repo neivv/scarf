@@ -1460,23 +1460,27 @@ pub fn simplify_eq_const<'e>(
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     if right == 0 {
-        if let Some((l, r)) = left.if_arithmetic_eq() {
-            // Check for (x == 0) == 0 => x
-            if r == ctx.const_0() {
-                if l.relevant_bits().end == 1 {
-                    return l;
+        if let OperandType::Arithmetic(ref arith) = left.ty() {
+            if arith.ty == ArithOpType::Equal {
+                // Check for (x == 0) == 0 => x
+                if arith.right == ctx.const_0() {
+                    if arith.left.relevant_bits().end == 1 {
+                        return arith.left;
+                    }
+                }
+            } else if arith.ty == ArithOpType::Or {
+                // (x | c) == 0 => 0
+                if arith.right.if_constant().is_some() {
+                    return ctx.const_0();
+                }
+            } else if arith.ty == ArithOpType::Sub {
+                // Simplify x - y == 0 as x == y
+                return simplify_eq(arith.left, arith.right, ctx);
+            } else if arith.ty == ArithOpType::GreaterThan {
+                if let Some(result) = simplify_eq_zero_with_gt(arith.left, arith.right, ctx) {
+                    return result;
                 }
             }
-        }
-        // (x | c) == 0 => 0
-        if let Some((_, r)) = left.if_arithmetic_or() {
-            if r.if_constant().is_some() {
-                return ctx.const_0();
-            }
-        }
-        // Simplify x - y == 0 as x == y
-        if let Some((l, r)) = left.if_arithmetic_sub() {
-            return simplify_eq(l, r, ctx);
         }
     }
     if right == 1 {
@@ -1487,7 +1491,7 @@ pub fn simplify_eq_const<'e>(
     }
     // Check if left can never have value that's high enough to be equal to right
     let left_bits = left.relevant_bits();
-    if left_bits.end != 64 {
+    if left_bits.end < 64 {
         let max_value = (1 << left_bits.end) - 1;
         if right > max_value {
             return ctx.const_0();
@@ -1502,40 +1506,26 @@ pub fn simplify_eq_const<'e>(
             can_quick_simplify = match arith.ty {
                 ArithOpType::Add | ArithOpType::Sub |
                     ArithOpType::Lsh | ArithOpType::Rsh | ArithOpType::Mul => false,
-                ArithOpType::And => {
-                    // (x << 8) & 800 == 0 gets simplfied to x & 8 == 0
-                    // (x >> 8) & 8 == 0 gets simplfied to x & 800 == 0
-                    // (x + ffff) & ffff == 0 becomes x & ffff == 1
-                    // And similar for sub.
-                    if let Some(c) = arith.right.if_constant() {
-                        if let OperandType::Arithmetic(ref arith) = arith.left.ty() {
-                            match arith.ty {
-                                ArithOpType::Add | ArithOpType::Sub => {
-                                    let continous_mask = c.wrapping_add(1) & c == 0;
-                                    !continous_mask
-                                }
-                                ArithOpType::Lsh | ArithOpType::Rsh | ArithOpType::Mul => false,
-                                _ => true,
-                            }
-                        } else {
-                            true
-                        }
-                    } else {
-                        true
-                    }
-                }
-                ArithOpType::GreaterThan => {
-                    // If right > 1, it gets caught by the max_value check above,
-                    // if right == 1, it gets caught by the right == 1 check above,
-                    // so right must be 0.
-                    debug_assert_eq!(right, 0);
-                    if let Some(result) = simplify_eq_zero_with_gt(arith.left, arith.right, ctx) {
-                        return result;
-                    }
-                    true
-                }
                 _ => true,
             };
+            if arith.ty == ArithOpType::And {
+                // (x << 8) & 800 == 0 gets simplfied to x & 8 == 0
+                // (x >> 8) & 8 == 0 gets simplfied to x & 800 == 0
+                // (x + ffff) & ffff == 0 becomes x & ffff == 1
+                // And similar for sub.
+                if let Some(c) = arith.right.if_constant() {
+                    if let OperandType::Arithmetic(ref arith) = arith.left.ty() {
+                        can_quick_simplify = match arith.ty {
+                            ArithOpType::Add | ArithOpType::Sub => {
+                                let continous_mask = c.wrapping_add(1) & c == 0;
+                                !continous_mask
+                            }
+                            ArithOpType::Lsh | ArithOpType::Rsh | ArithOpType::Mul => false,
+                            _ => true,
+                        };
+                    }
+                }
+            }
         } else if let Some(c) = left.if_constant() {
             return match c == right {
                 true => ctx.const_1(),
