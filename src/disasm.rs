@@ -646,7 +646,7 @@ fn instruction_operations32_main(
         0x1af => s.imul_normal(),
         0x1b1 => {
             // Cmpxchg
-            let (rm, _r) = s.parse_modrm(s.mem16_32())?;
+            let (rm, _r) = s.parse_modrm(s.mem16_32());
             let dest = s.rm_to_dest_operand(&rm);
             s.output_mov(dest, ctx.new_undef());
             s.output_mov_to_reg(0, ctx.new_undef());
@@ -659,7 +659,7 @@ fn instruction_operations32_main(
         0x1bc | 0x1bd => {
             // bsf, bsr, just set dest as undef.
             // Could maybe emit Special?
-            let (_rm, r) = s.parse_modrm(s.mem16_32())?;
+            let (_rm, r) = s.parse_modrm(s.mem16_32());
             s.output_mov(r.dest_operand(), ctx.new_undef());
             Ok(())
         }
@@ -913,7 +913,7 @@ fn instruction_operations64_main(
         0x1af => s.imul_normal(),
         0x1b1 => {
             // Cmpxchg
-            let (rm, _r) = s.parse_modrm(s.mem16_32())?;
+            let (rm, _r) = s.parse_modrm(s.mem16_32());
             let dest = s.rm_to_dest_operand(&rm);
             s.output_mov(dest, ctx.new_undef());
             s.output_mov_to_reg(0, ctx.new_undef());
@@ -926,7 +926,7 @@ fn instruction_operations64_main(
         0x1bc | 0x1bd => {
             // bsf, bsr, just set dest as undef.
             // Could maybe emit Special?
-            let (_rm, r) = s.parse_modrm(s.mem16_32())?;
+            let (_rm, r) = s.parse_modrm(s.mem16_32());
             s.output_mov(r.dest_operand(), ctx.new_undef());
             Ok(())
         }
@@ -1436,88 +1436,67 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     fn parse_modrm_inner(
         &mut self,
         op_size: MemAccessSize
-    ) -> Result<(ModRm_Rm, ModRm_R, usize), Failed> {
-        let modrm = self.read_u8(1)?;
+    ) -> (ModRm_Rm, ModRm_R, usize) {
+        let modrm = self.read_u8(1).unwrap_or(0);
         let rm_val = modrm & 0x7;
-        let register = if self.rex_prefix() & 0x4 == 0 {
-            (modrm >> 3) & 0x7
-        } else {
-            8 + ((modrm >> 3) & 0x7)
-        };
-        let rm_ext = self.rex_prefix() & 0x1 != 0;
-        let r_high = register >= 4 &&
-            self.rex_prefix() == 0 &&
-            op_size == MemAccessSize::Mem8;
-        let register_size = if r_high {
-            RegisterSize::High8
-        } else {
-            RegisterSize::from_mem_access_size(op_size)
-        };
-        let r = if r_high {
-            ModRm_R(register - 4, register_size)
-        } else {
-            ModRm_R(register, register_size)
-        };
+        let rex = self.rex_prefix();
+        let register_id = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
+        let high8_available = (rex == 0) & (op_size == MemAccessSize::Mem8);
+
+        let size = RegisterSize::from_mem_access_size(op_size);
+        let register = register_id & ((high8_available as u8).wrapping_sub(1) | 3);
+        let r_size = [size, RegisterSize::High8][(register != register_id) as usize];
+        let r = ModRm_R(register, r_size);
 
         let rm_variant = (modrm >> 6) & 0x3;
-        let (rm, size) = if rm_variant < 3 && rm_val == 4 {
-            self.parse_sib(rm_variant, op_size)?
-        } else {
-            let mut rm = ModRm_Rm {
-                size: RegisterSize::from_mem_access_size(op_size),
-                base: match rm_ext {
-                    false => rm_val,
-                    true => rm_val + 8,
-                },
-                index: 0,
-                index_mul: 0,
-                constant: 0,
-            };
-            match rm_variant {
-                0 => match rm_val {
-                    5 => {
-                        // 32-bit has the immediate as mem[imm],
-                        // 64-bit has mem[rip + imm]
-                        let imm = self.read_u32(2)?;
-                        rm.base = u8::max_value();
-                        rm.constant = imm;
-                        (rm, 6)
-                    }
-                    _ => {
-                        (rm, 2)
-                    }
-                },
-                1 => {
-                    let offset = self.read_u8(2)? as i8 as u32;
-                    rm.constant = offset;
-                    (rm, 3)
-                }
-                2 => {
-                    let offset = self.read_u32(2)?;
-                    rm.constant = offset;
-                    (rm, 6)
-                }
-                3 => {
-                    let rm_high = rm_val >= 4 &&
-                        self.rex_prefix() == 0 &&
-                        op_size == MemAccessSize::Mem8;
-
-                    if rm_high {
-                        rm.size = RegisterSize::High8;
-                        rm.base = rm_val - 4;
-                    }
-                    rm.index = u8::max_value();
-                    (rm, 2)
-                }
-                _ => unreachable!(),
-            }
+        let is_rm_variant_3 = (rm_variant + 1) >> 2;
+        let rm = ModRm_Rm {
+            size,
+            base: 0,
+            index: 0,
+            index_mul: 0,
+            constant: 0,
         };
-        Ok((rm, r, size))
+        let mut retval = (rm, r, 0);
+        let rm = &mut retval.0;
+        retval.2 = if is_rm_variant_3.wrapping_sub(1) & rm_val == 4 {
+            self.parse_sib(rm_variant, rm)
+        } else {
+            // variant 0, rm_val 5 is constant (or rip relative) offset
+            let rm_val5_mask = if rm_val == 5 {
+                u32::MAX
+            } else {
+                0
+            };
+            let imm = self.read_u32(2).unwrap_or(0);
+            rm.constant = [
+                imm & rm_val5_mask, // Only if const offset
+                imm as i8 as u32, // i8 offset
+                imm, // i32/u32 offset
+                0, // No offset
+            ][rm_variant as usize];
+            rm.index = if is_rm_variant_3 != 0 { u8::MAX } else { rm.index };
+            // base to 0xff if const offset
+            rm.base = rm_val | ((rex & 0x1) << 3);
+            rm.base |= ((0xffu32 >> (rm_variant * 8)) & rm_val5_mask) as u8;
+
+            // Only 1 if high8_available && rm_val >= 4 && variant == 3
+            let high8_base = (rm_val >> 2) & // 1 only if rm_val >= 4
+                is_rm_variant_3 & // 1 only if variant == 3
+                high8_available as u8;
+            rm.base &= 0x3 | high8_base.wrapping_sub(1);
+            rm.size = [rm.size, RegisterSize::High8][(high8_base as usize) & 1];
+            // Bytes read depends on immediate size (so rm_variant) (2/6, 3, 6, 2)
+            let size =
+                ((0x02060302u32 | (rm_val5_mask & 0x4)) >> (rm_variant * 8)) as u8;
+            size as usize
+        };
+        retval
     }
 
-    fn parse_modrm(&mut self, op_size: MemAccessSize) -> Result<(ModRm_Rm, ModRm_R), Failed> {
-        let (rm, r, _) = self.parse_modrm_inner(op_size)?;
-        Ok((rm, r))
+    fn parse_modrm(&mut self, op_size: MemAccessSize) -> (ModRm_Rm, ModRm_R) {
+        let (rm, r, _) = self.parse_modrm_inner(op_size);
+        (rm, r)
     }
 
     fn parse_modrm_imm(
@@ -1525,7 +1504,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         op_size: MemAccessSize,
         imm_size: MemAccessSize,
     ) -> Result<(ModRm_Rm, ModRm_R, Operand<'e>), Failed> {
-        let (rm, r, offset) = self.parse_modrm_inner(op_size)?;
+        let (rm, r, offset) = self.parse_modrm_inner(op_size);
         let imm = self.read_variable_size_32(offset, imm_size)?;
         let imm = if imm_size == op_size || imm_size == MemAccessSize::Mem64 {
             imm
@@ -1549,55 +1528,32 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     fn parse_sib(
         &mut self,
         variation: u8,
-        op_size: MemAccessSize,
-    ) -> Result<(ModRm_Rm, usize), Failed> {
-        let sib = self.read_u8(2)?;
+        result: &mut ModRm_Rm,
+    ) -> usize {
+        let sib = self.read_u8(2).unwrap_or(0);
+        let rex = self.rex_prefix();
         let mul = 1 << ((sib >> 6) & 0x3);
-        let base_ext = self.rex_prefix() & 0x1 != 0;
-        let mut result = ModRm_Rm {
-            size: RegisterSize::from_mem_access_size(op_size),
-            base: 0,
-            index: 0,
-            index_mul: 0,
-            constant: 0,
-        };
-        let size = match (sib & 0x7, variation) {
-            (5, 0) => {
-                // Constant base
-                let constant = self.read_u32(3)?;
-                result.base = 0xfe;
-                result.constant = constant;
-                7
-            }
-            (reg, _) => {
-                result.base = match base_ext {
-                    false => reg,
-                    true => reg + 8,
-                };
-                3
-            }
-        };
-        let index_reg = if self.rex_prefix() & 0x2 == 0 {
-            (sib >> 3) & 0x7
-        } else {
-            8 + ((sib >> 3) & 0x7)
-        };
+        let constant = self.read_u32(3).unwrap_or(0);
+        let reg = sib & 7;
+        // reg == 5 && variation == 0
+        let is_constant_base = reg & variation.wrapping_sub(1) == 5;
+        result.base = reg | ((rex & 1) << 3);
+        if is_constant_base {
+            result.base = 0xfe;
+        }
+        result.index = ((sib >> 3) & 0x7) | ((rex & 0x2) << 2);
         // Index reg 4 = None
-        if index_reg != 4 {
-            result.index = index_reg;
-            result.index_mul = mul;
-        }
-        match variation {
-            0 => Ok((result, size)),
-            1 => {
-                result.constant = self.read_u8(size)? as i8 as u32;
-                Ok((result, size + 1))
-            }
-            2 | _ => {
-                result.constant = self.read_u32(size)?;
-                Ok((result, size + 4))
-            }
-        }
+        result.index_mul = mul & ((result.index == 0x4) as u8).wrapping_sub(1);
+        // [3, 4, 7] depending on variation, 3 + 4 if constant base
+        let size = ((0x070403u32 >> (variation * 8)) | ((is_constant_base as u32) << 2)) as u8;
+
+        result.constant = [
+            // size == 3 or 7 (variation 0 or 2), 3 gets masked to zero after
+            constant,
+            // size == 4 (variation 1)
+            constant as u8 as i8 as u32,
+        ][(variation & 1) as usize] & ((!(size >> 2) as u32) & 1).wrapping_sub(1);
+        size as usize
     }
 
     fn inc_dec_op(&mut self) -> Result<(), Failed> {
@@ -1648,7 +1604,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn cmov(&mut self) -> Result<(), Failed> {
-        let (rm, r) = self.parse_modrm(self.mem16_32())?;
+        let (rm, r) = self.parse_modrm(self.mem16_32());
         let condition = Some(self.condition()?);
         let rm = self.rm_to_operand(&rm);
         self.output(Operation::Move(r.dest_operand(), rm, condition));
@@ -1657,7 +1613,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn conditional_set(&mut self) -> Result<(), Failed> {
         let condition = self.condition()?;
-        let (rm, _) = self.parse_modrm(MemAccessSize::Mem8)?;
+        let (rm, _) = self.parse_modrm(MemAccessSize::Mem8);
         let dest = self.rm_to_dest_operand(&rm);
         self.output_mov(dest, condition);
         Ok(())
@@ -1668,7 +1624,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (rm, r) = self.parse_modrm(op_size)?;
+        let (rm, r) = self.parse_modrm(op_size);
         if !r.equal_to_rm(&rm) {
             let r = self.r_to_dest_and_operand(r);
             let rm = self.rm_to_dest_and_operand(&rm);
@@ -2039,7 +1995,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (mut rm, r) = self.parse_modrm(op_size)?;
+        let (mut rm, r) = self.parse_modrm(op_size);
         let mut r = r.to_rm();
         let rm_left = self.read_u8(0)? & 0x3 < 2;
         let (left, right) = match rm_left {
@@ -2054,7 +2010,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn lea(&mut self) -> Result<(), Failed> {
         let op_size = self.mem16_32();
-        let (rm, r) = self.parse_modrm(op_size)?;
+        let (rm, r) = self.parse_modrm(op_size);
         if rm.is_memory() {
             let (base, offset) = self.rm_address_operand(&rm);
             let mut addr = self.ctx.add_const(base, offset);
@@ -2090,7 +2046,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             0x25 => (MemAccessSize::Mem32, MemAccessSize::Mem64),
             _ => return Err(self.unknown_opcode()),
         };
-        let (src, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (src, dest) = self.parse_modrm(MemAccessSize::Mem32);
         let ctx = self.ctx;
         let mut in_pos = 0;
         let mut out_xmm_word = 0;
@@ -2126,7 +2082,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn movsx(&mut self, op_size: MemAccessSize) -> Result<(), Failed> {
         let dest_size = self.mem16_32();
-        let (mut rm, r) = self.parse_modrm(dest_size)?;
+        let (mut rm, r) = self.parse_modrm(dest_size);
         let reg8_high = op_size == MemAccessSize::Mem8 &&
             !rm.is_memory() &&
             rm.base >= 4 &&
@@ -2151,7 +2107,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             0 => MemAccessSize::Mem8,
             _ => MemAccessSize::Mem16,
         };
-        let (mut rm, r) = self.parse_modrm(self.mem16_32())?;
+        let (mut rm, r) = self.parse_modrm(self.mem16_32());
         let reg8_high = op_size == MemAccessSize::Mem8 &&
             !rm.is_memory() &&
             rm.base >= 4 &&
@@ -2182,7 +2138,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             _ => self.mem16_32(),
         };
         let variant = (self.read_u8(1)? >> 3) & 0x7;
-        let (rm, _) = self.parse_modrm(op_size)?;
+        let (rm, _) = self.parse_modrm(op_size);
         let rm = self.rm_to_dest_and_operand(&rm);
         let ctx = self.ctx;
         match variant {
@@ -2284,7 +2240,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             let (rm, _, imm) = self.parse_modrm_imm(op_size, MemAccessSize::Mem8)?;
             (rm, imm)
         } else {
-            let (rm, r) = self.parse_modrm(op_size)?;
+            let (rm, r) = self.parse_modrm(op_size);
             (rm, self.r_to_operand(r).clone())
         };
         let ctx = self.ctx;
@@ -2325,7 +2281,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         } else {
             (MemAccessSize::Mem32, 2)
         };
-        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32);
         let ctx = self.ctx;
         let zero = ctx.const_0();
         if src_size == MemAccessSize::Mem32 {
@@ -2365,7 +2321,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         } else {
             (MemAccessSize::Mem32, 4)
         };
-        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32);
         let ctx = self.ctx;
         if size == MemAccessSize::Mem32 {
             for i in 0..amt {
@@ -2408,7 +2364,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         } else {
             (MemAccessSize::Mem32, 4)
         };
-        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32);
         let ctx = self.ctx;
         if size == MemAccessSize::Mem32 {
             for i in 0..amt {
@@ -2439,7 +2395,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn sse_bit_arith(&mut self, arith_type: ArithOpType) -> Result<(), Failed> {
-        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32);
         let ctx = self.ctx;
         for i in 0..4 {
             let dest = self.r_to_dest_and_operand_xmm(dest, i);
@@ -2455,7 +2411,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             return Err(self.unknown_opcode());
         }
         // Mul 16-bit packed
-        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32);
         let ctx = self.ctx;
         for i in 0..4 {
             let dest = self.r_to_dest_and_operand_xmm(dest, i);
@@ -2521,7 +2477,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             ArithOpType::ToDouble
         };
         let op_size = self.mem32_64();
-        let (rm, r) = self.parse_modrm(op_size)?;
+        let (rm, r) = self.parse_modrm(op_size);
         let ctx = self.ctx;
 
         let mut rm = self.rm_to_operand(&rm);
@@ -2549,7 +2505,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn sse_int_double_conversion(&mut self) -> Result<(), Failed> {
-        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32);
         let ctx = self.ctx;
         let zero = ctx.const_0();
         if self.has_prefix(0xf3) {
@@ -2594,7 +2550,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         } else {
             return Err(self.unknown_opcode());
         };
-        let (rm, r) = self.parse_modrm(self.mem32_64())?;
+        let (rm, r) = self.parse_modrm(self.mem32_64());
         let op = if src_size == MemAccessSize::Mem64 {
             self.rm_to_operand_xmm_64(&rm, 0)
         } else {
@@ -2613,7 +2569,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn cvtdq2ps(&mut self) -> Result<(), Failed> {
-        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32);
         let ctx = self.ctx;
         let zero = ctx.const_0();
         for i in 0..4 {
@@ -2664,7 +2620,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             }
         }
 
-        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32);
         // Example of operation with Mem8
         // r.0 = (r.0 & ff) | (rm.0 & ff) << 8 | (r.0 & ff00) << 8 | (rm.0 & ff00) << 10
         // r.1 = (r.0 & ff_0000) >> 10 | (rm.0 & ff_0000) >> 8 |
@@ -2734,7 +2690,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             true => MemAccessSize::Mem64,
             false => MemAccessSize::Mem32,
         };
-        let (rm, r) = self.parse_modrm(op_size)?;
+        let (rm, r) = self.parse_modrm(op_size);
         let rm_op = self.rm_to_operand(&rm);
         let ctx = self.ctx;
         self.output_mov(r.dest_operand_xmm(0), ctx.and_const(rm_op, 0xffff_ffff));
@@ -2763,7 +2719,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn sse_move(&mut self) -> Result<(), Failed> {
-        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32);
         let r = r.to_rm();
         let byte = self.read_u8(0)?;
         let (src, dest) = match byte {
@@ -2827,7 +2783,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
         }
-        let (rm, src) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, src) = self.parse_modrm(MemAccessSize::Mem32);
         let zero = self.ctx.const_0();
         for i in 0..4 {
             let val = if i >= 2 {
@@ -2851,7 +2807,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
         // Sign bit of each byte in input
         // out 0x1 = in 0x80, 0x2 = in 0x8000, 0x4 = 0x80_0000, ...
-        let (rm, src) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, src) = self.parse_modrm(MemAccessSize::Mem32);
         if rm.is_memory() {
             return Err(self.unknown_opcode());
         }
@@ -3155,7 +3111,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
         }
-        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32);
         // Zero everything if rm.1 is set
         let rm_0 = self.rm_to_operand_xmm(&rm, 0);
         self.packed_shift_left_xmm_u64(dest, rm_0);
@@ -3167,7 +3123,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         if !self.has_prefix(0x66) {
             return Err(self.unknown_opcode());
         }
-        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, dest) = self.parse_modrm(MemAccessSize::Mem32);
         let rm_0 = self.rm_to_operand_xmm(&rm, 0);
         // Zero everything if rm.1 is set
         self.packed_shift_right_xmm_u64(dest, rm_0);
@@ -3218,7 +3174,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
         let byte = self.read_u8(1)?;
         let variant = (byte >> 3) & 0x7;
-        let (rm, _) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm, _) = self.parse_modrm(MemAccessSize::Mem32);
         let op_ty = TYPES[variant as usize]
             .ok_or_else(|| self.unknown_opcode())?;
         let rm = self.rm_to_operand(&rm);
@@ -3246,7 +3202,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             self.output(Operation::Special(arr));
             return Ok(());
         }
-        let (rm_parsed, _) = self.parse_modrm(MemAccessSize::Mem32)?;
+        let (rm_parsed, _) = self.parse_modrm(MemAccessSize::Mem32);
         let rm = self.rm_to_dest_and_operand(&rm_parsed);
         let ctx = self.ctx;
         match variant {
@@ -3307,7 +3263,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 false => self.mem16_32(),
             },
         };
-        let (rm, _) = self.parse_modrm(op_size)?;
+        let (rm, _) = self.parse_modrm(op_size);
         let rm = self.rm_to_dest_and_operand(&rm);
         match variant {
             0 | 1 => {
@@ -3333,7 +3289,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn pop_rm(&mut self) -> Result<(), Failed> {
-        let (rm, _) = self.parse_modrm(self.mem16_32())?;
+        let (rm, _) = self.parse_modrm(self.mem16_32());
         let rm_dest = self.rm_to_dest_operand(&rm);
         let esp_mem = self.register_cache.esp_mem_word();
         self.output_mov(rm_dest, esp_mem);
@@ -3362,7 +3318,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             0 => MemAccessSize::Mem8,
             _ => self.mem16_32(),
         };
-        let (mut rm, _) = self.parse_modrm(op_size)?;
+        let (mut rm, _) = self.parse_modrm(op_size);
         let shift_count = match self.read_u8(0)? & 2 {
             0 => self.ctx.const_1(),
             _ => self.reg_variable_size(1, operand::MemAccessSize::Mem8).clone(),
@@ -3454,7 +3410,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn imul_normal(&mut self) -> Result<(), Failed> {
         let size = self.mem16_32();
-        let (rm, r) = self.parse_modrm(size)?;
+        let (rm, r) = self.parse_modrm(size);
         let rm = self.rm_to_operand(&rm);
         // TODO flags, imul only sets c and o on overflow
         // Signed multiplication should be different only when result is being sign extended.
@@ -3823,32 +3779,36 @@ enum RegisterSize {
     R64,
 }
 
+// LLVM seems to be unable to convert matching on RegisterSize / MemAccessSize
+// to array read, so this does it explicitly.
 impl RegisterSize {
     fn bits(self) -> u32 {
-        match self {
-            RegisterSize::Low8 | RegisterSize::High8 => 8,
-            RegisterSize::R16 => 16,
-            RegisterSize::R32 => 32,
-            RegisterSize::R64 => 64,
-        }
+        // Seems that while static works better when output is enum,
+        // this is better for integers.
+        [8, 8, 16, 32, 64][self as usize] as u32
     }
 
     fn to_mem_access_size(self) -> MemAccessSize {
-        match self {
-            RegisterSize::Low8 | RegisterSize::High8 => MemAccessSize::Mem8,
-            RegisterSize::R16 => MemAccessSize::Mem16,
-            RegisterSize::R32 => MemAccessSize::Mem32,
-            RegisterSize::R64 => MemAccessSize::Mem64,
-        }
+        static MAPPING: [MemAccessSize; 5] = [
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem8,
+            MemAccessSize::Mem16,
+            MemAccessSize::Mem32,
+            MemAccessSize::Mem64,
+        ];
+        MAPPING[self as usize]
     }
 
     fn from_mem_access_size(size: MemAccessSize) -> RegisterSize {
-        match size {
-            MemAccessSize::Mem8 => RegisterSize::Low8,
-            MemAccessSize::Mem16 => RegisterSize::R16,
-            MemAccessSize::Mem32 => RegisterSize::R32,
-            MemAccessSize::Mem64 => RegisterSize::R64,
-        }
+        static MAPPING: [RegisterSize; 4] = {
+            let mut map = [RegisterSize::Low8; 4];
+            map[MemAccessSize::Mem8 as usize] = RegisterSize::Low8;
+            map[MemAccessSize::Mem16 as usize] = RegisterSize::R16;
+            map[MemAccessSize::Mem32 as usize] = RegisterSize::R32;
+            map[MemAccessSize::Mem64 as usize] = RegisterSize::R64;
+            map
+        };
+        MAPPING[size as usize]
     }
 }
 
