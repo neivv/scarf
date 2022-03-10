@@ -2641,6 +2641,10 @@ pub fn simplify_and<'e>(
     if !bits_overlap(&left.relevant_bits(), &right.relevant_bits()) {
         return ctx.const_0();
     }
+    if left == right {
+        // Early exit for left == right, can end up here with code like `test rax, rax`
+        return left;
+    }
     let const_other = match left.if_constant() {
         Some(c) => Some((c, left, right)),
         None => match right.if_constant() {
