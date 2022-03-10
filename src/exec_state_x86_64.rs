@@ -500,6 +500,11 @@ impl<'e> State<'e> {
 
         let ctx = self.ctx;
 
+        if let Some(result) = self.pending_flags.sub_fast_result(ctx, flag) {
+            self.state[FLAGS_INDEX + flag as usize] = result;
+            return;
+        }
+
         let result_pair = match self.pending_flags.get_result(ctx) {
             Some(s) => s,
             None => {
@@ -829,13 +834,13 @@ impl<'e> State<'e> {
                     }
                 };
                 // Right is often a constant so predict that case before calling resolve
-                let left = self.resolve(left);
-                let right = if right.needs_resolve() {
+                let resolved_left = self.resolve(left);
+                let resolved_right = if right.needs_resolve() {
                     self.resolve(right)
                 } else {
                     right
                 };
-                self.ctx.arithmetic(op.ty, left, right)
+                self.ctx.arithmetic(op.ty, resolved_left, resolved_right)
             }
             OperandType::ArithmeticFloat(ref op, size) => {
                 let left = self.resolve(op.left);

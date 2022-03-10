@@ -744,6 +744,11 @@ impl<'e> State<'e> {
 
         let ctx = self.ctx;
 
+        if let Some(result) = self.pending_flags.sub_fast_result(ctx, flag) {
+            self.state[FLAGS_INDEX + flag as usize] = result;
+            return;
+        }
+
         let result_pair = match self.pending_flags.get_result(ctx) {
             Some(s) => s,
             None => {

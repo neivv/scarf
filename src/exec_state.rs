@@ -765,6 +765,37 @@ impl<'e> PendingFlags<'e> {
             })
         })
     }
+
+    /// Special case carry(x - y) => x < y, and zero(x - y) => x == y
+    /// as those will be majority of flag assignments through cmp instructions,
+    /// and avoiding creation of `x - y` operand followed by simplification
+    /// to carry/zero ends up being faster.
+    /// Overflow could probably be done too, not doing it for now.
+    pub fn sub_fast_result(&self, ctx: OperandCtx<'e>, flag: Flag) -> Option<Operand<'e>> {
+        let arith = self.update.as_ref()?;
+        if arith.ty != FlagArith::Sub {
+            return None;
+        }
+
+        if matches!(flag, Flag::Carry | Flag::Zero) {
+            let mut left = arith.left;
+            let mut right = arith.right;
+            let mask_bits = arith.size.bits() as u8;
+            if left.relevant_bits().end > mask_bits {
+                left = ctx.and_const(left, arith.size.mask());
+            }
+            if right.relevant_bits().end > mask_bits {
+                right = ctx.and_const(right, arith.size.mask());
+            }
+            if flag == Flag::Carry {
+                return Some(ctx.gt(right, left));
+            } else {
+                // Zero
+                return Some(ctx.eq(left, right));
+            }
+        }
+        None
+    }
 }
 
 /// Function to determine which flags add_resolved_constraint should consider checking
