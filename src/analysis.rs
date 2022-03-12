@@ -1692,13 +1692,13 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         }
         None => {
             let no_jump_addr = address + instruction_len;
-            let mut jump_state = state.clone();
-            jump_state.0.assume_jump_flag(condition, true);
-            state.0.assume_jump_flag(condition, false);
-            let to = jump_state.0.resolve(to);
+            let to = state.0.resolve(to);
+            let (jump, no_jump) = exec_state::assume_jump_flag(state.0, condition);
+            let jump_state = (jump, state.1.clone());
+            let no_jump_state = (no_jump, state.1);
             analysis.add_unchecked_branch(
                 no_jump_addr,
-                state,
+                no_jump_state,
             );
             let dest = try_add_branch(analysis, jump_state, to, address);
             *cfg_out_edge = CfgOutEdges::Branch(

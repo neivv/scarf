@@ -256,85 +256,6 @@ pub trait ExecutionState<'e> : Clone + 'e {
         }
     }
 
-    /// Updates state with the *unresolved* condition assumed to be true if jump == true
-    fn assume_jump_flag(
-        &mut self,
-        condition: Operand<'e>,
-        jump: bool,
-    ) {
-        let ctx = self.ctx();
-        match *condition.ty() {
-            OperandType::Arithmetic(ref arith) => {
-                let left = arith.left;
-                let right = arith.right;
-                match arith.ty {
-                    ArithOpType::Equal => {
-                        let unresolved_cond = match jump {
-                            true => condition,
-                            false => ctx.eq_const(condition, 0)
-                        };
-                        let resolved_cond = self.resolve(unresolved_cond);
-                        self.add_resolved_constraint(Constraint::new(resolved_cond));
-                        let assignable_flag = Some(())
-                            .filter(|()| right == ctx.const_0())
-                            .map(|()| {
-                                left.if_arithmetic_eq()
-                                    .and_then(|(l, r)| {
-                                        r.if_constant()
-                                            .map(|c| (l, if c == 0 { jump } else { !jump }))
-                                    })
-                                    .unwrap_or_else(|| (left, !jump))
-                            })
-                            .and_then(|(other, flag_state)| match *other.ty() {
-                                OperandType::Flag(f) => Some((f, flag_state)),
-                                _ => None,
-                            });
-                        if let Some((flag, flag_state)) = assignable_flag {
-                            let constant = self.ctx().constant(flag_state as u64);
-                            self.move_to(&DestOperand::Flag(flag), constant);
-                        } else {
-                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
-                        }
-                    }
-                    ArithOpType::Or => {
-                        if jump {
-                            let unresolved_cond = ctx.or(left, right);
-                            let cond = self.resolve(unresolved_cond);
-                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
-                            self.add_resolved_constraint(Constraint::new(cond));
-                        } else {
-                            let unresolved_cond = ctx.and(
-                                ctx.eq_const(left, 0),
-                                ctx.eq_const(right, 0),
-                            );
-                            let cond = self.resolve(unresolved_cond);
-                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
-                            self.add_resolved_constraint(Constraint::new(cond));
-                        }
-                    }
-                    ArithOpType::And => {
-                        if jump {
-                            let unresolved_cond = ctx.and(left, right);
-                            let cond = self.resolve(unresolved_cond);
-                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
-                            self.add_resolved_constraint(Constraint::new(cond));
-                        } else {
-                            let unresolved_cond = ctx.or(
-                                ctx.eq_const(left, 0),
-                                ctx.eq_const(right, 0),
-                            );
-                            let cond = self.resolve(unresolved_cond);
-                            self.add_unresolved_constraint(Constraint::new(unresolved_cond));
-                            self.add_resolved_constraint(Constraint::new(cond));
-                        }
-                    }
-                    _ => (),
-                }
-            }
-            _ => (),
-        }
-    }
-
     // Analysis functions, default to no-op
     fn find_functions_with_callers(_file: &crate::BinaryFile<Self::VirtualAddress>)
         -> Vec<analysis::FuncCallPair<Self::VirtualAddress>> { Vec::new() }
@@ -367,6 +288,63 @@ pub trait ExecutionState<'e> : Clone + 'e {
     ///
     /// Useful for avoiding unnecessary memcpys.
     unsafe fn clone_to(&self, out: *mut Self);
+}
+
+/// Splits state in two, updating the one state with condition assumed be false
+/// on jump, and the other state with condition assumed be true on jump.
+///
+/// Returns states in `(jump, no_jump)` order.
+pub(crate) fn assume_jump_flag<'e, E>(state: E, condition: Operand<'e>) -> (E, E)
+where E: ExecutionState<'e>,
+{
+    let mut no_jump_state = state.clone();
+    let mut jump_state = state;
+    if let OperandType::Arithmetic(arith) = condition.ty() {
+        if matches!(arith.ty, ArithOpType::Equal | ArithOpType::Or | ArithOpType::And) {
+            let ctx = jump_state.ctx();
+
+            let resolved_jump = jump_state.resolve(condition);
+            let resolved_no_jump = ctx.eq_const(resolved_jump, 0);
+            jump_state.add_resolved_constraint(Constraint::new(resolved_jump));
+            no_jump_state.add_resolved_constraint(Constraint::new(resolved_no_jump));
+
+            let mut do_unresolved_constraint = true;
+            if arith.ty == ArithOpType::Equal {
+                // Update relevant flag to 0/1 if reasonable, if not, then add constraint.
+                let assignable_flag = if arith.right == ctx.const_0() {
+                    let (other, jump_flag_state) = arith.left.if_arithmetic_eq()
+                        .and_then(|(l, r)| {
+                            r.if_constant().map(|c| (l, c == 0))
+                        })
+                        .unwrap_or_else(|| (arith.left, false));
+                    match *other.ty() {
+                        OperandType::Flag(f) => Some((f, jump_flag_state)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some((flag, flag_state)) = assignable_flag {
+                    let (jump_const, no_jump_const) = if flag_state {
+                        (ctx.const_1(), ctx.const_0())
+                    } else {
+                        (ctx.const_0(), ctx.const_1())
+                    };
+                    jump_state.move_to(&DestOperand::Flag(flag), jump_const);
+                    no_jump_state.move_to(&DestOperand::Flag(flag), no_jump_const);
+                    do_unresolved_constraint = false;
+                } else {
+                    // do_unresolved_constraint = true here
+                }
+            }
+            if do_unresolved_constraint {
+                let unresolved_no_jump = ctx.eq_const(condition, 0);
+                jump_state.add_unresolved_constraint(Constraint::new(condition));
+                no_jump_state.add_unresolved_constraint(Constraint::new(unresolved_no_jump));
+            }
+        }
+    }
+    (jump_state, no_jump_state)
 }
 
 /// Either `scarf::VirtualAddress` in 32-bit or `scarf::VirtualAddress64` in 64-bit
