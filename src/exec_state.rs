@@ -313,8 +313,15 @@ pub trait ExecutionState<'e> : Clone + 'e {
 /// Splits state in two, updating the one state with condition assumed be false
 /// on jump, and the other state with condition assumed be true on jump.
 ///
+/// Caller must make sure that `condition_resolved` == `state.resolve(condition)`
+/// (Or resolve_apply_constraints).
+///
 /// Returns states in `(jump, no_jump)` order.
-pub(crate) fn assume_jump_flag<'e, E>(state: E, condition: Operand<'e>) -> (E, E)
+pub(crate) fn assume_jump_flag<'e, E>(
+    state: E,
+    condition: Operand<'e>,
+    condition_resolved: Operand<'e>,
+) -> (E, E)
 where E: ExecutionState<'e>,
 {
     let mut no_jump_state = state.clone();
@@ -323,9 +330,8 @@ where E: ExecutionState<'e>,
         if matches!(arith.ty, ArithOpType::Equal | ArithOpType::Or | ArithOpType::And) {
             let ctx = jump_state.ctx();
 
-            let resolved_jump = jump_state.resolve(condition);
-            let resolved_no_jump = ctx.eq_const(resolved_jump, 0);
-            jump_state.add_resolved_constraint(Constraint::new(resolved_jump));
+            let resolved_no_jump = ctx.eq_const(condition_resolved, 0);
+            jump_state.add_resolved_constraint(Constraint::new(condition_resolved));
             no_jump_state.add_resolved_constraint(Constraint::new(resolved_no_jump));
 
             let mut do_unresolved_constraint = true;

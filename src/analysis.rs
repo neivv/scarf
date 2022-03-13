@@ -1648,65 +1648,70 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     }
 
     state.0.maybe_convert_memory_immutable(16);
-    match state.0.resolve_apply_constraints(condition).if_constant() {
-        Some(0) => {
-            let address = address + instruction_len;
-            *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
-            let constraint = analysis.operand_ctx.eq_const(condition, 0);
-            state.0.add_unresolved_constraint(Constraint::new(constraint));
-            analysis.add_unchecked_branch(address, state);
-        }
-        Some(_) => {
-            let to = state.0.resolve(to);
-            let ctx = analysis.operand_ctx;
-            let is_switch = is_switch_jump::<Exec::VirtualAddress>(to, ctx);
-            if let Some((switch_table_addr, index, base_addr, mem_size)) = is_switch {
-                let binary = analysis.binary;
-                let limits = state.0.value_limits(index);
-                let case_guess = (limits.1.wrapping_sub(limits.0) as usize)
-                    .wrapping_add(1)
-                    .min(128);
-                let mut cases = Vec::with_capacity(case_guess);
+    let condition_resolved = if condition.needs_resolve() {
+        state.0.resolve_apply_constraints(condition)
+    } else {
+        condition
+    };
 
-                let mut case_iter =
-                    switch_cases(binary, mem_size, switch_table_addr, limits, base_addr);
-                if let Some(ref mut case_iter) = case_iter {
-                    for addr in case_iter {
-                        analysis.add_unchecked_branch(addr, state.clone());
-                        cases.push(NodeLink::new(addr));
-                    }
+    let ctx = analysis.operand_ctx;
+    if condition_resolved == ctx.const_0() {
+        // Never jump
+        let address = address + instruction_len;
+        *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
+        let constraint = analysis.operand_ctx.eq_const(condition, 0);
+        state.0.add_unresolved_constraint(Constraint::new(constraint));
+        analysis.add_unchecked_branch(address, state);
+    } else if condition_resolved == ctx.const_1() {
+        // Always jump
+        let to = state.0.resolve(to);
+        let is_switch = is_switch_jump::<Exec::VirtualAddress>(to, ctx);
+        if let Some((switch_table_addr, index, base_addr, mem_size)) = is_switch {
+            let binary = analysis.binary;
+            let limits = state.0.value_limits(index);
+            let case_guess = (limits.1.wrapping_sub(limits.0) as usize)
+                .wrapping_add(1)
+                .min(128);
+            let mut cases = Vec::with_capacity(case_guess);
 
-                    if !cases.is_empty() {
-                        *cfg_out_edge = CfgOutEdges::Switch(cases, index);
-                    }
+            let mut case_iter =
+                switch_cases(binary, mem_size, switch_table_addr, limits, base_addr);
+            if let Some(ref mut case_iter) = case_iter {
+                for addr in case_iter {
+                    analysis.add_unchecked_branch(addr, state.clone());
+                    cases.push(NodeLink::new(addr));
                 }
-            } else {
-                state.0.add_unresolved_constraint(Constraint::new(condition));
-                let dest = try_add_branch(analysis, state, to, address);
-                *cfg_out_edge = CfgOutEdges::Single(
-                    dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
-                );
+
+                if !cases.is_empty() {
+                    *cfg_out_edge = CfgOutEdges::Switch(cases, index);
+                }
             }
-        }
-        None => {
-            let no_jump_addr = address + instruction_len;
-            let to = state.0.resolve(to);
-            let (jump, no_jump) = exec_state::assume_jump_flag(state.0, condition);
-            let jump_state = (jump, state.1.clone());
-            let no_jump_state = (no_jump, state.1);
-            analysis.add_unchecked_branch(
-                no_jump_addr,
-                no_jump_state,
-            );
-            let dest = try_add_branch(analysis, jump_state, to, address);
-            *cfg_out_edge = CfgOutEdges::Branch(
-                NodeLink::new(no_jump_addr),
-                OutEdgeCondition {
-                    node: dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown),
-                    condition,
-                },
+        } else {
+            state.0.add_unresolved_constraint(Constraint::new(condition));
+            let dest = try_add_branch(analysis, state, to, address);
+            *cfg_out_edge = CfgOutEdges::Single(
+                dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
             );
         }
+    } else {
+        let no_jump_addr = address + instruction_len;
+        let to = state.0.resolve(to);
+        let (jump, no_jump) =
+            exec_state::assume_jump_flag(state.0, condition, condition_resolved);
+        let jump_state = (jump, state.1.clone());
+        let no_jump_state = (no_jump, state.1);
+        analysis.add_unchecked_branch(
+            no_jump_addr,
+            no_jump_state,
+        );
+        let dest = try_add_branch(analysis, jump_state, to, address);
+        *cfg_out_edge = CfgOutEdges::Branch(
+            NodeLink::new(no_jump_addr),
+            OutEdgeCondition {
+                node: dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown),
+                condition,
+            },
+        );
     }
 }
 
