@@ -2610,6 +2610,39 @@ pub fn simplify_and_const_op<'e>(
                 // Left won't affect the result, use just right
                 return simplify_and_const_op(arith.right, right, right_op, ctx, swzb_ctx);
             }
+        } else if arith.ty == ArithOpType::Sub {
+            // Convert `(((x & mask) == 0) - 1) & mask2` to
+            // `(x & mask) << c` if `(mask << c) == mask2` (Or right shift)
+            // If masks are just single bit masks.
+            if arith.right == ctx.const_1() {
+                if right & right.wrapping_sub(1) == 0 {
+                    if let Some((l, r)) = arith.left.if_arithmetic_eq() {
+                        if r == ctx.const_0() {
+                            if let Some((_, r2)) = l.if_arithmetic_and() {
+                                if let Some(c2) = r2.if_constant() {
+                                    if c2 == right {
+                                        return l;
+                                    } else {
+                                        let inner_high_bit = 64 - c2.leading_zeros();
+                                        let outer_high_bit = 64 - right.leading_zeros();
+                                        if inner_high_bit > outer_high_bit {
+                                            let shift = inner_high_bit - outer_high_bit;
+                                            if right << shift == c2 {
+                                                return ctx.rsh_const(l, shift.into());
+                                            }
+                                        } else {
+                                            let shift = outer_high_bit - inner_high_bit;
+                                            if c2 << shift == right {
+                                                return ctx.lsh_const(l, shift.into());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     if let Some(result) = quick_and_simplify(left, right, right_op, ctx) {

@@ -7886,3 +7886,76 @@ fn simplify_rsh_and_masked() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_redundant_mask1() {
+    // ((((rax & 80000000) == 0) - 1) & 80000000) is just (rax & 80000000)
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.eq_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0x8000_0000,
+                ),
+                0,
+            ),
+            1,
+        ),
+        0x8000_0000,
+    );
+    let eq1 = ctx.and_const(
+        ctx.register(0),
+        0x8000_0000,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_redundant_mask2() {
+    // ((((rax & 80000000) == 0) - 1) & 40000000) => (rax & 80000000) >> 1
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.eq_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0x8000_0000,
+                ),
+                0,
+            ),
+            1,
+        ),
+        0x4000_0000,
+    );
+    let eq1 = ctx.rsh_const(
+        ctx.and_const(
+            ctx.register(0),
+            0x8000_0000,
+        ),
+        1,
+    );
+    assert_eq!(op1, eq1);
+    // ((((rax & 8000_0001) == 0) - 1) & 8_0000_0010) => (rax & 8000_0001) << 4
+    let op1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.eq_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0x8000_0000,
+                ),
+                0,
+            ),
+            1,
+        ),
+        0x8_0000_0000,
+    );
+    let eq1 = ctx.lsh_const(
+        ctx.and_const(
+            ctx.register(0),
+            0x8000_0000,
+        ),
+        4,
+    );
+    assert_eq!(op1, eq1);
+}
