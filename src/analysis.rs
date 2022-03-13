@@ -1361,13 +1361,11 @@ impl<'a, 'exec: 'a, A: Analyzer<'exec>> Analyzer<'exec> for CollectReturnsAnalyz
             if !control.inner.skip_operation || control.inner.end.is_some() {
                 let ctx = control.ctx();
                 let state = control.exec_state();
-                state.move_to(
-                    &crate::DestOperand::Register64(4),
-                    ctx.add_const(
-                        ctx.register(4),
-                        <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE.into(),
-                    ),
+                let new_esp = ctx.add_const(
+                    state.resolve_register(4),
+                    <A::Exec as ExecutionState<'exec>>::VirtualAddress::SIZE.into(),
                 );
+                state.set_register(4, new_esp);
                 match self.state {
                     Some(ref mut state) => {
                         let new = control.exec_state();

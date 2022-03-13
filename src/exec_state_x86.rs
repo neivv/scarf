@@ -40,14 +40,27 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         }
     }
 
+    #[inline]
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         self.inner.move_to(dest, value);
     }
 
+    #[inline]
     fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         self.inner.move_resolved(dest, value);
     }
 
+    #[inline]
+    fn set_register(&mut self, register: u8, value: Operand<'e>) {
+        self.inner.set_register(register, value);
+    }
+
+    #[inline]
+    fn set_flag(&mut self, flag: Flag, value: Operand<'e>) {
+        self.inner.set_flag(flag, value);
+    }
+
+    #[inline]
     fn set_flags_resolved(&mut self, arith: &FlagUpdate<'e>, carry: Option<Operand<'e>>) {
         self.inner.set_flags_resolved(arith, carry);
     }
@@ -57,20 +70,34 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         self.inner.ctx
     }
 
+    #[inline]
     fn resolve(&mut self, operand: Operand<'e>) -> Operand<'e> {
         self.inner.resolve(operand)
     }
 
+    #[inline]
     fn resolve_mem(&mut self, mem: &MemAccess<'e>) -> MemAccess<'e> {
         self.inner.resolve_mem(mem)
     }
 
+    #[inline]
     fn update(&mut self, operation: &Operation<'e>) {
         self.update(operation)
     }
 
+    #[inline]
     fn resolve_apply_constraints(&mut self, op: Operand<'e>) -> Operand<'e> {
         self.inner.resolve_apply_constraints(op)
+    }
+
+    #[inline]
+    fn resolve_register(&mut self, register: u8) -> Operand<'e> {
+        self.inner.resolve_register(register)
+    }
+
+    #[inline]
+    fn resolve_flag(&mut self, flag: Flag) -> Operand<'e> {
+        self.inner.resolve_flag(flag)
     }
 
     fn read_memory(&mut self, mem: &MemAccess<'e>) -> Operand<'e> {
@@ -98,10 +125,8 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     fn apply_call(&mut self, ret: VirtualAddress) {
         let ctx = self.ctx();
         let esp = ctx.register(4);
-        self.move_to(
-            &DestOperand::Register64(4),
-            ctx.sub_const(esp, 4),
-        );
+        let new_esp = ctx.sub_const(self.resolve_register(4), 4);
+        self.set_register(4, new_esp);
         self.move_to(
             &DestOperand::Memory(ctx.mem_access(esp, 0, MemAccessSize::Mem32)),
             ctx.constant(ret.0 as u64),
@@ -657,7 +682,7 @@ impl<'e> State<'e> {
                     size: arith.size,
                 };
                 let carry = match arith.ty {
-                    FlagArith::Adc | FlagArith::Sbb => Some(self.resolve(ctx.flag_c())),
+                    FlagArith::Adc | FlagArith::Sbb => Some(self.resolve_flag(Flag::Carry)),
                     _ => None,
                 };
                 self.set_flags_resolved(&arith, carry);
@@ -724,6 +749,17 @@ impl<'e> State<'e> {
             let dest = self.get_dest(dest, true);
             dest.set(value, ctx);
         }
+    }
+
+    #[inline]
+    fn set_register(&mut self, register: u8, value: Operand<'e>) {
+        self.state[register as usize & 0x7] = value;
+    }
+
+    #[inline]
+    fn set_flag(&mut self, flag: Flag, value: Operand<'e>) {
+        self.pending_flags.make_non_pending(flag);
+        self.state[FLAGS_INDEX + flag as usize] = value;
     }
 
     fn set_flags_resolved(&mut self, arith: &FlagUpdate<'e>, carry: Option<Operand<'e>>) {
@@ -1084,6 +1120,16 @@ impl<'e> State<'e> {
         }
     }
 
+    #[inline]
+    fn resolve_register(&mut self, register: u8) -> Operand<'e> {
+        self.state[register as usize & 0x7]
+    }
+
+    #[inline]
+    fn resolve_flag(&mut self, flag: Flag) -> Operand<'e> {
+        self.state[FLAGS_INDEX + flag as usize]
+    }
+
     fn get_dest_invalidate_constraints<'s>(
         &'s mut self,
         dest: &DestOperand<'e>,
@@ -1158,7 +1204,7 @@ impl<'e> State<'e> {
             // instead of adding it to constraint.
             // Not doing for non-flags as it'll end up making values such as func
             // args too eagerly undef once they get compared once.
-            self.move_to(&DestOperand::Flag(flag), value);
+            self.set_flag(flag, value);
             return;
         }
         if let Some(old) = self.unresolved_constraint {

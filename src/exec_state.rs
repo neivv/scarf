@@ -149,6 +149,16 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// resolves to `1`, if resolve_apply_constraints is used.
     fn resolve_apply_constraints(&mut self, operand: Operand<'e>) -> Operand<'e>;
 
+    /// Resolves a value of register.
+    ///
+    /// Quicker equivalent to `self.resolve(ctx.register(register))`.
+    fn resolve_register(&mut self, register: u8) -> Operand<'e>;
+
+    /// Resolves a value of flag.
+    ///
+    /// Quicker equivalent to `self.resolve(ctx.flag(flag))`.
+    fn resolve_flag(&mut self, flag: Flag) -> Operand<'e>;
+
     /// Reads memory from a resolved `MemAccess`.
     ///
     /// Note that this differs from `resolve` and `resolve_mem`, which will always resolve
@@ -185,6 +195,16 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// considered to be resolved. To move a resolved value to unresolved memory address,
     /// resolve the `MemAccess` and call `move_resolved` with that.
     fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
+
+    /// Sets a register to resolved value.
+    ///
+    /// Shortcut for `self.move_resolved(&DestOperand::Register(register), value)`.
+    fn set_register(&mut self, register: u8, value: Operand<'e>);
+
+    /// Sets a flag to resolved value.
+    ///
+    /// Shortcut for `self.move_resolved(&DestOperand::Flag(register), value)`.
+    fn set_flag(&mut self, flag: Flag, value: Operand<'e>);
 
     /// Sets flags to a value that has already been resolved.
     ///
@@ -330,8 +350,8 @@ where E: ExecutionState<'e>,
                     } else {
                         (ctx.const_0(), ctx.const_1())
                     };
-                    jump_state.move_to(&DestOperand::Flag(flag), jump_const);
-                    no_jump_state.move_to(&DestOperand::Flag(flag), no_jump_const);
+                    jump_state.set_flag(flag, jump_const);
+                    no_jump_state.set_flag(flag, no_jump_const);
                     do_unresolved_constraint = false;
                 } else {
                     // do_unresolved_constraint = true here
