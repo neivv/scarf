@@ -7959,3 +7959,41 @@ fn simplify_redundant_mask2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_gt_always_false() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt_const(
+        ctx.and_const(
+            ctx.register(8),
+            0xffff_ffff,
+        ),
+        0x7fff_ffff_ffff_ffff,
+    );
+    let eq1 = ctx.const_0();
+    assert_eq!(op1, eq1);
+    let op1 = ctx.gt_const(
+        ctx.and_const(
+            ctx.register(8),
+            0xfff,
+        ),
+        0xfff,
+    );
+    let eq1 = ctx.const_0();
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_gt_always_true() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.gt_const_left(
+        0x7fff_ffff_ffff_ffff,
+        ctx.and_const(
+            ctx.register(8),
+            0xffff_ffff,
+        ),
+    );
+    let eq1 = ctx.const_1();
+    assert_eq!(op1, eq1);
+}
+

@@ -5665,6 +5665,13 @@ pub fn simplify_gt<'e>(
             if c == 0 {
                 return ctx.const_0();
             }
+            let relbit_mask = right.relevant_bits_mask();
+            if c > relbit_mask {
+                return ctx.const_1();
+            } else if c == relbit_mask {
+                // max > x if x != max
+                return ctx.neq(left, right);
+            }
             if c == 1 {
                 // 1 > x if x == 0
                 return ctx.eq_const(right, 0);
@@ -5685,23 +5692,18 @@ pub fn simplify_gt<'e>(
                     }
                 }
             }
-            // max > x if x != max
-            let relbit_mask = right.relevant_bits_mask();
-            if c == relbit_mask {
-                return ctx.neq(left, right);
-            }
         }
         (None, Some(c)) => {
             // x > 0 if x != 0
             if c == 0 {
                 return ctx.neq(left, right);
             }
+            let relbit_mask = left.relevant_bits_mask();
+            if c >= relbit_mask {
+                return ctx.const_0();
+            }
             if let Some((inner, from, to)) = left.if_sign_extend() {
                 return simplify_gt_sext_const(ctx, c, inner, from, to, false);
-            }
-            let relbit_mask = left.relevant_bits_mask();
-            if c == relbit_mask {
-                return ctx.const_0();
             }
         }
         _ => (),
