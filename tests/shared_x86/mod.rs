@@ -1024,3 +1024,31 @@ fn flag_constraint_merge_bug() {
          (ctx.register(1), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn inc_dec_ax() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xb8, 0xff, 0x7f, 0x00, 0x00, // mov eax, 7fff
+        0x66, 0xff, 0xc0, // inc ax
+        0x70, 0x01, // jo more
+        0xcc, // int3
+        0x66, 0xff, 0xc8, // dec ax
+        0x70, 0x01, // jo more
+        0xcc, // int3
+        0x31, 0xc0, // xor eax, eax
+        0x66, 0xff, 0xc8, // dec ax
+        0x78, 0x01, // js more
+        0xcc, // int3
+        0x73, 0x01, // jnc more (inc/dec won't change carry, it is zero from xor)
+        0xcc, // int3
+        0x66, 0xff, 0xc0, // inc ax
+        0x79, 0x01, // jns more
+        0xcc, // int3
+        0x73, 0x01, // jnc more (inc/dec won't change carry, it is zero from xor)
+        0xcc, // int3
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0)),
+    ]);
+}

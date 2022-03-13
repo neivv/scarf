@@ -1563,33 +1563,25 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let op_size = self.mem16_32();
         let reg = self.reg_variable_size(reg_id, op_size);
         let dest = DestAndOperand {
-            op: reg.clone(),
+            op: reg,
             dest: DestOperand::reg_variable_size(reg_id, op_size),
         };
         match is_inc {
             true => self.output_add_const(dest, 1),
             false => self.output_sub_const(dest, 1),
         }
-        self.inc_dec_flags(is_inc, reg);
+        self.inc_dec_flags(is_inc, reg, op_size);
         Ok(())
     }
 
-    fn inc_dec_flags(&mut self, is_inc: bool, reg: Operand<'e>) {
-        let is_64 = Va::SIZE == 8;
+    fn inc_dec_flags(&mut self, is_inc: bool, reg: Operand<'e>, op_size: MemAccessSize) {
+        let sign_bit = op_size.sign_bit();
+        let max_positive = sign_bit.wrapping_sub(1);
         let ctx = self.ctx;
-        if is_64 {
-            self.output_flag_set(Flag::Zero, ctx.eq_const(reg, 0));
-            self.output_flag_set(Flag::Sign, ctx.gt_const(reg, 0x7fff_ffff_ffff_ffff));
-        } else {
-            self.output_flag_set(Flag::Zero, ctx.eq_const(ctx.and_const(reg, 0xffff_ffff), 0));
-            self.output_flag_set(Flag::Sign, ctx.gt_const(reg, 0x7fff_ffff));
-        }
-        let eq_value = match (is_inc, is_64) {
-            (true, false) => 0x8000_0000,
-            (false, false) => 0x7fff_ffff,
-            (true, true) => 0x8000_0000_0000_0000,
-            (false, true) => 0x7fff_ffff_ffff_ffff,
-        };
+        self.output_flag_set(Flag::Zero, ctx.eq_const(reg, 0));
+        self.output_flag_set(Flag::Sign, ctx.gt_const(reg, max_positive));
+        // Overflow if result is 0x8000...000 for inc and 0x7fff..fff for dec
+        let eq_value = max_positive.wrapping_add(is_inc as u64);
         self.output_flag_set(Flag::Overflow, ctx.eq_const(reg, eq_value));
     }
 
@@ -3273,7 +3265,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     true => self.output_add_const(rm, 1),
                     false => self.output_sub_const(rm, 1),
                 }
-                self.inc_dec_flags(is_inc, op);
+                self.inc_dec_flags(is_inc, op, op_size);
             }
             2 | 3 => self.output(Operation::Call(rm.op)),
             4 | 5 => self.output(Operation::Jump { condition: self.ctx.const_1(), to: rm.op }),
