@@ -618,6 +618,10 @@ impl PrecedingBranchAddr {
         PrecedingBranchAddr(u32::MAX)
     }
 
+    fn is_multiple(self) -> bool {
+        self.0 == u32::MAX
+    }
+
     fn are_same(self, other: PrecedingBranchAddr) -> bool {
         self.0 == other.0 && self.0 != u32::MAX
     }
@@ -1145,7 +1149,13 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             end_address: Exec::VirtualAddress::from_u64(0),
             distance: 0,
         });
-        control.inner.state.0.add_resolved_constraint_from_unresolved();
+        // add_resolved_constraint_from_unresolved is not expected to be useful
+        // when only one branch leads to this branch, but multiple branches merging
+        // may end up having same unresolved constraint with different resolved
+        // constraints.
+        if preceding_branch.is_multiple() {
+            control.inner.state.0.add_resolved_constraint_from_unresolved();
+        }
         loop {
             let address = disasm.address();
             control.inner.address = address;
