@@ -842,6 +842,7 @@ impl<'e> State<'e> {
             OperandType::Arithmetic(ref op) => {
                 let left = op.left;
                 let right = op.right;
+                let ctx = self.ctx;
                 if op.ty == ArithOpType::And {
                     // Check for (x op y) & const_mask
                     if let Some(c) = right.if_constant() {
@@ -854,7 +855,19 @@ impl<'e> State<'e> {
                         } else if let OperandType::Arithmetic(ref inner) = *ty {
                             let left = self.resolve(inner.left);
                             let right = self.resolve(inner.right);
-                            return self.ctx.arithmetic_masked(inner.ty, left, right, c);
+                            return ctx.arithmetic_masked(inner.ty, left, right, c);
+                        }
+                    }
+                } else if op.ty == ArithOpType::Equal {
+                    // If the value is `x == 0 == 0`, resolve x and call neq_const(x, 0),
+                    // as that can give slightly better results.
+                    let zero = ctx.const_0();
+                    if right == zero {
+                        if let Some((l, r)) = left.if_arithmetic_eq() {
+                            if r == zero {
+                                let l = self.resolve(l);
+                                return ctx.neq_const(l, 0);
+                            }
                         }
                     }
                 }
@@ -865,7 +878,7 @@ impl<'e> State<'e> {
                 } else {
                     right
                 };
-                self.ctx.arithmetic(op.ty, resolved_left, resolved_right)
+                ctx.arithmetic(op.ty, resolved_left, resolved_right)
             }
             OperandType::ArithmeticFloat(ref op, size) => {
                 let left = self.resolve(op.left);

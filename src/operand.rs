@@ -1286,7 +1286,7 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left << right`.
     pub fn lsh_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        if right >= 256 {
+        if right >= 64 {
             self.const_0()
         } else {
             let mut simplify = simplify::SimplifyWithZeroBits::default();
@@ -1303,9 +1303,12 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left >> right`.
     pub fn rsh_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        let right = self.constant(right);
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_rsh(left, right, self, &mut simplify)
+        if right >= 64 {
+            self.const_0()
+        } else {
+            let mut simplify = simplify::SimplifyWithZeroBits::default();
+            simplify::simplify_rsh_const(left, right as u8, self, &mut simplify)
+        }
     }
 
     /// Returns `Operand` for `left == right`.
@@ -1317,8 +1320,12 @@ impl<'e> OperandContext<'e> {
     ///
     /// Currently this is represented as `(left == right) == 0`.
     pub fn neq_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        let right = self.constant(right);
-        self.eq_const(self.eq(left, right), 0)
+        // Avoid creating the inner eq if it is trivially going to be
+        // removed again in outer eq simplify.
+        if right == 0 && left.relevant_bits().end == 1 {
+            return left;
+        }
+        self.eq_const(self.eq_const(left, right), 0)
     }
 
     /// Returns `Operand` for unsigned `left > right`.

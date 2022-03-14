@@ -841,8 +841,8 @@ pub fn simplify_lsh<'e>(
         None => {
             let arith = ArithOperand {
                 ty: ArithOpType::Lsh,
-                left: left.clone(),
-                right: right.clone(),
+                left,
+                right,
             };
             return ctx.intern(OperandType::Arithmetic(arith));
         }
@@ -1050,24 +1050,42 @@ pub fn simplify_rsh<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
+    let constant = match right.if_constant() {
+        Some(s) => s,
+        None => {
+            let arith = ArithOperand {
+                ty: ArithOpType::Rsh,
+                left,
+                right,
+            };
+            return ctx.intern(OperandType::Arithmetic(arith));
+        }
+    };
+    if constant >= 256 {
+        return ctx.const_0();
+    }
+    simplify_rsh_const(left, constant as u8, ctx, swzb_ctx)
+}
+
+pub fn simplify_rsh_const<'e>(
+    left: Operand<'e>,
+    constant: u8,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Operand<'e> {
     let default = || {
         let arith = ArithOperand {
             ty: ArithOpType::Rsh,
-            left: left,
-            right: right,
+            left,
+            right: ctx.constant(constant as u64),
         };
         ctx.intern(OperandType::Arithmetic(arith))
     };
-    let constant = match right.if_constant() {
-        Some(s) => s,
-        None => return default(),
-    };
     if constant == 0 {
         return left;
-    } else if constant >= left.relevant_bits().end.into() {
+    } else if constant >= left.relevant_bits().end {
         return ctx.const_0();
     }
-    let constant = constant as u8;
 
     let new_left = simplify_with_and_mask(left, u64::MAX << constant, ctx, swzb_ctx);
     let zero_bits = 0..constant;
@@ -1076,7 +1094,7 @@ pub fn simplify_rsh<'e>(
         Some(s) => s,
     };
     if new_left != left {
-        return simplify_rsh(new_left, right, ctx, swzb_ctx);
+        return simplify_rsh_const(new_left, constant, ctx, swzb_ctx);
     }
 
     match *left.ty() {
@@ -1090,21 +1108,21 @@ pub fn simplify_rsh<'e>(
                         let high = 64 - other.relevant_bits().end;
                         let no_op_mask = !0u64 >> low << low << high >> high;
                         if c == no_op_mask {
-                            let new = simplify_rsh(other, right, ctx, swzb_ctx);
+                            let new = simplify_rsh_const(other, constant, ctx, swzb_ctx);
                             return new;
                         }
                         // `(x & c) >> constant` can be simplified to
                         // `(x >> constant) & (c >> constant)
                         // With lsh/rsh it can simplify further,
                         // but do it always for canonicalization
-                        let new = simplify_rsh(other, right, ctx, swzb_ctx);
+                        let new = simplify_rsh_const(other, constant, ctx, swzb_ctx);
                         let new = simplify_and_const(new, c >> constant, ctx, swzb_ctx);
                         return new;
                     }
                     let arith = ArithOperand {
                         ty: ArithOpType::Rsh,
-                        left: left.clone(),
-                        right: right.clone(),
+                        left: left,
+                        right: ctx.constant(constant as u64),
                     };
                     ctx.intern(OperandType::Arithmetic(arith))
                 }
@@ -1118,7 +1136,7 @@ pub fn simplify_rsh<'e>(
                                 None
                             } else {
                                 for op in slice.iter_mut() {
-                                    *op = simplify_rsh(*op, right, ctx, swzb_ctx);
+                                    *op = simplify_rsh_const(*op, constant, ctx, swzb_ctx);
                                 }
                                 simplify_or_ops(slice, ctx, swzb_ctx).ok()
                             }
@@ -1135,7 +1153,7 @@ pub fn simplify_rsh<'e>(
                                 None
                             } else {
                                 for op in slice.iter_mut() {
-                                    *op = simplify_rsh(*op, right, ctx, swzb_ctx);
+                                    *op = simplify_rsh_const(*op, constant, ctx, swzb_ctx);
                                 }
                                 simplify_xor_ops(slice, ctx, swzb_ctx).ok()
                             }
@@ -1170,7 +1188,7 @@ pub fn simplify_rsh<'e>(
                     if let Some(inner_const) = arith.right.if_constant().map(|x| x as u8) {
                         let sum = inner_const.saturating_add(constant);
                         if sum < 64 {
-                            simplify_rsh(arith.left, ctx.constant(sum.into()), ctx, swzb_ctx)
+                            simplify_rsh_const(arith.left, sum, ctx, swzb_ctx)
                         } else {
                             ctx.const_0()
                         }
@@ -1238,9 +1256,9 @@ pub fn simplify_rsh<'e>(
                 }
                 _ => return default(),
             };
-            let c = ctx.constant(u64::from(constant - offset_add * 8));
+            let c = constant - offset_add * 8;
             let new = ctx.mem_any(size, address, offset.wrapping_add(u64::from(offset_add)));
-            simplify_rsh(new, c, ctx, swzb_ctx)
+            simplify_rsh_const(new, c, ctx, swzb_ctx)
         }
         _ => default(),
     }

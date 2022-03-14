@@ -1062,6 +1062,7 @@ impl<'e> State<'e> {
             OperandType::Arithmetic(ref op) => {
                 let left = op.left;
                 let right = op.right;
+                let ctx = self.ctx;
                 if op.ty == ArithOpType::And {
                     let r = self.try_resolve_partial_register(left, right);
                     if let Some(r) = r {
@@ -1072,10 +1073,22 @@ impl<'e> State<'e> {
                         if let OperandType::Arithmetic(ref inner) = left.ty() {
                             let left = self.resolve(inner.left);
                             let right = self.resolve(inner.right);
-                            return self.ctx.arithmetic_masked(inner.ty, left, right, c);
+                            return ctx.arithmetic_masked(inner.ty, left, right, c);
                         }
                     }
-                };
+                } else if op.ty == ArithOpType::Equal {
+                    // If the value is `x == 0 == 0`, resolve x and call neq_const(x, 0),
+                    // as that can give slightly better results.
+                    let zero = ctx.const_0();
+                    if right == zero {
+                        if let Some((l, r)) = left.if_arithmetic_eq() {
+                            if r == zero {
+                                let l = self.resolve(l);
+                                return ctx.neq_const(l, 0);
+                            }
+                        }
+                    }
+                }
                 // Right is often a constant so predict that case before calling resolve
                 let left = self.resolve(left);
                 let right = if right.needs_resolve() {
@@ -1083,7 +1096,7 @@ impl<'e> State<'e> {
                 } else {
                     right
                 };
-                self.ctx.arithmetic(op.ty, left, right)
+                ctx.arithmetic(op.ty, left, right)
             }
             OperandType::ArithmeticFloat(ref op, size) => {
                 let left = self.resolve(op.left);
