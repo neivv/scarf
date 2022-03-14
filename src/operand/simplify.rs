@@ -1914,22 +1914,6 @@ fn simplify_eq_2_ops<'e>(
     right: Operand<'e>,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
-    fn mask_maskee<'e>(x: Operand<'e>) -> Option<(u64, Operand<'e>)> {
-        match x.ty() {
-            OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
-                arith.right.if_constant().map(|c| (c, arith.left))
-            }
-            OperandType::Memory(mem) => {
-                match mem.size {
-                    MemAccessSize::Mem8 => Some((0xff, x)),
-                    MemAccessSize::Mem16 => Some((0xffff, x)),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
     let (left, right) = match left < right {
         true => (left, right),
         false => (right, left),
@@ -1937,52 +1921,6 @@ fn simplify_eq_2_ops<'e>(
 
     if let Some(result) = simplify_eq_2op_check_signed_less(ctx, left, right) {
         return result;
-    }
-    // Try to prove (x & mask) == ((x + c) & mask) true/false.
-    // If c & mask == 0, it's true if c & mask2 == 0, otherwise unknown
-    //    mask2 is mask, where 0-bits whose next bit is 1 are switched to 1.
-    // If c & mask == mask, it's unknown, unless mask contains the bit 0x1, in which
-    // case it's false
-    // Otherwise it's false.
-    //
-    // This can be deduced from how binary addition works; for digit to not change, the
-    // added digit needs to either be 0, or 1 with another 1 carried from lower digit's
-    // addition.
-    //
-    // TODO is this necessary anymore?
-    // Probably could be simpler to do just with relevant_bits?
-    {
-        let left_const = mask_maskee(left);
-        let right_const = mask_maskee(right);
-        if let (Some((mask1, l)), Some((mask2, r))) = (left_const, right_const) {
-            if mask1 == mask2 {
-                let add_const = simplify_eq_masked_add(l).map(|(c, other)| (other, r, c))
-                    .or_else(|| {
-                        simplify_eq_masked_add(r).map(|(c, other)| (other, l, c))
-                    });
-                if let Some((a, b, added_const)) = add_const {
-                    let a = simplify_with_and_mask(
-                        a,
-                        mask1,
-                        ctx,
-                        &mut SimplifyWithZeroBits::default(),
-                    );
-                    if a == b {
-                        match added_const & mask1 {
-                            0 => {
-                                // TODO
-                            }
-                            x if x == mask1 => {
-                                if mask1 & 1 == 1 {
-                                    return ctx.const_0();
-                                }
-                            }
-                            _ => return ctx.const_0(),
-                        }
-                    }
-                }
-            }
-        }
     }
     let arith = ArithOperand {
         ty: ArithOpType::Equal,
@@ -2081,20 +2019,6 @@ fn simplify_eq_2op_check_signed_less<'e>(
         (ctx.add_const(cmp_l, offset), ctx.add_const(cmp_r, offset))
     };
     Some(ctx.eq_const(ctx.gt_signed(cmp_r, cmp_l, size), 0))
-}
-
-fn simplify_eq_masked_add<'e>(operand: Operand<'e>) -> Option<(u64, Operand<'e>)> {
-    match operand.ty() {
-        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Add => {
-            arith.left.if_constant().map(|c| (c, arith.right))
-                .or_else(|| arith.left.if_constant().map(|c| (c, arith.left)))
-        }
-        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Sub => {
-            arith.left.if_constant().map(|c| (0u64.wrapping_sub(c), arith.right))
-                .or_else(|| arith.right.if_constant().map(|c| (0u64.wrapping_sub(c), arith.left)))
-        }
-        _ => None,
-    }
 }
 
 /// Returns (lowest, highest) constant what the sum of all `ops` can have.
