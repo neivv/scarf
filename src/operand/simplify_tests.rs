@@ -7997,3 +7997,121 @@ fn simplify_gt_always_true() {
     assert_eq!(op1, eq1);
 }
 
+#[test]
+fn simplify_trivial_or_join() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.register(1),
+            0xffff,
+        ),
+        ctx.and_const(
+            ctx.register(1),
+            0xffff0000,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.register(1),
+        0xffffffff,
+    );
+    assert_eq!(op1, eq1);
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.register(1),
+            0xffff_ffff_0000_0000,
+        ),
+        ctx.and_const(
+            ctx.register(1),
+            0xffff_ffff,
+        ),
+    );
+    let eq1 = ctx.register(1);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_or_join_of_adds() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.add(
+                ctx.mem32(ctx.register(9), 0),
+                ctx.mem32(ctx.register(10), 0),
+            ),
+            0xffff,
+        ),
+        ctx.and_const(
+            ctx.add(
+                ctx.mem32(ctx.register(9), 0),
+                ctx.mem32(ctx.register(10), 0),
+            ),
+            0xffff_0000,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.add(
+            ctx.mem32(ctx.register(9), 0),
+            ctx.mem32(ctx.register(10), 0),
+        ),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_or_join_of_sub_const() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.register(1),
+                0x140,
+            ),
+            0xff,
+        ),
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.register(1),
+                0x140,
+            ),
+            0xffff_ff00,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.register(1),
+            0x140,
+        ),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_or_join_of_add_const_mem() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.add_const(
+                ctx.mem32(ctx.register(1), 0),
+                0x10000,
+            ),
+            0xffff,
+        ),
+        ctx.and_const(
+            ctx.add_const(
+                ctx.mem32(ctx.register(1), 0),
+                0x10000,
+            ),
+            0xffff_0000,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.add_const(
+            ctx.mem32(ctx.register(1), 0),
+            0x10000,
+        ),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}

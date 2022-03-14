@@ -2200,7 +2200,7 @@ fn try_merge_ands<'e>(
     ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
     if a == b {
-        return Some(a.clone());
+        return Some(a);
     }
     if let Some(a) = a.if_constant() {
         if let Some(b) = b.if_constant() {
@@ -3323,6 +3323,26 @@ fn simplify_demorgan<'e>(
     }
 }
 
+fn and_masked_precise<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
+    match op.ty() {
+        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
+            arith.right.if_constant().map(|c| (c, arith.left))
+        }
+        OperandType::Memory(mem) => Some((mem.size.mask(), op)),
+        _ => {
+            let bits = op.relevant_bits();
+            if bits != (0..64) && bits.start < bits.end {
+                let low = bits.start;
+                let high = 64 - bits.end;
+                Some((!0 >> low << low << high >> high, op))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+
 /// "Simplify bitwise or: merge child ands"
 /// Converts things like [x & const1, x & const2] to [x & (const1 | const2)]
 ///
@@ -3332,25 +3352,6 @@ fn simplify_or_merge_child_ands<'e>(
     ctx: OperandCtx<'e>,
     arith_ty: ArithOpType,
 ) -> Result<(), SizeLimitReached> {
-    fn and_const<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
-        match op.ty() {
-            OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
-                arith.right.if_constant().map(|c| (c, arith.left))
-            }
-            OperandType::Memory(mem) => Some((mem.size.mask(), op)),
-            _ => {
-                let bits = op.relevant_bits();
-                if bits != (0..64) && bits.start < bits.end {
-                    let low = bits.start;
-                    let high = 64 - bits.end;
-                    Some((!0 >> low << low << high >> high, op))
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
     if ops.len() > 16 {
         // The loop below is quadratic complexity, being especially bad
         // if there are lot of masked xors, so give up if there are more
@@ -3363,10 +3364,10 @@ fn simplify_or_merge_child_ands<'e>(
     let only_nonoverlapping = arith_ty == ArithOpType::Xor;
     let mut i = 0;
     'outer: while i < ops.len() {
-        if let Some((constant, val)) = and_const(ops[i]) {
+        if let Some((constant, val)) = and_masked_precise(ops[i]) {
             let mut j = i + 1;
             while j < ops.len() {
-                if let Some((other_constant, other_val)) = and_const(ops[j]) {
+                if let Some((other_constant, other_val)) = and_masked_precise(ops[j]) {
                     if !only_nonoverlapping || other_constant & constant == 0 {
                         let mut buf = SmallVec::new();
                         simplify_or_merge_ands_try_merge(
@@ -4503,18 +4504,62 @@ pub fn simplify_or<'e>(
     if right_bits.start >= right_bits.end {
         return left;
     }
-    if let Some((l, r)) = check_quick_arith_simplify(left, right) {
-        let r_const = r.if_constant().unwrap_or(0);
-        let left_bits = l.relevant_bits_mask();
-        if left_bits & r_const == left_bits {
-            return r;
+    let const_other = if let Some(c) = left.if_constant() {
+        Some((c, Some(left), right))
+    } else if let Some(c) = right.if_constant() {
+        Some((c, Some(right), left))
+    } else {
+        None
+    };
+    if let Some((mut c, mut c_op, mut other)) = const_other {
+        // Both operands being constant seems to happen often enough
+        // for this to be worth it.
+        if let Some(c2) = other.if_constant() {
+            return ctx.constant(c | c2);
         }
-        let arith = ArithOperand {
-            ty: ArithOpType::Or,
-            left: l,
-            right: r,
-        };
-        return ctx.intern(OperandType::Arithmetic(arith));
+        if let Some((l, r)) = other.if_arithmetic_or() {
+            if let Some(c2) = r.if_constant() {
+                if c | c2 == c2 {
+                    return l;
+                }
+                c_op = None;
+                c |= c2;
+                other = l;
+            }
+        }
+        if can_quick_simplify_type(other.ty()) {
+            let left_bits = other.relevant_bits_mask();
+            let c_op = c_op.unwrap_or_else(|| ctx.constant(c));
+            if left_bits & c == left_bits {
+                return c_op;
+            }
+            let arith = ArithOperand {
+                ty: ArithOpType::Or,
+                left: other,
+                right: c_op,
+            };
+            return ctx.intern(OperandType::Arithmetic(arith));
+        }
+    } else {
+        if !bits_overlap(&left_bits, &right_bits) {
+            if let Some(result) = simplify_or_2op_no_overlap(left, right, ctx) {
+                return result;
+            }
+        }
+        if can_quick_simplify_type(left.ty()) && can_quick_simplify_type(right.ty()) {
+            // Two variable operands without arithmetic/memory won't simplify to anything
+            let (left, right) = match left > right {
+                true => (left, right),
+                false => (right, left),
+            };
+            let arith = ArithOperand {
+                ty: ArithOpType::Or,
+                left,
+                right,
+            };
+
+            return ctx.intern(OperandType::Arithmetic(arith));
+        }
     }
     // Simplify (x & a) | (y & a) to (x | y) & a
     if let Some((l, r, mask)) = check_shared_and_mask(left, right) {
@@ -4535,6 +4580,51 @@ pub fn simplify_or<'e>(
                 ctx.intern(OperandType::Arithmetic(arith))
             })
     })
+}
+
+fn simplify_or_2op_no_overlap<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ctx: OperandCtx<'e>,
+) -> Option<Operand<'e>> {
+    // This function doesn't try to handle everything that simplify_or_merge_child_ands
+    // does; if there are child ors/xors then just go through the main simplification.
+    fn check<'e>(op: Operand<'e>) -> bool {
+        match op.ty() {
+            OperandType::Arithmetic(x) => {
+                if matches!(x.ty, ArithOpType::Xor | ArithOpType::Or) {
+                    return false;
+                }
+                if matches!(x.ty, ArithOpType::And) {
+                    return x.right.if_constant().is_none() || check(x.left);
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+    if !check(left) || !check(right) {
+        return None;
+    }
+    if let Some((c1, l1)) = and_masked_precise(left) {
+        if let Some((c2, l2)) = and_masked_precise(right) {
+            if let Some(result) = try_merge_ands(l1, l2, c1, c2, ctx) {
+                return Some(ctx.and_const(result, c1 | c2));
+            }
+        }
+    }
+
+    let (left, right) = match left > right {
+        true => (left, right),
+        false => (right, left),
+    };
+    let arith = ArithOperand {
+        ty: ArithOpType::Or,
+        left,
+        right,
+    };
+
+    Some(ctx.intern(OperandType::Arithmetic(arith)))
 }
 
 fn simplify_or_ops<'e>(
