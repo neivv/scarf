@@ -8115,3 +8115,26 @@ fn simplify_or_join_of_add_const_mem() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_eq_mul() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.eq(
+        ctx.mul_const(
+            ctx.register(1),
+            0x3,
+        ),
+        ctx.mul_const(
+            ctx.register(1),
+            0x9,
+        ),
+    );
+    let eq1 = ctx.eq_const(
+        ctx.mul_const(
+            ctx.register(1),
+            0x6,
+        ),
+        0,
+    );
+    assert_eq!(op1, eq1);
+}

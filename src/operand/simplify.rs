@@ -1607,6 +1607,39 @@ pub fn simplify_eq<'e>(
     }
 }
 
+/// Returns true if operand is not getting split into add/sub parts
+/// and is not constant, so that eq simplification can just skip to 2op
+/// simplification.
+fn is_simple_eq(op: Operand<'_>, add_sub_mask: u64) -> bool {
+    if op.if_constant().is_some() {
+        false
+    } else if let OperandType::Arithmetic(arith) = op.ty() {
+        // x * 3 == x * 9 will simplify to x * 6 == 0 in add simplification, though
+        // if there was special case to simplify those before calling simplify_eq_2_ops
+        // it would be fine too.
+        if matches!(arith.ty, ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul |
+            ArithOpType::Lsh)
+        {
+            false
+        } else if arith.ty == ArithOpType::And {
+            if let Some(c) = arith.right.if_constant() {
+                c & add_sub_mask != add_sub_mask
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    } else {
+        true
+    }
+}
+
+#[inline]
+fn eq_sort_order<'e>(a: Operand<'e>, b: Operand<'e>) -> bool {
+    Operand::and_masked(a) < Operand::and_masked(b)
+}
+
 fn simplify_eq_main<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
@@ -1616,10 +1649,19 @@ fn simplify_eq_main<'e>(
     // this also uses x == y => x - y == 0 property to simplify it.
     let shared_mask = left.relevant_bits_mask() | right.relevant_bits_mask();
     let add_sub_mask = if shared_mask == 0 {
-        u64::max_value()
+        u64::MAX
     } else {
-        u64::max_value() >> shared_mask.leading_zeros()
+        u64::MAX >> shared_mask.leading_zeros()
     };
+    let simple = is_simple_eq(left, add_sub_mask) &&
+        is_simple_eq(right, add_sub_mask);
+    if simple {
+        let (left, right) = match eq_sort_order(left, right) {
+            true => (left, right),
+            false => (right, left),
+        };
+        return simplify_eq_2_ops(left, right, ctx);
+    }
     ctx.simplify_temp_stack().alloc(|ops| {
         simplify_add_sub_ops(ops, left, right, true, add_sub_mask, ctx)?;
         Ok(simplify_eq_ops(ops, add_sub_mask, ctx))
@@ -1670,7 +1712,7 @@ fn simplify_eq_ops<'e>(
             zero
         };
     }
-    heapsort::sort_by(ops, |a, b| Operand::and_masked(a.0) < Operand::and_masked(b.0));
+    heapsort::sort_by(ops, |a, b| eq_sort_order(a.0, b.0));
     if constant >= 0x8000_0000_0000_0000 ||
         (constant == 0 && ops.last().filter(|x| x.1 == true).is_some())
     {
