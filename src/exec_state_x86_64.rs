@@ -1133,33 +1133,25 @@ impl<'e> State<'e> {
         self.resolved_constraint = Some(constraint);
         let ctx = self.ctx();
         if let OperandType::Arithmetic(ref arith) = *constraint.0.ty() {
-            if arith.left.if_constant().is_some() {
-                if let Some((base, offset, size)) =
-                    self.memory.fast_reverse_lookup(ctx, arith.right, u64::MAX, 3)
-                {
-                    let val = ctx.mem_any(size, base, offset);
-                    self.add_memory_constraint(ctx.arithmetic(arith.ty, arith.left, val));
-                }
-                for i in 0..0x10 {
-                    if self.state[i] == arith.right {
-                        let val = ctx.register(i as u8);
-                        self.add_to_unresolved_constraint(
-                            ctx.arithmetic(arith.ty, arith.left, val)
-                        );
-                    }
-                }
+            let const_other = if arith.left.if_constant().is_some() {
+                Some((arith.left, arith.right))
             } else if arith.right.if_constant().is_some() {
+                Some((arith.right, arith.left))
+            } else {
+                None
+            };
+            if let Some((const_op, other_op)) = const_other {
                 if let Some((base, offset, size)) =
-                    self.memory.fast_reverse_lookup(ctx, arith.left, u64::MAX, 3)
+                    self.memory.fast_reverse_lookup(ctx, other_op, u64::MAX, 3)
                 {
                     let val = ctx.mem_any(size, base, offset);
-                    self.add_memory_constraint(ctx.arithmetic(arith.ty, val, arith.right));
+                    self.add_memory_constraint(ctx.arithmetic(arith.ty, const_op, val));
                 }
                 for i in 0..0x10 {
-                    if self.state[i] == arith.left {
+                    if self.state[i] == other_op {
                         let val = ctx.register(i as u8);
                         self.add_to_unresolved_constraint(
-                            ctx.arithmetic(arith.ty, val, arith.right)
+                            ctx.arithmetic(arith.ty, const_op, val)
                         );
                     }
                 }
