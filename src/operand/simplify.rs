@@ -5634,99 +5634,11 @@ pub fn simplify_gt<'e>(
     if left == right {
         return ctx.const_0();
     }
-    // Normalize (c1 - x) > c2 to (0 - c2 - 1) > (x - c1 - 1)
-    // if c2 > sign_bit
-    // Similarly (x - c1) > c2 to (0 - c2 - 1) > (x - c2 - c1 - 1)
-    if let Some(c2) = right.if_constant() {
-        let (left_inner, mask) = Operand::and_masked(left);
-        if let Some((l, r)) = left_inner.if_arithmetic_sub() {
-            if let Some(c1) = l.if_constant() {
-                if c2 > mask >> 1 {
-                    left = ctx.constant(0u64.wrapping_sub(c2).wrapping_sub(1) & mask);
-                    right = ctx.and_const(
-                        ctx.sub_const(
-                            r,
-                            c1.wrapping_add(1),
-                        ),
-                        mask,
-                    );
-                }
-            } else if let Some(c1) = r.if_constant() {
-                let new_right_c = c1.wrapping_add(c2).wrapping_add(1);
-                if new_right_c >= (mask >> 2) + 1 {
-                    left = ctx.constant(0u64.wrapping_sub(c2).wrapping_sub(1) & mask);
-                    right = ctx.and_const(
-                        ctx.sub_const(
-                            l,
-                            new_right_c,
-                        ),
-                        mask,
-                    );
-                }
-            }
-        }
-    }
-
-    // Remove mask in a > ((x - b) & mask)
-    // if x <= mask && a + b <= mask
-    if let Some((right_inner, mask_op)) = right.if_arithmetic_and() {
-        if let Some(mask) = mask_op.if_constant() {
-            if let Some((x, b)) = right_inner.if_arithmetic_sub() {
-                let mask_is_continuous_from_0 = mask.wrapping_add(1) & mask == 0;
-                if mask_is_continuous_from_0 {
-                    let a_val = match left.if_constant() {
-                        Some(c) => c,
-                        None => left.relevant_bits_mask(),
-                    };
-                    let b_val = match b.if_constant() {
-                        Some(c) => c,
-                        None => b.relevant_bits_mask(),
-                    };
-                    let ok = a_val.checked_add(b_val).filter(|&c| c <= mask).is_some() &&
-                        x.relevant_bits().end <= mask_op.relevant_bits().end;
-                    if ok {
-                        right = right_inner;
-                    }
-                }
-            }
-        }
-    }
-
-    // x - y > x == y > x
-    if let Some(new) = simplify_gt_lhs_sub(ctx, left, right) {
-        return simplify_gt(new, right, ctx, swzb_ctx);
-    } else {
-        let (left_inner, mask) = match Operand::and_masked(left) {
-            (inner, x) if x == !0u64 =>
-                (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
-            x => x,
-        };
-        let (right_inner, mask2) = match Operand::and_masked(right) {
-            (inner, x) if x == !0u64 =>
-                (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
-            x => x,
-        };
-        // Can simplify x - y > x to y > x if mask starts from bit 0
-        let mask_is_continuous_from_0 = mask2.wrapping_add(1) & mask2 == 0;
-        if mask & mask2 == mask2 && mask_is_continuous_from_0 {
-            for &cand in &[right_inner, right] {
-                if let Some(new) = simplify_gt_lhs_sub(ctx, left_inner, cand) {
-                    let new = simplify_and_const(new, mask, ctx, swzb_ctx);
-                    return simplify_gt(new, right, ctx, swzb_ctx);
-                }
-            }
-        }
-    }
-    // c1 > (c2 - x) to c1 > (x + (c1 - c2 - 1))
-    // Not exactly sure why this works.. Would be good to prove..
-    if let Some(c1) = left.if_constant() {
-        let (right_inner, mask) = Operand::and_masked(right);
-        if let Some((l, r)) = right_inner.if_arithmetic_sub() {
-            if let Some(c2) = l.if_constant() {
-                if c1 > c2 {
-                    right = ctx.and_const(ctx.add_const(r, c1 - c2 - 1), mask);
-                }
-            }
+    if matches!(left.ty(), OperandType::Arithmetic(..)) ||
+        matches!(right.ty(), OperandType::Arithmetic(..))
+    {
+        if let Some(result) = simplify_gt_arith_checks(&mut left, &mut right, ctx, swzb_ctx) {
+            return result;
         }
     }
 
@@ -5788,6 +5700,114 @@ pub fn simplify_gt<'e>(
         right,
     };
     ctx.intern(OperandType::Arithmetic(arith))
+}
+
+fn simplify_gt_arith_checks<'e>(
+    left_inout: &mut Operand<'e>,
+    right_inout: &mut Operand<'e>,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Option<Operand<'e>> {
+    let mut left = *left_inout;
+    let mut right = *right_inout;
+    // Normalize (c1 - x) > c2 to (0 - c2 - 1) > (x - c1 - 1)
+    // if c2 > sign_bit
+    // Similarly (x - c1) > c2 to (0 - c2 - 1) > (x - c2 - c1 - 1)
+    if let Some(c2) = right.if_constant() {
+        let (left_inner, mask) = Operand::and_masked(left);
+        if let Some((l, r)) = left_inner.if_arithmetic_sub() {
+            if let Some(c1) = l.if_constant() {
+                if c2 > mask >> 1 {
+                    left = ctx.constant(0u64.wrapping_sub(c2).wrapping_sub(1) & mask);
+                    right = ctx.and_const(
+                        ctx.sub_const(
+                            r,
+                            c1.wrapping_add(1),
+                        ),
+                        mask,
+                    );
+                }
+            } else if let Some(c1) = r.if_constant() {
+                let new_right_c = c1.wrapping_add(c2).wrapping_add(1);
+                if new_right_c >= (mask >> 2) + 1 {
+                    left = ctx.constant(0u64.wrapping_sub(c2).wrapping_sub(1) & mask);
+                    right = ctx.and_const(
+                        ctx.sub_const(
+                            l,
+                            new_right_c,
+                        ),
+                        mask,
+                    );
+                }
+            }
+        }
+    }
+
+    // Remove mask in a > ((x - b) & mask)
+    // if x <= mask && a + b <= mask
+    if let Some((right_inner, mask_op)) = right.if_arithmetic_and() {
+        if let Some(mask) = mask_op.if_constant() {
+            if let Some((x, b)) = right_inner.if_arithmetic_sub() {
+                let mask_is_continuous_from_0 = mask.wrapping_add(1) & mask == 0;
+                if mask_is_continuous_from_0 {
+                    let a_val = match left.if_constant() {
+                        Some(c) => c,
+                        None => left.relevant_bits_mask(),
+                    };
+                    let b_val = match b.if_constant() {
+                        Some(c) => c,
+                        None => b.relevant_bits_mask(),
+                    };
+                    let ok = a_val.checked_add(b_val).filter(|&c| c <= mask).is_some() &&
+                        x.relevant_bits().end <= mask_op.relevant_bits().end;
+                    if ok {
+                        right = right_inner;
+                    }
+                }
+            }
+        }
+    }
+
+    // x - y > x == y > x
+    if let Some(new) = simplify_gt_lhs_sub(ctx, left, right) {
+        return Some(simplify_gt(new, right, ctx, swzb_ctx));
+    } else {
+        let (left_inner, mask) = match Operand::and_masked(left) {
+            (inner, x) if x == !0u64 =>
+                (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
+            x => x,
+        };
+        let (right_inner, mask2) = match Operand::and_masked(right) {
+            (inner, x) if x == !0u64 =>
+                (inner, (1u64 << (inner.relevant_bits().end & 63)).wrapping_sub(1)),
+            x => x,
+        };
+        // Can simplify x - y > x to y > x if mask starts from bit 0
+        let mask_is_continuous_from_0 = mask2.wrapping_add(1) & mask2 == 0;
+        if mask & mask2 == mask2 && mask_is_continuous_from_0 {
+            for &cand in &[right_inner, right] {
+                if let Some(new) = simplify_gt_lhs_sub(ctx, left_inner, cand) {
+                    let new = simplify_and_const(new, mask, ctx, swzb_ctx);
+                    return Some(simplify_gt(new, right, ctx, swzb_ctx));
+                }
+            }
+        }
+    }
+    // c1 > (c2 - x) to c1 > (x + (c1 - c2 - 1))
+    // Not exactly sure why this works.. Would be good to prove..
+    if let Some(c1) = left.if_constant() {
+        let (right_inner, mask) = Operand::and_masked(right);
+        if let Some((l, r)) = right_inner.if_arithmetic_sub() {
+            if let Some(c2) = l.if_constant() {
+                if c1 > c2 {
+                    right = ctx.and_const(ctx.add_const(r, c1 - c2 - 1), mask);
+                }
+            }
+        }
+    }
+    *left_inout = left;
+    *right_inout = right;
+    None
 }
 
 /// Note: low inclusive, high exclusive
