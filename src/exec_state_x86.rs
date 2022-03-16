@@ -1232,13 +1232,13 @@ impl<'e> State<'e> {
         let ctx = self.ctx();
         if let OperandType::Arithmetic(ref arith) = *constraint.0.ty() {
             let const_other = if arith.left.if_constant().is_some() {
-                Some((arith.left, arith.right))
+                Some((arith.left, arith.right, false))
             } else if arith.right.if_constant().is_some() {
-                Some((arith.right, arith.left))
+                Some((arith.right, arith.left, true))
             } else {
                 None
             };
-            if let Some((const_op, other_op)) = const_other {
+            if let Some((const_op, other_op, const_right)) = const_other {
                 if let Some((base, offset, mut size)) =
                     self.memory.fast_reverse_lookup(ctx, other_op, 0xffff_ffff, 2)
                 {
@@ -1246,13 +1246,21 @@ impl<'e> State<'e> {
                         size = MemAccessSize::Mem32;
                     }
                     let val = ctx.mem_any(size, base, offset);
-                    self.add_memory_constraint(ctx.arithmetic(arith.ty, const_op, val));
+                    let (l, r) = match const_right {
+                        true => (val, const_op),
+                        false => (const_op, val),
+                    };
+                    self.add_memory_constraint(ctx.arithmetic(arith.ty, l, r));
                 }
                 for i in 0..8 {
                     if self.state[i] == other_op {
                         let val = ctx.register(i as u8);
+                        let (l, r) = match const_right {
+                            true => (val, const_op),
+                            false => (const_op, val),
+                        };
                         self.add_to_unresolved_constraint(
-                            ctx.arithmetic(arith.ty, const_op, val)
+                            ctx.arithmetic(arith.ty, l, r)
                         );
                     }
                 }
