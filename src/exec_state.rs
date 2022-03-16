@@ -814,6 +814,8 @@ pub(crate) fn flags_for_resolved_constraint_eq_check<'e>(
     arith: &ArithOperand<'e>,
     ctx: OperandCtx<'e>,
 ) -> &'static [Flag] {
+    // This could return carry when arith is GreaterThan, or
+    // Equal with FlagUpdate +/- 1/max, but hasn't been useful yet.
     let is_sign = arith.right == ctx.const_0() &&
         arith.left.if_arithmetic_eq()
             .filter(|x| x.1 == ctx.const_0())
@@ -825,9 +827,7 @@ pub(crate) fn flags_for_resolved_constraint_eq_check<'e>(
     if is_sign {
         return &[Flag::Sign, Flag::Zero];
     } else {
-        if flag_update.ty == FlagArith::Sub || flag_update.ty == FlagArith::Add {
-            return &[Flag::Zero, Flag::Carry];
-        } else if arith.right == ctx.const_0() ||
+        if arith.right == ctx.const_0() ||
             matches!(flag_update.ty, FlagArith::Add | FlagArith::Sub | FlagArith::And)
         {
             return &[Flag::Zero];
