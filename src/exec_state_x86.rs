@@ -1278,8 +1278,8 @@ impl<'e> State<'e> {
             }
         }
         for i in 0..6 {
-            if self.pending_flags.pending_bits & (1 << i) == 0 {
-                if self.state[FLAGS_INDEX + i] == constraint.0 {
+            if self.state[FLAGS_INDEX + i] == constraint.0 {
+                if self.pending_flags.pending_bits & (1 << i) == 0 {
                     self.state[FLAGS_INDEX + i] = ctx.const_1();
                 }
             }
