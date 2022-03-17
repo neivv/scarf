@@ -308,16 +308,6 @@ impl<'e> CachedLowRegisters<'e> {
     }
 }
 
-/// Handles regular &'mut Operand assign for regs,
-/// and the more complicated one for memory
-enum Destination<'a, 'e> {
-    Oper(&'a mut Operand<'e>),
-    Register16(&'a mut Operand<'e>),
-    Register8High(&'a mut Operand<'e>),
-    Register8Low(&'a mut Operand<'e>),
-    Memory(&'a mut State<'e>, MemAccess<'e>),
-}
-
 /// Removes 0xffff_ffff masks from registers/undefined,
 /// converts x + u64_const to x + u32_const.
 ///
@@ -357,145 +347,6 @@ fn as_32bit_value<'e>(value: Operand<'e>, ctx: OperandCtx<'e>) -> Operand<'e> {
             }
         } else {
             value.clone()
-        }
-    }
-}
-
-impl<'a, 'e> Destination<'a, 'e> {
-    fn set(self, value: Operand<'e>, ctx: OperandCtx<'e>) {
-        let value = as_32bit_value(value, ctx);
-        match self {
-            Destination::Oper(o) => {
-                *o = value;
-            }
-            Destination::Register16(o) => {
-                let old = *o;
-                let masked = if value.relevant_bits().end > 16 {
-                    ctx.and_const(value, 0xffff)
-                } else {
-                    value
-                };
-                let old_bits = old.relevant_bits();
-                let new = if old_bits.end <= 16 {
-                    masked
-                } else {
-                    ctx.or(
-                        ctx.and_const(old, 0xffff_0000),
-                        masked,
-                    )
-                };
-                *o = new;
-            }
-            Destination::Register8High(o) => {
-                let old = *o;
-                let masked = if value.relevant_bits().end > 8 {
-                    ctx.and_const(value, 0xff)
-                } else {
-                    value
-                };
-                let old_bits = old.relevant_bits();
-                let new = if old_bits.start >= 8 && old_bits.end <= 16 {
-                    ctx.lsh_const(masked, 8)
-                } else {
-                    ctx.or(
-                        ctx.and_const(old, 0xffff_00ff),
-                        ctx.lsh_const(masked, 8),
-                    )
-                };
-                *o = new;
-            }
-            Destination::Register8Low(o) => {
-                let old = *o;
-                let masked = if value.relevant_bits().end > 8 {
-                    ctx.and_const(value, 0xff)
-                } else {
-                    value
-                };
-                let old_bits = old.relevant_bits();
-                let new = if old_bits.end <= 8 {
-                    masked
-                } else {
-                    ctx.or(
-                        ctx.and_const(old, 0xffff_ff00),
-                        masked,
-                    )
-                };
-                *o = new;
-            }
-            Destination::Memory(state, ref mem) => {
-                if mem.size == MemAccessSize::Mem64 {
-                    // Split into two u32 sets
-                    Destination::Memory(state, mem.with_offset_size(0, MemAccessSize::Mem32))
-                        .set(ctx.and_const(value, 0xffff_ffff), ctx);
-                    Destination::Memory(state, mem.with_offset_size(4, MemAccessSize::Mem32))
-                        .set(ctx.rsh_const(value, 32), ctx);
-                    return;
-                }
-                let (base, offset) = mem.address();
-                let offset = offset as u32;
-                let offset_4 = offset & 3;
-                let offset_rest = offset & !3;
-                if offset_4 != 0 {
-                    let size_bits = mem.size.bits();
-                    let low_old = state.read_memory_impl(base, offset_rest, MemAccessSize::Mem32)
-                        .unwrap_or_else(|| ctx.mem32(base, offset_rest.into()));
-
-                    let mask_low = offset_4 * 8;
-                    let mask_high = (mask_low + size_bits).min(0x20);
-                    let mask = !0u32 >> mask_low << mask_low <<
-                        (0x20 - mask_high) >> (0x20 - mask_high);
-                    let low_value = ctx.or(
-                        ctx.and_const(
-                            ctx.lsh_const(
-                                value,
-                                8 * offset_4 as u64,
-                            ),
-                            mask as u64,
-                        ),
-                        ctx.and_const(
-                            low_old,
-                            !mask as u64,
-                        ),
-                    );
-                    state.memory.set(base, (offset_rest >> 2).into(), low_value);
-                    let needs_high = mask_low + size_bits > 0x20;
-                    if needs_high {
-                        let high_offset = offset_rest.wrapping_add(4) & 0xffff_ffff;
-                        let high_old =
-                            state.read_memory_impl(base, high_offset, MemAccessSize::Mem32)
-                                .unwrap_or_else(|| ctx.mem32(base, high_offset.into()));
-
-                        let mask = !0u32 >> (0x20 - (mask_low + size_bits - 0x20));
-                        let high_value = ctx.or(
-                            ctx.and_const(
-                                ctx.rsh_const(
-                                    value,
-                                    (0x20 - 8 * offset_4) as u64,
-                                ),
-                                mask as u64,
-                            ),
-                            ctx.and_const(
-                                high_old,
-                                !mask as u64,
-                            ),
-                        );
-                        state.memory.set(base, (high_offset >> 2).into(), high_value);
-                    }
-                } else {
-                    let value = if mem.size == MemAccessSize::Mem32 {
-                        value
-                    } else {
-                        let old = state.read_memory_impl(base, offset, MemAccessSize::Mem32)
-                            .unwrap_or_else(|| ctx.mem32(base, offset.into()));
-                        let new_mask = mem.size.mask();
-                        ctx.or(
-                            ctx.and_const(value, new_mask),
-                            ctx.and_const(old, !new_mask & 0xffff_ffff),
-                        )
-                    };
-                    state.memory.set(base, (offset >> 2).into(), value);
-                }
-            }
         }
     }
 }
@@ -729,25 +580,21 @@ impl<'e> State<'e> {
     }
 
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
-        let ctx = self.ctx();
         let resolved = self.resolve(value);
         if self.frozen {
             let dest = self.resolve_dest(dest);
             self.freeze_buffer.push(FreezeOperation::Move(dest, resolved));
         } else {
-            let dest = self.get_dest_invalidate_constraints(dest);
-            dest.set(resolved, ctx);
+            self.move_to_dest_invalidate_constraints(dest, resolved);
         }
     }
 
     fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
-        let ctx = self.ctx;
         if self.frozen {
             self.freeze_buffer.push(FreezeOperation::Move(*dest, value));
         } else {
             self.unresolved_constraint = None;
-            let dest = self.get_dest(dest, true);
-            dest.set(value, ctx);
+            self.move_to_dest(dest, value, true);
         }
     }
 
@@ -962,6 +809,86 @@ impl<'e> State<'e> {
         }
     }
 
+    fn write_memory(
+        &mut self,
+        base: Operand<'e>,
+        offset: u32,
+        size: MemAccessSize,
+        value: Operand<'e>,
+    ) {
+        let ctx = self.ctx;
+        if size == MemAccessSize::Mem64 {
+            // Split into two u32 sets
+            let low = ctx.and_const(value, 0xffff_ffff);
+            let high = ctx.rsh_const(value, 32);
+            self.write_memory(base, offset, MemAccessSize::Mem32, low);
+            self.write_memory(base, offset.wrapping_add(4), MemAccessSize::Mem32, high);
+            return;
+        }
+        let offset_4 = offset & 3;
+        let offset_rest = offset & !3;
+        if offset_4 != 0 {
+            let size_bits = size.bits();
+            let low_old = self.read_memory_impl(base, offset_rest, MemAccessSize::Mem32)
+                .unwrap_or_else(|| ctx.mem32(base, offset_rest.into()));
+
+            let mask_low = offset_4 * 8;
+            let mask_high = (mask_low + size_bits).min(0x20);
+            let mask = !0u32 >> mask_low << mask_low <<
+                (0x20 - mask_high) >> (0x20 - mask_high);
+            let low_value = ctx.or(
+                ctx.and_const(
+                    ctx.lsh_const(
+                        value,
+                        8 * offset_4 as u64,
+                    ),
+                    mask as u64,
+                ),
+                ctx.and_const(
+                    low_old,
+                    !mask as u64,
+                ),
+            );
+            self.memory.set(base, (offset_rest >> 2).into(), low_value);
+            let needs_high = mask_low + size_bits > 0x20;
+            if needs_high {
+                let high_offset = offset_rest.wrapping_add(4) & 0xffff_ffff;
+                let high_old =
+                    self.read_memory_impl(base, high_offset, MemAccessSize::Mem32)
+                        .unwrap_or_else(|| ctx.mem32(base, high_offset.into()));
+
+                let mask = !0u32 >> (0x20 - (mask_low + size_bits - 0x20));
+                let high_value = ctx.or(
+                    ctx.and_const(
+                        ctx.rsh_const(
+                            value,
+                            (0x20 - 8 * offset_4) as u64,
+                        ),
+                        mask as u64,
+                    ),
+                    ctx.and_const(
+                        high_old,
+                        !mask as u64,
+                    ),
+                );
+                self.memory.set(base, (high_offset >> 2).into(), high_value);
+            }
+        } else {
+            let value = if size == MemAccessSize::Mem32 {
+                value
+            } else {
+                let old = self.read_memory_impl(base, offset, MemAccessSize::Mem32)
+                    .unwrap_or_else(|| ctx.mem32(base, offset.into()));
+                let new_mask = size.mask();
+                ctx.or(
+                    ctx.and_const(value, new_mask),
+                    ctx.and_const(old, !new_mask & 0xffff_ffff),
+                )
+            };
+            self.memory.set(base, (offset >> 2).into(), value);
+        }
+    }
+
     fn resolve_binary_constant_mem(
         &self,
         address: u32,
@@ -1143,10 +1070,11 @@ impl<'e> State<'e> {
         self.state[FLAGS_INDEX + flag as usize]
     }
 
-    fn get_dest_invalidate_constraints<'s>(
+    fn move_to_dest_invalidate_constraints<'s>(
         &'s mut self,
         dest: &DestOperand<'e>,
-    ) -> Destination<'s, 'e> {
+        value: Operand<'e>,
+    ) {
         let ctx = self.ctx();
         self.unresolved_constraint = match self.unresolved_constraint {
             Some(ref s) => s.invalidate_dest_operand(ctx, dest),
@@ -1160,52 +1088,103 @@ impl<'e> State<'e> {
             }
             self.memory_constraint = None;
         }
-        self.get_dest(dest, false)
+        self.move_to_dest(dest, value, false)
     }
 
-    fn get_dest<'s>(
+    fn move_to_dest<'s>(
         &'s mut self,
         dest: &DestOperand<'e>,
+        value: Operand<'e>,
         dest_is_resolved: bool,
-    ) -> Destination<'s, 'e> {
+    ) {
+        let ctx = self.ctx;
+        let value = as_32bit_value(value, ctx);
         match *dest {
             DestOperand::Register32(reg) | DestOperand::Register64(reg) => {
                 self.cached_low_registers.invalidate(reg);
-                Destination::Oper(&mut self.state[reg as usize & 7])
+                self.state[reg as usize & 7] = value;
             }
             DestOperand::Register16(reg) => {
                 self.cached_low_registers.invalidate(reg);
-                Destination::Register16(&mut self.state[reg as usize & 7])
+                let index = reg as usize & 7;
+                let old = self.state[index];
+                let masked = if value.relevant_bits().end > 16 {
+                    ctx.and_const(value, 0xffff)
+                } else {
+                    value
+                };
+                let old_bits = old.relevant_bits();
+                let new = if old_bits.end <= 16 {
+                    masked
+                } else {
+                    ctx.or(
+                        ctx.and_const(old, 0xffff_0000),
+                        masked,
+                    )
+                };
+                self.state[index] = new;
             }
             DestOperand::Register8High(reg) => {
                 self.cached_low_registers.invalidate(reg);
-                Destination::Register8High(&mut self.state[reg as usize & 7])
+                let index = reg as usize & 7;
+                let old = self.state[index];
+                let masked = if value.relevant_bits().end > 8 {
+                    ctx.and_const(value, 0xff)
+                } else {
+                    value
+                };
+                let old_bits = old.relevant_bits();
+                let new = if old_bits.start >= 8 && old_bits.end <= 16 {
+                    ctx.lsh_const(masked, 8)
+                } else {
+                    ctx.or(
+                        ctx.and_const(old, 0xffff_00ff),
+                        ctx.lsh_const(masked, 8),
+                    )
+                };
+                self.state[index] = new;
             }
             DestOperand::Register8Low(reg) => {
                 self.cached_low_registers.invalidate(reg);
-                Destination::Register8Low(&mut self.state[reg as usize & 7])
+                let index = reg as usize & 7;
+                let old = self.state[index];
+                let masked = if value.relevant_bits().end > 8 {
+                    ctx.and_const(value, 0xff)
+                } else {
+                    value
+                };
+                let old_bits = old.relevant_bits();
+                let new = if old_bits.end <= 8 {
+                    masked
+                } else {
+                    ctx.or(
+                        ctx.and_const(old, 0xffff_ff00),
+                        masked,
+                    )
+                };
+                self.state[index] = new;
             }
             DestOperand::Fpu(id) => {
                 let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
-                Destination::Oper(&mut xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize])
+                xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize] = value;
             }
             DestOperand::Xmm(reg, word) => {
                 let xmm_fpu = Rc::make_mut(&mut self.xmm_fpu);
-                Destination::Oper(&mut xmm_fpu[
+                xmm_fpu[
                     XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize
-                ])
+                ] = value;
             }
             DestOperand::Flag(flag) => {
                 self.pending_flags.make_non_pending(flag);
-                Destination::Oper(&mut self.state[FLAGS_INDEX + flag as usize])
+                self.state[FLAGS_INDEX + flag as usize] = value;
             }
             DestOperand::Memory(ref mem) => {
-                let mem = if dest_is_resolved {
-                    *mem
+                let (base, offset) = if dest_is_resolved {
+                    mem.address()
                 } else {
-                    self.resolve_mem(mem)
+                    self.resolve_mem(mem).address()
                 };
-                Destination::Memory(self, mem)
+                self.write_memory(base, offset as u32, mem.size, value)
             }
         }
     }
