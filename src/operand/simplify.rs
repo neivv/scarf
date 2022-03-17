@@ -2540,13 +2540,16 @@ pub fn simplify_and_const_op<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
-    if right == u64::max_value() {
+    if right == u64::MAX {
         return left;
     }
     // Check if left is x & const
     if let Some((l, r)) = left.if_arithmetic_and() {
         if let Some(c) = r.if_constant() {
             let new = c & right;
+            if new == c {
+                return left;
+            }
             if new != right {
                 right = new;
                 right_op = None;
