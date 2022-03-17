@@ -259,10 +259,8 @@ struct InstructionPrefixes {
 }
 
 struct RegisterCache<'e> {
-    register8_low: [Option<Operand<'e>>; 16],
-    register8_high: [Option<Operand<'e>>; 4],
-    register16: [Option<Operand<'e>>; 16],
-    register32: [Option<Operand<'e>>; 16],
+    // Ordered as 16 unmasked registers, 16 32bit, 16 16bit, 4 8bit high, 16 8bit
+    registers: [Option<Operand<'e>>; 16 * 4 + 4],
     conditions: [Option<Operand<'e>>; 16],
     esp_mem_word: Operand<'e>,
     esp_pos_word_offset: Operand<'e>,
@@ -278,12 +276,13 @@ impl<'e> RegisterCache<'e> {
         let esp_pos_word_offset = ctx.add_const(ctx.register(4), size.bits() as u64 >> 3);
         let esp_neg_word_offset = ctx.sub_const(ctx.register(4), size.bits() as u64 >> 3);
         let esp_mem_word = ctx.memory(&esp_mem);
+        let mut registers = [None; 16 * 4 + 4];
+        for i in 0..16 {
+            registers[i] = Some(ctx.register(i as u8));
+        }
         RegisterCache {
             ctx,
-            register8_low: [None; 16],
-            register8_high: [None; 4],
-            register16: [None; 16],
-            register32: [None; 16],
+            registers,
             conditions: [None; 16],
             esp_mem_word,
             esp_mem,
@@ -292,35 +291,46 @@ impl<'e> RegisterCache<'e> {
         }
     }
 
-    fn register8_low(&mut self, i: u8) -> Operand<'e> {
-        let ctx = self.ctx;
-        *self.register8_low[i as usize & 15].get_or_insert_with(|| {
-            ctx.and_const(ctx.register(i as u8), 0xff)
-        })
+    fn register(&mut self, i: u8, size: RegisterSize) -> Operand<'e> {
+        let start_index = match size {
+            RegisterSize::Low8 => 52u8,
+            RegisterSize::High8 => 48,
+            RegisterSize::R16 => 32,
+            RegisterSize::R32 => 16,
+            RegisterSize::R64 => 0,
+        };
+        let mask = match size {
+            RegisterSize::Low8 => 15u8,
+            RegisterSize::High8 => 3,
+            RegisterSize::R16 => 15,
+            RegisterSize::R32 => 15,
+            RegisterSize::R64 => 15,
+        };
+        let index = start_index as usize + (i & mask) as usize;
+        if let Some(op) = self.registers[index] {
+            op
+        } else {
+            self.gen_register_cold(i, index, size)
+        }
     }
 
-    fn register8_high(&mut self, i: u8) -> Operand<'e> {
+    #[cold]
+    fn gen_register_cold(&mut self, i: u8, index: usize, size: RegisterSize) -> Operand<'e> {
+        let mask = match size {
+            RegisterSize::Low8 => 0xffu32,
+            RegisterSize::High8 => 0xff00,
+            RegisterSize::R16 => 0xffff,
+            RegisterSize::R32 => 0xffff_ffff,
+            // Unreachable
+            RegisterSize::R64 => 0,
+        };
         let ctx = self.ctx;
-        *self.register8_high[i as usize & 15].get_or_insert_with(|| {
-            ctx.rsh_const(
-                ctx.and_const(ctx.register(i as u8), 0xff00),
-                8,
-            )
-        })
-    }
-
-    fn register16(&mut self, i: u8) -> Operand<'e> {
-        let ctx = self.ctx;
-        *self.register16[i as usize & 15].get_or_insert_with(|| {
-            ctx.and_const(ctx.register(i as u8), 0xffff)
-        })
-    }
-
-    fn register32(&mut self, i: u8) -> Operand<'e> {
-        let ctx = self.ctx;
-        *self.register32[i as usize & 15].get_or_insert_with(|| {
-            ctx.and_const(ctx.register(i as u8), 0xffff_ffff)
-        })
+        let mut op = ctx.and_const(ctx.register(i as u8), mask as u64);
+        if size == RegisterSize::High8 {
+            op = ctx.rsh_const(op, 8);
+        }
+        self.registers[index] = Some(op);
+        op
     }
 
     fn condition(&mut self, i: u8) -> Operand<'e> {
@@ -1085,6 +1095,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
     }
 
+    #[inline]
     fn has_prefix(&self, val: u8) -> bool {
         match val {
             0x66 => self.prefixes.prefix_66,
@@ -1115,6 +1126,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
     }
 
+    #[inline]
     fn mem32_64(&self) -> MemAccessSize {
         match self.rex_prefix() & 0x8 != 0 {
             true => MemAccessSize::Mem64,
@@ -1123,26 +1135,19 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn reg_variable_size(&mut self, register: u8, op_size: MemAccessSize) -> Operand<'e> {
+        let mut register = register;
+        let size;
         if register >= 4 && self.rex_prefix() == 0 && op_size == MemAccessSize::Mem8 {
-            self.register_cache.register8_high(register - 4)
+            register -= 4;
+            size = RegisterSize::High8;
         } else {
-            match op_size {
-                MemAccessSize::Mem8 => self.register_cache.register8_low(register),
-                MemAccessSize::Mem16 => self.register_cache.register16(register),
-                MemAccessSize::Mem32 => self.register_cache.register32(register),
-                MemAccessSize::Mem64 => self.ctx.register(register),
-            }
+            size = RegisterSize::from_mem_access_size(op_size);
         }
+        self.register_cache.register(register, size)
     }
 
     fn r_to_operand(&mut self, r: ModRm_R) -> Operand<'e> {
-        match r.1 {
-            RegisterSize::Low8 => self.register_cache.register8_low(r.0),
-            RegisterSize::High8 => self.register_cache.register8_high(r.0),
-            RegisterSize::R16 => self.register_cache.register16(r.0),
-            RegisterSize::R32 => self.register_cache.register32(r.0),
-            RegisterSize::R64 => self.ctx.register(r.0),
-        }
+        self.register_cache.register(r.0, r.1)
     }
 
     fn r_to_operand_xmm(&self, r: ModRm_R, i: u8) -> Operand<'e> {
@@ -1165,30 +1170,14 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     /// variations, not useful with ModRm_R, but ModRm_Rm avoids
     /// recalculating address twice with this.
     fn r_to_dest_and_operand(&mut self, r: ModRm_R) -> DestAndOperand<'e> {
-        let op;
-        let dest;
-        match r.1 {
-            RegisterSize::R64 => {
-                op = self.ctx.register(r.0);
-                dest = DestOperand::Register64(r.0);
-            }
-            RegisterSize::R32 => {
-                op = self.register_cache.register32(r.0);
-                dest = DestOperand::Register32(r.0);
-            }
-            RegisterSize::R16 => {
-                op = self.register_cache.register16(r.0);
-                dest = DestOperand::Register16(r.0);
-            }
-            RegisterSize::Low8 => {
-                op = self.register_cache.register8_low(r.0);
-                dest = DestOperand::Register8Low(r.0);
-            }
-            RegisterSize::High8 => {
-                op = self.register_cache.register8_high(r.0);
-                dest = DestOperand::Register8High(r.0);
-            }
-        }
+        let dest = match r.1 {
+            RegisterSize::R64 => DestOperand::Register64(r.0),
+            RegisterSize::R32 => DestOperand::Register32(r.0),
+            RegisterSize::R16 => DestOperand::Register16(r.0),
+            RegisterSize::Low8 => DestOperand::Register8Low(r.0),
+            RegisterSize::High8 => DestOperand::Register8High(r.0),
+        };
+        let op = self.register_cache.register(r.0, r.1);
         DestAndOperand {
             op,
             dest,
@@ -1349,7 +1338,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             let (base, offset) = self.rm_address_operand(rm);
             self.ctx.mem_any(rm.size.to_mem_access_size(), base, offset)
         } else {
-            self.r_to_operand(ModRm_R(rm.base, rm.size)).clone()
+            self.r_to_operand(ModRm_R(rm.base, rm.size))
         }
     }
 
