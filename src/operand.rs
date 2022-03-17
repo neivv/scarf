@@ -1021,8 +1021,12 @@ impl<'e> OperandContext<'e> {
         if num < 0x10 {
             unsafe { self.common_operands[SMALL_CONSTANT_COUNT + num as usize].cast() }
         } else {
-            self.intern(OperandType::Register(num))
+            self.register_slow(num)
         }
+    }
+
+    fn register_slow(&'e self, num: u8) -> Operand<'e> {
+        self.intern(OperandType::Register(num))
     }
 
     /// Returns [`OperandType::Fpu(index)`](OperandType) operand.

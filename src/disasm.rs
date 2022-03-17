@@ -1196,42 +1196,36 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     fn rm_address_operand(&mut self, rm: &ModRm_Rm) -> (Operand<'e>, u64) {
         let ctx = self.ctx;
         // Optimization: avoid having to go through simplify for x + x * 4 -type accesses
-        let base_index_same = rm.base == rm.index && rm.index_mul != 0;
+        let constant = rm.constant as i32 as i64 as u64;
         let (base, offset) = if rm.constant_base() {
+            let zero = ctx.const_0();
             if Va::SIZE == 4 || !rm.rip_relative() {
-                (ctx.const_0(), rm.constant as u64)
+                (zero, constant as u32 as u64)
             } else {
                 let addr = self.address.as_u64()
                     .wrapping_add(self.len() as u64)
-                    .wrapping_add(rm.constant as i32 as i64 as u64);
-                (ctx.const_0(), addr)
+                    .wrapping_add(constant);
+                (zero, addr)
             }
         } else {
+            let base = ctx.register(rm.base & 0xf);
+            let base_index_same = rm.base == rm.index && rm.index_mul != 0;
             if base_index_same {
-                let base = self.ctx.register(rm.base);
                 let base = ctx.mul_const(base, rm.index_mul as u64 + 1);
-                if rm.constant == 0 {
-                    (base, 0)
-                } else {
-                    (base, rm.constant as i32 as i64 as u64)
-                }
+                return (base, constant);
             } else {
-                (ctx.register(rm.base), rm.constant as i32 as i64 as u64)
+                (base, constant)
             }
         };
-        if base_index_same {
-            (base, offset)
-        } else {
-            match rm.index_mul {
-                0 => (base, offset),
-                1 => (ctx.add(base, self.ctx.register(rm.index)), offset),
-                x => {
-                    let with_index = ctx.add(
-                        base,
-                        ctx.mul_const(self.ctx.register(rm.index), x as u64),
-                    );
-                    (with_index, offset)
-                }
+        match rm.index_mul {
+            0 => (base, offset),
+            1 => (ctx.add(base, ctx.register(rm.index & 0xf)), offset),
+            x => {
+                let with_index = ctx.add(
+                    base,
+                    ctx.mul_const(ctx.register(rm.index & 0xf), x as u64),
+                );
+                (with_index, offset)
             }
         }
     }
