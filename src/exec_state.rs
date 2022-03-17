@@ -748,8 +748,22 @@ impl<'e> PendingFlags<'e> {
         let carry = self.carry;
         *self.result.get_or_insert_with(|| {
             let arith = update.as_ref()?;
-            let arith_ty = flag_arith_to_op_arith(arith.ty)?;
             let size = arith.size;
+            if arith.left == arith.right && arith.ty == FlagArith::And {
+                // Fast path for test x,x
+                // As exec_state sub_fast_result already handles the most common
+                // carry/zero for cmp, test x,x here is pretty common.
+                let result = if arith.left.relevant_bits().end as u32 > size.bits() {
+                    ctx.and_const(arith.left, size.mask())
+                } else {
+                    arith.left
+                };
+                return Some(PendingFlagsResult {
+                    result,
+                    base_result: result,
+                });
+            }
+            let arith_ty = flag_arith_to_op_arith(arith.ty)?;
 
             let base_result =
                 ctx.arithmetic_masked(arith_ty, arith.left, arith.right, size.mask());
