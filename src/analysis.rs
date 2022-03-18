@@ -1669,8 +1669,10 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         // Never jump
         let address = address + instruction_len;
         *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
-        let constraint = analysis.operand_ctx.eq_const(condition, 0);
-        state.0.add_unresolved_constraint(Constraint::new(constraint));
+        if condition != ctx.const_0() {
+            let constraint = analysis.operand_ctx.eq_const(condition, 0);
+            state.0.add_unresolved_constraint(Constraint::new(constraint));
+        }
         analysis.add_unchecked_branch(address, state);
     } else if condition_resolved == ctx.const_1() {
         // Always jump
@@ -1697,7 +1699,9 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                 }
             }
         } else {
-            state.0.add_unresolved_constraint(Constraint::new(condition));
+            if condition != ctx.const_1() {
+                state.0.add_unresolved_constraint(Constraint::new(condition));
+            }
             let dest = try_add_branch(analysis, state, to, address);
             *cfg_out_edge = CfgOutEdges::Single(
                 dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
