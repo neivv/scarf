@@ -170,8 +170,24 @@ pub fn simplify_arith_masked<'e>(
     if useful_mask {
         match ty {
             ArithOpType::And | ArithOpType::Or | ArithOpType::Xor => {
-                left = simplify_with_and_mask(left, mask, ctx, swzb_ctx);
-                right = simplify_with_and_mask(right, mask, ctx, swzb_ctx);
+                if let Some(c) = right.if_constant() {
+                    let c = c & mask;
+                    if ty == ArithOpType::And {
+                        return simplify_and_const(left, c, ctx, swzb_ctx);
+                    } else {
+                        left = simplify_with_and_mask(left, mask, ctx, swzb_ctx);
+                        let c = ctx.constant(c);
+                        let val = if ty == ArithOpType::Or {
+                            simplify_or(left, c, ctx, swzb_ctx)
+                        } else {
+                            simplify_xor(left, c, ctx, swzb_ctx)
+                        };
+                        return ctx.and_const(val, mask);
+                    }
+                } else {
+                    left = simplify_with_and_mask(left, mask, ctx, swzb_ctx);
+                    right = simplify_with_and_mask(right, mask, ctx, swzb_ctx);
+                }
             }
             ArithOpType::Lsh | ArithOpType::Rsh => {
                 if let Some(c) = right.if_constant() {
@@ -195,10 +211,7 @@ pub fn simplify_arith_masked<'e>(
     }
     let val = simplify_arith(left, right, ty, ctx, swzb_ctx);
     if useful_mask {
-        ctx.and_const(
-            val,
-            mask,
-        )
+        simplify_and_const(val, mask, ctx, swzb_ctx)
     } else {
         val
     }

@@ -3918,6 +3918,24 @@ impl<'e> DestOperand<'e> {
             DestOperand::Memory(ref x) => ctx.memory(x),
         }
     }
+
+    /// Returns MemAccessSize that any assignments to this DestOperand will be masked to.
+    pub(crate) fn size(&self) -> MemAccessSize {
+        if let DestOperand::Memory(ref mem) = *self {
+            mem.size
+        } else {
+            match *self {
+                DestOperand::Register32(..) | DestOperand::Xmm(..) |
+                    DestOperand::Fpu(..) => MemAccessSize::Mem32,
+                DestOperand::Register16(..) => MemAccessSize::Mem16,
+                DestOperand::Register8High(..) |
+                    DestOperand::Register8Low(..) => MemAccessSize::Mem8,
+                // Flag maybe could be Mem8? But currently assignments to flags aren't masked so
+                DestOperand::Register64(..) | DestOperand::Flag(..) |
+                    DestOperand::Memory(..) => MemAccessSize::Mem64,
+            }
+        }
+    }
 }
 
 fn dest_operand<'e>(val: Operand<'e>) -> DestOperand<'e> {

@@ -824,19 +824,8 @@ impl<'e> State<'e> {
                 let right = op.right;
                 let ctx = self.ctx;
                 if op.ty == ArithOpType::And {
-                    // Check for (x op y) & const_mask
                     if let Some(c) = right.if_constant() {
-                        let ty = left.ty();
-                        if let OperandType::Register(reg) = *ty {
-                            let r = self.try_resolve_partial_register(reg, c);
-                            if let Some(r) = r {
-                                return r;
-                            }
-                        } else if let OperandType::Arithmetic(ref inner) = *ty {
-                            let left = self.resolve(inner.left);
-                            let right = self.resolve(inner.right);
-                            return ctx.arithmetic_masked(inner.ty, left, right, c);
-                        }
+                        return self.resolve_masked(left, c);
                     }
                 } else if op.ty == ArithOpType::Equal {
                     // If the value is `x == 0 == 0`, resolve x and call neq_const(x, 0),
@@ -877,6 +866,54 @@ impl<'e> State<'e> {
                 OperandType::Register(_) =>
             {
                 debug_assert!(false, "Should be unreachable due to needs_resolve check");
+                value
+            }
+        }
+    }
+
+    /// Variant of resolve which masks the returned value with `ctx.and_const(x, size.mask())`.
+    ///
+    /// Can avoid some simplification / interning due to using `ctx.arithmetic_masked`
+    fn resolve_masked(&mut self, value: Operand<'e>, mask: u64) -> Operand<'e> {
+        if !value.needs_resolve() {
+            let relbit_mask = value.relevant_bits_mask();
+            if mask & relbit_mask != relbit_mask {
+                return self.ctx.and_const(value, mask);
+            } else {
+                return value;
+            }
+        }
+        let ty = value.ty();
+        if let OperandType::Register(reg) = *ty {
+            let r = self.try_resolve_partial_register(reg, mask);
+            if let Some(r) = r {
+                r
+            } else {
+                self.ctx.and_const(self.resolve_register(reg), mask)
+            }
+        } else if let OperandType::Arithmetic(ref arith) = *ty {
+            let left = arith.left;
+            let right = arith.right;
+            let ty = arith.ty;
+            if ty == ArithOpType::And {
+                if let Some(c) = right.if_constant() {
+                    return self.resolve_masked(left, c & mask);
+                }
+            }
+            // Right is often a constant so predict that case before calling resolve
+            let resolved_left = self.resolve(left);
+            let resolved_right = if right.needs_resolve() {
+                self.resolve(right)
+            } else {
+                right
+            };
+            self.ctx.arithmetic_masked(ty, resolved_left, resolved_right, mask)
+        } else {
+            let value = self.resolve(value);
+            let relbit_mask = value.relevant_bits_mask();
+            if mask & relbit_mask != relbit_mask {
+                self.ctx.and_const(value, mask)
+            } else {
                 value
             }
         }
@@ -952,7 +989,12 @@ impl<'e> State<'e> {
     }
 
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
-        let resolved = self.resolve(value);
+        let size = dest.size();
+        let resolved = if size == MemAccessSize::Mem64 {
+            self.resolve(value)
+        } else {
+            self.resolve_masked(value, size.mask())
+        };
         if self.frozen {
             let dest = self.resolve_dest(dest);
             self.freeze_buffer.push(FreezeOperation::Move(dest, resolved));
