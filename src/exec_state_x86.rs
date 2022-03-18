@@ -754,12 +754,11 @@ impl<'e> State<'e> {
                     } else {
                         None
                     }
-                })
-                .unwrap_or_else(|| ctx.mem32(base, offset_rest.into()));
-            let low = ctx.rsh_const(low, (offset_4 * 8) as u64);
-            let combined = if offset_4 + size_bytes > 4 {
+                });
+            let needs_high = offset_4 + size_bytes > 4;
+            let high = if needs_high {
                 let high_offset = offset_rest.wrapping_add(4);
-                let high = self.memory.get(base, (high_offset >> 2).into())
+                self.memory.get(base, (high_offset >> 2).into())
                     .or_else(|| {
                         if const_base {
                             let size = match (offset_4 + size_bytes) - 4 {
@@ -772,7 +771,19 @@ impl<'e> State<'e> {
                             None
                         }
                     })
-                    .unwrap_or_else(|| ctx.mem32(base, high_offset.into()));
+            } else {
+                None
+            };
+            if low.is_none() && high.is_none() {
+                return None;
+            }
+            let low = low.unwrap_or_else(|| ctx.mem32(base, offset_rest.into()));
+            let low = ctx.rsh_const(low, (offset_4 * 8) as u64);
+            let combined = if needs_high {
+                let high = high.unwrap_or_else(|| {
+                    let high_offset = offset_rest.wrapping_add(4);
+                    ctx.mem32(base, high_offset.into())
+                });
                 let high = ctx.and_const(
                     ctx.lsh_const(
                         high,
