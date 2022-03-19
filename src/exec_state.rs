@@ -5,7 +5,7 @@
 //! and [`VirtualAddress`] for the "Integer representing memory address of word size"
 //! trait.
 
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap};
 use std::fmt;
 use std::mem;
 use std::ops::{Add, Sub};
@@ -1269,16 +1269,16 @@ struct MemoryMap<'e> {
     /// Sum of map.len() of immutable map chain and own `map.len()`, only set when map
     /// is made immutable.
     immutable_length: usize,
+    /// True if all values stored in `self.map` are `Undefined`.
+    /// False does not guarantee that that there are not-undefined values though.
+    all_undefined: bool,
 }
 
 type MemoryMapTopLevel<'e> = HashMap<(OperandHashByAddress<'e>, u64), Operand<'e>, FxBuildHasher>;
 
-struct MemoryIterUntilImm<'a, 'e> {
-    // self.iter can always be assumed to be from self.map.map.iter()
-    iter: Option<hash_map::Iter<'a, (OperandHashByAddress<'e>, u64), Operand<'e>>>,
-    map: &'a MemoryMap<'e>,
+struct MemoryIterMapsUntilImm<'a, 'e> {
+    map: Option<&'a MemoryMap<'e>>,
     limit: Option<&'a MemoryMap<'e>>,
-    in_immutable: bool,
 }
 
 impl<'e> Memory<'e> {
@@ -1290,6 +1290,7 @@ impl<'e> Memory<'e> {
                 slower_immutable: None,
                 immutable_depth: 0,
                 immutable_length: 0,
+                all_undefined: true,
             },
             cached_addr: None,
             cached_value: None,
@@ -1464,6 +1465,7 @@ impl<'e> MemoryMap<'e> {
             }
         }
         map.insert(address, value);
+        self.all_undefined &= value.is_undefined();
     }
 
     fn is_empty(&self) -> bool {
@@ -1482,47 +1484,46 @@ impl<'e> MemoryMap<'e> {
         op
     }
 
-    /// Iterates until the immutable block.
-    /// Only ref-equality is considered, not deep-eq.
-    ///
-    /// Takes as fast path as possible.
-    /// Passing Some(map) which isn't in this map's immutable chain isn't required to work.
-    /// Also limit must be "main immutable" for the depth; slower_immutable isn't accepted.
-    fn iter_until_immutable<'a>(
+    fn iter_maps_until_immutable<'a>(
         &'a self,
         limit: Option<&'a MemoryMap<'e>>,
-    ) -> MemoryIterUntilImm<'a, 'e> {
+    ) -> MemoryIterMapsUntilImm<'a, 'e> {
         match limit {
             Some(s) => if ptr::eq(self, s) {
-                return MemoryIterUntilImm {
-                    iter: None,
-                    map: self,
+                return MemoryIterMapsUntilImm {
+                    map: None,
                     limit,
-                    in_immutable: false,
                 };
             },
             None => (),
         };
 
+        let pos = Self::slower_immutable_to_limit(self, limit);
+        MemoryIterMapsUntilImm {
+            map: Some(pos),
+            limit,
+        }
+    }
+
+    /// Goes through `map.slower_immutable` as much as needed to make sure that
+    /// `limit` will be reachable from returned value
+    fn slower_immutable_to_limit<'a>(
+        map: &'a MemoryMap<'e>,
+        limit: Option<&'a MemoryMap<'e>>,
+    ) -> &'a MemoryMap<'e> {
         // Walk through slower_immutable if they exist to find the map that
         // doesn't go past limit
         let limit_depth = limit.map(|x| x.immutable_depth).unwrap_or(0);
-        let mut pos = self;
+        let mut pos = map;
         loop {
             let pos_depth = pos.immutable.as_ref().map(|x| x.immutable_depth).unwrap_or(0);
             if pos_depth >= limit_depth {
-                break;
+                return pos;
             }
             pos = match pos.slower_immutable.as_ref() {
                 Some(s) => s,
-                None => break,
+                None => return pos,
             };
-        }
-        MemoryIterUntilImm {
-            iter: Some(pos.map.iter()),
-            map: pos,
-            limit,
-            in_immutable: false,
         }
     }
 
@@ -1614,6 +1615,7 @@ impl<'e> MemoryMap<'e> {
         );
         let old_immutable = self.immutable.take();
         let immutable_depth = self.immutable_depth;
+        let all_undefined = self.all_undefined;
         let immutable_length = old_immutable.as_ref().map(|x| x.immutable_length).unwrap_or(0) +
             map.len();
         self.immutable = Some(Rc::new(MemoryMap {
@@ -1622,7 +1624,9 @@ impl<'e> MemoryMap<'e> {
             slower_immutable: None,
             immutable_depth,
             immutable_length,
+            all_undefined,
         }));
+        self.all_undefined = true;
         self.immutable_depth = immutable_depth.wrapping_add(1);
         // Merge 4 immutables to one larger map, another layer if we're at 16
         // immutables etc.
@@ -1643,12 +1647,14 @@ impl<'e> MemoryMap<'e> {
             // Actually build the map
             let mut merged_map = HashMap::with_capacity_and_hasher(sum, Default::default());
             let mut pos = self.immutable.as_ref();
+            let mut all_undefined = true;
             for _ in 0..4 {
                 match pos {
                     Some(next) => {
                         for (&k, &val) in next.map.iter() {
                             merged_map.entry(k).or_insert_with(|| val);
                         }
+                        all_undefined &= next.all_undefined;
                         pos = next.immutable.as_ref();
                     }
                     None => break,
@@ -1664,6 +1670,7 @@ impl<'e> MemoryMap<'e> {
                 slower_immutable,
                 immutable_depth,
                 immutable_length,
+                all_undefined,
             }));
             n = n << 2;
         }
@@ -1745,12 +1752,14 @@ impl<'e> MemoryMap<'e> {
                 slower_immutable,
                 immutable_depth: a.immutable_depth,
                 immutable_length,
+                all_undefined: true,
             };
         }
         let imm_eq = a.immutable.as_ref().map(|x| &**x as *const MemoryMap) ==
             b.immutable.as_ref().map(|x| &**x as *const MemoryMap);
         let result = if imm_eq {
             // Allows just checking a.map.iter() instead of a.iter()
+            let mut all_undefined = true;
             for (key, &a_val) in a.map.iter() {
                 if a_val.is_undefined() {
                     result.insert(*key, a_val);
@@ -1759,6 +1768,7 @@ impl<'e> MemoryMap<'e> {
                         match a_val == b_val {
                             true => {
                                 if !is_imm {
+                                    all_undefined &= a_val.is_undefined();
                                     result.insert(*key, a_val);
                                 }
                             }
@@ -1801,84 +1811,102 @@ impl<'e> MemoryMap<'e> {
                 slower_immutable,
                 immutable_depth: a.immutable_depth,
                 immutable_length,
+                all_undefined,
             }
         } else {
             // a's immutable map is used as base, so one which exist there don't get inserted to
             // result, but if it has ones that should become undefined, the undefined has to be
             // inserted to the result instead.
             let common = a.common_immutable(b);
-            for (key, b_val, b_is_imm) in b.iter_until_immutable(common) {
-                if b_is_imm && b.get(key) != Some(b_val) {
-                    // Wasn't newest value
-                    continue;
-                }
-                if let Some((a_val, is_imm)) = a.get_with_immutable_info(key) {
-                    match a_val == b_val {
-                        true => {
-                            if !is_imm {
-                                result.insert(*key, a_val);
+            let mut all_undefined = true;
+            let mut b_is_imm = false;
+            for map in b.iter_maps_until_immutable(common) {
+                for (key, &b_val) in map.map.iter() {
+                    if b_is_imm && b.get(key) != Some(b_val) {
+                        // Wasn't newest value
+                        continue;
+                    }
+                    if let Some((a_val, is_imm)) = a.get_with_immutable_info(key) {
+                        match a_val == b_val {
+                            true => {
+                                if !is_imm {
+                                    all_undefined &= a_val.is_undefined();
+                                    result.insert(*key, a_val);
+                                }
                             }
-                        }
-                        false => {
-                            if !a_val.is_undefined() {
-                                if b_val.is_undefined() {
-                                    result.insert(*key, b_val);
-                                } else {
-                                    result.insert(*key, ctx.new_undef());
+                            false => {
+                                if !a_val.is_undefined() {
+                                    if b_val.is_undefined() {
+                                        result.insert(*key, b_val);
+                                    } else {
+                                        result.insert(*key, ctx.new_undef());
+                                    }
                                 }
                             }
                         }
-                    }
-                } else {
-                    if !key.0.0.contains_undefined() {
-                        if b_val.is_undefined() {
-                            result.insert(*key, b_val);
-                        } else {
-                            result.insert(*key, ctx.new_undef());
+                    } else {
+                        if !key.0.0.contains_undefined() {
+                            if b_val.is_undefined() {
+                                result.insert(*key, b_val);
+                            } else {
+                                result.insert(*key, ctx.new_undef());
+                            }
                         }
                     }
                 }
+                b_is_imm = true;
             }
             // The result contains now anything that was in b's unique branch of the memory.
             //
             // Repeat for a's unique branch.
-            for (key, a_val, a_is_imm) in a.iter_until_immutable(common) {
-                if a_is_imm {
-                    if a_val.is_undefined() {
-                        if let Some(nonimm) = a.get_no_immutable(key) {
-                            if nonimm.is_undefined() {
-                                // Do nothing, the result will have 'key = a_val'
-                                // instead of 'key = nonimm', but both are undefined anyway
+            let mut a_is_imm = false;
+            let a_mutable_all_undef = a.all_undefined;
+            for map in a.iter_maps_until_immutable(common) {
+                if a_mutable_all_undef && a_is_imm && map.all_undefined {
+                    continue;
+                }
+                for (key, &a_val) in map.map.iter() {
+                    if a_is_imm {
+                        if a_val.is_undefined() {
+                            if a_mutable_all_undef {
                                 continue;
                             }
-                            // else continues to `if !result.contains_key(..)`
+                            if let Some(nonimm) = a.get_no_immutable(key) {
+                                if nonimm.is_undefined() {
+                                    // Do nothing, the result will have 'key = a_val'
+                                    // instead of 'key = nonimm', but both are undefined anyway
+                                    continue;
+                                }
+                                // else continues to `if !result.contains_key(..)`
+                            } else {
+                                // Do nothing, if this is not the newest value it should've
+                                // been skipped anyway, if this is then undef merged with
+                                // anything will still be undef
+                                continue;
+                            }
                         } else {
-                            // Do nothing, if this is not the newest value it should've
-                            // been skipped anyway, if this is then undef merged with
-                            // anything will still be undef
-                            continue;
+                            if a.get(key) != Some(a_val) {
+                                // Wasn't newest value
+                                continue;
+                            }
                         }
-                    } else {
-                        if a.get(key) != Some(a_val) {
-                            // Wasn't newest value
-                            continue;
+                    }
+                    if !result.contains_key(key) {
+                        let needs_undef = if let Some(b_val) = b.get(key) {
+                            a_val != b_val
+                        } else {
+                            true
+                        };
+                        if needs_undef {
+                            // If the key with undefined was in imm, override its value,
+                            // but otherwise just don't bother adding it back.
+                            if !key.0.0.contains_undefined() || !a_is_imm {
+                                result.insert(*key, ctx.new_undef());
+                            }
                         }
                     }
                 }
-                if !result.contains_key(key) {
-                    let needs_undef = if let Some(b_val) = b.get(key) {
-                        a_val != b_val
-                    } else {
-                        true
-                    };
-                    if needs_undef {
-                        // If the key with undefined was in imm, override its value,
-                        // but otherwise just don't bother adding it back.
-                        if !key.0.0.contains_undefined() || !a_is_imm {
-                            result.insert(*key, ctx.new_undef());
-                        }
-                    }
-                }
+                a_is_imm = true;
             }
             let immutable_length = result_immutable_len + result.len();
             let map = Rc::new(result);
@@ -1888,6 +1916,7 @@ impl<'e> MemoryMap<'e> {
                 slower_immutable,
                 immutable_depth: a.immutable_depth,
                 immutable_length,
+                all_undefined,
             }
         };
         result
@@ -1900,14 +1929,41 @@ impl<'e> MemoryMap<'e> {
             return false;
         }
         let common = a.common_immutable(b);
-        for (key, a_val, is_imm) in a.iter_until_immutable(common) {
-            if !key.0.0.contains_undefined() {
-                if !a_val.is_undefined() {
-                    if b.get(key) != Some(a_val) {
+        let mut is_imm = false;
+        for map in a.iter_maps_until_immutable(common) {
+            if !map.all_undefined {
+                for (key, &a_val) in map.map.iter() {
+                    if !key.0.0.contains_undefined() {
+                        if !a_val.is_undefined() {
+                            if b.get(key) != Some(a_val) {
+                                let was_newest_value = if !is_imm {
+                                    true
+                                } else {
+                                    a.get(key) == Some(a_val)
+                                };
+                                if was_newest_value {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            is_imm = true;
+        }
+        is_imm = false;
+        for map in b.iter_maps_until_immutable(common) {
+            for (key, &b_val) in map.map.iter() {
+                if !key.0.0.contains_undefined() {
+                    let different = match a.get(key) {
+                        Some(a_val) => !a_val.is_undefined() && a_val != b_val,
+                        None => true,
+                    };
+                    if different {
                         let was_newest_value = if !is_imm {
                             true
                         } else {
-                            a.get(key) == Some(a_val)
+                            b.get(key) == Some(b_val)
                         };
                         if was_newest_value {
                             return true;
@@ -1915,46 +1971,22 @@ impl<'e> MemoryMap<'e> {
                     }
                 }
             }
-        }
-        for (key, b_val, is_imm) in b.iter_until_immutable(common) {
-            if !key.0.0.contains_undefined() {
-                let different = match a.get(key) {
-                    Some(a_val) => !a_val.is_undefined() && a_val != b_val,
-                    None => true,
-                };
-                if different {
-                    let was_newest_value = if !is_imm {
-                        true
-                    } else {
-                        b.get(key) == Some(b_val)
-                    };
-                    if was_newest_value {
-                        return true;
-                    }
-                }
-            }
+            is_imm = true;
         }
         false
     }
 }
 
-impl<'a, 'e> Iterator for MemoryIterUntilImm<'a, 'e> {
+impl<'a, 'e> Iterator for MemoryIterMapsUntilImm<'a, 'e> {
     /// The bool tells if we're at immutable parts of the calling operand or not
-    type Item = (&'a (OperandHashByAddress<'e>, u64), Operand<'e>, bool);
+    type Item = &'a MemoryMap<'e>;
     fn next(&mut self) -> Option<Self::Item> {
-        match self.iter.as_mut()?.next() {
-            Some(s) => Some((s.0, *s.1, self.in_immutable)),
-            None => {
-                match self.map.immutable {
-                    Some(ref i) => {
-                        *self = i.iter_until_immutable(self.limit);
-                        self.in_immutable = true;
-                        self.next()
-                    }
-                    None => return None,
-                }
-            }
-        }
+        let next = self.map?;
+        let limit_ptr = self.limit.map(|x| x as *const MemoryMap<'e>).unwrap_or(ptr::null());
+        self.map = next.immutable.as_deref()
+            .filter(|&x| x as *const MemoryMap<'e>  != limit_ptr)
+            .map(|x| MemoryMap::slower_immutable_to_limit(x, self.limit));
+        Some(next)
     }
 }
 
@@ -2820,7 +2852,9 @@ fn test_iter_until_immutable() {
     let map1 = maps[1].map.immutable.as_ref().unwrap();
     assert_eq!(map1.immutable_depth, 1);
 
-    let results = map19.iter_until_immutable(Some(map14))
+    let results = map19.iter_maps_until_immutable(Some(map14))
+        .enumerate()
+        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
         .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
@@ -2829,7 +2863,9 @@ fn test_iter_until_immutable() {
     ];
     assert_eq!(results, cmp);
 
-    let results = map19.iter_until_immutable(Some(map12))
+    let results = map19.iter_maps_until_immutable(Some(map12))
+        .enumerate()
+        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
         .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
@@ -2840,7 +2876,9 @@ fn test_iter_until_immutable() {
     ];
     assert_eq!(results, cmp);
 
-    let results = map19.iter_until_immutable(Some(map11))
+    let results = map19.iter_maps_until_immutable(Some(map11))
+        .enumerate()
+        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
         .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
@@ -2849,7 +2887,9 @@ fn test_iter_until_immutable() {
     ];
     assert_eq!(results, cmp);
 
-    let results = map19.iter_until_immutable(Some(map3))
+    let results = map19.iter_maps_until_immutable(Some(map3))
+        .enumerate()
+        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
         .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
@@ -2860,7 +2900,9 @@ fn test_iter_until_immutable() {
     ];
     assert_eq!(results, cmp);
 
-    let results = map19.iter_until_immutable(Some(map1))
+    let results = map19.iter_maps_until_immutable(Some(map1))
+        .enumerate()
+        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
         .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
@@ -2873,7 +2915,9 @@ fn test_iter_until_immutable() {
     ];
     assert_eq!(results, cmp);
 
-    let results = map14.iter_until_immutable(Some(map1))
+    let results = map14.iter_maps_until_immutable(Some(map1))
+        .enumerate()
+        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
         .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
         .collect::<Vec<_>>();
     let cmp = vec![
