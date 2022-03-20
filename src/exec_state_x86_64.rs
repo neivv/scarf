@@ -96,8 +96,31 @@ impl<'e> CachedLowRegisters<'e> {
         }
     }
 
+    #[inline]
     fn invalidate(&mut self, register: u8) {
         self.registers[register as usize] = [None; 3];
+    }
+
+    #[inline]
+    fn set32(&mut self, register: u8, value: Operand<'e>) {
+        self.registers[register as usize][2] = Some(value);
+    }
+
+    #[inline]
+    fn set16(&mut self, register: u8, value: Operand<'e>) {
+        self.registers[register as usize][1] = Some(value);
+    }
+
+    #[inline]
+    fn invalidate_for_8high(&mut self, register: u8) {
+        // Won't change low u8 if it was cached
+        self.registers[register as usize][0] = None;
+        self.registers[register as usize][1] = None;
+    }
+
+    #[inline]
+    fn set8(&mut self, register: u8, value: Operand<'e>) {
+        self.registers[register as usize][0] = Some(value);
     }
 }
 
@@ -466,18 +489,20 @@ impl<'e> State<'e> {
                 self.state[(reg & 0xf) as usize] = value;
             }
             DestOperand::Register32(reg) => {
-                self.cached_low_registers.invalidate(reg);
                 // 32-bit register dest clears high bits (16- or 8-bit dests don't)
                 let masked = if value.relevant_bits().end > 32 {
                     self.ctx.and_const(value, 0xffff_ffff)
                 } else {
                     value
                 };
-                self.state[(reg & 0xf) as usize] = masked;
+                let reg = reg & 0xf;
+                self.state[reg as usize] = masked;
+                self.cached_low_registers.invalidate(reg);
+                self.cached_low_registers.set32(reg, masked);
             }
             DestOperand::Register16(reg) => {
-                self.cached_low_registers.invalidate(reg);
-                let index = (reg & 0xf) as usize;
+                let reg = reg & 0xf;
+                let index = reg as usize;
                 let old = self.state[index];
                 let ctx = self.ctx;
                 let masked = if value.relevant_bits().end > 16 {
@@ -495,10 +520,12 @@ impl<'e> State<'e> {
                     )
                 };
                 self.state[index] = new;
+                self.cached_low_registers.invalidate(reg);
+                self.cached_low_registers.set16(reg, masked);
             }
             DestOperand::Register8High(reg) => {
-                self.cached_low_registers.invalidate(reg);
-                let index = (reg & 0xf) as usize;
+                let reg = reg & 0xf;
+                let index = reg as usize;
                 let old = self.state[index];
                 let ctx = self.ctx;
                 let masked = if value.relevant_bits().end > 8 {
@@ -516,10 +543,11 @@ impl<'e> State<'e> {
                     )
                 };
                 self.state[index] = new;
+                self.cached_low_registers.invalidate_for_8high(reg);
             }
             DestOperand::Register8Low(reg) => {
-                self.cached_low_registers.invalidate(reg);
-                let index = (reg & 0xf) as usize;
+                let reg = reg & 0xf;
+                let index = reg as usize;
                 let old = self.state[index];
                 let ctx = self.ctx;
                 let masked = if value.relevant_bits().end > 8 {
@@ -537,6 +565,8 @@ impl<'e> State<'e> {
                     )
                 };
                 self.state[index] = new;
+                self.cached_low_registers.invalidate(reg);
+                self.cached_low_registers.set8(reg, masked);
             }
             DestOperand::Fpu(_) => (),
             DestOperand::Xmm(reg, word) => {
