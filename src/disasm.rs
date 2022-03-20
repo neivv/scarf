@@ -126,7 +126,8 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
     }
 
     fn next<'s>(&'s mut self) -> Instruction<'s, 'a, VirtualAddress32> {
-        let length = instruction_length_32(&self.buf[self.pos..]);
+        let instruction_bytes = &self.buf[self.pos..];
+        let length = instruction_length_32(instruction_bytes);
         let address = self.virtual_address + self.pos as u32;
         self.ops_buffer.clear();
         if length == 0 {
@@ -138,10 +139,10 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
                 self.ops_buffer.push(Operation::Error(Error::UnknownOpcode(bytes, 1)));
             }
         } else {
-            let data = &self.buf[self.pos..self.pos + length];
             instruction_operations32(
                 address,
-                data,
+                instruction_bytes,
+                length,
                 self.ctx,
                 &mut self.ops_buffer,
                 &mut self.register_cache,
@@ -195,7 +196,8 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
     }
 
     fn next<'s>(&'s mut self) -> Instruction<'s, 'a, VirtualAddress64> {
-        let length = instruction_length_64(&self.buf[self.pos..]);
+        let instruction_bytes = &self.buf[self.pos..];
+        let length = instruction_length_64(instruction_bytes);
         let address = self.virtual_address + self.pos as u32;
         self.ops_buffer.clear();
         if length == 0 {
@@ -207,10 +209,10 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
                 self.ops_buffer.push(Operation::Error(Error::UnknownOpcode(bytes, 1)));
             }
         } else {
-            let data = &self.buf[self.pos..self.pos + length];
             instruction_operations64(
                 address,
-                data,
+                instruction_bytes,
+                length,
                 self.ctx,
                 &mut self.ops_buffer,
                 &mut self.register_cache,
@@ -412,6 +414,7 @@ struct InstructionOpsState<'a, 'e: 'a, Va: VirtualAddress> {
 fn instruction_operations32<'e>(
     address: VirtualAddress32,
     data: &[u8],
+    instruction_len: usize,
     ctx: OperandCtx<'e>,
     out: &mut OperationVec<'e>,
     register_cache: &mut RegisterCache<'e>,
@@ -434,7 +437,7 @@ fn instruction_operations32<'e>(
         prefix_f3: false,
     };
 
-    let full_data = data;
+    let full_data = &data[..instruction_len];
     let prefix_count = data.iter().take_while(|&&x| is_prefix_byte(x)).count();
     for &prefix in data.iter().take_while(|&&x| is_prefix_byte(x)) {
         match prefix {
@@ -445,16 +448,25 @@ fn instruction_operations32<'e>(
             _ => (),
         }
     }
-    let instruction_len = data.len();
     let data = &data[prefix_count..];
     let is_ext = data[0] == 0xf;
     let data_in = match is_ext {
         true => &data[1..],
         false => data,
     };
-    let mut data = [0u8; 16];
-    let copy_len = data.len().min(data_in.len());
-    (&mut data[..copy_len]).copy_from_slice(&data_in[..copy_len]);
+    // Try to write this in a way that LLVM doesn't convert the 99.99% common
+    // case of 16-byte copy to a memcpy call.
+    let mut data;
+    if data_in.len() >= 16 {
+        data = [0u8; 16];
+        (&mut data[..16]).copy_from_slice(&data_in[..16]);
+    } else {
+        data = [0u8; 16];
+        // This seems to still become a memcpy call, oh well.
+        for i in 0..data_in.len() {
+            data[i] = data_in[i];
+        }
+    }
     let mut s = InstructionOpsState {
         address,
         data,
@@ -700,6 +712,7 @@ fn instruction_operations32_main(
 fn instruction_operations64<'e>(
     address: VirtualAddress64,
     data: &[u8],
+    instruction_len: usize,
     ctx: OperandCtx<'e>,
     out: &mut OperationVec<'e>,
     register_cache: &mut RegisterCache<'e>,
@@ -723,7 +736,7 @@ fn instruction_operations64<'e>(
         prefix_f3: false,
     };
 
-    let full_data = data;
+    let full_data = &data[..instruction_len];
     let prefix_count = data.iter().take_while(|&&x| is_prefix_byte(x)).count();
     for &prefix in data.iter().take_while(|&&x| is_prefix_byte(x)) {
         match prefix {
@@ -735,16 +748,25 @@ fn instruction_operations64<'e>(
             _ => (),
         }
     }
-    let instruction_len = data.len();
     let data = &data[prefix_count..];
     let is_ext = data[0] == 0xf;
     let data_in = match is_ext {
         true => &data[1..],
         false => data,
     };
-    let mut data = [0u8; 16];
-    let copy_len = data.len().min(data_in.len());
-    (&mut data[..copy_len]).copy_from_slice(&data_in[..copy_len]);
+    // Try to write this in a way that LLVM doesn't convert the 99.99% common
+    // case of 16-byte copy to a memcpy call.
+    let mut data;
+    if data_in.len() >= 16 {
+        data = [0u8; 16];
+        (&mut data[..16]).copy_from_slice(&data_in[..16]);
+    } else {
+        data = [0u8; 16];
+        // This seems to still become a memcpy call, oh well.
+        for i in 0..data_in.len() {
+            data[i] = data_in[i];
+        }
+    }
     let mut s = InstructionOpsState {
         address,
         data,
