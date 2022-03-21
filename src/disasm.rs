@@ -3685,6 +3685,9 @@ pub enum Operation<'e> {
     /// Allows implementing operations that write to several outputs, which are
     /// simultaneously used as inputs. For example, long mul, div (Result + modulo), swap,
     /// carry add/sub.
+    ///
+    /// Cloning state which is in middle of freeze will not clone any buffered operations;
+    /// the new copy can be updated but any buffered writes are lost.
     Freeze,
     /// Commits any buffered operations since `Freeze` was used to buffer them.
     Unfreeze,

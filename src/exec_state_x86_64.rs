@@ -56,8 +56,10 @@ impl<'e> Clone for ExecutionState<'e> {
         // or branching code generally avoids temporaries.
         let s = &*self.inner;
         let memory = s.memory.clone();
-        let xmm= s.xmm.clone();
-        let freeze_buffer = s.freeze_buffer.clone();
+        let xmm = s.xmm.clone();
+        // Not cloning freeze_buffer, it is always expected to be empty anyway.
+        // Operation::Freeze now also documents that freezes will be discarded on clone.
+        let freeze_buffer = Vec::new();
         ExecutionState {
             inner: Box::alloc().init(State {
                 memory,
@@ -71,7 +73,7 @@ impl<'e> Clone for ExecutionState<'e> {
                 ctx: s.ctx,
                 binary: s.binary,
                 pending_flags: s.pending_flags,
-                frozen: s.frozen,
+                frozen: false,
             }),
         }
     }
