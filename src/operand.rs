@@ -1782,6 +1782,7 @@ impl<'e> OperandType<'e> {
                         arith.left.relevant_bits()
                     }
                 }
+                ArithOpType::ToFloat => 0..32,
                 _ => 0..64,
             },
             OperandType::ArithmeticFloat(ref arith, size) => match arith.ty {

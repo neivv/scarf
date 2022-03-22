@@ -8138,3 +8138,22 @@ fn simplify_eq_mul() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn int_to_float_is_32bit() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.arithmetic(
+            ArithOpType::ToFloat,
+            ctx.register(1),
+            ctx.const_0(),
+        ),
+        0xffff_ffff,
+    );
+    let eq1 = ctx.arithmetic(
+        ArithOpType::ToFloat,
+        ctx.register(1),
+        ctx.const_0(),
+    );
+    assert_eq!(op1, eq1);
+}
