@@ -1055,13 +1055,16 @@ impl<'e> State<'e> {
         }
     }
 
-    #[inline]
     fn set_register(&mut self, register: u8, value: Operand<'e>) {
-        self.state[register as usize & 0xf] = value;
+        self.unresolved_constraint = None;
+        let reg = register & 0xf;
+        self.cached_low_registers.invalidate(reg);
+        self.state[reg as usize] = value;
     }
 
     #[inline]
     fn set_flag(&mut self, flag: Flag, value: Operand<'e>) {
+        self.unresolved_constraint = None;
         self.pending_flags.make_non_pending(flag);
         self.state[FLAGS_INDEX + flag as usize] = value;
     }
