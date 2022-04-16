@@ -658,6 +658,7 @@ struct ControlInner<'e: 'b, 'b, Exec: ExecutionState<'e> + 'b, State: AnalysisSt
     end: Option<End>,
     address: Exec::VirtualAddress,
     branch_start: Exec::VirtualAddress,
+    continue_at_address: Exec::VirtualAddress,
     instruction_length: u8,
     skip_operation: bool,
 }
@@ -666,6 +667,7 @@ struct ControlInner<'e: 'b, 'b, Exec: ExecutionState<'e> + 'b, State: AnalysisSt
 enum End {
     Function,
     Branch,
+    ContinueBranch,
 }
 
 impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
@@ -687,6 +689,11 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     /// For `branch_end()` callback, returns the address of final instruction of branch.
     pub fn address(&self) -> <A::Exec as ExecutionState<'e>>::VirtualAddress {
         self.inner.address
+    }
+
+    /// Returns start address of the current branch.
+    pub fn branch_start(&self) -> <A::Exec as ExecutionState<'e>>::VirtualAddress {
+        self.inner.branch_start
     }
 
     /// Returns address of the next instruction that will be executed.
@@ -849,16 +856,44 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     }
 
     /// Adds a branch to be analyzed using current state.
-    ///
-    /// Can be useful when combined with end_branch() on jump to only force one branch to
-    /// be taken. As with branches in general, if the branch has been already analyzed and the
-    /// new state doesn't differ from old, the branch doesn't get analyzed.
     pub fn add_branch_with_current_state(
         &mut self,
         address: <A::Exec as ExecutionState<'e>>::VirtualAddress,
     ) {
         let state = self.inner.state.clone();
         self.inner.analysis.add_unchecked_branch(address, state);
+    }
+
+    /// Adds a branch to be analyzed using given `ExecutionState` and user-defined state.
+    pub fn add_branch_with_state(
+        &mut self,
+        address: <A::Exec as ExecutionState<'e>>::VirtualAddress,
+        exec_state: A::Exec,
+        user_state: A::State,
+    ) {
+        self.inner.analysis.add_unchecked_branch(address, (exec_state, user_state));
+    }
+
+    /// Causes the current branch jump to an address.
+    ///
+    /// Internally ends the current branch, and queues a new one at the given
+    /// address using current state.
+    ///
+    /// Slightly differs from what `ctrl.end_branch()` does in that if used on middle of
+    /// non-jumping instruction, all `Operation`s in the instruction will be executed
+    /// before branch ends and execution will be continued at `address`.
+    ///
+    /// Can be used on jump to only force one branch to be taken.
+    /// As with branches in general, if the branch has been already analyzed and the
+    /// new state doesn't differ from old, the branch doesn't get analyzed.
+    pub fn continue_at_address(
+        &mut self,
+        address: <A::Exec as ExecutionState<'e>>::VirtualAddress,
+    ) {
+        if self.inner.end.is_none() {
+            self.inner.continue_at_address = address;
+            self.inner.end = Some(End::ContinueBranch);
+        }
     }
 
     /// Clears all branches, both analyzed and currently pending.
@@ -1120,6 +1155,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             analysis: self,
             address: addr,
             branch_start: addr,
+            continue_at_address: Exec::VirtualAddress::from_u64(0),
             instruction_length: 0,
             skip_operation: false,
             state,
@@ -1164,18 +1200,18 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             for op in instruction.ops() {
                 control.inner.skip_operation = false;
                 analyzer.operation(&mut control, op);
-                if control.inner.end.is_some() {
-                    update_cfg_for_user_requested_end(&mut control.inner, &mut node);
-                    return control.inner.end;
+                if let Some(end) = control.inner.end {
+                    let end_now = end != End::ContinueBranch || is_branch_end_op(op);
+                    if end_now {
+                        update_analysis_for_user_requested_end(&mut inner_wrap, &mut node);
+                        return Some(end);
+                    }
                 }
                 if control.inner.skip_operation {
                     continue;
                 }
-                match *op {
-                    Operation::Jump { .. } | Operation::Return(..) | Operation::Error(..) => {
-                        analyzer.branch_end(&mut control);
-                    }
-                    _ => (),
+                if is_branch_end_op(op) {
+                    analyzer.branch_end(&mut control);
                 }
                 update_analysis_for_operation(&mut inner_wrap, op, &mut node);
                 control = match inner_wrap {
@@ -1186,6 +1222,10 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                         inner,
                     },
                 };
+            }
+            if let Some(end) = control.inner.end {
+                update_analysis_for_user_requested_end(&mut inner_wrap, &mut node);
+                return Some(end);
             }
         }
     }
@@ -1287,6 +1327,11 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         });
         cfg
     }
+}
+
+#[inline]
+fn is_branch_end_op<'e>(op: &Operation<'e>) -> bool {
+    matches!(op, Operation::Jump { .. } | Operation::Return(..) | Operation::Error(..))
 }
 
 struct RunHookAnalyzer<'e, F, Exec: ExecutionState<'e>, S: AnalysisState> {
@@ -1447,18 +1492,29 @@ where E: ExecutionState<'e> + 'b,
     End(Option<End>),
 }
 
-fn update_cfg_for_user_requested_end<'e: 'b, 'b, E, S>(
-    control: &mut ControlInner<'e, 'b, E, S>,
+fn update_analysis_for_user_requested_end<'e: 'b, 'b, E, S>(
+    // Expected to always be AnalysisUpdateResult::Continue
+    control_ref: &mut AnalysisUpdateResult<'e, 'b, E, S>,
     // Option so that it can be moved out of. Expected to always be Some
     cfg_node_opt: &mut Option<CfgNode<'e, CfgState<'e, E, S>>>,
 )
 where E: ExecutionState<'e> + 'b,
       S: AnalysisState,
 {
+    let control = match mem::replace(control_ref, AnalysisUpdateResult::End(None)) {
+        AnalysisUpdateResult::Continue(c) => c,
+        // Unreachable
+        AnalysisUpdateResult::End(_) => return,
+    };
     if let Some(mut cfg_node) = cfg_node_opt.take() {
         let address = control.address;
         cfg_node.end_address = address;
         control.analysis.cfg.add_node(control.branch_start, cfg_node);
+    }
+    if control.end == Some(End::ContinueBranch) {
+        let analysis = control.analysis;
+        let state = control.state;
+        analysis.add_unchecked_branch(control.continue_at_address, state);
     }
 }
 
