@@ -373,6 +373,7 @@ pub fn find_relocs_x86_64(
     Ok(result)
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct RelocValues<Va: VaTrait> {
     pub address: Va,
     pub value: Va,
