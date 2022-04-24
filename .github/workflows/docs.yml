@@ -1,0 +1,39 @@
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'src/**'
+      - 'Cargo.*'
+
+name: Docs
+
+jobs:
+  build-docs:
+    concurrency: ci-${{ github.ref }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+
+      - name: Install stable toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Build docs
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --lib --no-deps
+
+      - name: Deploy 🚀
+        uses: JamesIves/github-pages-deploy-action@v4.3.0
+        with:
+          branch: gh-pages
+          folder: target/doc
+          target-folder: docs
+          commit-message: CI docs for ${{ github.sha }}
+          single-commit: true

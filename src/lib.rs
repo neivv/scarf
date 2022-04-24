@@ -1,5 +1,7 @@
 //! Scarf is a library for analyzing x86 functions.
 //!
+//! test doc building asd asd asd
+//!
 //! The main concept of scarf is that the user gives [`FuncAnalysis`] a function
 //! which will be simulated. `FuncAnalysis` will walk through the function's different
 //! execution paths, while calling [user-defined callbacks](Analyzer), letting the user code
