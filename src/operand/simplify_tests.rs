@@ -8157,3 +8157,40 @@ fn int_to_float_is_32bit() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn float_compares_are_bool() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.float_arithmetic(
+            ArithOpType::Equal,
+            ctx.xmm(0, 0),
+            ctx.xmm(0, 1),
+            MemAccessSize::Mem32,
+        ),
+        1,
+    );
+    let eq1 = ctx.float_arithmetic(
+        ArithOpType::Equal,
+        ctx.xmm(0, 0),
+        ctx.xmm(0, 1),
+        MemAccessSize::Mem32,
+    );
+    assert_eq!(op1, eq1);
+    let op1 = ctx.and_const(
+        ctx.float_arithmetic(
+            ArithOpType::GreaterThan,
+            ctx.xmm(0, 0),
+            ctx.xmm(0, 1),
+            MemAccessSize::Mem32,
+        ),
+        1,
+    );
+    let eq1 = ctx.float_arithmetic(
+        ArithOpType::GreaterThan,
+        ctx.xmm(0, 0),
+        ctx.xmm(0, 1),
+        MemAccessSize::Mem32,
+    );
+    assert_eq!(op1, eq1);
+}

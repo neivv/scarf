@@ -1792,6 +1792,7 @@ impl<'e> OperandType<'e> {
                 // guess that's good enough?
                 ArithOpType::ToDouble => 0..64,
                 ArithOpType::ToFloat => 0..32,
+                ArithOpType::Equal | ArithOpType::GreaterThan => 0..1,
                 _ => (0..size.bits() as u8),
             }
             // Note: constants not handled here; const_relevant_bits instead
