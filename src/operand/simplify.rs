@@ -1455,6 +1455,47 @@ fn relevant_bits_for_eq<'e>(ops: &[(Operand<'e>, bool)], ctx: OperandCtx<'e>) ->
     })
 }
 
+/// Canonicalize (inner & mask_c) == eq_c
+fn canonicalize_masked_eq_const<'e>(
+    ctx: OperandCtx<'e>,
+    inner: Operand<'e>,
+    mask_c: u64,
+    eq_c: u64,
+) -> Option<Operand<'e>> {
+    match inner.ty() {
+        OperandType::Arithmetic(arith) => {
+            // If inner is (x << c) or (x >> c), remove the shift
+            // and shift constants to opposite direction.
+            // so (x & mask_c_shifted) == eq_c_shifted
+            if matches!(arith.ty, ArithOpType::Lsh | ArithOpType::Rsh) {
+                if let Some(c) = arith.right.if_constant() {
+                    let c = c as u32;
+                    let left = arith.left;
+                    let mask_c_shifted;
+                    let eq_c_shifted;
+                    if arith.ty == ArithOpType::Lsh {
+                        mask_c_shifted = mask_c.wrapping_shr(c);
+                        eq_c_shifted = eq_c.wrapping_shr(c);
+                    } else {
+                        mask_c_shifted = mask_c.wrapping_shl(c);
+                        eq_c_shifted = eq_c.wrapping_shl(c);
+                    };
+                    let result = ctx.eq_const(
+                        ctx.and_const(
+                            left,
+                            mask_c_shifted,
+                        ),
+                        eq_c_shifted,
+                    );
+                    return Some(result);
+                }
+            }
+        }
+        _ => (),
+    }
+    None
+}
+
 /// This is called by main simplify_eq, so it is assuming
 /// that left doesn't have any constants
 fn simplify_eq_1op_const<'e>(
@@ -1468,7 +1509,15 @@ fn simplify_eq_1op_const<'e>(
             return left;
         }
     }
-    if let Some((val, from, to)) = left.if_sign_extend() {
+    if let Some((l, r)) = left.if_arithmetic_and() {
+        // Canonicalize ((a << C1) & C2) == C3
+        // to (a & (C2 >> C1)) == (C3 >> C1)
+        if let Some(r) = r.if_constant() {
+            if let Some(op) = canonicalize_masked_eq_const(ctx, l, r, right) {
+                return op;
+            }
+        }
+    } else if let Some((val, from, to)) = left.if_sign_extend() {
         let from_mask = from.mask();
         let to_mask = to.mask();
         if right < to_mask - from_mask / 2 && right > from_mask / 2 {
@@ -3519,6 +3568,50 @@ fn intern_arith_ops_to_tree<'e, I: Iterator<Item = Operand<'e>>>(
     Some(tree)
 }
 
+/// If a == (b >> c), return Some(c)
+fn equal_when_shifted_right<'e>(
+    a: Operand<'e>,
+    b: Operand<'e>,
+) -> Option<u8> {
+    use ArithOpType::*;
+    match *a.ty() {
+        OperandType::Arithmetic(ref a_arith) => {
+            if matches!(a_arith.ty, And | Or | Xor) {
+                match b.ty() {
+                    OperandType::Arithmetic(b_arith) => {
+                        if matches!(b_arith.ty, And | Or | Xor) {
+                            let left = equal_when_shifted_right(a_arith.left, b_arith.left)?;
+                            let right = equal_when_shifted_right(a_arith.right, b_arith.right)?;
+                            if left == right {
+                                return Some(left);
+                            }
+                        }
+                    }
+                    _ => (),
+                }
+            } else if a_arith.ty == Rsh {
+                if a_arith.left == b {
+                    if let Some(c) = a_arith.right.if_constant() {
+                        return Some(c as u8);
+                    }
+                }
+            }
+        }
+        OperandType::Constant(c) => {
+            if let Some(c2) = b.if_constant() {
+                let a_zeros = a.relevant_bits().start;
+                let b_zeros = b.relevant_bits().start;
+                let shift = b_zeros.checked_sub(a_zeros)?;
+                if c2.wrapping_shr(shift as u32) == c {
+                    return Some(shift);
+                }
+            }
+        }
+        _ => (),
+    }
+    None
+}
+
 // Simplify or: merge comparisions
 // Converts
 // (c > x) | (c == x) to (c + 1 > x),
@@ -3572,7 +3665,7 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
                             (MatchType::Equal, MatchType::ConstantGreater) =>
                         {
                             // (c1 > y - c2) | (c1 + c2) == y to (c1 + 1 > y - c2)
-                            let (gt, c1, eq, eq_c) = match ty == MatchType::ConstantGreater {
+                            let (gt, c1, eq, mut eq_c) = match ty == MatchType::ConstantGreater {
                                 true => (x, c, x2, c2),
                                 false => (x2, c2, x, c),
                             };
@@ -3582,10 +3675,7 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
                                     Some((l, r.if_constant()?))
                                 })
                                 .unwrap_or((gt_inner, 0));
-                            let constants_match = c1.checked_add(c2)
-                                .filter(|&c| c == eq_c)
-                                .is_some();
-                            let values_match = if (y, gt_mask) == Operand::and_masked(eq) {
+                            let mut values_match = if (y, gt_mask) == Operand::and_masked(eq) {
                                 true
                             } else {
                                 // Can also be that y == eq == (smth & ff),
@@ -3593,6 +3683,21 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
                                 // (y, u64::MAX) != (smth, ff)
                                 y == eq && gt_mask == u64::MAX
                             };
+                            if !values_match {
+                                // If values didn't match, check if they match when eq is shifted
+                                // E.g. y = ((rcx >> 10) & ff),
+                                //      eq = (rcx & ff0000)
+                                // If they do, shift eq_c as well
+                                if gt_mask == u64::MAX {
+                                    if let Some(shift) = equal_when_shifted_right(y, eq) {
+                                        eq_c = eq_c.wrapping_shr(shift as u32);
+                                        values_match = true;
+                                    }
+                                }
+                            }
+                            let constants_match = c1.checked_add(c2)
+                                .filter(|&c| c == eq_c)
+                                .is_some();
                             if constants_match && values_match {
                                 // min/max edge cases can be handled by gt simplification,
                                 // don't do them here.

@@ -8194,3 +8194,41 @@ fn float_compares_are_bool() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn mem_mask_eq_mask() {
+    let ctx = &OperandContext::new();
+    // (Mem32[100] & 8888_0000) == 8888_0000
+    // => (Mem16[102] & 8888) == 8888
+    let op1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.mem32c(0x100),
+            0x8888_0000,
+        ),
+        0x8888_0000,
+    );
+    let eq1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.mem32c(0x102),
+            0x8888,
+        ),
+        0x8888,
+    );
+    // ((Mem16[102] >> 3) & 1111) == 1111
+    let eq2 = ctx.eq_const(
+        ctx.and_const(
+            ctx.rsh_const(
+                ctx.mem32c(0x102),
+                3,
+            ),
+            0x1111,
+        ),
+        0x1111,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op1, eq2);
+    // Check also that canonical form is (_ == 8888)
+    // (No shifts)
+    let (_, r) = op1.if_arithmetic_eq().unwrap();
+    assert_eq!(r, ctx.constant(0x8888));
+}
