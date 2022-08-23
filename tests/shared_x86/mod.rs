@@ -1052,3 +1052,19 @@ fn inc_dec_ax() {
          (ctx.register(0), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn lahf() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xb8, 0xff, 0x7f, 0x00, 0x00, // mov eax, 7fff
+        0xb9, 0x00, 0x80, 0x00, 0x00, // mov ecx, 8000
+        0x39, 0xc8, // cmp eax, ecx
+        0x9f, // lahf (SF:ZF:0:AF:0:PF:1:CF) (100a0p11)
+        0x25, 0xff, 0xeb, 0xff, 0xff, // and eax, ffff_ebff (Ignore a/p)
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0x83ff)),
+         (ctx.register(1), ctx.constant(0x8000)),
+    ]);
+}

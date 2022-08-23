@@ -1749,10 +1749,21 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn lahf(&mut self) -> Result<(), Failed> {
-        // TODO implement
+        // Should also have (AuxCarry, 4) but scarf doesn't include that
+        static FLAGS: [(Flag, u8); 4] = [
+            (Flag::Carry, 0),
+            (Flag::Parity, 2),
+            (Flag::Zero, 6),
+            (Flag::Sign, 7),
+        ];
+        let ctx = self.ctx;
+        let mut value = ctx.constant(0x2);
+        for &(flag, shift) in &FLAGS {
+            value = ctx.or(value, ctx.lsh_const(ctx.flag(flag), shift.into()));
+        }
         self.output_mov(
             DestOperand::Register8High(0),
-            self.ctx.new_undef(),
+            value,
         );
         Ok(())
     }
@@ -2238,7 +2249,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             (rm, imm)
         } else {
             let (rm, r) = self.parse_modrm(op_size);
-            (rm, self.r_to_operand(r).clone())
+            (rm, self.r_to_operand(r))
         };
         let ctx = self.ctx;
         // Move bit at index to carry, clear it
@@ -2442,22 +2453,38 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     }
 
     fn sse_compare(&mut self) -> Result<(), Failed> {
-        // TODO
-        // Needs to specify how to check for unordered. Does not(y > x) mean
-        // that `y == x || x > y || nan(y) || nan(x)` or just `y == x || x > y`.
         let ctx = self.ctx;
-        let zero = ctx.const_0();
         // zpc = 111 if unordered, 000 if greater, 001 if less, 100 if equal
         // or alternatively
         // z = equal or unordererd
         // p = unordered
         // c = less than or unordered
-        for &flag in &[Flag::Zero, Flag::Carry, Flag::Parity] {
-            self.output_mov(
-                DestOperand::Flag(flag),
-                ctx.and_const(ctx.new_undef(), 1),
-            );
-        }
+        let (rm, r) = self.parse_modrm(MemAccessSize::Mem32);
+        let rm = self.rm_to_operand_xmm(&rm, 0);
+        let r = self.r_to_operand_xmm(r, 0);
+        // isnan(r) | isnan(rm)
+        let unordered = ctx.or(
+            ctx.eq_const(
+                ctx.and_const(r, 0x7f80_0000),
+                0x7f80_0000,
+            ),
+            ctx.eq_const(
+                ctx.and_const(rm, 0x7f80_0000),
+                0x7f80_0000,
+            ),
+        );
+        let zero = ctx.or(
+            unordered,
+            ctx.float_arithmetic(ArithOpType::Equal, r, rm, MemAccessSize::Mem32),
+        );
+        let carry = ctx.or(
+            unordered,
+            ctx.float_arithmetic(ArithOpType::GreaterThan, rm, r, MemAccessSize::Mem32),
+        );
+
+        self.output_mov(DestOperand::Flag(Flag::Zero), zero);
+        self.output_mov(DestOperand::Flag(Flag::Carry), carry);
+        self.output_mov(DestOperand::Flag(Flag::Parity), unordered);
         for &flag in &[Flag::Overflow, Flag::Sign] {
             self.output_mov(DestOperand::Flag(flag), zero);
         }

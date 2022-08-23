@@ -116,8 +116,8 @@ impl<'e> CachedLowRegisters<'e> {
     #[inline]
     fn invalidate_for_8high(&mut self, register: u8) {
         // Won't change low u8 if it was cached
-        self.registers[register as usize][0] = None;
         self.registers[register as usize][1] = None;
+        self.registers[register as usize][2] = None;
     }
 
     #[inline]
