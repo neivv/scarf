@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use std::mem;
 
 use arrayvec::ArrayVec;
+use copyless::BoxHelper;
 use fxhash::FxHasher;
 use hashbrown::hash_map::{HashMap, RawEntryMut};
 use typed_arena::Arena;
@@ -300,7 +301,7 @@ impl UndefInterner {
                 }
             }
 
-            chunks.push(Box::new(ArrayVec::new()));
+            chunks.push(Box::alloc().init(ArrayVec::new()));
         }
     }
 

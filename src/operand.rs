@@ -1494,9 +1494,10 @@ impl<'e> OperandContext<'e> {
     /// to be rechecked.
     pub fn new_undef(&'e self) -> Operand<'e> {
         let id = self.next_undefined.get();
-        self.next_undefined.set(id + 1);
+        let next = id.wrapping_add(1);
+        self.next_undefined.set(next);
         if id == self.max_undefined.get() {
-            self.max_undefined.set(id + 1);
+            self.max_undefined.set(next);
             self.undef_interner.push(OperandBase {
                 ty: OperandType::Undefined(UndefinedId(id)),
                 min_zero_bit_simplify_size: 0,
