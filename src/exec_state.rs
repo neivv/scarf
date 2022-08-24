@@ -546,6 +546,65 @@ pub(crate) fn overflow_for_add_sub<'e>(
     }
 }
 
+/// Calculates x86 parity flag value, that is, 1 if number of set bits on low u8 is even,
+/// and 0 if it is odd.
+pub(crate) fn calculate_parity<'e>(ctx: OperandCtx<'e>, mut value: Operand<'e>) -> Operand<'e> {
+    // Parity can be expressed as
+    // 1 ^ (x & 1) ^ ((x >> 1) & 1) ^ ...
+    // or alternatively, shorter as
+    // a = ((x >> 4) ^ x)
+    // b = ((a >> 2) ^ a)
+    // result = ((b >> 1) ^ b)) == 0
+    // Do even slightly faster version where temp values can be avoided when
+    // relevant_bits is less than 8
+
+    if let Some(c) = value.if_constant() {
+        return match (c as u8).count_ones() & 1 == 0 {
+            true => ctx.const_1(),
+            false => ctx.const_0(),
+        }
+    }
+    let mut rel_bits = value.relevant_bits();
+    if rel_bits.start >= 8 {
+        return ctx.const_1();
+    }
+    if rel_bits.end > 8 {
+        value = ctx.and_const(value, 0xff);
+        rel_bits.end = 8;
+    }
+    if rel_bits.start != 0 {
+        value = ctx.rsh_const(value, rel_bits.start as u64);
+    }
+    while rel_bits.end > 1 {
+        // 2 bit => 1
+        // 3 bit => 2
+        // 4 bit => 2
+        // 5 bit => 3
+        // 6 bit => 3
+        // 7 bit => 4
+        // 8 bit => 4
+        let shift = rel_bits.end.wrapping_sub(rel_bits.start).wrapping_add(1) >> 1;
+        value = ctx.xor(
+            ctx.rsh_const(
+                value,
+                shift as u64,
+            ),
+            ctx.and_const(
+                value,
+                (1u32 << shift).wrapping_sub(1) as u64,
+            )
+        );
+        rel_bits = value.relevant_bits();
+    }
+    if rel_bits.end == 0 {
+        return ctx.const_1();
+    }
+    ctx.eq_const(
+        value,
+        0,
+    )
+}
+
 pub(crate) struct FlagState<'a, 'e> {
     pub flags: &'a mut [Operand<'e>; 6],
     pub pending_flags: &'a mut PendingFlags<'e>,

@@ -100,22 +100,6 @@ pub fn simplify_arith<'e>(
             };
             ctx.intern(OperandType::Arithmetic(arith))
         }
-        ArithOpType::Parity => {
-            let val = left;
-            if let Some(c) = val.if_constant() {
-                return match (c as u8).count_ones() & 1 == 0 {
-                    true => ctx.const_1(),
-                    false => ctx.const_0(),
-                }
-            } else {
-                let ty = OperandType::Arithmetic(ArithOperand {
-                    ty: ArithOpType::Parity,
-                    left: val,
-                    right: ctx.const_0(),
-                });
-                ctx.intern(ty)
-            }
-        }
         ArithOpType::ToFloat => {
             let val = left;
             if let Some(c) = val.if_constant() {

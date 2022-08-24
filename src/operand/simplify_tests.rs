@@ -4486,22 +4486,6 @@ fn simplify_and_consistency13() {
 }
 
 #[test]
-fn simplify_and_panic() {
-    let ctx = &OperandContext::new();
-    let op1 = ctx.and(
-        ctx.xmm(1, 0),
-        ctx.and(
-            ctx.or(
-                ctx.xmm(1, 0),
-                ctx.constant(0x5ffffffff00),
-            ),
-            ctx.arithmetic(ArithOpType::Parity, ctx.register(0), ctx.constant(0)),
-        )
-    );
-    let _ = op1;
-}
-
-#[test]
 fn simplify_and_consistency14() {
     let ctx = &OperandContext::new();
     let op1 = ctx.and(

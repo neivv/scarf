@@ -335,7 +335,6 @@ impl<'e> fmt::Display for Operand<'e> {
                     GreaterThan => write!(f, "({} > {})", l, r),
                     SignedMul => write!(f, "mul_signed({}, {})", l, r),
                     MulHigh => write!(f, "mul_high({}, {})", l, r),
-                    Parity => write!(f, "parity({})", l),
                     ToFloat => write!(f, "to_float({})", l),
                     ToDouble => write!(f, "to_double({})", l),
                     ToInt => write!(f, "to_int({})", l),
@@ -452,13 +451,6 @@ pub enum ArithOpType {
     Equal,
     /// `1` if LHS is greater than RHS, otherwise 0. Inputs are treated as unsigned.
     GreaterThan,
-    /// Represents `(op & ff).count_ones() & 1`.
-    ///
-    /// Weird expression for a rarely used X86 flag, scarf probably should just
-    /// have `ArithOpType::PopCount` instead.
-    ///
-    /// `ArithOperand.right` is not used.
-    Parity,
     /// Converts 64-bit integer to 32-bit float (`OperandType::Arithmetic`),
     /// or 64-bit float to 32-bit float (`OperandType::Arithmetic`)
     ///
@@ -1793,7 +1785,7 @@ impl<'e> OperandType<'e> {
                 ArithOpType::ToDouble => 0..64,
                 ArithOpType::ToFloat => 0..32,
                 ArithOpType::Equal | ArithOpType::GreaterThan => 0..1,
-                _ => (0..size.bits() as u8),
+                _ => 0..(size.bits() as u8),
             }
             // Note: constants not handled here; const_relevant_bits instead
             _ => 0..(self.expr_size().bits() as u8),
@@ -2361,7 +2353,6 @@ impl<'e> Operand<'e> {
                     0x9 => Lsh,
                     0xa => Rsh,
                     0xb => Equal,
-                    0xc => Parity,
                     0xd => GreaterThan,
                     0xe => ToFloat,
                     0xf => ToInt,

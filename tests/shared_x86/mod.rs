@@ -1068,3 +1068,26 @@ fn lahf() {
          (ctx.register(1), ctx.constant(0x8000)),
     ]);
 }
+
+#[test]
+fn parity() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xb0, 0x4f, // mov al, 4f
+        0x83, 0xf8, 0x00, // cmp eax, 0 (p = 0)
+        0x7b, 0x01, // jpo skip
+        0xcc, // int3
+        0xb0, 0xff, // mov al, ff
+        0x83, 0xf8, 0x00, // cmp eax, 0 (p = 1)
+        0x7a, 0x01, // jpe skip
+        0xcc, // int3
+        0xb0, 0x00, // mov al, 00
+        0x83, 0xf8, 0x00, // cmp eax, 0 (p = 1)
+        0x7a, 0x01, // jpe skip
+        0xcc, // int3
+        0x31, 0xc0, // xor eax, eax
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0)),
+    ]);
+}

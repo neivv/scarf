@@ -441,7 +441,7 @@ impl<'e> State<'e> {
                 self.state[FLAGS_INDEX + Flag::Zero as usize] = val;
             }
             Flag::Parity => {
-                let val = ctx.arithmetic(ArithOpType::Parity, result, ctx.const_0());
+                let val = exec_state::calculate_parity(ctx, result);
                 self.state[FLAGS_INDEX + Flag::Parity as usize] = val;
             }
             Flag::Sign => {
