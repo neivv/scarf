@@ -2464,11 +2464,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let r = self.r_to_operand_xmm(r, 0);
         // isnan(r) | isnan(rm)
         let unordered = ctx.or(
-            ctx.eq_const(
+            ctx.gt_const(
                 ctx.and_const(r, 0x7f80_0000),
                 0x7f80_0000,
             ),
-            ctx.eq_const(
+            ctx.gt_const(
                 ctx.and_const(rm, 0x7f80_0000),
                 0x7f80_0000,
             ),
