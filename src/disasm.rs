@@ -599,6 +599,7 @@ fn instruction_operations32_main(
         0xd0 | 0xd1 | 0xd2 | 0xd3 => s.bitwise_compact_op(),
         0xd8 => s.various_d8(),
         0xd9 => s.various_d9(),
+        0xdd => s.various_dd(),
         0xe8 => s.call_op(),
         0xe9 => s.jump_op(),
         0xeb => s.short_jmp(),
@@ -3266,6 +3267,47 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             7 => {
                 if rm_parsed.is_memory() {
                     self.output_mov(rm.dest, ctx.new_undef());
+                }
+                Ok(())
+            }
+            _ => return Err(self.unknown_opcode()),
+        }
+    }
+
+    fn various_dd(&mut self) -> Result<(), Failed> {
+        let byte = self.read_u8(1)?;
+        let variant = (byte >> 3) & 0x7;
+        let (rm_parsed, _) = self.parse_modrm(MemAccessSize::Mem64);
+        let rm = self.rm_to_dest_and_operand(&rm_parsed);
+        let ctx = self.ctx;
+        match variant {
+            // Fld f64, as long as rm is mem
+            // Fpu is defined to hold f32?? I guess?? fpu is quite underdefined
+            // and i don't want to add f80 which would be the most correct, so
+            // going with f32 since it was assumed first.
+            // Means that this has to do ToFloat()
+            0 => {
+                self.fpu_push();
+                let op = ctx.float_arithmetic(
+                    ArithOpType::ToFloat,
+                    rm.op,
+                    ctx.const_0(),
+                    MemAccessSize::Mem64,
+                );
+                self.output_mov(DestOperand::Fpu(0), op);
+                Ok(())
+            }
+            // Fst/Fstp f64, as long as rm is mem
+            2 | 3 => {
+                let op = ctx.float_arithmetic(
+                    ArithOpType::ToDouble,
+                    ctx.register_fpu(0),
+                    ctx.const_0(),
+                    MemAccessSize::Mem32,
+                );
+                self.output_mov(rm.dest, op);
+                if variant == 3 {
+                    self.fpu_pop();
                 }
                 Ok(())
             }
