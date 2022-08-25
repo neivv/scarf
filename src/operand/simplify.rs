@@ -649,6 +649,145 @@ fn simplify_xor_merge_ands_with_same_mask<'e>(
     }
 }
 
+struct ArithChainIter<'e> {
+    next: Operand<'e>,
+    rest: Option<Operand<'e>>,
+    arith: ArithOpType,
+}
+
+impl<'e> ArithChainIter<'e> {
+    fn new(op: Operand<'e>, arith: ArithOpType) -> Self {
+        let mut val = Self {
+            next: op, // Dummy, overwritten by self.next()
+            rest: Some(op),
+            arith,
+        };
+        val.next();
+        val
+    }
+
+    fn new2(rest: Operand<'e>, next: Operand<'e>, arith: ArithOpType) -> Self {
+        Self {
+            next,
+            rest: Some(rest),
+            arith,
+        }
+    }
+
+    fn next(&mut self) -> bool {
+        match self.rest {
+            Some(x) => {
+                match x.if_arithmetic(self.arith) {
+                    Some((l, r)) => {
+                        self.rest = Some(l);
+                        self.next = r;
+                    }
+                    None => {
+                        self.rest = None;
+                        self.next = x;
+                    }
+                }
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Return x where `(remove_val | x) == or_val` if possible
+fn remove_or<'e>(
+    ctx: OperandCtx<'e>,
+    or_val: Operand<'e>,
+    remove_val: Operand<'e>,
+) -> Option<Operand<'e>> {
+    let (l, r) = or_val.if_arithmetic_or()?;
+
+    // Check if remove_val is subset of or_val first, before building result at all.
+    // The simplification is supposed to guarantee that remove_val parts are in same
+    // order, or_val may just other parts in between.
+    let mut or_chain = ArithChainIter::new2(l, r, ArithOpType::Or);
+    let mut remove_chain = ArithChainIter::new(remove_val, ArithOpType::Or);
+    'check_loop: loop {
+        if or_chain.next == remove_chain.next {
+            if !remove_chain.next() {
+                break 'check_loop;
+            }
+        }
+        if !or_chain.next() {
+            return None;
+        }
+    }
+
+    let mut result = None;
+    let mut or_chain = ArithChainIter::new2(l, r, ArithOpType::Or);
+    let mut remove_chain = ArithChainIter::new(remove_val, ArithOpType::Or);
+    loop {
+        if or_chain.next == remove_chain.next {
+            remove_chain.next();
+        } else {
+            result = Some(match result {
+                Some(s) => ctx.or(s, or_chain.next),
+                None => or_chain.next,
+            });
+        }
+        if !or_chain.next() {
+            return result;
+        }
+    }
+}
+
+/// Simplifies boolean arithmetic (x ^ (y | x)) => (!x & y)
+fn simplify_xor_or_bools<'e>(
+    ops: &mut Slice<'e>,
+    ctx: OperandCtx<'e>,
+) {
+    let mut bool_count = 0;
+    for &op in ops.iter() {
+        let bits = op.relevant_bits();
+        if bits.start.wrapping_add(1) == bits.end {
+            bool_count += 1;
+            if bool_count >= 2 {
+                break;
+            }
+        }
+    }
+    if bool_count < 2 {
+        return;
+    }
+
+    let mut i = 0;
+    'outer: while i < ops.len() {
+        let op1 = ops[i];
+        let bits = op1.relevant_bits();
+        if bits.start.wrapping_add(1) == bits.end {
+            let mut j = i + 1;
+            while j < ops.len() {
+                let op2 = ops[j];
+                if op2.relevant_bits() == bits {
+                    let xy = match remove_or(ctx, op1, op2) {
+                        Some(y) => Some((op2, y)),
+                        None => match remove_or(ctx, op2, op1) {
+                            Some(y) => Some((op1, y)),
+                            None => None,
+                        },
+                    };
+                    if let Some((x, y)) = xy {
+                        ops[i] = ctx.and(
+                            ctx.eq_const(x, 0),
+                            y,
+                        );
+                        ops.swap_remove(j);
+                        i += 1;
+                        continue 'outer;
+                    }
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
 fn simplify_xor_ops<'e>(
     ops: &mut Slice<'e>,
     ctx: OperandCtx<'e>,
@@ -666,6 +805,7 @@ fn simplify_xor_ops<'e>(
             simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
             simplify_or_merge_child_ands(ops, ctx, ArithOpType::Xor)?;
             simplify_xor_merge_ands_with_same_mask(ops, false, ctx, swzb_ctx);
+            simplify_xor_or_bools(ops, ctx);
         }
         if ops.is_empty() {
             return Ok(ctx.constant(const_val));

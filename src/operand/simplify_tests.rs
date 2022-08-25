@@ -8216,3 +8216,110 @@ fn mem_mask_eq_mask() {
     let (_, r) = op1.if_arithmetic_eq().unwrap();
     assert_eq!(r, ctx.constant(0x8888));
 }
+
+#[test]
+fn xor_or() {
+    // a ^ (a | b) => !a & b, where ab are booleans
+    // 00 => 0 ^ 0 = 0
+    // 01 => 0 ^ 1 = 1
+    // 10 => 1 ^ 1 = 0
+    // 11 => 1 ^ 1 = 0
+    // Ends up being part of float compare -> lahf -> test ah -> parity chain
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.or(
+            ctx.eq_const(ctx.register(6), 7),
+            ctx.eq_const(ctx.register(1), 0),
+        ),
+        ctx.eq_const(ctx.register(1), 0),
+    );
+    let eq1 = ctx.and(
+        ctx.neq_const(ctx.register(1), 0),
+        ctx.eq_const(ctx.register(6), 7),
+    );
+    assert_eq!(op1, eq1);
+    // Check also that canonical form is and
+    let _ = op1.if_arithmetic_and().unwrap();
+
+    let f_eq = ctx.float_arithmetic(
+        ArithOpType::Equal,
+        ctx.mem16c(0x500),
+        ctx.xmm(0, 0),
+        MemAccessSize::Mem32,
+    );
+    let op1 = ctx.xor(
+        ctx.or(
+            ctx.or(
+                ctx.eq_const(ctx.mem16c(0x500), 0x7f80),
+                ctx.eq_const(ctx.xmm(0, 0), 0x7f80_0000),
+            ),
+            f_eq,
+        ),
+        ctx.or(
+            ctx.eq_const(ctx.mem16c(0x500), 0x7f80),
+            ctx.eq_const(ctx.xmm(0, 0), 0x7f80_0000),
+        ),
+    );
+    let eq1 = ctx.and(
+        ctx.eq_const(
+            ctx.or(
+                ctx.eq_const(ctx.mem16c(0x500), 0x7f80),
+                ctx.eq_const(ctx.xmm(0, 0), 0x7f80_0000),
+            ),
+            0,
+        ),
+        f_eq,
+    );
+    assert_eq!(op1, eq1);
+
+    // Check all variations of 2-op or as a
+    let op1 = ctx.xor(
+        ctx.or(
+            ctx.or(
+                ctx.eq_const(ctx.mem16c(0x500), 0x7f80),
+                ctx.eq_const(ctx.xmm(0, 0), 0x7f80_0000),
+            ),
+            f_eq,
+        ),
+        ctx.or(
+            f_eq,
+            ctx.eq_const(ctx.xmm(0, 0), 0x7f80_0000),
+        ),
+    );
+    let eq1 = ctx.and(
+        ctx.eq_const(
+            ctx.or(
+                ctx.eq_const(ctx.xmm(0, 0), 0x7f80_0000),
+                f_eq,
+            ),
+            0,
+        ),
+        ctx.eq_const(ctx.mem16c(0x500), 0x7f80),
+    );
+    assert_eq!(op1, eq1);
+
+    let op1 = ctx.xor(
+        ctx.or(
+            ctx.or(
+                ctx.eq_const(ctx.xmm(0, 0), 0x7f80_0000),
+                ctx.eq_const(ctx.mem16c(0x500), 0x7f80),
+            ),
+            f_eq,
+        ),
+        ctx.or(
+            f_eq,
+            ctx.eq_const(ctx.mem16c(0x500), 0x7f80),
+        ),
+    );
+    let eq1 = ctx.and(
+        ctx.eq_const(
+            ctx.or(
+                ctx.eq_const(ctx.mem16c(0x500), 0x7f80),
+                f_eq,
+            ),
+            0,
+        ),
+        ctx.eq_const(ctx.xmm(0, 0), 0x7f80_0000),
+    );
+    assert_eq!(op1, eq1);
+}
