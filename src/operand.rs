@@ -452,7 +452,7 @@ pub enum ArithOpType {
     /// `1` if LHS is greater than RHS, otherwise 0. Inputs are treated as unsigned.
     GreaterThan,
     /// Converts 64-bit integer to 32-bit float (`OperandType::Arithmetic`),
-    /// or 64-bit float to 32-bit float (`OperandType::ArithmeticFloat`)
+    /// or 64-bit float to 32-bit float (`OperandType::Arithmetic`)
     ///
     /// Result is considered to be the raw integer representation of the float.
     ///

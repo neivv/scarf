@@ -15,7 +15,7 @@ required-features = ["binaries"]
 [dependencies]
 arrayvec = "0.7"
 array-init = "2.0"
-byteorder = "1.1.0"
+byteorder = { version = "1.4", default-features = false }
 copyless = "0.1"
 fxhash = "0.2"
 hashbrown = { version = "0.12", default-features = false }

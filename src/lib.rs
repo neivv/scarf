@@ -84,7 +84,8 @@ pub use crate::exec_state::ExecutionState;
 pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;
 pub use crate::exec_state_x86_64::ExecutionState as ExecutionStateX86_64;
 
-use std::ffi::{OsString, OsStr};
+use std::convert::TryInto;
+use std::ffi::{OsStr};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek};
 
@@ -281,11 +282,8 @@ quick_error! {
             display("I/O error {}", e)
             from()
         }
-        InvalidPeFile(detail: String) {
+        InvalidPeFile(detail: &'static str) {
             display("Invalid PE file ({})", detail)
-        }
-        InvalidFilename(filename: OsString) {
-            display("Invalid filename {:?}", filename)
         }
     }
 }
@@ -493,50 +491,47 @@ pub fn raw_bin<Va: exec_state::VirtualAddress>(
 
 /// Creates a `BinaryFile` from 32-bit Windows executable at `filename`.
 pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
-    use byteorder::{LittleEndian, ReadBytesExt};
+    use byteorder::{ByteOrder, LittleEndian};
     use crate::Error::*;
     let mut file = BufReader::new(File::open(filename)?);
-    if file.read_u16::<LittleEndian>()? != 0x5a4d {
-        return Err(InvalidPeFile("Missing DOS magic".into()));
+    let mut buffer = [0u8; 0x58];
+    file.read_exact(&mut buffer[..0x40])?;
+    if LittleEndian::read_u16(&buffer[0..]) != 0x5a4d {
+        return Err(InvalidPeFile("Missing DOS magic"));
     }
-    let pe_offset = u64::from(read_at_32(&mut file, 0x3c)?);
-    if read_at_32(&mut file, pe_offset)? != 0x0000_4550 {
-        return Err(InvalidPeFile("Missing PE magic".into()));
+    let pe_offset = LittleEndian::read_u32(&buffer[0x3c..]) as u64;
+    file.seek(io::SeekFrom::Start(pe_offset))?;
+    file.read_exact(&mut buffer)?;
+
+    if LittleEndian::read_u32(&buffer[0..]) != 0x0000_4550 {
+        return Err(InvalidPeFile("Missing PE magic"));
     }
-    let section_count = read_at_16(&mut file, pe_offset + 6)?;
-    let base = VirtualAddress(read_at_32(&mut file, pe_offset + 0x34)?);
+    let section_count = LittleEndian::read_u16(&buffer[0x6..]);
+    let base = VirtualAddress(LittleEndian::read_u32(&buffer[0x34..]));
+    let header_block_size = LittleEndian::read_u32(&buffer[0x54..]);
     let mut sections = (0..u64::from(section_count)).map(|i| {
-        let mut name = [0; 8];
         file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i))?;
-        file.read_exact(&mut name)?;
-        file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i + 0x8))?;
-        let virtual_size = file.read_u32::<LittleEndian>()?;
-        let rva = Rva(file.read_u32::<LittleEndian>()?);
-        let phys_size = file.read_u32::<LittleEndian>()?;
-        let phys = file.read_u32::<LittleEndian>()?;
+        file.read_exact(&mut buffer[..0x28])?;
+        let virtual_size = LittleEndian::read_u32(&buffer[0x8..]);
+        let rva = LittleEndian::read_u32(&buffer[0xc..]);
+        let phys_size = LittleEndian::read_u32(&buffer[0x10..]);
+        let phys = LittleEndian::read_u32(&buffer[0x14..]);
 
         file.seek(io::SeekFrom::Start(u64::from(phys)))?;
         let mut data = vec![0; phys_size as usize];
         file.read_exact(&mut data)?;
         Ok(BinarySection {
-            name,
+            name: buffer[..8].try_into().unwrap(),
             virtual_address: base + rva,
             virtual_size,
             data,
         })
     }).collect::<Result<Vec<_>, Error>>()?;
-    let header_block_size = read_at_32(&mut file, pe_offset + 0x54)?;
     file.seek(io::SeekFrom::Start(0))?;
     let mut header_data = vec![0; header_block_size as usize];
     file.read_exact(&mut header_data)?;
     sections.push(BinarySection {
-        name: {
-            let mut name = [0; 8];
-            for (&c, out) in b"(header)".iter().zip(name.iter_mut()) {
-                *out = c;
-            }
-            name
-        },
+        name: *b"(header)",
         virtual_address: base,
         virtual_size: header_block_size,
         data: header_data,
@@ -550,50 +545,47 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
 
 /// Creates a `BinaryFile` from 64-bit Windows executable at `filename`.
 pub fn parse_x86_64(filename: &OsStr) -> Result<BinaryFile<VirtualAddress64>, Error> {
-    use byteorder::{LittleEndian, ReadBytesExt};
+    use byteorder::{ByteOrder, LittleEndian};
     use crate::Error::*;
     let mut file = BufReader::new(File::open(filename)?);
-    if file.read_u16::<LittleEndian>()? != 0x5a4d {
-        return Err(InvalidPeFile("Missing DOS magic".into()));
+    let mut buffer = [0u8; 0x58];
+    file.read_exact(&mut buffer[..0x40])?;
+    if LittleEndian::read_u16(&buffer[0..]) != 0x5a4d {
+        return Err(InvalidPeFile("Missing DOS magic"));
     }
-    let pe_offset = u64::from(read_at_32(&mut file, 0x3c)?);
-    if read_at_32(&mut file, pe_offset)? != 0x0000_4550 {
-        return Err(InvalidPeFile("Missing PE magic".into()));
+    let pe_offset = LittleEndian::read_u32(&buffer[0x3c..]) as u64;
+    file.seek(io::SeekFrom::Start(pe_offset))?;
+    file.read_exact(&mut buffer)?;
+
+    if LittleEndian::read_u32(&buffer[0..]) != 0x0000_4550 {
+        return Err(InvalidPeFile("Missing PE magic"));
     }
-    let section_count = read_at_16(&mut file, pe_offset + 6)?;
-    let base = VirtualAddress64(read_at_64(&mut file, pe_offset + 0x30)?);
+    let section_count = LittleEndian::read_u16(&buffer[0x6..]);
+    let base = VirtualAddress64(LittleEndian::read_u64(&buffer[0x30..]));
+    let header_block_size = LittleEndian::read_u32(&buffer[0x54..]);
     let mut sections = (0..u64::from(section_count)).map(|i| {
-        let mut name = [0; 8];
         file.seek(io::SeekFrom::Start(pe_offset + 0x108 + 0x28 * i))?;
-        file.read_exact(&mut name)?;
-        file.seek(io::SeekFrom::Start(pe_offset + 0x108 + 0x28 * i + 0x8))?;
-        let virtual_size = file.read_u32::<LittleEndian>()?;
-        let rva = file.read_u32::<LittleEndian>()?;
-        let phys_size = file.read_u32::<LittleEndian>()?;
-        let phys = file.read_u32::<LittleEndian>()?;
+        file.read_exact(&mut buffer[..0x28])?;
+        let virtual_size = LittleEndian::read_u32(&buffer[0x8..]);
+        let rva = LittleEndian::read_u32(&buffer[0xc..]);
+        let phys_size = LittleEndian::read_u32(&buffer[0x10..]);
+        let phys = LittleEndian::read_u32(&buffer[0x14..]);
 
         file.seek(io::SeekFrom::Start(u64::from(phys)))?;
         let mut data = vec![0; phys_size as usize];
         file.read_exact(&mut data)?;
         Ok(BinarySection {
-            name,
+            name: buffer[..8].try_into().unwrap(),
             virtual_address: base + rva,
             virtual_size,
             data,
         })
     }).collect::<Result<Vec<_>, Error>>()?;
-    let header_block_size = read_at_32(&mut file, pe_offset + 0x54)?;
     file.seek(io::SeekFrom::Start(0))?;
     let mut header_data = vec![0; header_block_size as usize];
     file.read_exact(&mut header_data)?;
     sections.push(BinarySection {
-        name: {
-            let mut name = [0; 8];
-            for (&c, out) in b"(header)".iter().zip(name.iter_mut()) {
-                *out = c;
-            }
-            name
-        },
+        name: *b"(header)",
         virtual_address: base,
         virtual_size: header_block_size,
         data: header_data,
@@ -603,22 +595,4 @@ pub fn parse_x86_64(filename: &OsStr) -> Result<BinaryFile<VirtualAddress64>, Er
         sections,
         relocs: Vec::new(),
     })
-}
-
-fn read_at_16<R: Read + Seek>(f: &mut R, at: u64) -> Result<u16, io::Error> {
-    use byteorder::{LittleEndian, ReadBytesExt};
-    f.seek(io::SeekFrom::Start(at))?;
-    f.read_u16::<LittleEndian>()
-}
-
-fn read_at_32<R: Read + Seek>(f: &mut R, at: u64) -> Result<u32, io::Error> {
-    use byteorder::{LittleEndian, ReadBytesExt};
-    f.seek(io::SeekFrom::Start(at))?;
-    f.read_u32::<LittleEndian>()
-}
-
-fn read_at_64<R: Read + Seek>(f: &mut R, at: u64) -> Result<u64, io::Error> {
-    use byteorder::{LittleEndian, ReadBytesExt};
-    f.seek(io::SeekFrom::Start(at))?;
-    f.read_u64::<LittleEndian>()
 }
