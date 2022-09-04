@@ -707,6 +707,48 @@ fn call_clears_pending_flags() {
 }
 
 #[test]
+fn misc_coverage() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x0f, 0xb6, 0xcc, // movzx ecx, ah
+        0x00, 0xe1, // add cl, ah
+        0x00, 0xf1, // add cl, dh
+        0x8b, 0x04, 0xbd, 0x00, 0x50, 0x00, 0x00, // mov eax, [edi * 4 + 5000]
+        0xc3, // ret
+    ], &[
+         (
+            ctx.register(0),
+            ctx.mem32(
+                ctx.mul_const(ctx.register(7), 4),
+                0x5000,
+            ),
+         ),
+         (
+            ctx.register(1),
+            ctx.and_const(
+                ctx.add(
+                    ctx.add(
+                        ctx.rsh_const(
+                            ctx.and_const(ctx.register(0), 0xff00),
+                            0x8,
+                        ),
+                        ctx.rsh_const(
+                            ctx.and_const(ctx.register(0), 0xff00),
+                            0x8,
+                        ),
+                    ),
+                    ctx.rsh_const(
+                        ctx.and_const(ctx.register(2), 0xff00),
+                        0x8,
+                    ),
+                ),
+                0xff,
+            ),
+         ),
+    ]);
+}
+
+#[test]
 fn jump_conditions() {
     let ctx = &OperandContext::new();
     test(5, &[

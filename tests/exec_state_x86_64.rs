@@ -971,6 +971,21 @@ fn rdtsc_is_32_bits() {
     ]);
 }
 
+#[test]
+fn misc_coverage() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x03, 0x05, 0xfa, 0xff, 0x0f, 0x00, // add eax, [rip + 0010_0000] = [0050_1002]
+        0xc3, // ret
+    ], &[
+         (
+            ctx.register(0),
+            ctx.mem32c(0x0050_1002),
+         ),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
