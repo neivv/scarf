@@ -7,7 +7,7 @@ use crate::operand::{
     self, ArithOpType, Flag, MemAccess, Operand, OperandCtx, OperandType, MemAccessSize,
 };
 use crate::VirtualAddress as VirtualAddress32;
-use crate::VirtualAddress64;
+use crate::{BinaryFile, VirtualAddress64};
 
 quick_error! {
     // NOTE: Try avoid making this have a destructor
@@ -43,10 +43,11 @@ pub type OperationVec<'e> = Vec<Operation<'e>>;
 pub struct Disassembler32<'e> {
     buf: &'e [u8],
     pos: usize,
-    virtual_address: VirtualAddress32,
     register_cache: RegisterCache<'e>,
     ops_buffer: Vec<Operation<'e>>,
     ctx: OperandCtx<'e>,
+    binary: &'e BinaryFile<VirtualAddress32>,
+    current_section_start: VirtualAddress32,
 }
 
 fn instruction_length_32(buf: &[u8]) -> usize {
@@ -107,28 +108,45 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
     // Inline(never) seems to help binary size *enough* and this function
     // is only called once per function-to-be-analyzed
     #[inline(never)]
-    fn new(ctx: OperandCtx<'a>) -> Disassembler32<'a> {
+    fn new(
+        ctx: OperandCtx<'a>,
+        binary: &'a BinaryFile<VirtualAddress32>,
+        start_address: VirtualAddress32,
+    ) -> Disassembler32<'a> {
+        let current_section = binary.section_by_addr(start_address);
+        let (buf, pos, current_section_start) = match current_section {
+            Some(s) => {
+                let relative = (start_address.0 - s.virtual_address.0) as usize;
+                (&s.data[..], relative, s.virtual_address)
+            }
+            None => (&[][..], 0, VirtualAddress32(0)),
+        };
         Disassembler32 {
-            buf: &[],
-            pos: 0,
-            virtual_address: VirtualAddress32(0),
+            buf,
+            pos,
             register_cache: RegisterCache::new(ctx, false),
             ops_buffer: Vec::with_capacity(16),
             ctx,
+            binary,
+            current_section_start,
         }
     }
 
-    fn set_pos(&mut self, buf: &'a [u8], pos: usize, address: VirtualAddress32) {
-        assert!(pos < buf.len());
-        self.buf = buf;
-        self.pos = pos;
-        self.virtual_address = address;
+    fn set_pos(&mut self, address: VirtualAddress32) -> Result<(), ()> {
+        if address >= self.current_section_start {
+            let relative = (address.0 - self.current_section_start.0) as usize;
+            if relative < self.buf.len() {
+                self.pos = relative;
+                return Ok(());
+            }
+        }
+        self.set_pos_cold(address)
     }
 
     fn next<'s>(&'s mut self) -> Instruction<'s, 'a, VirtualAddress32> {
         let instruction_bytes = &self.buf[self.pos..];
         let length = instruction_length_32(instruction_bytes);
-        let address = self.virtual_address + self.pos as u32;
+        let address = self.address();
         self.ops_buffer.clear();
         if length == 0 {
             if self.pos == self.buf.len() {
@@ -158,17 +176,30 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler32<'a> {
 
     #[inline]
     fn address(&self) -> VirtualAddress32 {
-        self.virtual_address + self.pos as u32
+        self.current_section_start + self.pos as u32
+    }
+}
+
+impl<'a> Disassembler32<'a> {
+    #[cold]
+    fn set_pos_cold(&mut self, address: VirtualAddress32) -> Result<(), ()> {
+        let section = self.binary.section_by_addr(address).ok_or(())?;
+        let relative = (address.0 - self.current_section_start.0) as usize;
+        self.buf = &section.data;
+        self.pos = relative;
+        self.current_section_start = section.virtual_address;
+        Ok(())
     }
 }
 
 pub struct Disassembler64<'e> {
     buf: &'e [u8],
     pos: usize,
-    virtual_address: VirtualAddress64,
     register_cache: RegisterCache<'e>,
     ops_buffer: Vec<Operation<'e>>,
     ctx: OperandCtx<'e>,
+    binary: &'e BinaryFile<VirtualAddress64>,
+    current_section_start: VirtualAddress64,
 }
 
 impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
@@ -177,28 +208,45 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
     // Inline(never) seems to help binary size *enough* and this function
     // is only called once per function-to-be-analyzed
     #[inline(never)]
-    fn new(ctx: OperandCtx<'a>) -> Disassembler64<'a> {
+    fn new(
+        ctx: OperandCtx<'a>,
+        binary: &'a BinaryFile<VirtualAddress64>,
+        start_address: VirtualAddress64,
+    ) -> Disassembler64<'a> {
+        let current_section = binary.section_by_addr(start_address);
+        let (buf, pos, current_section_start) = match current_section {
+            Some(s) => {
+                let relative = (start_address.0 - s.virtual_address.0) as usize;
+                (&s.data[..], relative, s.virtual_address)
+            }
+            None => (&[][..], 0, VirtualAddress64(0)),
+        };
         Disassembler64 {
-            buf: &[],
-            pos: 0,
-            virtual_address: VirtualAddress64(0),
+            buf,
+            pos,
             register_cache: RegisterCache::new(ctx, true),
             ops_buffer: Vec::with_capacity(16),
             ctx,
+            binary,
+            current_section_start,
         }
     }
 
-    fn set_pos(&mut self, buf: &'a [u8], pos: usize, address: VirtualAddress64) {
-        assert!(pos < buf.len());
-        self.buf = buf;
-        self.pos = pos;
-        self.virtual_address = address;
+    fn set_pos(&mut self, address: VirtualAddress64) -> Result<(), ()> {
+        if address >= self.current_section_start {
+            let relative = (address.0 - self.current_section_start.0) as usize;
+            if relative < self.buf.len() {
+                self.pos = relative;
+                return Ok(());
+            }
+        }
+        self.set_pos_cold(address)
     }
 
     fn next<'s>(&'s mut self) -> Instruction<'s, 'a, VirtualAddress64> {
         let instruction_bytes = &self.buf[self.pos..];
         let length = instruction_length_64(instruction_bytes);
-        let address = self.virtual_address + self.pos as u32;
+        let address = self.address();
         self.ops_buffer.clear();
         if length == 0 {
             if self.pos == self.buf.len() {
@@ -227,7 +275,19 @@ impl<'a> crate::exec_state::Disassembler<'a> for Disassembler64<'a> {
     }
 
     fn address(&self) -> VirtualAddress64 {
-        self.virtual_address + self.pos as u32
+        self.current_section_start + self.pos as u32
+    }
+}
+
+impl<'a> Disassembler64<'a> {
+    #[cold]
+    fn set_pos_cold(&mut self, address: VirtualAddress64) -> Result<(), ()> {
+        let section = self.binary.section_by_addr(address).ok_or(())?;
+        let relative = (address.0 - self.current_section_start.0) as usize;
+        self.buf = &section.data;
+        self.pos = relative;
+        self.current_section_start = section.virtual_address;
+        Ok(())
     }
 }
 
@@ -4083,64 +4143,5 @@ fn dest_operand<'e>(val: Operand<'e>) -> DestOperand<'e> {
         _ => panic!("Invalid value for converting Operand -> DestOperand"),
         #[cfg(debug_assertions)]
         _ => panic!("Invalid value for converting Operand -> DestOperand {}", val),
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::VirtualAddress;
-    use crate::exec_state::Disassembler;
-    #[test]
-    fn test_operations_mov16() {
-        use crate::operand::OperandContext;
-
-        let ctx = &OperandContext::new();
-        let buf = [0x66, 0xc7, 0x47, 0x62, 0x00, 0x20];
-        let mut disasm = Disassembler32::new(ctx);
-        disasm.set_pos(&buf[..], 0, VirtualAddress(0));
-        let ins = disasm.next();
-        assert_eq!(ins.ops().len(), 1);
-        let op = &ins.ops()[0];
-        let dest = ctx.mem16(ctx.register(0x7), 0x62);
-
-        assert!(matches!(*op, Operation::Move(a, b, None) if
-                a == dest_operand(dest) && b == ctx.constant(0x2000)));
-    }
-
-    #[test]
-    fn test_sib() {
-        use crate::operand::OperandContext;
-
-        let ctx = &OperandContext::new();
-        let buf = [0x89, 0x84, 0xb5, 0x18, 0xeb, 0xff, 0xff];
-        let mut disasm = Disassembler32::new(ctx);
-        disasm.set_pos(&buf[..], 0, VirtualAddress(0));
-        let ins = disasm.next();
-        assert_eq!(ins.ops().len(), 1);
-        let op = &ins.ops()[0];
-        let dest = ctx.mem32(
-            ctx.add(
-                ctx.mul(
-                    ctx.constant(4),
-                    ctx.register(6),
-                ),
-                ctx.sub(
-                    ctx.register(5),
-                    ctx.constant(0x14e8),
-                ),
-            ),
-            0,
-        );
-
-        match op.clone() {
-            Operation::Move(d, f, cond) => {
-                let d = d.as_operand(ctx);
-                assert_eq!(d, dest);
-                assert_eq!(f, ctx.register(0));
-                assert_eq!(cond, None);
-            }
-            _ => panic!("Unexpected op {:?}", op),
-        }
     }
 }

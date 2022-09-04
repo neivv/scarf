@@ -21,6 +21,7 @@ use crate::operand::{
     MemAccessSize, MemAccess,
 };
 use crate::operand::slice_stack::Slice;
+use crate::{BinaryFile};
 
 /// A trait that does (most of) arch-specific state handling.
 ///
@@ -118,7 +119,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// Constructs the `ExecutionState`.
     fn initial_state(
         operand_ctx: OperandCtx<'e>,
-        binary: &'e crate::BinaryFile<Self::VirtualAddress>,
+        binary: &'e BinaryFile<Self::VirtualAddress>,
     ) -> Self;
 
     /// Returns the `OperandCtx` used by `self`.
@@ -277,7 +278,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     }
 
     // Analysis functions, default to no-op
-    fn find_functions_with_callers(_file: &crate::BinaryFile<Self::VirtualAddress>)
+    fn find_functions_with_callers(_file: &BinaryFile<Self::VirtualAddress>)
         -> Vec<analysis::FuncCallPair<Self::VirtualAddress>> { Vec::new() }
 
     fn find_functions_from_calls(
@@ -292,13 +293,13 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// The returned addresses are expected to be sorted and not have overlaps.
     /// (Though it currently trusts that the binary follows PE spec)
     fn function_ranges_from_exception_info(
-        _file: &crate::BinaryFile<Self::VirtualAddress>,
+        _file: &BinaryFile<Self::VirtualAddress>,
     ) -> Result<Vec<(u32, u32)>, crate::OutOfBounds> {
         Ok(Vec::new())
     }
 
     fn find_relocs(
-        _file: &crate::BinaryFile<Self::VirtualAddress>,
+        _file: &BinaryFile<Self::VirtualAddress>,
     ) -> Result<Vec<Self::VirtualAddress>, crate::OutOfBounds> {
         Ok(Vec::new())
     }
@@ -1236,19 +1237,14 @@ fn is_subset<'e>(sub: Operand<'e>, sup: Operand<'e>) -> bool {
 /// Trait for disassembling instructions
 pub trait Disassembler<'e> {
     type VirtualAddress: VirtualAddress;
-    /// Creates a new Disassembler. It is expected that set_pos() is called
-    /// afterwards before next().
-    fn new(ctx: OperandCtx<'e>) -> Self;
+    /// Creates a new Disassembler.
+    fn new(
+        ctx: OperandCtx<'e>,
+        binary: &'e BinaryFile<Self::VirtualAddress>,
+        init_pos: Self::VirtualAddress,
+    ) -> Self;
     /// Seeks to a address.
-    fn set_pos(
-        &mut self,
-        // Should this use a separate lifetime for clarity?
-        // 'e does still in practice always refer to &BinaryFile as well,
-        // so it should be ok.
-        buf: &'e [u8],
-        pos: usize,
-        address: Self::VirtualAddress,
-    );
+    fn set_pos(&mut self, address: Self::VirtualAddress) -> Result<(), ()>;
     fn next<'s>(&'s mut self) -> Instruction<'s, 'e, Self::VirtualAddress>;
     fn address(&self) -> Self::VirtualAddress;
 }

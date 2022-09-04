@@ -1112,7 +1112,11 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     /// as the code is being stepped thorugh.
     pub fn analyze<A: Analyzer<'a, State = State, Exec = Exec>>(&mut self, analyzer: &mut A) {
         let old_undef_pos = self.operand_ctx.get_undef_pos();
-        let mut disasm = Exec::Disassembler::new(self.operand_ctx);
+        let mut disasm = Exec::Disassembler::new(
+            self.operand_ctx,
+            self.binary,
+            self.current_branch,
+        );
 
         while let Some((addr, state, preceding)) =
             self.pop_next_branch_and_set_disasm(&mut disasm)
@@ -1131,10 +1135,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         disasm: &mut Exec::Disassembler,
         address: Exec::VirtualAddress,
     ) -> Result<(), ()> {
-        let section = self.binary.section_by_addr(address).ok_or(())?;
-        let rva = (address.as_u64() - section.virtual_address.as_u64()) as usize;
-        disasm.set_pos(&section.data, rva, section.virtual_address);
-        Ok(())
+        disasm.set_pos(address)
     }
 
     /// Disasm must have been set to `addr`
