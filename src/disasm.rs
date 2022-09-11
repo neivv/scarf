@@ -1841,13 +1841,22 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let constant = self.read_variable_size_64(1, const_size)?;
         let eax_left = self.read_u8(0)? & 0x2 == 0;
         let ctx = self.ctx;
+        let mem = self.ctx.mem_access(ctx.const_0(), constant, op_size);
         match eax_left {
             true => {
-                self.output_mov_to_reg(0, ctx.mem_any(op_size, ctx.const_0(), constant));
+                let dest = match op_size {
+                    MemAccessSize::Mem8 => DestOperand::Register8Low(0),
+                    MemAccessSize::Mem16 => DestOperand::Register16(0),
+                    MemAccessSize::Mem32 => DestOperand::Register32(0),
+                    MemAccessSize::Mem64 => DestOperand::Register64(0),
+                };
+                let value = ctx.memory(&mem);
+                self.out.push(Operation::Move(dest, value, None));
             }
             false => {
-                let access = self.ctx.mem_access(ctx.const_0(), constant, op_size);
-                self.output_mov(DestOperand::Memory(access), ctx.register(0));
+                let size = RegisterSize::from_mem_access_size(op_size);
+                let value = self.register_cache.register(0, size);
+                self.output_mov(DestOperand::Memory(mem), value);
             }
         }
         Ok(())

@@ -526,6 +526,7 @@ fn mov_al() {
         0xb0, 0x55, // mov al, 55
         0xa2, 0xdd, 0xcc, 0xbb, 0xaa, // mov [aabbccdd], al
         0x0f, 0xb6, 0x0d, 0xdd, 0xcc, 0xbb, 0xaa, // movzx ecx, byte [aabbccdd]
+        0x31, 0xc0, // xor eax, eax
         0xa0, 0x78, 0x56, 0x34, 0x12, // mov al, [12345678]
         0xc3, // ret
     ], &[
@@ -743,6 +744,34 @@ fn misc_coverage() {
                     ),
                 ),
                 0xff,
+            ),
+         ),
+    ]);
+}
+
+#[test]
+fn mov_al_constmem() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xb8, 0x34, 0x12, 0x00, 0x00, // mov eax, 1234
+        0xa0, 0x34, 0x12, 0x00, 0x00, // mov al, [1234]
+        0x89, 0xc1, // mov ecx, eax
+        0xb8, 0x78, 0x56, 0x34, 0x12, // mov eax, 12345678
+        0x66, 0xa1, 0x11, 0x11, 0x00, 0x00, // mov ax, [1111]
+        0xc3, // ret
+    ], &[
+         (
+            ctx.register(0),
+            ctx.or(
+                ctx.mem16c(0x1111),
+                ctx.constant(0x1234_0000),
+            ),
+         ),
+         (
+            ctx.register(1),
+            ctx.or(
+                ctx.mem8c(0x1234),
+                ctx.constant(0x1200),
             ),
          ),
     ]);
