@@ -778,6 +778,49 @@ fn mov_al_constmem() {
 }
 
 #[test]
+fn mov_mem32_consistency() {
+    let ctx = &OperandContext::new();
+    // Should not get & ffff_ffff masks
+    test_inline(&[
+        0xa3, 0x10, 0x10, 0x00, 0x00, // mov [1010], eax
+        0xa1, 0x10, 0x10, 0x00, 0x00, // mov eax, [1010]
+        0x89, 0x0d, 0x10, 0x10, 0x00, 0x00, // mov [1010], ecx
+        0x8b, 0x0d, 0x10, 0x10, 0x00, 0x00, // mov ecx, [1010]
+        0x89, 0x16, // mov [esi], edx
+        0x8b, 0x16, // mov edx, [esi]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.register(0)),
+        (ctx.register(1), ctx.register(1)),
+        (ctx.register(2), ctx.register(2)),
+    ]);
+}
+
+#[test]
+fn mov_mem32_consistency_2() {
+    let ctx = &OperandContext::new();
+    // Should not get & ffff_ffff masks?
+    // Either none should or all should, and currently none do.
+    test_inline_with_init(&[
+        0xa3, 0x10, 0x10, 0x00, 0x00, // mov [1010], eax
+        0xa1, 0x10, 0x10, 0x00, 0x00, // mov eax, [1010]
+        0x89, 0x0d, 0x10, 0x10, 0x00, 0x00, // mov [1010], ecx
+        0x8b, 0x0d, 0x10, 0x10, 0x00, 0x00, // mov ecx, [1010]
+        0x89, 0x16, // mov [esi], edx
+        0x8b, 0x16, // mov edx, [esi]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.custom(0)),
+        (ctx.register(1), ctx.custom(1)),
+        (ctx.register(2), ctx.custom(2)),
+    ], &[
+        (ctx.register(0), ctx.custom(0)),
+        (ctx.register(1), ctx.custom(1)),
+        (ctx.register(2), ctx.custom(2)),
+    ]);
+}
+
+#[test]
 fn jump_conditions() {
     let ctx = &OperandContext::new();
     test(5, &[
@@ -818,15 +861,22 @@ fn test_inner<'e, 'b>(
     file: &'e BinaryFile<VirtualAddress>,
     func: VirtualAddress,
     changes: &[(Operand<'b>, Operand<'b>)],
+    init: &[(Operand<'b>, Operand<'b>)],
     xmm: bool,
 ) {
     let ctx = &OperandContext::new();
     let changes = changes.iter().map(|&(a, b)| {
         (ctx.copy_operand(a), ctx.copy_operand(b))
     }).collect::<Vec<_>>();
+    let init = init.iter().map(|&(a, b)| {
+        (ctx.copy_operand(a), ctx.copy_operand(b))
+    }).collect::<Vec<_>>();
 
-    let state = ExecutionState::with_binary(file, ctx);
+    let mut state = ExecutionState::with_binary(file, ctx);
     let mut expected_state = state.clone();
+    for &(op, val) in &init {
+        state.move_resolved(&DestOperand::from_oper(op), val);
+    }
     for &(op, val) in &changes {
         expected_state.move_resolved(&DestOperand::from_oper(op), val);
     }
@@ -877,10 +927,18 @@ fn test_inline_xmm<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
         virtual_size: code.len() as u32,
         data: code.into(),
     }]);
-    test_inner(&binary, binary.code_section().virtual_address, changes, true);
+    test_inner(&binary, binary.code_section().virtual_address, changes, &[], true);
 }
 
 fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
+    test_inline_with_init(code, changes, &[])
+}
+
+fn test_inline_with_init<'e>(
+    code: &[u8],
+    changes: &[(Operand<'e>, Operand<'e>)],
+    init: &[(Operand<'e>, Operand<'e>)],
+) {
     let binary = scarf::raw_bin(VirtualAddress(0x00400000), vec![BinarySection {
         name: {
             // ugh
@@ -894,12 +952,12 @@ fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
         virtual_size: code.len() as u32,
         data: code.into(),
     }]);
-    test_inner(&binary, binary.code_section().virtual_address, changes, false);
+    test_inner(&binary, binary.code_section().virtual_address, changes, init, false);
 }
 
 fn test<'b>(idx: usize, changes: &[(Operand<'b>, Operand<'b>)]) {
     let binary = helpers::raw_bin(OsStr::new("test_inputs/exec_state.bin")).unwrap();
     let offset = (&binary.code_section().data[idx * 4..]).read_u32::<LittleEndian>().unwrap();
     let func = VirtualAddress(offset);
-    test_inner(&binary, func, changes, false);
+    test_inner(&binary, func, changes, &[], false);
 }

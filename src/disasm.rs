@@ -1854,7 +1854,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 self.out.push(Operation::Move(dest, value, None));
             }
             false => {
-                let size = RegisterSize::from_mem_access_size(op_size);
+                let mut size = RegisterSize::from_mem_access_size(op_size);
+                if Va::SIZE == 4 && size == RegisterSize::R32 {
+                    // Not going to add and masks for r32 moves on 32-bit
+                    size = RegisterSize::R64;
+                }
                 let value = self.register_cache.register(0, size);
                 self.output_mov(DestOperand::Memory(mem), value);
             }
