@@ -515,6 +515,38 @@ impl<'e> Iterator for IterArithOps<'e> {
     }
 }
 
+#[derive(Copy, Clone)]
+struct IterAddSubArithOps<'e> {
+    next: Option<Operand<'e>>,
+}
+
+impl<'e> IterAddSubArithOps<'e> {
+    fn new(operand: Operand<'e>) -> IterAddSubArithOps {
+        IterAddSubArithOps {
+            next: Some(operand),
+        }
+    }
+}
+
+impl<'e> Iterator for IterAddSubArithOps<'e> {
+    /// (op, bool negate)
+    type Item = (Operand<'e>, bool);
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.next?;
+        if let OperandType::Arithmetic(a) = next.ty() {
+            if a.ty == ArithOpType::Add {
+                self.next = Some(a.left);
+                return Some((a.right, false));
+            } else if a.ty == ArithOpType::Sub {
+                self.next = Some(a.left);
+                return Some((a.right, true));
+            }
+        }
+        self.next = None;
+        Some((next, false))
+    }
+}
+
 /// Also used for or.
 /// If one of the ops contains (x ^ y) & c,
 /// and some of the inner operands don't need the mask c, extract them out.
@@ -3740,11 +3772,21 @@ fn equal_when_shifted_right<'e>(
 // Converts
 // (c > x) | (c == x) to (c + 1 > x),
 //      More general: (c1 > x - c2) | (c1 + c2) == x to (c1 + 1 > x - c2)
-// (x > c) | (x == c) to (x > c + 1).
+// (x > c) | (x == c) to (x > c - 1).
+//      (x > y + c) | (x - y == c) to (x > y + (c - 1))
+//      as a variation due to == canonicalizing c alone to right.
 // (x == 0) | (x == 1) to (2 > x)
 // Cannot do for values that can overflow, so just limit it to constants for now.
 // (Well, could do (c + 1 > x) | (c == max_value), but that isn't really simpler)
 fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
+    struct Match<'e> {
+        op: Operand<'e>,
+        // y in (x > (y + c))
+        const_side_op: Option<Operand<'e>>,
+        ty: MatchType,
+        constant: u64,
+    }
+
     #[derive(Eq, PartialEq, Copy, Clone)]
     enum MatchType {
         ConstantGreater,
@@ -3752,7 +3794,7 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
         Equal,
     }
 
-    fn check_match<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>, MatchType)> {
+    fn check_match<'e>(op: Operand<'e>) -> Option<Match<'e>> {
         match op.ty() {
             OperandType::Arithmetic(arith) => {
                 let left = arith.left;
@@ -3760,14 +3802,38 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
                 match arith.ty {
                     ArithOpType::Equal => {
                         let c = right.if_constant()?;
-                        return Some((c, left, MatchType::Equal));
+                        return Some(Match {
+                            op: left,
+                            const_side_op: None,
+                            constant: c,
+                            ty: MatchType::Equal,
+                        });
                     }
                     ArithOpType::GreaterThan => {
                         if let Some(c) = left.if_constant() {
-                            return Some((c, right, MatchType::ConstantGreater));
+                            return Some(Match {
+                                op: right,
+                                const_side_op: None,
+                                constant: c,
+                                ty: MatchType::ConstantGreater,
+                            });
                         }
                         if let Some(c) = right.if_constant() {
-                            return Some((c, left, MatchType::ConstantLess));
+                            return Some(Match {
+                                op: left,
+                                const_side_op: None,
+                                constant: c,
+                                ty: MatchType::ConstantLess,
+                            });
+                        } else if let Some((l, r)) = right.if_arithmetic_add() {
+                            if let Some(c) = r.if_constant() {
+                                return Some(Match {
+                                    op: left,
+                                    const_side_op: Some(l),
+                                    constant: c,
+                                    ty: MatchType::ConstantLess,
+                                });
+                            }
                         }
                     }
                     _ => (),
@@ -3780,18 +3846,25 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
 
     let mut i = 0;
     'outer: while i < ops.len() {
-        if let Some((c, x, ty)) = check_match(ops[i]) {
+        if let Some(m1) = check_match(ops[i]) {
             let mut j = i + 1;
-            while j < ops.len() {
-                if let Some((c2, x2, ty2)) = check_match(ops[j]) {
-                    match (ty, ty2) {
+            'inner: while j < ops.len() {
+                if let Some(m2) = check_match(ops[j]) {
+                    match (m1.ty, m2.ty) {
                         (MatchType::ConstantGreater, MatchType::Equal) |
                             (MatchType::Equal, MatchType::ConstantGreater) =>
                         {
+                            if m1.const_side_op.is_some() || m2.const_side_op.is_some() {
+                                // May be able to do something, but not considering it now.
+                                continue 'inner;
+                            }
+
                             // (c1 > y - c2) | (c1 + c2) == y to (c1 + 1 > y - c2)
-                            let (gt, c1, eq, mut eq_c) = match ty == MatchType::ConstantGreater {
-                                true => (x, c, x2, c2),
-                                false => (x2, c2, x, c),
+                            let (gt, c1, eq, mut eq_c) =
+                                match m1.ty == MatchType::ConstantGreater
+                            {
+                                true => (m1.op, m1.constant, m2.op, m2.constant),
+                                false => (m2.op, m2.constant, m1.op, m1.constant),
                             };
                             let (gt_inner, gt_mask) = Operand::and_masked(gt);
                             let (y, c2) = gt_inner.if_arithmetic_sub()
@@ -3835,22 +3908,46 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
                         (MatchType::ConstantLess, MatchType::Equal) |
                             (MatchType::Equal, MatchType::ConstantLess) =>
                         {
-                            if c == c2 && x == x2 {
-                                if let Some(new_c) = c.checked_sub(1) {
-                                    ops[i] = ctx.gt_const(x, new_c);
-                                    ops.swap_remove(j);
-                                    continue 'outer;
+                            let (eq, cl) = match m1.ty == MatchType::Equal {
+                                true => (&m1, &m2),
+                                false => (&m2, &m1),
+                            };
+                            if let Some(new_c) = eq.constant.checked_sub(1) {
+                                if let Some(const_side) = cl.const_side_op {
+                                    if is_eq_sub_for_gt(cl.op, const_side, eq.op) {
+                                        ops[i] = ctx.gt(
+                                            cl.op,
+                                            ctx.add_const(
+                                                const_side,
+                                                new_c,
+                                            ),
+                                        );
+                                        ops.swap_remove(j);
+                                        continue 'outer;
+                                    }
+                                } else {
+                                    if eq.constant == cl.constant && eq.op == cl.op {
+                                        ops[i] = ctx.gt_const(eq.op, new_c);
+                                        ops.swap_remove(j);
+                                        continue 'outer;
+                                    }
                                 }
                             }
                         }
+                        (MatchType::Equal, MatchType::Equal) => {
+                            // No need to check const_side_op since it can't be set on equal
+                            debug_assert!(m1.const_side_op.is_none());
+                            debug_assert!(m2.const_side_op.is_none());
+                            if m1.constant.min(m2.constant) == 0 &&
+                                m1.constant.max(m2.constant) == 1 &&
+                                m1.op == m2.op
+                            {
+                                ops[i] = ctx.gt_const_left(2, m1.op);
+                                ops.swap_remove(j);
+                                continue 'outer;
+                            }
+                        }
                         _ => (),
-                    }
-                    if c.min(c2) == 0 && c.max(c2) == 1 && x == x2 &&
-                        ty == MatchType::Equal && ty2 == MatchType::Equal
-                    {
-                        ops[i] = ctx.gt_const_left(2, x);
-                        ops.swap_remove(j);
-                        continue 'outer;
                     }
                 }
                 j += 1;
@@ -3858,6 +3955,56 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
         }
         i += 1;
     }
+}
+
+/// Assuming that there are two expressions,
+/// `lhs > (rhs + C)` and `lhs == rhs + C`,
+/// and that the equality one has been transformed to `compare == C`,
+/// verifies that `compare` can be reverted to `lhs` and `rhs`.
+///
+/// Simply put, if (lhs - rhs) == compare, return true.
+/// However, there may be and masks here,
+/// so more correct implementation would be something like
+/// simplify(`lhs == rhs + 5000`).left == compare
+///
+/// Helper for simplify_or_merge_comparisions.
+fn is_eq_sub_for_gt<'e>(
+    lhs: Operand<'e>,
+    rhs: Operand<'e>,
+    compare: Operand<'e>,
+) -> bool {
+    let (compare, c_mask) = Operand::and_masked(compare);
+    let (lhs, l_mask) = Operand::and_masked(lhs);
+    let (rhs, r_mask) = Operand::and_masked(rhs);
+    // Not super sure if these mask checks are valid or enough..
+    if c_mask != u64::MAX {
+        if l_mask != u64::MAX && c_mask != l_mask {
+            return false;
+        }
+        if r_mask != u64::MAX && c_mask != r_mask {
+            return false;
+        }
+    } else {
+        if l_mask != u64::MAX || r_mask != u64::MAX {
+            return false;
+        }
+    }
+
+    let mut compare_iter = IterAddSubArithOps::new(compare);
+    let mut lhs_iter = IterAddSubArithOps::new(lhs);
+    let mut rhs_iter = IterAddSubArithOps::new(rhs);
+    let mut lhs_next = lhs_iter.next();
+    let mut rhs_next = rhs_iter.next();
+    while let Some((x, negate)) = compare_iter.next() {
+        if Some((x, negate)) == lhs_next {
+            lhs_next = lhs_iter.next();
+        } else if Some((x, !negate)) == rhs_next {
+            rhs_next = rhs_iter.next();
+        } else {
+            return false;
+        }
+    }
+    lhs_next.is_none() && rhs_next.is_none()
 }
 
 /// Does not collect constants into ops, but returns them added together instead.

@@ -8323,3 +8323,51 @@ fn xor_or() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn add_greater_or_eq() {
+    let ctx = &OperandContext::new();
+
+    // (a > x + 400) | (a == x + 400)
+    // => (a > x + 3ff)
+    let lhs = ctx.register(1);
+    let rhs = ctx.add_const(
+        ctx.mem16c(0x500),
+        0x400,
+    );
+    let gt = ctx.gt(lhs, rhs);
+    let eq = ctx.eq(lhs, rhs);
+    let op1 = ctx.or(gt, eq);
+    let eq1 = ctx.gt(
+        lhs,
+        ctx.add_const(
+            ctx.mem16c(0x500),
+            0x3ff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn add_greater_or_eq_masked() {
+    let ctx = &OperandContext::new();
+
+    // (a > x + 400) | (a == x + 400)
+    // => (a > x + 3ff)
+    let lhs = ctx.and_const(ctx.register(1), 0xffff_ffff);
+    let rhs = ctx.add_const(
+        ctx.mem16c(0x500),
+        0x400,
+    );
+    let gt = ctx.gt(lhs, rhs);
+    let eq = ctx.eq(lhs, rhs);
+    let op1 = ctx.or(gt, eq);
+    let eq1 = ctx.gt(
+        lhs,
+        ctx.add_const(
+            ctx.mem16c(0x500),
+            0x3ff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
