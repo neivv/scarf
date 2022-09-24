@@ -84,7 +84,7 @@ pub use crate::exec_state::ExecutionState;
 pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;
 pub use crate::exec_state_x86_64::ExecutionState as ExecutionStateX86_64;
 
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::ffi::{OsStr};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek};
@@ -474,6 +474,74 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
 
     pub fn set_relocs(&mut self, relocs: Vec<Va>) {
         self.relocs = relocs;
+    }
+}
+
+impl<Va: exec_state::VirtualAddress> BinarySection<Va> {
+    /// Returns true if `address` is within this section.
+    #[inline]
+    pub fn contains(&self, address: Va) -> bool {
+        address >= self.virtual_address && address < self.end()
+    }
+
+    /// Returns end address (First byte not included) of this section.
+    #[inline]
+    pub fn end(&self) -> Va {
+        self.virtual_address + self.virtual_size
+    }
+
+    /// Receives a slice of data from address with length of `length, or None,
+    /// if the slice is not fully contained in the section.
+    pub fn slice_from_address(&self, address: Va, length: u32) -> Option<&[u8]> {
+        let offset = usize::try_from(
+            address.as_u64().wrapping_sub(self.virtual_address.as_u64())
+        ).ok()?;
+        self.data.get(offset..)?.get(..(length as usize))
+    }
+
+    /// Receives a slice of data from address to end of section, or None,
+    /// if the address is not in the section
+    pub fn slice_from_address_to_end(&self, address: Va) -> Option<&[u8]> {
+        let offset = usize::try_from(
+            address.as_u64().wrapping_sub(self.virtual_address.as_u64())
+        ).ok()?;
+        self.data.get(offset..)
+    }
+
+    /// Reads an u8 from `addr` if the address is within this section.
+    pub fn read_u8(&self, addr: Va) -> Option<u8> {
+        use crate::light_byteorder::ReadLittleEndian;
+        self.slice_from_address_to_end(addr)?.read_u8().ok()
+    }
+
+    /// Reads an little-endian u16 from `addr` if the address is within this section.
+    pub fn read_u16(&self, addr: Va) -> Option<u16> {
+        use crate::light_byteorder::ReadLittleEndian;
+        self.slice_from_address_to_end(addr)?.read_u16().ok()
+    }
+
+    /// Reads an little-endian u32 from `addr` if the address is within this section.
+    pub fn read_u32(&self, addr: Va) -> Option<u32> {
+        use crate::light_byteorder::ReadLittleEndian;
+        self.slice_from_address_to_end(addr)?.read_u32().ok()
+    }
+
+    /// Reads an little-endian u32 from `addr` if the address is within this section.
+    pub fn read_u64(&self, addr: Va) -> Option<u64> {
+        use crate::light_byteorder::ReadLittleEndian;
+        self.slice_from_address_to_end(addr)?.read_u64().ok()
+    }
+
+    /// Reads a little-endian `VirtualAddress`
+    /// (Same size as the addresses of this `BinarySection` are)
+    /// from `addr` if the address is within this section.
+    #[inline]
+    pub fn read_address(&self, addr: Va) -> Option<Va> {
+        match Va::SIZE {
+            4 => self.read_u32(addr).map(|x| Va::from_u64(x as u64)),
+            8 => self.read_u64(addr).map(|x| Va::from_u64(x)),
+            x => panic!("Unsupported VirtualAddress size {}", x),
+        }
     }
 }
 
