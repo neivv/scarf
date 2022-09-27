@@ -110,10 +110,6 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         self.unresolve(val)
     }
 
-    fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>> {
-        self.unresolve_memory(val)
-    }
-
     fn merge_states(
         old: &mut Self,
         new: &mut Self,
@@ -432,12 +428,6 @@ impl<'e> ExecutionState<'e> {
             }
         }
         None
-    }
-
-    /// Tries to find an memory address corresponding to a resolved value.
-    pub fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>> {
-        let ctx = self.ctx();
-        self.inner.memory.reverse_lookup(val).map(|x| ctx.mem32(x.0, x.1 << 2))
     }
 
     pub fn memory(&self) -> &Memory<'e> {

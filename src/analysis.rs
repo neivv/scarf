@@ -776,12 +776,6 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         self.inner.state.0.unresolve(val)
     }
 
-    /// Don't use this, will be deprecated at some point.
-    /// See [`ExecutionState::unresolve_memory`].
-    pub fn unresolve_memory(&mut self, val: Operand<'e>) -> Option<Operand<'e>> {
-        self.inner.state.0.unresolve_memory(val)
-    }
-
     /// Convenience function for [`exec_state().move_to()`](ExecutionState::move_to),
     /// with a better name that reminds that this function uses
     /// [unresolved operands](../exec_state/trait.ExecutionState.html#resolved-and-unresolved-operands).

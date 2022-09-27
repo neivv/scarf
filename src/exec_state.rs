@@ -261,13 +261,6 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// that meets the accuracy/performance requirements they have itself.
     fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>>;
 
-    /// Iterates through all memory to try and find unresolved `Operand` for the
-    /// resolved `val`.
-    ///
-    /// Being O(n), and something not used by scarf, this may be removed at some
-    /// point and user code should implement their own reverse lookup instead.
-    fn unresolve_memory(&self, val: Operand<'e>) -> Option<Operand<'e>>;
-
     /// Creates an `Mem[addr]` with MemAccessSize of VirtualAddress size.
     fn operand_mem_word(ctx: OperandCtx<'e>, address: Operand<'e>, offset: u64) -> Operand<'e> {
         if <Self::VirtualAddress as VirtualAddress>::SIZE == 4 {
@@ -1370,11 +1363,6 @@ impl<'e> Memory<'e> {
         self.cached_value = Some(value);
     }
 
-    /// Does a value -> key lookup (Finds an address containing value)
-    pub fn reverse_lookup(&self, value: Operand<'e>) -> Option<(Operand<'e>, u64)> {
-        self.map.reverse_lookup(value)
-    }
-
     /// Does a reverse lookup on last accessed memory address.
     ///
     /// Could probably cache like 4 previous accesses for slightly better results.
@@ -1728,20 +1716,6 @@ impl<'e> MemoryMap<'e> {
                 all_undefined,
             }));
             n = n << 2;
-        }
-    }
-
-    /// Does a value -> key lookup (Finds an address containing value)
-    pub fn reverse_lookup(&self, value: Operand<'e>) -> Option<(Operand<'e>, u64)> {
-        for (key, &val) in self.map.iter() {
-            if value == val {
-                return Some((key.0.0, key.1));
-            }
-        }
-        if let Some(ref i) = self.immutable {
-            i.reverse_lookup(value)
-        } else {
-            None
         }
     }
 
