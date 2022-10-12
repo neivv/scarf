@@ -10,6 +10,7 @@ use super::{
     ArithOperand, ArithOpType, MemAccess, MemAccessSize, Operand, OperandType, OperandCtx,
 };
 use super::slice_stack::{self, SizeLimitReached};
+#[cfg(feature = "fuzz")] use super::tls_simplification_incomplete;
 
 type Slice<'e> = slice_stack::Slice<'e, Operand<'e>>;
 type AddSlice<'e> = slice_stack::Slice<'e, (Operand<'e>, bool)>;

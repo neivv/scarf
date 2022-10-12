@@ -2335,7 +2335,7 @@ impl<'e> Operand<'e> {
                     _ => MemAccessSize::Mem64,
                 };
                 let inner = Operand::from_fuzz_bytes(ctx, bytes)?;
-                ctx.sign_extend(inner, from, to);
+                ctx.sign_extend(inner, from, to)
             }
             0x5 => {
                 use self::ArithOpType::*;
@@ -2357,10 +2357,21 @@ impl<'e> Operand<'e> {
                     0xd => GreaterThan,
                     0xe => ToFloat,
                     0xf => ToInt,
+                    0x10 => ToDouble,
+                    0x11 => MulHigh,
                     _ => return None,
                 };
-                ctx.arithmetic(ty, left, right)
+                if read_u8(bytes)? == 0 {
+                    ctx.arithmetic(ty, left, right)
+                } else {
+                    let size = match read_u8(bytes)? & 3 {
+                        0 => MemAccessSize::Mem32,
+                        _ => MemAccessSize::Mem64,
+                    };
+                    ctx.float_arithmetic(ty, left, right, size)
+                }
             }
+            0x6 => ctx.custom(read_u64(bytes)? as u32),
             _ => return None,
         })
     }
