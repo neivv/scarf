@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use byteorder::{ReadBytesExt, LittleEndian};
 
 use scarf::{
-    BinaryFile, BinarySection, DestOperand, Operand, Operation, OperandContext, VirtualAddress64,
+    BinaryFile, BinarySection, Operand, Operation, OperandContext, VirtualAddress64,
 };
 use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86_64 as ExecutionState;
@@ -910,13 +910,13 @@ fn switch_different_resolved_constraints_on_branch_end() {
     // resolved values but same unresolved values so switch_start could still have
     // useful constraint.
     test(1, &[
-         (ctx.register(0), ctx.new_undef()),
+         (ctx.register(0), ctx.mem64(ctx.new_undef(), 0)),
          (ctx.register(1), ctx.new_undef()),
          (ctx.register(6), ctx.new_undef()),
          (ctx.register(7), ctx.new_undef()),
          (ctx.register(8), ctx.new_undef()),
          (ctx.register(9), ctx.new_undef()),
-         (ctx.register(13), ctx.new_undef()),
+         (ctx.register(13), ctx.mem32(ctx.mem64(ctx.new_undef(), 0), 8)),
     ]);
 }
 
@@ -1023,15 +1023,11 @@ fn test_inner<'e, 'b>(
     xmm: bool,
 ) {
     let ctx = &OperandContext::new();
-    let changes = changes.iter().map(|&(a, b)| {
+    let expected = changes.iter().map(|&(a, b)| {
         (ctx.copy_operand(a), ctx.copy_operand(b))
     }).collect::<Vec<_>>();
 
     let state = ExecutionState::with_binary(file, ctx);
-    let mut expected_state = state.clone();
-    for &(op, val) in &changes {
-        expected_state.move_resolved(&DestOperand::from_oper(op), val);
-    }
     let mut analysis = analysis::FuncAnalysis::with_state(file, ctx, func, state);
     let mut collect_end_state = CollectEndState {
         end_state: None,
@@ -1040,27 +1036,36 @@ fn test_inner<'e, 'b>(
 
     let mut end_state = collect_end_state.end_state.unwrap();
     for i in 0..16 {
-        let expected = expected_state.resolve(ctx.register(i));
-        let end = end_state.resolve(ctx.register(i));
-        if end.iter().any(|x| x.is_undefined()) {
-            let expected_is_ud = expected.is_undefined();
-            assert!(expected_is_ud, "Register {}: got undef {} expected {}", i, end, expected);
-        } else {
-            assert_eq!(expected, end, "Register {}: got {} expected {}", i, end, expected);
+        let reg = ctx.register(i);
+        if expected.iter().any(|x| x.0 == reg) {
+            continue;
         }
+        let end = end_state.resolve(reg);
+        assert_eq!(end, reg, "Register {}: got {} expected {}", i, end, reg);
     }
     if xmm {
         for i in 0..16 {
             for j in 0..4 {
-                let expected = expected_state.resolve(ctx.xmm(i, j));
-                let end = end_state.resolve(ctx.xmm(i, j));
-                if end.iter().any(|x| x.is_undefined()) {
-                    let expected_is_ud = expected.is_undefined();
-                    assert!(expected_is_ud, "XMM {}.{}: got undef {} expected {}", i, j, end, expected);
-                } else {
-                    assert_eq!(expected, end, "XMM {}.{}: got {} expected {}", i, j, end, expected);
+                let reg = ctx.xmm(i, j);
+                if expected.iter().any(|x| x.0 == reg) {
+                    continue;
                 }
+                let end = end_state.resolve(reg);
+                assert_eq!(end, reg, "XMM {}: got {} expected {}", i, end, reg);
             }
+        }
+    }
+    for &(op, val) in &expected {
+        let val2 = end_state.resolve(op);
+        if val2.contains_undefined() {
+            let replace = ctx.custom(0x100);
+            let cmp1 =
+                ctx.transform(val, 16, |x| if x.is_undefined() { Some(replace) } else { None });
+            let cmp2 =
+                ctx.transform(val2, 16, |x| if x.is_undefined() { Some(replace) } else { None });
+            assert_eq!(cmp1, cmp2, "Operand {op}: got {} expected {}", val, val2);
+        } else {
+            assert_eq!(val, val2, "Operand {op}: got {val2} expected {val}");
         }
     }
 }

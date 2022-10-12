@@ -2,7 +2,20 @@
 
 use super::{test_inline, test_inline_xmm};
 
-use scarf::OperandContext;
+use scarf::{OperandCtx, OperandContext, Operand};
+
+fn is_64bit() -> bool {
+    use scarf::exec_state::VirtualAddress;
+    <super::ExecutionState as scarf::ExecutionState<'_>>::VirtualAddress::SIZE == 8
+}
+
+fn mask_if_64bit<'e>(ctx: OperandCtx<'e>, left: Operand<'e>, right: u64) -> Operand<'e> {
+    if !is_64bit() {
+        left
+    } else {
+        ctx.and_const(left, right)
+    }
+}
 
 #[test]
 fn overflow_not_set_bug() {
@@ -432,11 +445,14 @@ fn merge_mem_to_undef() {
         0x31, 0xd2, // xor edx, edx
         0x39, 0xc8, // cmp eax, ecx
         0x0f, 0x94, 0xc2, // sete dl
+        0x31, 0xd2, // xor edx, edx
         0xc3, // ret
     ], &[
-         (ctx.register(0), ctx.mem32(ctx.register(4), 4)),
-         (ctx.register(1), ctx.new_undef()),
-         (ctx.register(2), ctx.new_undef()),
+        (ctx.register(0), ctx.mem32(ctx.register(4), 4)),
+        (ctx.register(1),
+            if is_64bit() { ctx.rsh_const(ctx.new_undef(), 0x20) } else { ctx.new_undef() },
+        ),
+        (ctx.register(2), ctx.constant(0)),
     ]);
 }
 
@@ -538,9 +554,9 @@ fn xmm_u128_left_shift1() {
         0xc3, // ret
     ], &[
         (ctx.register(0), ctx.constant(0)),
-        (ctx.register(1), ctx.and_const(ctx.register(0), 0xffff_ffff)),
-        (ctx.register(2), ctx.and_const(ctx.register(1), 0xffff_ffff)),
-        (ctx.register(3), ctx.and_const(ctx.register(2), 0xffff_ffff)),
+        (ctx.register(1), mask_if_64bit(ctx, ctx.register(0), 0xffff_ffff)),
+        (ctx.register(2), mask_if_64bit(ctx, ctx.register(1), 0xffff_ffff)),
+        (ctx.register(3), mask_if_64bit(ctx, ctx.register(2), 0xffff_ffff)),
     ]);
 }
 
@@ -561,9 +577,9 @@ fn xmm_u128_right_shift1() {
         0x8b, 0x5c, 0xe4, 0x0c, // mov ebx, [esp + c]
         0xc3, // ret
     ], &[
-        (ctx.register(0), ctx.and_const(ctx.register(1), 0xffff_ffff)),
-        (ctx.register(1), ctx.and_const(ctx.register(2), 0xffff_ffff)),
-        (ctx.register(2), ctx.and_const(ctx.register(3), 0xffff_ffff)),
+        (ctx.register(0), mask_if_64bit(ctx, ctx.register(1), 0xffff_ffff)),
+        (ctx.register(1), mask_if_64bit(ctx, ctx.register(2), 0xffff_ffff)),
+        (ctx.register(2), mask_if_64bit(ctx, ctx.register(3), 0xffff_ffff)),
         (ctx.register(3), ctx.constant(0)),
     ]);
 }

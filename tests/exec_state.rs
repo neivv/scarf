@@ -865,7 +865,7 @@ fn test_inner<'e, 'b>(
     xmm: bool,
 ) {
     let ctx = &OperandContext::new();
-    let changes = changes.iter().map(|&(a, b)| {
+    let expected = changes.iter().map(|&(a, b)| {
         (ctx.copy_operand(a), ctx.copy_operand(b))
     }).collect::<Vec<_>>();
     let init = init.iter().map(|&(a, b)| {
@@ -873,12 +873,8 @@ fn test_inner<'e, 'b>(
     }).collect::<Vec<_>>();
 
     let mut state = ExecutionState::with_binary(file, ctx);
-    let mut expected_state = state.clone();
     for &(op, val) in &init {
         state.move_resolved(&DestOperand::from_oper(op), val);
-    }
-    for &(op, val) in &changes {
-        expected_state.move_resolved(&DestOperand::from_oper(op), val);
     }
     let mut analysis = analysis::FuncAnalysis::with_state(file, ctx, func, state);
     let mut collect_end_state = CollectEndState {
@@ -888,33 +884,42 @@ fn test_inner<'e, 'b>(
 
     let mut end_state = collect_end_state.end_state.unwrap();
     for i in 0..8 {
-        let expected = expected_state.resolve(ctx.register(i));
-        let end = end_state.resolve(ctx.register(i));
-        if end.iter().any(|x| x.is_undefined()) {
-            let expected_is_ud = expected.is_undefined();
-            assert!(expected_is_ud, "Register {}: got undef {} expected {}", i, end, expected);
-        } else {
-            assert_eq!(expected, end, "Register {}: got {} expected {}", i, end, expected);
+        let reg = ctx.register(i);
+        if expected.iter().any(|x| x.0 == reg) {
+            continue;
         }
+        let end = end_state.resolve(reg);
+        assert_eq!(end, reg, "Register {}: got {} expected {}", i, end, reg);
     }
     if xmm {
         for i in 0..8 {
             for j in 0..4 {
-                let expected = expected_state.resolve(ctx.xmm(i, j));
-                let end = end_state.resolve(ctx.xmm(i, j));
-                if end.iter().any(|x| x.is_undefined()) {
-                    let expected_is_ud = expected.is_undefined();
-                    assert!(expected_is_ud, "XMM {}.{}: got undef {} expected {}", i, j, end, expected);
-                } else {
-                    assert_eq!(expected, end, "XMM {}.{}: got {} expected {}", i, j, end, expected);
+                let reg = ctx.xmm(i, j);
+                if expected.iter().any(|x| x.0 == reg) {
+                    continue;
                 }
+                let end = end_state.resolve(reg);
+                assert_eq!(end, reg, "XMM {}: got {} expected {}", i, end, reg);
             }
+        }
+    }
+    for &(op, val) in &expected {
+        let val2 = end_state.resolve(op);
+        if val2.contains_undefined() {
+            let replace = ctx.custom(0x100);
+            let cmp1 =
+                ctx.transform(val, 16, |x| if x.is_undefined() { Some(replace) } else { None });
+            let cmp2 =
+                ctx.transform(val2, 16, |x| if x.is_undefined() { Some(replace) } else { None });
+            assert_eq!(cmp1, cmp2, "Operand {op}: got {} expected {}", val, val2);
+        } else {
+            assert_eq!(val, val2, "Operand {op}: got {val2} expected {val}");
         }
     }
 }
 
-fn test_inline_xmm<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
-    let binary = scarf::raw_bin(VirtualAddress(0x00400000), vec![BinarySection {
+fn make_binary(code: &[u8]) -> BinaryFile<VirtualAddress> {
+    scarf::raw_bin(VirtualAddress(0x00400000), vec![BinarySection {
         name: {
             // ugh
             let mut x = [0; 8];
@@ -926,7 +931,11 @@ fn test_inline_xmm<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
         virtual_address: VirtualAddress(0x401000),
         virtual_size: code.len() as u32,
         data: code.into(),
-    }]);
+    }])
+}
+
+fn test_inline_xmm<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
+    let binary = make_binary(code);
     test_inner(&binary, binary.code_section().virtual_address, changes, &[], true);
 }
 
