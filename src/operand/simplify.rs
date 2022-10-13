@@ -4983,6 +4983,10 @@ pub fn simplify_or<'e>(
         }
         if can_quick_simplify_type(left.ty()) && can_quick_simplify_type(right.ty()) {
             // Two variable operands without arithmetic/memory won't simplify to anything
+            // unless they are the same value.
+            if left == right {
+                return left;
+            }
             let (left, right) = match left > right {
                 true => (left, right),
                 false => (right, left),

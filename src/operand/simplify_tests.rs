@@ -8371,3 +8371,15 @@ fn add_greater_or_eq_masked() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn or_self() {
+    let ctx = &OperandContext::new();
+
+    let op1 = ctx.or(
+        ctx.register(0),
+        ctx.register(0),
+    );
+    let eq1 = ctx.register(0);
+    assert_eq!(op1, eq1);
+}
