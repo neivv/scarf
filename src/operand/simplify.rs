@@ -1009,6 +1009,9 @@ pub fn simplify_lsh<'e>(
     let constant = match right.if_constant() {
         Some(s) => s,
         None => {
+            if left == ctx.const_0() {
+                return left;
+            }
             let arith = ArithOperand {
                 ty: ArithOpType::Lsh,
                 left,
@@ -1223,6 +1226,9 @@ pub fn simplify_rsh<'e>(
     let constant = match right.if_constant() {
         Some(s) => s,
         None => {
+            if left == ctx.const_0() {
+                return left;
+            }
             let arith = ArithOperand {
                 ty: ArithOpType::Rsh,
                 left,

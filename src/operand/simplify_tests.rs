@@ -8429,3 +8429,22 @@ fn rsh_relbits() {
     let eq1 = ctx.constant(0);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn zero_shift_any() {
+    let ctx = &OperandContext::new();
+
+    let op1 = ctx.lsh(
+        ctx.constant(0),
+        ctx.register(5)
+    );
+    let eq1 = ctx.constant(0);
+    assert_eq!(op1, eq1);
+
+    let op1 = ctx.rsh(
+        ctx.constant(0),
+        ctx.register(5)
+    );
+    let eq1 = ctx.constant(0);
+    assert_eq!(op1, eq1);
+}
