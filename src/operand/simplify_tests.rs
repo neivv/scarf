@@ -8383,3 +8383,49 @@ fn or_self() {
     let eq1 = ctx.register(0);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn lsh_relbits() {
+    let ctx = &OperandContext::new();
+
+    // Unknown shift but at most 7 bits,
+    // so it'll always get masked out
+    let op1 = ctx.and_const(
+        ctx.lsh(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(0), 0),
+                8,
+            ),
+            ctx.and_const(
+                ctx.register(4),
+                3,
+            ),
+        ),
+        0xff00_00ff,
+    );
+    let eq1 = ctx.constant(0);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn rsh_relbits() {
+    let ctx = &OperandContext::new();
+
+    // Unknown shift but at most 7 bits,
+    // so it'll always get masked out
+    let op1 = ctx.and_const(
+        ctx.rsh(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(0), 0),
+                16,
+            ),
+            ctx.and_const(
+                ctx.register(4),
+                3,
+            ),
+        ),
+        0xff00_00ff,
+    );
+    let eq1 = ctx.constant(0);
+    assert_eq!(op1, eq1);
+}

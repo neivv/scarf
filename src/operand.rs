@@ -1695,20 +1695,26 @@ impl<'e> OperandType<'e> {
                     0..1
                 }
                 ArithOpType::Lsh | ArithOpType::Rsh => {
-                    if let Some(c) = arith.right.if_constant() {
-                        let c = c & 0x3f;
-                        let left_bits = arith.left.relevant_bits();
-                        if arith.ty == ArithOpType::Lsh {
-                            let start = min(64, left_bits.start + c as u8);
-                            let end = min(64, left_bits.end + c as u8);
-                            start..end
-                        } else {
-                            let start = left_bits.start.saturating_sub(c as u8);
-                            let end = left_bits.end.saturating_sub(c as u8);
-                            start..end
-                        }
+                    let left_bits = arith.left.relevant_bits();
+                    let (min, max) = if let Some(c) = arith.right.if_constant() {
+                        let c = c as u8 & 0x3f;
+                        (c, c)
                     } else {
-                        0..64
+                        let right_bits = arith.right.relevant_bits();
+                        if right_bits.end > 6 {
+                            (0, 0x3f)
+                        } else {
+                            (0, (1u8 << right_bits.end).wrapping_sub(1))
+                        }
+                    };
+                    if arith.ty == ArithOpType::Lsh {
+                        let start = 64u8.min(left_bits.start + min as u8);
+                        let end = 64u8.min(left_bits.end + max as u8);
+                        start..end
+                    } else {
+                        let start = left_bits.start.saturating_sub(max as u8);
+                        let end = left_bits.end.saturating_sub(min as u8);
+                        start..end
                     }
                 }
                 ArithOpType::And => {
