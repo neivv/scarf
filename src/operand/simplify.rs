@@ -3147,8 +3147,10 @@ fn simplify_and_main<'e>(
     };
     simplify_and_remove_unnecessary_ors(ops, const_remain);
 
-    let mut tree = ops.pop()
-        .unwrap_or_else(|| ctx.const_0());
+    let mut tree = match ops.pop() {
+        Some(s) => s,
+        None => return Ok(ctx.constant(final_const_remain)),
+    };
     while let Some(op) = ops.pop() {
         let arith = ArithOperand {
             ty: ArithOpType::And,

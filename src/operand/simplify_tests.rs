@@ -8448,3 +8448,20 @@ fn zero_shift_any() {
     let eq1 = ctx.constant(0);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn or_and_to_const_bug() {
+    let ctx = &OperandContext::new();
+
+    // Result is just const1 & const2, bits of xmm that aren't set to 1 by or
+    // are set to 0 by and
+    let op1 = ctx.and_const(
+        ctx.or_const(
+            ctx.xmm(0, 0),
+            0x0103_3501_0025_c700,
+        ),
+        0x0000_1401_0025_c700,
+    );
+    let eq1 = ctx.constant(0x0000_1401_0025_c700);
+    assert_eq!(op1, eq1);
+}
