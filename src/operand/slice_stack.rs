@@ -163,6 +163,10 @@ impl<'e, T: Copy> Slice<'e, T> {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.slice_len = 0;
+    }
+
     pub fn shrink(&mut self, new_len: usize) {
         assert!(new_len <= self.len());
         self.slice_len = new_len;

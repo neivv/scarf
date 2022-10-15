@@ -8505,3 +8505,25 @@ fn mul_simplify_to_zero() {
     let eq1 = ctx.constant(0);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn and_simplify_to_zero() {
+    let ctx = &OperandContext::new();
+
+    // rax must be both 8 and less than 5 => becomes 0
+    let op1 = ctx.and(
+        ctx.and(
+            ctx.register(0),
+            ctx.eq_const(
+                ctx.register(0),
+                8,
+            ),
+        ),
+        ctx.gt_const_left(
+            5,
+            ctx.register(0),
+        ),
+    );
+    let eq1 = ctx.constant(0);
+    assert_eq!(op1, eq1);
+}

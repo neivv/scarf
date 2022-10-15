@@ -3043,7 +3043,8 @@ fn simplify_and_main<'e>(
         }
     }
     simplify_and_merge_child_ors(ops, ctx);
-    simplify_and_merge_gt_const(ops, ctx);
+    let new_const_remain = simplify_and_merge_gt_const(ops, ctx);
+    const_remain &= new_const_remain;
 
     // Replace not(x) & not(y) with not(x | y)
     if ops.len() >= 2 {
@@ -3217,7 +3218,12 @@ fn simplify_and_merge_child_ors<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
 // Merges (x > c) & ((x == c + 1) == 0) to x > (c + 1)
 // Or alternatively (x > c) & ((x == c2) == 0) to x > c
 // if c2 < c
-fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
+// Returns true if constant mask becomes 1
+#[must_use]
+fn simplify_and_merge_gt_const<'e>(
+    ops: &mut Slice<'e>,
+    ctx: OperandCtx<'e>,
+) -> u64 {
     // Range start, range end (inclusive), mask, compare operand, range value
     // E.g. range value for `x in 5..=10` would be true,
     // false for `not x in 5..=10`
@@ -3369,11 +3375,12 @@ fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
     }
 
     if !ops.iter().any(|x| x.if_arithmetic_gt().is_some()) {
-        return;
+        return u64::MAX;
     }
 
+    let mut new_const_remain = u64::MAX;
     let mut i = 0;
-    while i < ops.len() {
+    'outer_loop: while i < ops.len() {
         let op = ops[i];
         if let Some(mut value) = check(op) {
             let mut changed = false;
@@ -3388,11 +3395,20 @@ fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
             }
             if changed {
                 let (min, max, mask, op, set) = value;
-                let new = if min == 0 && max == mask {
+                if min == 0 && max == mask {
                     // Always 0/1
-                    ctx.constant(if set { 1 } else { 0 })
-                } else {
                     if set {
+                        // Became const 1
+                        new_const_remain = 1;
+                        ops.swap_remove(i);
+                        continue 'outer_loop;
+                    } else {
+                        // Became const 0, everything is zeroed out
+                        ops.clear();
+                        return 0;
+                    }
+                } else {
+                    let new = if set {
                         if min == max {
                             let op = ctx.and_const(op, mask);
                             ctx.eq_const(op, min)
@@ -3438,13 +3454,24 @@ fn simplify_and_merge_gt_const<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
                                 max.wrapping_sub(min),
                             )
                         }
+                    };
+                    if new == ctx.const_0() {
+                        // Became const 0, everything is zeroed out
+                        ops.clear();
+                        return 0;
                     }
+                    if new == ctx.const_1() {
+                        new_const_remain = 1;
+                        ops.swap_remove(i);
+                        continue 'outer_loop;
+                    }
+                    ops[i] = new;
                 };
-                ops[i] = new;
             }
         }
         i += 1;
     }
+    new_const_remain
 }
 
 // "Simplify bitwise or: xor merge"
