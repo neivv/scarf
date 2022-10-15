@@ -10,6 +10,7 @@ use super::{
     ArithOperand, ArithOpType, MemAccess, MemAccessSize, Operand, OperandType, OperandCtx,
 };
 use super::slice_stack::{self, SizeLimitReached};
+use super::util::{IterArithOps, IterAddSubArithOps};
 #[cfg(feature = "fuzz")] use super::tls_simplification_incomplete;
 
 type Slice<'e> = slice_stack::Slice<'e, Operand<'e>>;
@@ -484,68 +485,6 @@ fn is_continuous_mask(val: u64) -> bool {
     let low = val.trailing_zeros();
     let low_mask = 1u64.wrapping_shl(low).wrapping_sub(1);
     (val | low_mask).wrapping_add(1) & val == 0
-}
-
-/// Iterates through parts of a arithmetic op tree where it is guaranteed
-/// that right has never subtrees, only left (E.g. for and, or, xor).
-///
-/// Order is outermost right first, then next inner right, etc.
-#[derive(Copy, Clone)]
-struct IterArithOps<'e> {
-    ty: ArithOpType,
-    next: Option<Operand<'e>>,
-    next_inner: Option<Operand<'e>>,
-}
-
-impl<'e> Iterator for IterArithOps<'e> {
-    type Item = Operand<'e>;
-    fn next(&mut self) -> Option<Self::Item> {
-        let next = self.next?;
-        if let Some(x) = self.next_inner {
-            if let Some((inner_a, inner_b)) = x.if_arithmetic(self.ty) {
-                self.next_inner = Some(inner_a);
-                self.next = Some(inner_b);
-            } else {
-                self.next = Some(x);
-                self.next_inner = None;
-            }
-        } else {
-            self.next = None;
-        }
-        Some(next)
-    }
-}
-
-#[derive(Copy, Clone)]
-struct IterAddSubArithOps<'e> {
-    next: Option<Operand<'e>>,
-}
-
-impl<'e> IterAddSubArithOps<'e> {
-    fn new(operand: Operand<'e>) -> IterAddSubArithOps {
-        IterAddSubArithOps {
-            next: Some(operand),
-        }
-    }
-}
-
-impl<'e> Iterator for IterAddSubArithOps<'e> {
-    /// (op, bool negate)
-    type Item = (Operand<'e>, bool);
-    fn next(&mut self) -> Option<Self::Item> {
-        let next = self.next?;
-        if let OperandType::Arithmetic(a) = next.ty() {
-            if a.ty == ArithOpType::Add {
-                self.next = Some(a.left);
-                return Some((a.right, false));
-            } else if a.ty == ArithOpType::Sub {
-                self.next = Some(a.left);
-                return Some((a.right, true));
-            }
-        }
-        self.next = None;
-        Some((next, false))
-    }
 }
 
 /// Also used for or.

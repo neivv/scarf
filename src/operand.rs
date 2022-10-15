@@ -8,6 +8,7 @@ mod simplify;
 pub(crate) mod slice_stack;
 #[cfg(test)]
 mod simplify_tests;
+mod util;
 
 #[cfg(feature = "serde")]
 mod deserialize;
