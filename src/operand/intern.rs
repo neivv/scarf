@@ -77,6 +77,7 @@ impl<'e> Interner<'e> {
 
     fn add_operand(&'e self, ty: OperandType<'e>) -> Operand<'e> {
         let relevant_bits = ty.calculate_relevant_bits();
+        debug_assert!(relevant_bits.start != relevant_bits.end, "Operand should be zero {:?}", ty);
         let min_zero_bit_simplify_size =
             ty.min_zero_bit_simplify_size(relevant_bits.clone());
         let flags = ty.flags();

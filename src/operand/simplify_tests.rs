@@ -8465,3 +8465,43 @@ fn or_and_to_const_bug() {
     let eq1 = ctx.constant(0x0000_1401_0025_c700);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn mul_simplify_to_zero() {
+    let ctx = &OperandContext::new();
+
+    let op1 = ctx.mul_const(
+        ctx.and_const(
+            ctx.register(0),
+            0xb_0000_0000,
+        ),
+        0x0400_0b00_0000_0000,
+    );
+    let eq1 = ctx.constant(0);
+    assert_eq!(op1, eq1);
+
+    let op1 = ctx.mul(
+        ctx.mul(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff_0000,
+            ),
+            ctx.and_const(
+                ctx.register(0),
+                0xffff_0000,
+            ),
+        ),
+        ctx.mul(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff_0000,
+            ),
+            ctx.and_const(
+                ctx.register(0),
+                0xffff_0000,
+            ),
+        ),
+    );
+    let eq1 = ctx.constant(0);
+    assert_eq!(op1, eq1);
+}

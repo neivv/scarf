@@ -4572,6 +4572,12 @@ pub fn simplify_mul<'e>(
     right: Operand<'e>,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
+    let left_rel = left.relevant_bits();
+    let right_rel = right.relevant_bits();
+    // Guaranteed to overflow to 0
+    if left_rel.start.wrapping_add(right_rel.start) >= 64 {
+        return ctx.const_0();
+    }
     let const_other = Operand::either(left, right, |x| x.if_constant());
     if let Some((c, other)) = const_other {
         // Go through lsh simplification for power of two, it will still intern Mul
