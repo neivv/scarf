@@ -8527,3 +8527,160 @@ fn and_simplify_to_zero() {
     let eq1 = ctx.constant(0);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn or_cmp_1bit_mask_consistency() {
+    let ctx = &OperandContext::new();
+
+    // (rax > rcx) | (rdx & 1)
+    // is same as
+    // ((rax > rcx) | rdx) & 1
+    let op1 = ctx.or(
+        ctx.gt(
+            ctx.register(0),
+            ctx.register(1),
+        ),
+        ctx.and_const(
+            ctx.register(2),
+            1,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.gt(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.register(2),
+        ),
+        1,
+    );
+    assert_eq!(op1, eq1);
+
+    // And the canonical form is (rax > rcx) | (rdx & 1)
+    // If or operand does not need mask it will not be masked.
+    // This is different from xor. Maybe should change be same?
+    op1.if_arithmetic_or().expect("Did not canonicalize to or");
+
+    // ((rax > rcx) | ((rdx | Custom(2)) & 1)) | (r8 == r9)
+    // is same as
+    // ((((rax > rcx) | rdx) | Custom(2)) | (r8 == r9)) & 1
+    let op1 = ctx.or(
+        ctx.or(
+            ctx.gt(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.and_const(
+                ctx.or(
+                    ctx.register(2),
+                    ctx.custom(2),
+                ),
+                1,
+            ),
+        ),
+        ctx.eq(
+            ctx.register(8),
+            ctx.register(9),
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.or(
+                ctx.or(
+                    ctx.gt(
+                        ctx.register(0),
+                        ctx.register(1),
+                    ),
+                    ctx.register(2),
+                ),
+                ctx.custom(2),
+            ),
+            ctx.eq(
+                ctx.register(8),
+                ctx.register(9),
+            ),
+        ),
+        1,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn xor_cmp_1bit_mask_consistency() {
+    let ctx = &OperandContext::new();
+
+    // (rax > rcx) ^ (rdx & 1)
+    // is same as
+    // ((rax > rcx) ^ rdx) & 1
+    let op1 = ctx.xor(
+        ctx.gt(
+            ctx.register(0),
+            ctx.register(1),
+        ),
+        ctx.and_const(
+            ctx.register(2),
+            1,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.xor(
+            ctx.gt(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.register(2),
+        ),
+        1,
+    );
+
+    assert_eq!(op1, eq1);
+
+    // And the canonical form is ((rax > rcx) ^ rdx) & 1
+    // This is different from or; moving and masks to be outermost
+    // with xor was considered ideal. Maybe or should do the same.
+    op1.if_arithmetic(ArithOpType::And).expect("Did not canonicalize to and");
+
+    // ((rax > rcx) ^ ((rdx ^ Custom(2)) & 1)) ^ (r8 == r9)
+    // is same as
+    // ((((rax > rcx) ^ rdx) ^ Custom(2)) ^ (r8 == r9)) & 1
+    let op1 = ctx.xor(
+        ctx.xor(
+            ctx.gt(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.and_const(
+                ctx.xor(
+                    ctx.register(2),
+                    ctx.custom(2),
+                ),
+                1,
+            ),
+        ),
+        ctx.eq(
+            ctx.register(8),
+            ctx.register(9),
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.xor(
+            ctx.xor(
+                ctx.xor(
+                    ctx.gt(
+                        ctx.register(0),
+                        ctx.register(1),
+                    ),
+                    ctx.register(2),
+                ),
+                ctx.custom(2),
+            ),
+            ctx.eq(
+                ctx.register(8),
+                ctx.register(9),
+            ),
+        ),
+        1,
+    );
+    assert_eq!(op1, eq1);
+}

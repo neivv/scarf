@@ -2855,6 +2855,88 @@ pub fn simplify_and<'e>(
     })
 }
 
+/// If and ops contain or, and some of the parts of or
+/// don't need the mask, split or to half that needs the mask
+/// and mask it, and rejoin with rest. After that the and simplification
+/// won't need constant mask since anding with the or which was
+/// modified to include the mask will clear out the bits that the mask
+/// would have.
+///
+/// Returns if the mask insertion was done, and if it changed anything.
+fn simplify_and_insert_mask_to_or<'e>(
+    ctx: OperandCtx<'e>,
+    ops: &mut [Operand<'e>],
+    const_remain: u64,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> (bool, bool) {
+    let mut any_changed = false;
+    let mut any_merged = false;
+    for i in 0..ops.len() {
+        if let OperandType::Arithmetic(arith) = ops[i].ty() {
+            if !matches!(arith.ty, ArithOpType::Or) {
+                continue;
+            }
+            let parts = IterArithOps {
+                ty: arith.ty,
+                next: Some(arith.right),
+                next_inner: Some(arith.left),
+            };
+            let mut mask_result = 0;
+            for op in parts {
+                let mask = match op.if_constant() {
+                    Some(c) => c,
+                    None => op.relevant_bits_mask(),
+                };
+                if mask & const_remain != mask {
+                    // Needs mask
+                    mask_result |= 1;
+                } else {
+                    mask_result |= 2;
+                }
+                if mask_result == 3 {
+                    break;
+                }
+            }
+            if mask_result != 3 {
+                continue;
+            }
+            let mut needing_mask = ctx.const_0();
+            let mut not_needing_mask = ctx.const_0();
+            let parts = IterArithOps {
+                ty: arith.ty,
+                next: Some(arith.right),
+                next_inner: Some(arith.left),
+            };
+            for op in parts {
+                let mask = match op.if_constant() {
+                    Some(c) => c,
+                    None => op.relevant_bits_mask(),
+                };
+                if mask & const_remain != mask {
+                    needing_mask = ctx.arithmetic(arith.ty, op, needing_mask);
+                } else {
+                    not_needing_mask = ctx.arithmetic(arith.ty, op, not_needing_mask);
+                }
+            }
+            let masked = simplify_and_const(needing_mask, const_remain, ctx, swzb_ctx);
+            let new = ctx.arithmetic(arith.ty, not_needing_mask, masked);
+            if ops[i] != new {
+                ops[i] = new;
+                any_changed = true;
+            }
+            any_merged = true;
+            // Technically could return here since the mask will cause
+            // any remaining ones be masked the same, but going to mask
+            // every part for more consistent canonicalization.
+            //
+            // Alternatively could only insert mask if only one part is
+            // maskable, but it would require undoing the masks when
+            // and with one applied is being used as input to another and.
+        }
+    }
+    (any_merged, any_changed)
+}
+
 fn simplify_and_main<'e>(
     ops: &mut Slice<'e>,
     mut const_remain: u64,
@@ -2970,40 +3052,14 @@ fn simplify_and_main<'e>(
                 return Ok(zero);
             }
         }
-        // Simplify (x | y) & mask to (x | (y & mask)) if mask is useless to x
-        let mut const_remain_necessary = true;
-        for i in 0..ops.len() {
-            if let Some((l, r)) = ops[i].if_arithmetic_or() {
-                let left_mask = match l.if_constant() {
-                    Some(c) => c,
-                    None => l.relevant_bits_mask(),
-                };
-                let right_mask = match r.if_constant() {
-                    Some(c) => c,
-                    None => r.relevant_bits_mask(),
-                };
-                let left_needs_mask = left_mask & const_remain != left_mask;
-                let right_needs_mask = right_mask & const_remain != right_mask;
-                if !left_needs_mask && right_needs_mask && left_mask != const_remain {
-                    let constant = const_remain & right_mask;
-                    let masked = simplify_and_const(r, constant, ctx, swzb_ctx);
-                    let new = simplify_or(l, masked, ctx, swzb_ctx);
-                    ops[i] = new;
-                    const_remain_necessary = false;
-                    ops_changed = true;
-                } else if left_needs_mask && !right_needs_mask && right_mask != const_remain {
-                    let constant = const_remain & left_mask;
-                    let masked = simplify_and_const(l, constant, ctx, swzb_ctx);
-                    let new = simplify_or(r, masked, ctx, swzb_ctx);
-                    ops[i] = new;
-                    const_remain_necessary = false;
-                    ops_changed = true;
-                }
+
+        if const_remain != u64::MAX {
+            let (const_remain_unnecessary, any_changed) =
+                simplify_and_insert_mask_to_or(ctx, ops, const_remain, swzb_ctx);
+            ops_changed |= any_changed;
+            if const_remain_unnecessary {
+                const_remain = u64::MAX;
             }
-        }
-        if !const_remain_necessary {
-            // All ops were masked with const remain, so it should not be useful anymore
-            const_remain = u64::max_value();
         }
 
         let mut i = 0;
