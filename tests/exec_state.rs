@@ -10,6 +10,7 @@ use byteorder::{ReadBytesExt, LittleEndian};
 
 use scarf::{
     BinaryFile, BinarySection, DestOperand, Operand, Operation, OperandContext, VirtualAddress,
+    MemAccessSize,
 };
 use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86 as ExecutionState;
@@ -639,10 +640,13 @@ fn xmm_u128_left_shift2() {
     ], &[
         (ctx.register(0), ctx.constant(0)),
         (ctx.register(1), ctx.constant(0)),
-        (ctx.register(2), ctx.and_const(ctx.lsh_const(ctx.register(0), 0x10), 0xffff_ffff)),
-        (ctx.register(3), ctx.or(
-            ctx.rsh_const(ctx.register(0), 0x10),
-            ctx.and_const(ctx.lsh_const(ctx.register(1), 0x10), 0xffff_0000),
+        (ctx.register(2), ctx.lsh_const(ctx.register(0), 0x10)),
+        (ctx.register(3), ctx.and_const(
+            ctx.or(
+                ctx.rsh_const(ctx.register(0), 0x10),
+                ctx.and_const(ctx.lsh_const(ctx.register(1), 0x10), 0xffff_0000),
+            ),
+            0xffff_ffff,
         )),
     ]);
 }
@@ -664,11 +668,17 @@ fn xmm_u128_right_shift2() {
         0x8b, 0x5c, 0xe4, 0x0c, // mov ebx, [esp + c]
         0xc3, // ret
     ], &[
-        (ctx.register(0), ctx.or(
-            ctx.rsh_const(ctx.register(2), 0x10),
-            ctx.and_const(ctx.lsh_const(ctx.register(3), 0x10), 0xffff_0000),
+        (ctx.register(0), ctx.and_const(
+            ctx.or(
+                ctx.rsh_const(ctx.register(2), 0x10),
+                ctx.and_const(ctx.lsh_const(ctx.register(3), 0x10), 0xffff_0000),
+            ),
+            0xffff_ffff,
         )),
-        (ctx.register(1), ctx.rsh_const(ctx.register(3), 0x10)),
+        (ctx.register(1), ctx.and_const(
+            ctx.rsh_const(ctx.register(3), 0x10),
+            0xffff_ffff,
+        )),
         (ctx.register(2), ctx.constant(0)),
         (ctx.register(3), ctx.constant(0)),
     ]);
@@ -778,9 +788,13 @@ fn mov_al_constmem() {
 }
 
 #[test]
-fn mov_mem32_consistency() {
+fn mov_mem32_consistency_1() {
     let ctx = &OperandContext::new();
-    // Should not get & ffff_ffff masks
+    // Single register to memory and back does not get & ffff_ffff masks
+    // It could, but currently not done to not break too much user code
+    // (Mainly since ecx is used as 'this' argument in functions and
+    // so far the correct way to check it in scarf has been not assuming
+    // ffff_ffff mask there)
     test_inline(&[
         0xa3, 0x10, 0x10, 0x00, 0x00, // mov [1010], eax
         0xa1, 0x10, 0x10, 0x00, 0x00, // mov eax, [1010]
@@ -793,14 +807,14 @@ fn mov_mem32_consistency() {
         (ctx.register(0), ctx.register(0)),
         (ctx.register(1), ctx.register(1)),
         (ctx.register(2), ctx.register(2)),
+        (ctx.mem32c(0x1010), ctx.register(1)),
     ]);
 }
 
 #[test]
 fn mov_mem32_consistency_2() {
     let ctx = &OperandContext::new();
-    // Should not get & ffff_ffff masks?
-    // Either none should or all should, and currently none do.
+    // Should not get & ffff_ffff masks due to ctx.normalize_32bit
     test_inline_with_init(&[
         0xa3, 0x10, 0x10, 0x00, 0x00, // mov [1010], eax
         0xa1, 0x10, 0x10, 0x00, 0x00, // mov eax, [1010]
@@ -821,13 +835,56 @@ fn mov_mem32_consistency_2() {
 }
 
 #[test]
+fn mov_mem32_consistency_3() {
+    let ctx = &OperandContext::new();
+    // Register move but misaligned memory address
+    test_inline(&[
+        0xa3, 0x1e, 0x10, 0x00, 0x00, // mov [101e], eax
+        0xa1, 0x1e, 0x10, 0x00, 0x00, // mov eax, [101e]
+        0x89, 0x0d, 0x1e, 0x10, 0x00, 0x00, // mov [101e], ecx
+        0x8b, 0x0d, 0x1e, 0x10, 0x00, 0x00, // mov ecx, [101e]
+        0x89, 0x56, 0x0e, // mov [esi + e], edx
+        0x8b, 0x56, 0x0e, // mov edx, [esi + e]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.register(0)),
+        (ctx.register(1), ctx.register(1)),
+        (ctx.register(2), ctx.register(2)),
+        (ctx.mem32c(0x101e), ctx.register(1)),
+    ]);
+}
+
+#[test]
+fn mov_mem32_consistency_4() {
+    let ctx = &OperandContext::new();
+    // Custom move with misaligned memory address
+    // Should not get & ffff_ffff masks due to ctx.normalize_32bit
+    test_inline_with_init(&[
+        0xa3, 0x1e, 0x10, 0x00, 0x00, // mov [101e], eax
+        0xa1, 0x1e, 0x10, 0x00, 0x00, // mov eax, [101e]
+        0x89, 0x0d, 0x1e, 0x10, 0x00, 0x00, // mov [101e], ecx
+        0x8b, 0x0d, 0x1e, 0x10, 0x00, 0x00, // mov ecx, [101e]
+        0x89, 0x56, 0x0e, // mov [esi + e], edx
+        0x8b, 0x56, 0x0e, // mov edx, [esi + e]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.custom(0)),
+        (ctx.register(1), ctx.custom(1)),
+        (ctx.register(2), ctx.custom(2)),
+    ], &[
+        (ctx.register(0), ctx.custom(0)),
+        (ctx.register(1), ctx.custom(1)),
+        (ctx.register(2), ctx.custom(2)),
+    ]);
+}
+
+#[test]
 fn jump_conditions() {
     let ctx = &OperandContext::new();
     test(5, &[
          (ctx.register(0), ctx.new_undef()),
     ]);
 }
-
 
 #[test]
 fn read_in_virtual_only_bytes() {
@@ -852,6 +909,43 @@ fn read_in_virtual_only_bytes() {
         end_state: None,
     };
     analysis.analyze(&mut collect_end_state);
+}
+
+#[test]
+fn stack_arr_write_read() {
+    let file = &make_binary(&[
+        // Make esp undefined
+        0x85, 0xc9, // test ecx, ecx
+        0x74, 0x03, // je skip_sub
+        0x83, 0xec, 0x04, // sub esp, 4
+        // skip_sub:
+        0xeb, 0x00, // jmp next (Force state merge at next)
+        // next:
+        0x8b, 0xec, // mov ebp, esp
+        0x8d, 0x45, 0xff, // lea eax, [ebp - 1]
+        0x50, // push eax
+        0xc6, 0x45, 0xff, 0x11, // mov byte [ebp - 1], 0x11
+        0x6a, 0x01, // push 1
+        0x50, // push eax
+        0xc3, // ret
+    ]);
+    let func = file.code_section().virtual_address;
+    let ctx = &OperandContext::new();
+
+    let state = ExecutionState::with_binary(file, ctx);
+    let mut analysis = analysis::FuncAnalysis::with_state(file, ctx, func, state);
+    let mut collect_end_state = CollectEndState {
+        end_state: None,
+    };
+    analysis.analyze(&mut collect_end_state);
+
+    let mut end_state = collect_end_state.end_state.unwrap();
+    // Read value at [esp], it should be pointer to stack memory
+    // read u8 at that value, it should be 0x11
+    let value = end_state.resolve(ctx.mem32(ctx.register(4), 0));
+    println!("Value at [esp] = {value}");
+    let inner = end_state.read_memory(&ctx.mem_access(value, 0, MemAccessSize::Mem8));
+    assert_eq!(inner, ctx.constant(0x11));
 }
 
 struct CollectEndState<'e> {

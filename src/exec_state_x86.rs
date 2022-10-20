@@ -317,49 +317,6 @@ impl<'e> CachedLowRegisters<'e> {
     }
 }
 
-/// Removes 0xffff_ffff masks from registers/undefined,
-/// converts x + u64_const to x + u32_const.
-///
-/// The main idea is that it is assumed that arithmetic add/sub/mul won't overflow
-/// when stored to operands. If the arithmetic result is used as a part of another
-/// operation whose meaning changes based on high bits (div/mod/rsh/eq/gt), then
-/// the result is explicitly masked. (Add / sub constants larger than u32::max will
-/// be still truncated eagerly)
-fn as_32bit_value<'e>(value: Operand<'e>, ctx: OperandCtx<'e>) -> Operand<'e> {
-    if value.relevant_bits().end > 32 {
-        if let Some((l, r)) = value.if_arithmetic_add() {
-            // Uh, relying that simplification places constant on the right
-            // always. Should be made a explicit guarantee.
-            if let Some(c) = r.if_constant() {
-                if c > u32::max_value() as u64 {
-                    let truncated = c as u32 as u64;
-                    return ctx.add_const(l, truncated);
-                }
-            }
-        }
-        if let Some(c) = value.if_constant() {
-            if c > u32::max_value() as u64 {
-                let truncated = c as u32 as u64;
-                return ctx.constant(truncated);
-            }
-        }
-        value.clone()
-    } else {
-        let const_mask = value.if_arithmetic_and()
-            .filter(|x| x.1.if_constant() == Some(0xffff_ffff))
-            .map(|x| x.0);
-        if let Some(other) = const_mask {
-            if other.is_undefined() || other.if_register().is_some() {
-                other.clone()
-            } else {
-                value.clone()
-            }
-        } else {
-            value.clone()
-        }
-    }
-}
-
 impl<'e> ExecutionState<'e> {
     pub fn new<'b>(
         ctx: OperandCtx<'b>,
@@ -728,12 +685,21 @@ impl<'e> State<'e> {
                 return None;
             }
             let low = low
+                .map(|low| {
+                    if low.relevant_bits().end > 32 {
+                        ctx.and_const(low, 0xffff_ffff)
+                    } else {
+                        low
+                    }
+                })
                 .unwrap_or_else(|| ctx.mem32(base, offset.into()));
             let high = high
-                .unwrap_or_else(|| ctx.lsh_const(ctx.mem32(base, high_offset.into()), 32));
+                .unwrap_or_else(|| ctx.mem32(base, high_offset as u64));
+            let high = ctx.lsh_const(high, 32);
             return Some(ctx.or(low, high));
         }
 
+        let base = ctx.normalize_32bit(base);
         let mask = match size {
             MemAccessSize::Mem8 => 0xffu32,
             MemAccessSize::Mem16 => 0xffff,
@@ -745,7 +711,7 @@ impl<'e> State<'e> {
         let offset_4 = offset & 3;
         let const_base = base == ctx.const_0();
         let offset_rest = offset & !3;
-        if offset_4 != 0 {
+        let value = if offset_4 != 0 {
             let low = self.memory.get(base, (offset_rest >> 2).into())
                 .or_else(|| {
                     if const_base {
@@ -806,7 +772,7 @@ impl<'e> State<'e> {
             } else {
                 combined
             };
-            return Some(masked);
+            masked
         } else {
             self.memory.get(base, (offset >> 2).into())
                 .map(|operand| {
@@ -822,7 +788,12 @@ impl<'e> State<'e> {
                     } else {
                         None
                     }
-                })
+                })?
+        };
+        if size == MemAccessSize::Mem32 {
+            Some(ctx.normalize_32bit(value))
+        } else {
+            Some(value)
         }
     }
 
@@ -842,6 +813,8 @@ impl<'e> State<'e> {
             self.write_memory(base, offset.wrapping_add(4), MemAccessSize::Mem32, high);
             return;
         }
+
+        let base = ctx.normalize_32bit(base);
         let offset_4 = offset & 3;
         let offset_rest = offset & !3;
         if offset_4 != 0 {
@@ -1107,11 +1080,14 @@ impl<'e> State<'e> {
     fn move_to_dest<'s>(
         &'s mut self,
         dest: &DestOperand<'e>,
-        value: Operand<'e>,
+        input_value: Operand<'e>,
         dest_is_resolved: bool,
     ) {
         let ctx = self.ctx;
-        let value = as_32bit_value(value, ctx);
+        // Anything but 64bit memory stores will be normalized to 32bit,
+        // and 64bit stores are edge case that is only (expected to be) triggered
+        // from user code calls, so doing this work even for this is fine.
+        let value = ctx.normalize_32bit(input_value);
         match *dest {
             DestOperand::Register32(reg) | DestOperand::Register64(reg) => {
                 let reg = reg & 0x7;
@@ -1202,6 +1178,12 @@ impl<'e> State<'e> {
                     mem.address()
                 } else {
                     self.resolve_mem(mem).address()
+                };
+                let value = if mem.size == MemAccessSize::Mem64 {
+                    // Use actual argument and not 32bit normalized one.
+                    input_value
+                } else {
+                    value
                 };
                 self.write_memory(base, offset as u32, mem.size, value)
             }
@@ -1410,26 +1392,4 @@ fn merge_states<'a: 'r, 'r>(
     } else {
         None
     }
-}
-
-#[test]
-fn test_as_32bit_value() {
-    let ctx = &crate::operand::OperandContext::new();
-    let op = ctx.add(
-        ctx.register(0),
-        ctx.constant(0x1_0000_0000),
-    );
-    let expected = ctx.register(0);
-    assert_eq!(as_32bit_value(op, ctx), expected);
-
-    let op = ctx.and(
-        ctx.register(0),
-        ctx.constant(0xffff_ffff),
-    );
-    let expected = ctx.register(0);
-    assert_eq!(as_32bit_value(op, ctx), expected);
-
-    let op = ctx.constant(0x1_0000_0000);
-    let expected = ctx.constant(0);
-    assert_eq!(as_32bit_value(op, ctx), expected);
 }

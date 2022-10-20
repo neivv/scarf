@@ -223,6 +223,10 @@ const FLAG_COULD_REMOVE_CONST_AND: u8 = 0x2;
 // (Constants, undef, custom, and arithmetic using them)
 const FLAG_NEEDS_RESOLVE: u8 = 0x4;
 const FLAG_CONTAINS_MEMORY: u8 = 0x8;
+const FLAG_32BIT_NORMALIZED: u8 = 0x10;
+// The operand is add / sub with at least one of the terms
+// having FLAG_32BIT_NORMALIZED set
+const FLAG_PARTIAL_32BIT_NORMALIZED_ADD: u8 = 0x20;
 const ALWAYS_INHERITED_FLAGS: u8 =
     FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE | FLAG_CONTAINS_MEMORY;
 
@@ -1571,7 +1575,7 @@ impl<'e> OperandContext<'e> {
                 ty: OperandType::Undefined(UndefinedId(id)),
                 min_zero_bit_simplify_size: 0,
                 relevant_bits: 0..64,
-                flags: FLAG_CONTAINS_UNDEFINED,
+                flags: FLAG_CONTAINS_UNDEFINED | FLAG_32BIT_NORMALIZED,
                 sort_order: id as u64,
             })
         } else {
@@ -1694,6 +1698,97 @@ impl<'e> OperandContext<'e> {
         let high = 64 - size;
         let mask = !0u64 << high >> high;
         self.and_const(operand, mask)
+    }
+
+    /// Converts operand to '32-bit normalized form'
+    ///
+    /// This function exists for 32-bit `ExecutionState`, which wants to mainly
+    /// deal with `Operand`s without caring about their high 32 bits.
+    ///
+    /// This could be achieved with just `ctx.and_const(value, 0xffff_ffff)` on every
+    /// `Operand`, but these masked values would then need to be constantly unwrapped.
+    /// For values that don't use the entire 32 bits, such as `Mem32[400] << 8`, the
+    /// mask would become just `0xffff_ff00` after simplification, and determining if
+    /// the mask is just used intentionally or if it is just to mask out high bits
+    /// becomes more complicated.
+    ///
+    /// So instead of always zeroing high bits, the following kinds of `Operand`s have
+    /// their '32-bit normalized form' be as is, *without* an bitwise AND mask, even if
+    /// rest of scarf can consider their high bits to possibly have a meaning. `Operand`s
+    /// for which scarf can prove low 32 bits be always zero will become zero though, even
+    /// if they would otherwise be included in the rules below. (E.g. `Mem32[x] << 0x20`)
+    ///
+    /// - Any 'pure 64-bit variable'; `Register`, `Undefined`, `Custom`
+    /// - Additions and subtractions consisting only 32-bit normalized `Operand`s
+    /// - Multiplications and left shifts consisting 32-bit normalized `Operand` and a constant
+    /// - `OperandType::ArithmeticFloat`
+    ///
+    /// If the `Operand` is `AND 0xffff_ffff` masked, but the value being masked
+    /// meets above conditions, the mask is removed.
+    ///
+    /// If the `Operand` is `AND 0xffff_ffff` masked addition or subtraction, with
+    /// some of the terms meeting the above conditions, those terms are moved outside
+    /// of the AND mask. E.g. `(rax + (rcx ^ rdx)) & ffff_ffff` becomes
+    /// `rax + ((rcx ^ rdx) & ffff_ffff)`.
+    ///
+    /// In other cases bitwise AND mask `0xffff_ffff` is applied. (Which does not change the
+    /// input value if all its high bits are already zero)
+    ///
+    /// In the end, it is intended, though not necessarily guaranteed in complex cases,
+    /// that `ctx.normalize_32bit(x) == ctx.normalize_32bit(x & ffff_ffff)`.
+    #[inline]
+    pub fn normalize_32bit(&'e self, value: Operand<'e>) -> Operand<'e> {
+        if value.0.flags & FLAG_32BIT_NORMALIZED == 0 {
+            self.normalize_32bit_main(value)
+        } else {
+            value
+        }
+    }
+
+    fn normalize_32bit_main(&'e self, value: Operand<'e>) -> Operand<'e> {
+        let mut value = value;
+        if value.relevant_bits().end > 32 {
+            value = self.and_const(value, 0xffff_ffff);
+            if value.0.flags & FLAG_32BIT_NORMALIZED != 0 {
+                return value;
+            }
+            // Else value should have removable and now
+        }
+        // Only 32-bit value passed here should be and mask
+        // that can be removed.
+        if let OperandType::Arithmetic(arith) = value.ty() {
+            if arith.left.0.flags & (FLAG_32BIT_NORMALIZED | FLAG_PARTIAL_32BIT_NORMALIZED_ADD)
+                == FLAG_PARTIAL_32BIT_NORMALIZED_ADD
+            {
+                self.normalize_32bit_add(arith.left)
+            } else {
+                arith.left
+            }
+        } else {
+            // Expected to be unreachable
+            value
+        }
+    }
+
+    fn normalize_32bit_add(&'e self, value: Operand<'e>) -> Operand<'e> {
+        let mut needs_mask = self.const_0();
+        let mut doesnt_need_mask = self.const_0();
+        for (op, is_sub) in util::IterAddSubArithOps::new(value) {
+            if op.0.flags & FLAG_32BIT_NORMALIZED == 0 {
+                if is_sub {
+                    needs_mask = self.sub(needs_mask, op);
+                } else {
+                    needs_mask = self.add(needs_mask, op);
+                }
+            } else {
+                if is_sub {
+                    doesnt_need_mask = self.sub(doesnt_need_mask, op);
+                } else {
+                    doesnt_need_mask = self.add(doesnt_need_mask, op);
+                }
+            }
+        }
+        self.add(self.and_const(needs_mask, 0xffff_ffff), doesnt_need_mask)
     }
 }
 
@@ -1818,19 +1913,32 @@ impl<'e> OperandType<'e> {
                 ArithOpType::Mul => {
                     let left_bits = arith.left.relevant_bits();
                     let right_bits = arith.right.relevant_bits();
-                    if let Some(c) = arith.right.if_constant() {
-                        // Use x << c bits
-                        if c.wrapping_sub(1) & c == 0 {
-                            let shift = right_bits.start;
-                            let start = min(64, left_bits.start.wrapping_add(shift));
-                            let end = min(64, left_bits.end.wrapping_add(shift));
-                            return start..end;
-                        }
+                    if left_bits.start.wrapping_add(1) == left_bits.end ||
+                        right_bits.start.wrapping_add(1) == right_bits.end
+                    {
+                        // If multiplying by value that has at most 1 bit shift,
+                        // it is either multiplying by 0 or shifting left,
+                        // in which case highest nonzero can be known be one less
+                        // than otherwise.
+                        // E.g. `x * (y & 0x8000)`
+                        // Becomes either `0` or `x << 0xf`
+                        // So result would be (x.start + 0xf, x.end + 0xf)
+                        //      y relbits are (y.start == 0xf, y.end == 0x10)
+                        //
+                        // Instead of having two branches to figure out whether
+                        // x is on left or right and using `x.end + y.start`,
+                        // use `x.end + y.end - 1` which works both ways
+                        let low = left_bits.start.wrapping_add(right_bits.start).min(64);
+                        let high = left_bits.end
+                            .wrapping_add(right_bits.end)
+                            .wrapping_sub(1).min(64);
+                        low..high
+                    } else {
+                        // 64 + 64 cannot overflow
+                        let low = left_bits.start.wrapping_add(right_bits.start).min(64);
+                        let high = left_bits.end.wrapping_add(right_bits.end).min(64);
+                        low..high
                     }
-                    // 64 + 64 cannot overflow
-                    let low = left_bits.start.wrapping_add(right_bits.start).min(64);
-                    let high = left_bits.end.wrapping_add(right_bits.end).min(64);
-                    low..high
                 }
                 ArithOpType::Modulo => {
                     let left_bits = arith.left.relevant_bits();
@@ -1880,15 +1988,22 @@ impl<'e> OperandType<'e> {
         }
     }
 
-    fn flags(&self) -> u8 {
+    fn flags(&self, relevant_bits: Range<u8>) -> u8 {
         use self::OperandType::*;
+        // Value of FLAG_32BIT_NORMALIZED for types which are normalized when
+        // explicitly masked with 0xffff_ffff
+        let default_32_bit_normalized = if relevant_bits.end > 32 || relevant_bits.start >= 32 {
+            0
+        } else {
+            FLAG_32BIT_NORMALIZED
+        };
         match *self {
             Memory(ref mem) => {
                 (mem.address().0.0.flags & ALWAYS_INHERITED_FLAGS) | FLAG_NEEDS_RESOLVE |
-                    FLAG_CONTAINS_MEMORY
+                    FLAG_CONTAINS_MEMORY | default_32_bit_normalized
             }
             SignExtend(val, _, _) => {
-                val.0.flags & ALWAYS_INHERITED_FLAGS
+                (val.0.flags & ALWAYS_INHERITED_FLAGS) | default_32_bit_normalized
             }
             Arithmetic(ref arith) => {
                 let base = (arith.left.0.flags | arith.right.0.flags) & ALWAYS_INHERITED_FLAGS;
@@ -1910,21 +2025,161 @@ impl<'e> OperandType<'e> {
                         _ => 0,
                     }
                 };
-                base | could_remove_const_and
+                let normalized_32 = if relevant_bits.start >= 32 {
+                    0
+                } else {
+                    Self::arithmetic_32_bit_normalized_flag(arith, default_32_bit_normalized)
+                };
+                base | could_remove_const_and | normalized_32
             }
             ArithmeticFloat(ref arith, _) => {
-                (arith.left.0.flags | arith.right.0.flags) & ALWAYS_INHERITED_FLAGS
+                (
+                    (arith.left.0.flags | arith.right.0.flags) & ALWAYS_INHERITED_FLAGS
+                ) | FLAG_32BIT_NORMALIZED
             }
-            Xmm(..) | Flag(..) | Fpu(..) | Register(..) => FLAG_NEEDS_RESOLVE,
+            Xmm(..) | Flag(..) | Fpu(..) | Register(..) => {
+                FLAG_NEEDS_RESOLVE | FLAG_32BIT_NORMALIZED
+            }
+            Custom(..) => FLAG_32BIT_NORMALIZED,
+            // Note: undefined not handled here; new_undef instead
             // Note: constants not handled here; const_flags instead
-            Constant(..) | Custom(..) => 0,
-            Undefined(..) => FLAG_CONTAINS_UNDEFINED,
+            Undefined(..) | Constant(..) => 0,
+        }
+    }
+
+    fn is_32bit_normalized_for_mul_shift(
+        op: Operand<'e>,
+        shift: u8,
+    ) -> bool {
+        let ty = op.ty();
+        if op.relevant_bits().start.wrapping_add(shift) >= 32 {
+            return false;
+        }
+        if let OperandType::Arithmetic(arith) = ty {
+            match arith.ty {
+                ArithOpType::Add | ArithOpType::Sub => {
+                    if !Self::is_32bit_normalized_for_mul_shift(arith.right, shift) {
+                        return false;
+                    }
+                    let mut iter = util::IterAddSubArithOps::new(arith.left);
+                    if iter.any(|x| {
+                        !Self::is_32bit_normalized_for_mul_shift(x.0, shift)
+                    }) {
+                        return false;
+                    }
+                    true
+                }
+                _ => {
+                    // Require all other arith with const mul / shift
+                    // be masked.
+                    // Not sure if there are patterns that 32-bit
+                    // code uses which would benefit from this
+                    // being less strict.
+                    false
+                }
+            }
+        } else if let OperandType::Memory(mem) = ty {
+            let min_shift = match mem.size {
+                MemAccessSize::Mem8 => 64u8,
+                MemAccessSize::Mem16 => 24,
+                MemAccessSize::Mem32 => 16,
+                MemAccessSize::Mem64 => 0,
+            };
+            shift < min_shift
+        } else if let OperandType::SignExtend(_, from, _) = ty {
+            let min_shift = match from {
+                MemAccessSize::Mem8 => 24u8,
+                MemAccessSize::Mem16 => 16,
+                MemAccessSize::Mem32 => 64,
+                MemAccessSize::Mem64 => 64,
+            };
+            shift < min_shift
+        } else {
+            true
+        }
+    }
+
+    fn arithmetic_32_bit_normalized_flag(
+        arith: &ArithOperand<'e>,
+        default_32_bit_normalized: u8,
+    ) -> u8 {
+        match arith.ty {
+            ArithOpType::And => {
+                if let Some(c) = arith.right.if_constant() {
+                    if arith.left.0.flags &
+                        (FLAG_PARTIAL_32BIT_NORMALIZED_ADD | FLAG_32BIT_NORMALIZED) != 0
+                    {
+                        let left_relbits = arith.left.relevant_bits_mask();
+                        if left_relbits as u32 == c as u32 {
+                            // mask doesn't change anything for low 32 bits so
+                            // arith.left is 32bit normalized value of this operand.
+                            return 0;
+                        }
+                    }
+                }
+                default_32_bit_normalized
+            }
+            ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul |
+                ArithOpType::Lsh =>
+            {
+                if matches!(arith.ty, ArithOpType::Add | ArithOpType::Sub) {
+                    let mut result =
+                        arith.left.0.flags & arith.right.0.flags & FLAG_32BIT_NORMALIZED;
+                    if ((arith.left.0.flags | arith.right.0.flags) & FLAG_32BIT_NORMALIZED) |
+                        (arith.left.0.flags & FLAG_PARTIAL_32BIT_NORMALIZED_ADD) != 0
+                    {
+                        result |= FLAG_PARTIAL_32BIT_NORMALIZED_ADD;
+                    }
+                    // Account for (x - 0xffff_ffff) becoming (x + 1) when
+                    // 32-bit masked
+                    if let Some(c) = arith.right.if_constant() {
+                        let limit = match arith.ty {
+                            ArithOpType::Add => 0x8000_0000u32,
+                            _ => 0x7fff_ffff,
+                        };
+                        if c as u32 > limit {
+                            return 0;
+                        }
+                    }
+                    result
+                } else {
+                    let result = arith.left.0.flags & arith.right.0.flags & FLAG_32BIT_NORMALIZED;
+                    if result != 0 {
+                        // Mul or Lsh, if lhs is addition / subtraction,
+                        // and rhs is constant, simplification may prove
+                        // that some of the terms end up being irrelevant
+                        // to low 32bits.
+                        if let Some(c) = arith.right.if_constant() {
+                            let shift = if arith.ty == ArithOpType::Lsh {
+                                c as u8
+                            } else {
+                                c.trailing_zeros() as u8
+                            };
+                            if shift != 0 {
+                                if !Self::is_32bit_normalized_for_mul_shift(arith.left, shift) {
+                                    return default_32_bit_normalized;
+                                }
+                            }
+                        } else {
+                            // Nonconst mul / shifts are only normalized when less than 32 bit
+                            // results.
+                            return default_32_bit_normalized;
+                        }
+                    }
+                    result
+                }
+            }
+            _ => default_32_bit_normalized,
         }
     }
 
     #[inline]
-    fn const_flags() -> u8 {
-        0
+    fn const_flags(value: u64) -> u8 {
+        if value <= u32::MAX as u64 {
+            FLAG_32BIT_NORMALIZED
+        } else {
+            0
+        }
     }
 
     fn sort_order(&self) -> u64 {
@@ -2971,6 +3226,336 @@ mod test {
         let mut des = serde_json::Deserializer::from_str(&json);
         let op2: Operand<'_> = ctx.deserialize_seed().deserialize(&mut des).unwrap();
         assert_eq!(op, op2);
+    }
+
+    #[test]
+    fn test_normalize_32bit() {
+        let ctx = &crate::operand::OperandContext::new();
+        let op = ctx.add(
+            ctx.register(0),
+            ctx.constant(0x1_0000_0000),
+        );
+        let expected = ctx.register(0);
+        assert_eq!(ctx.normalize_32bit(op), expected);
+
+        let op = ctx.or(
+            ctx.register(2),
+            ctx.lsh_const(
+                ctx.register(1),
+                32,
+            ),
+        );
+        let expected = ctx.register(2);
+        assert_eq!(ctx.normalize_32bit(op), expected);
+
+        let op = ctx.and(
+            ctx.register(0),
+            ctx.constant(0xffff_ffff),
+        );
+        let expected = ctx.register(0);
+        assert_eq!(ctx.normalize_32bit(op), expected);
+
+        let op = ctx.and(
+            ctx.custom(0),
+            ctx.constant(0xffff_ffff),
+        );
+        let expected = ctx.custom(0);
+        assert_eq!(ctx.normalize_32bit(op), expected);
+
+        let op = ctx.constant(0x1_0000_0000);
+        let expected = ctx.constant(0);
+        assert_eq!(ctx.normalize_32bit(op), expected);
+
+        let op = ctx.sub(
+            ctx.register(0),
+            ctx.constant(0xfb01_00fe),
+        );
+        let expected = ctx.add(
+            ctx.register(0),
+            ctx.constant(0x04fe_ff02),
+        );
+        assert_eq!(ctx.normalize_32bit(op), expected);
+
+        let op = ctx.sub(
+            ctx.register(0),
+            ctx.constant(0x8000_0000),
+        );
+        let expected = ctx.add(
+            ctx.register(0),
+            ctx.constant(0x8000_0000),
+        );
+        assert_eq!(ctx.normalize_32bit(op), expected);
+        assert_eq!(ctx.normalize_32bit(expected), expected);
+
+        let op = ctx.add(
+            ctx.register(0),
+            ctx.constant(0x8000_0001),
+        );
+        let expected = ctx.sub(
+            ctx.register(0),
+            ctx.constant(0x7fff_ffff),
+        );
+        assert_eq!(ctx.normalize_32bit(op), expected);
+        assert_eq!(ctx.normalize_32bit(expected), expected);
+
+        let op = ctx.and(
+            ctx.register(0),
+            ctx.constant(0x7074_7676_7516_0007),
+        );
+        let expected = ctx.and(
+            ctx.register(0),
+            ctx.constant(0x7516_0007),
+        );
+        assert_eq!(ctx.normalize_32bit(op), expected);
+    }
+
+    #[test]
+    fn normalize_32bit_complex_multiply_add() {
+        // ((x & 0x8000_0000) + y) * 2 will only
+        // have y * 2 in low 32 bits.
+        // This is something that 32bit execstate probably wouldn't mind
+        // getting wrong, but fixing it isn't too bad...
+
+        let ctx = &crate::operand::OperandContext::new();
+        let op = ctx.mul_const(
+            ctx.add(
+                ctx.and_const(
+                    ctx.register(0),
+                    0x8000_0000,
+                ),
+                ctx.register(1),
+            ),
+            2,
+        );
+        // Should be rcx * 2 but simplification only is able to do this for
+        // shifts and not multiplications right now.
+        let expected = ctx.and_const(op, 0xffff_ffff);
+        assert_eq!(ctx.normalize_32bit(op), expected);
+
+        let op = ctx.lsh_const(
+            ctx.add(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xffff_0000,
+                ),
+                ctx.register(1),
+            ),
+            0x10,
+        );
+        let expected = ctx.mul_const(
+            ctx.register(1),
+            0x10000,
+        );
+        assert_eq!(ctx.normalize_32bit(op), expected);
+
+        // No change possible
+        let op = ctx.mul_const(
+            ctx.add(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xffff_0000,
+                ),
+                ctx.register(1),
+            ),
+            0x10001,
+        );
+        assert_eq!(ctx.normalize_32bit(op), op);
+
+        let op = ctx.lsh_const(
+            ctx.add(
+                ctx.xmm(0, 0),
+                ctx.mul_const(
+                    ctx.register(0),
+                    2,
+                ),
+            ),
+            0x1f,
+        );
+        let expected = ctx.lsh_const(
+            ctx.xmm(0, 0),
+            0x1f,
+        );
+        assert_eq!(ctx.normalize_32bit(op), expected);
+    }
+
+    #[test]
+    fn normalize_32bit_complex_multiply_and_const() {
+        // Similar to above, but with and mask that could be simplified
+        let ctx = &crate::operand::OperandContext::new();
+        let op = ctx.lsh_const(
+            ctx.and_const(
+                ctx.register(1),
+                0x4_0004,
+            ),
+            0x10,
+        );
+        let expected = ctx.lsh_const(
+            ctx.and_const(
+                ctx.register(1),
+                0x4,
+            ),
+            0x10,
+        );
+        assert_eq!(ctx.normalize_32bit(op), expected);
+
+        let op = ctx.lsh_const(
+            ctx.add(
+                ctx.register(0),
+                ctx.and_const(
+                    ctx.register(1),
+                    0x4_0004,
+                ),
+            ),
+            0x10,
+        );
+        let expected = ctx.and_const(
+            ctx.lsh_const(
+                ctx.add(
+                    ctx.register(0),
+                    ctx.and_const(
+                        ctx.register(1),
+                        0x4,
+                    ),
+                ),
+                0x10,
+            ),
+            0xffff_0000,
+        );
+        assert_eq!(ctx.normalize_32bit(op), expected);
+    }
+
+    #[test]
+    fn normalize_32bit_complex_multiply_mem() {
+        let ctx = &crate::operand::OperandContext::new();
+        let op = ctx.lsh_const(
+            ctx.mem32c(
+                0x14,
+            ),
+            0x10,
+        );
+        let expected = ctx.lsh_const(
+            ctx.mem16c(
+                0x14
+            ),
+            0x10,
+        );
+        assert_eq!(ctx.normalize_32bit(op), expected);
+    }
+
+    #[test]
+    fn normalize_32bit_multiply_nonconst() {
+        // This test case serves as a reason to limit 32bit normalization
+        // of multiply / shift just to mul/shift by constants, which
+        // are main thing that comes up in 32-bit addresses (index in array)
+        //
+        // If all multiplications are considered normalized like adds are,
+        // ((((rbp + (rax * rax)) + (((rdx * 2) + 60002) * rcx)) * rbp) << 11)
+        // constant 60002 can be simplified to 2
+        // but whether that is possible is too hard to determine without any practical
+        // gains.
+        //
+        // Of course this could just be accepted as a case where normalization won't
+        // give same result as 0xffff_ffff mask
+
+        let ctx = &crate::operand::OperandContext::new();
+        let op = ctx.lsh_const(
+            ctx.mul(
+                ctx.add(
+                    ctx.add(
+                        ctx.register(5),
+                        ctx.mul(
+                            ctx.register(0),
+                            ctx.register(0),
+                        ),
+                    ),
+                    ctx.mul(
+                        ctx.add_const(
+                            ctx.mul_const(
+                                ctx.register(2),
+                                2,
+                            ),
+                            0x60002,
+                        ),
+                        ctx.register(1),
+                    ),
+                ),
+                ctx.register(5),
+            ),
+            0x11,
+        );
+        assert_eq!(
+            ctx.normalize_32bit(op),
+            ctx.normalize_32bit(
+                ctx.and_const(
+                    op,
+                    0xffff_ffff,
+                ),
+            ),
+        );
+    }
+
+    #[test]
+    fn normalize_sign_extend() {
+        let ctx = &crate::operand::OperandContext::new();
+        let op = ctx.lsh_const(
+            ctx.sign_extend(
+                ctx.register(0),
+                MemAccessSize::Mem16,
+                MemAccessSize::Mem32,
+            ),
+            0x11,
+        );
+        let eq = ctx.lsh_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x7fff,
+            ),
+            0x11,
+        );
+        assert_eq!(ctx.normalize_32bit(op), eq);
+
+        let op = ctx.lsh_const(
+            ctx.sign_extend(
+                ctx.register(0),
+                MemAccessSize::Mem16,
+                MemAccessSize::Mem32,
+            ),
+            0x10,
+        );
+        let eq = ctx.lsh_const(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff,
+            ),
+            0x10,
+        );
+        assert_eq!(ctx.normalize_32bit(op), eq);
+    }
+
+    #[test]
+    fn normalize_masked_xor_in_add() {
+        let ctx = &crate::operand::OperandContext::new();
+        let op = ctx.and_const(
+            ctx.add(
+                ctx.register(0),
+                ctx.xor(
+                    ctx.register(1),
+                    ctx.register(2),
+                ),
+            ),
+            0xffff_ffff,
+        );
+        let eq = ctx.add(
+            ctx.register(0),
+            ctx.and_const(
+                ctx.xor(
+                    ctx.register(1),
+                    ctx.register(2),
+                ),
+                0xffff_ffff,
+            ),
+        );
+        assert_eq!(ctx.normalize_32bit(op), eq);
     }
 }
 
