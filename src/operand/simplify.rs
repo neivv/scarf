@@ -2945,15 +2945,7 @@ fn simplify_and_main<'e>(
 ) -> Result<Operand<'e>, SizeLimitReached> {
     // Keep second mask in form 00000011111 (All High bits 0, all low bits 1),
     // as that allows simplifying add/sub/mul a bit more
-    let mut low_const_remain = !0u64;
     loop {
-        for op in ops.iter() {
-            let relevant_bits = op.relevant_bits();
-            if relevant_bits.start == 0 {
-                let shift = (64 - relevant_bits.end) & 63;
-                low_const_remain = low_const_remain << shift >> shift;
-            }
-        }
         const_remain = ops.iter()
             .map(|op| match op.if_constant() {
                 Some(c) => c,
@@ -2964,8 +2956,6 @@ fn simplify_and_main<'e>(
         if ops.is_empty() || const_remain == 0 {
             return Ok(ctx.constant(const_remain));
         }
-        let crem_high_zeros = const_remain.leading_zeros();
-        low_const_remain = low_const_remain << crem_high_zeros >> crem_high_zeros;
 
         if ops.len() > 1 {
             heapsort::sort(ops);
@@ -2987,34 +2977,6 @@ fn simplify_and_main<'e>(
         }
 
         let mut ops_changed = false;
-        if low_const_remain != !0 && low_const_remain != const_remain {
-            slice_filter_map(ops, |op| {
-                let benefits_from_low_mask = match *op.ty() {
-                    OperandType::Arithmetic(ref arith) => match arith.ty {
-                        ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => true,
-                        _ => false,
-                    },
-                    _ => false,
-                };
-                if !benefits_from_low_mask {
-                    return Some(op);
-                }
-
-                let new = simplify_with_and_mask(op, low_const_remain, ctx, swzb_ctx);
-                if let Some(c) = new.if_constant() {
-                    if c & const_remain != const_remain {
-                        const_remain &= c;
-                        ops_changed = true;
-                    }
-                    None
-                } else {
-                    if new != op {
-                        ops_changed = true;
-                    }
-                    Some(new)
-                }
-            });
-        }
         if const_remain != !0 {
             slice_filter_map(ops, |op| {
                 let new = simplify_with_and_mask(op, const_remain, ctx, swzb_ctx);
@@ -5373,11 +5335,7 @@ fn simplify_with_and_mask_inner<'e>(
                 }
                 ArithOpType::Rsh => {
                     if let Some(c) = arith.right.if_constant() {
-                        // Using mask with all bits-to-be-shifted out as 1 for better
-                        // add/sub/etc simplification.
-                        // Maybe should do that and the actual mask?
-                        let inner_mask = (mask << c) | (1u64 << c).wrapping_sub(1);
-                        let left = simplify_with_and_mask(arith.left, inner_mask, ctx, swzb_ctx);
+                        let left = simplify_with_and_mask(arith.left, mask << c, ctx, swzb_ctx);
                         if left == arith.left {
                             op
                         } else {
@@ -5388,6 +5346,7 @@ fn simplify_with_and_mask_inner<'e>(
                     }
                 }
                 ArithOpType::Xor | ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
+                    let mut mask = mask;
                     if arith.ty != ArithOpType::Xor {
                         // The mask can be applied separately to left and right if
                         // any of the unmasked bits input don't affect masked bits in result.
@@ -5411,10 +5370,14 @@ fn simplify_with_and_mask_inner<'e>(
                         if let Some(other) = other {
                             return simplify_with_and_mask(other, mask, ctx, swzb_ctx);
                         }
-                        let ok = mask.wrapping_add(1).count_ones() <= 1;
-                        if !ok {
+                        // Otherwise fill the mask to 000..111 having any bit after
+                        // mask_end_bit set, so that something can possibly be done.
+                        mask = if mask_end_bit >= 64 {
+                            // Mask would be u64::MAX, which is pointless
                             return op;
-                        }
+                        } else {
+                            (1u64 << mask_end_bit).wrapping_sub(1)
+                        };
                     }
                     // Normalize (x + c000) & ffff to (x - 4000) & ffff and similar.
                     if let Some(c) = arith.right.if_constant() {

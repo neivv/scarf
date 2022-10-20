@@ -8684,3 +8684,35 @@ fn xor_cmp_1bit_mask_consistency() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_and_with_mul_inside_xor() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and(
+        ctx.xmm(0, 0),
+        ctx.xor_const(
+            ctx.mul(
+                ctx.and_const(
+                    ctx.register(1),
+                    0x603060001060002,
+                ),
+                ctx.register(0),
+            ),
+            0x520230010090002,
+        ),
+    );
+    let eq1 = ctx.and(
+        ctx.xmm(0, 0),
+        ctx.xor_const(
+            ctx.mul(
+                ctx.and_const(
+                    ctx.register(1),
+                    0x0106_0002,
+                ),
+                ctx.register(0),
+            ),
+            0x1009_0002,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
