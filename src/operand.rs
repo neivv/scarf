@@ -1779,7 +1779,8 @@ impl<'e> OperandType<'e> {
                     if arith.right.if_constant() == Some(0) {
                         0..64
                     } else {
-                        arith.left.relevant_bits()
+                        let left_bits = arith.left.relevant_bits();
+                        0..left_bits.end
                     }
                 }
                 ArithOpType::ToFloat => 0..32,

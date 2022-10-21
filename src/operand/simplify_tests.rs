@@ -8754,3 +8754,25 @@ fn simplify_and_or_with_mem_merge() {
     assert_eq!(eq2, eq1);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn div_relevant_bits() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.div(
+            ctx.constant(0x5000_0002),
+            ctx.register(1),
+        ),
+        1,
+    );
+    assert_ne!(op1, ctx.const_0());
+
+    let op1 = ctx.and_const(
+        ctx.div(
+            ctx.constant(0x5000_0002),
+            ctx.register(1),
+        ),
+        0x8000_0000,
+    );
+    assert_eq!(op1, ctx.const_0());
+}
