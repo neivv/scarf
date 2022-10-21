@@ -8716,3 +8716,41 @@ fn simplify_and_with_mul_inside_xor() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_and_or_with_mem_merge() {
+    let ctx = &OperandContext::new();
+    // Mem16 can be moved inside to (Mem32[rax] & c500_ffff)
+    // and the c500_ffff and c500_61ff masks have same effect
+    // due to or constant setting differing bits to one.
+    // (Simpler simplification without mem merge won't hit the inconsistency bug)
+    let op1 = ctx.or(
+        ctx.mem16(ctx.register(0), 0),
+        ctx.or_const(
+            ctx.and_const(
+                ctx.lsh_const(
+                    ctx.mem8(ctx.register(0), 3),
+                    0x18,
+                ),
+                0xc5000000,
+            ),
+            0x2019e00,
+        ),
+    );
+    let eq1 = ctx.or_const(
+        ctx.and_const(
+            ctx.mem32(ctx.register(0), 0),
+            0xc50061ff,
+        ),
+        0x2019e00,
+    );
+    let eq2 = ctx.or_const(
+        ctx.and_const(
+            ctx.mem32(ctx.register(0), 0),
+            0xc500ffff,
+        ),
+        0x2019e00,
+    );
+    assert_eq!(eq2, eq1);
+    assert_eq!(op1, eq1);
+}

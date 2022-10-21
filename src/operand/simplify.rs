@@ -775,7 +775,7 @@ fn simplify_xor_ops<'e>(
             heapsort::sort(ops);
             simplify_xor_remove_reverting(ops);
             simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
-            simplify_or_merge_child_ands(ops, ctx, ArithOpType::Xor)?;
+            simplify_or_merge_child_ands(ops, ctx, swzb_ctx, u64::MAX, ArithOpType::Xor)?;
             simplify_xor_merge_ands_with_same_mask(ops, false, ctx, swzb_ctx);
             simplify_xor_or_bools(ops, ctx);
         }
@@ -3606,6 +3606,8 @@ fn and_masked_precise<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
 fn simplify_or_merge_child_ands<'e>(
     ops: &mut Slice<'e>,
     ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+    and_mask: u64,
     arith_ty: ArithOpType,
 ) -> Result<(), SizeLimitReached> {
     if ops.len() > 16 {
@@ -3639,6 +3641,11 @@ fn simplify_or_merge_child_ands<'e>(
                             ops.swap_remove(j);
                             ops.swap_remove(i);
                             for op in buf {
+                                let op = if and_mask == u64::MAX {
+                                    op
+                                } else {
+                                    simplify_with_and_mask(op, and_mask, ctx, swzb_ctx)
+                                };
                                 ops.push(op)?;
                             }
                             continue 'outer;
@@ -5099,7 +5106,7 @@ fn simplify_or_ops<'e>(
             slice_filter_map(ops, |op| simplify_with_one_bits(op, &bits, ctx));
         }
         if ops.len() > 1 {
-            simplify_or_merge_child_ands(ops, ctx, ArithOpType::Or)?;
+            simplify_or_merge_child_ands(ops, ctx, swzb_ctx, !const_val, ArithOpType::Or)?;
             simplify_or_merge_xors(ops, ctx, swzb_ctx);
             simplify_or_merge_mem(ops, ctx);
             simplify_or_merge_comparisions(ops, ctx);
