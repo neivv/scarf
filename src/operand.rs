@@ -1771,15 +1771,33 @@ impl<'e> OperandContext<'e> {
     }
 
     fn normalize_32bit_add(&'e self, value: Operand<'e>) -> Operand<'e> {
-        let mut needs_mask = self.const_0();
+        let mut needs_mask = None;
+        let mut needs_is_sub = false;
         let mut doesnt_need_mask = self.const_0();
         for (op, is_sub) in util::IterAddSubArithOps::new(value) {
             if op.0.flags & FLAG_32BIT_NORMALIZED == 0 {
-                if is_sub {
-                    needs_mask = self.sub(needs_mask, op);
-                } else {
-                    needs_mask = self.add(needs_mask, op);
-                }
+                needs_mask = match needs_mask {
+                    None => {
+                        needs_is_sub = is_sub;
+                        Some(op)
+                    }
+                    Some(old) => {
+                        if is_sub {
+                            if needs_is_sub {
+                                Some(self.add(old, op))
+                            } else {
+                                Some(self.sub(old, op))
+                            }
+                        } else {
+                            if needs_is_sub {
+                                needs_is_sub = false;
+                                Some(self.sub(op, old))
+                            } else {
+                                Some(self.add(old, op))
+                            }
+                        }
+                    }
+                };
             } else {
                 if is_sub {
                     doesnt_need_mask = self.sub(doesnt_need_mask, op);
@@ -1788,7 +1806,17 @@ impl<'e> OperandContext<'e> {
                 }
             }
         }
-        self.add(self.and_const(needs_mask, 0xffff_ffff), doesnt_need_mask)
+        match needs_mask {
+            Some(needs) => {
+                let masked = self.and_const(needs, 0xffff_ffff);
+                if needs_is_sub {
+                    self.sub(doesnt_need_mask, masked)
+                } else {
+                    self.add(doesnt_need_mask, masked)
+                }
+            }
+            None => doesnt_need_mask,
+        }
     }
 }
 
@@ -3556,6 +3584,49 @@ mod test {
             ),
         );
         assert_eq!(ctx.normalize_32bit(op), eq);
+    }
+
+    #[test]
+    fn normalize_masked_sub() {
+        let ctx = &crate::operand::OperandContext::new();
+        // rax - (rcx ^ rdx) and rax + ((0 - (rcx ^ rdx)) & ffff_ffff)
+        // and rax - ((rcx ^ rdx) & ffff_ffff)
+        // should be same normalized (Different with just simplification)
+        let op = ctx.sub(
+            ctx.register(0),
+            ctx.xor(
+                ctx.register(1),
+                ctx.register(2),
+            ),
+        );
+        let op_masked = ctx.sub(
+            ctx.register(0),
+            ctx.and_const(
+                ctx.xor(
+                    ctx.register(1),
+                    ctx.register(2),
+                ),
+                0xffff_ffff,
+            ),
+        );
+        let eq = ctx.add(
+            ctx.register(0),
+            ctx.and_const(
+                ctx.sub(
+                    ctx.constant(0),
+                    ctx.xor(
+                        ctx.register(1),
+                        ctx.register(2),
+                    ),
+                ),
+                0xffff_ffff,
+            ),
+        );
+        assert_ne!(op, eq);
+        assert_ne!(op, op_masked);
+        assert_ne!(eq, op_masked);
+        assert_eq!(ctx.normalize_32bit(op), ctx.normalize_32bit(eq));
+        assert_eq!(ctx.normalize_32bit(op), ctx.normalize_32bit(op_masked));
     }
 }
 
