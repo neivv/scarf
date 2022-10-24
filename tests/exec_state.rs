@@ -828,6 +828,32 @@ fn jump_conditions() {
     ]);
 }
 
+
+#[test]
+fn read_in_virtual_only_bytes() {
+    // Reading at data that is in text.virtual_address, text.virtual_size
+    // range but not in data bytes.
+    // Just regression test against crashing, it could also result in 0
+    // or partially known value, but not implementing that right now.
+    let file = &make_binary_with_virtual_size(&[
+        0xb8, 0x00, 0x10, 0x40, 0x00, // mov eax, 00401000
+        // Read past data end
+        0x8b, 0x48, 0x20, // mov ecx, [eax + 20]
+        // Reads two last bytes and two not-in-data bytes (10, c3, xx, xx)
+        0x8b, 0x48, 0x10, // mov eax, [eax + 10]
+        0xc3, // ret
+    ], 0x1000);
+    let func = file.code_section().virtual_address;
+    let ctx = &OperandContext::new();
+
+    let state = ExecutionState::with_binary(file, ctx);
+    let mut analysis = analysis::FuncAnalysis::with_state(file, ctx, func, state);
+    let mut collect_end_state = CollectEndState {
+        end_state: None,
+    };
+    analysis.analyze(&mut collect_end_state);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
@@ -918,20 +944,17 @@ fn test_inner<'e, 'b>(
     }
 }
 
-fn make_binary(code: &[u8]) -> BinaryFile<VirtualAddress> {
+fn make_binary_with_virtual_size(code: &[u8], virtual_size: u32) -> BinaryFile<VirtualAddress> {
     scarf::raw_bin(VirtualAddress(0x00400000), vec![BinarySection {
-        name: {
-            // ugh
-            let mut x = [0; 8];
-            for (out, &val) in x.iter_mut().zip(b".text\0\0\0".iter()) {
-                *out = val;
-            }
-            x
-        },
+        name: *b".text\0\0\0",
         virtual_address: VirtualAddress(0x401000),
-        virtual_size: code.len() as u32,
+        virtual_size,
         data: code.into(),
     }])
+}
+
+fn make_binary(code: &[u8]) -> BinaryFile<VirtualAddress> {
+    make_binary_with_virtual_size(code, code.len() as u32)
 }
 
 fn test_inline_xmm<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {

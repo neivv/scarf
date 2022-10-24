@@ -920,15 +920,11 @@ impl<'e> State<'e> {
             })
         })?;
         let offset = (address - section.virtual_address.0) as usize;
+        let mut bytes = section.data.get(offset..)?;
         let val = match size {
-            MemAccessSize::Mem8 => section.data[offset] as u32,
-            MemAccessSize::Mem16 => {
-                (&section.data[offset..]).read_u16().unwrap_or(0) as u32
-            }
-            MemAccessSize::Mem32 => {
-                (&section.data[offset..]).read_u32().unwrap_or(0)
-            }
-            MemAccessSize::Mem64 => unreachable!(),
+            MemAccessSize::Mem8 => bytes.read_u8().unwrap_or(0) as u32,
+            MemAccessSize::Mem16 => bytes.read_u16().unwrap_or(0) as u32,
+            MemAccessSize::Mem32 | _ => bytes.read_u32().unwrap_or(0),
         };
         Some(self.ctx.constant(val as u64))
     }
