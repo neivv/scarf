@@ -198,6 +198,9 @@ const FLAG_COULD_REMOVE_CONST_AND: u8 = 0x2;
 // If not set, resolve(x) == x
 // (Constants, undef, custom, and arithmetic using them)
 const FLAG_NEEDS_RESOLVE: u8 = 0x4;
+const FLAG_CONTAINS_MEMORY: u8 = 0x8;
+const ALWAYS_INHERITED_FLAGS: u8 =
+    FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE | FLAG_CONTAINS_MEMORY;
 
 impl<'e> Hash for OperandHashByAddress<'e> {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -1815,14 +1818,14 @@ impl<'e> OperandType<'e> {
         use self::OperandType::*;
         match *self {
             Memory(ref mem) => {
-                (mem.address().0.0.flags & FLAG_CONTAINS_UNDEFINED) | FLAG_NEEDS_RESOLVE
+                (mem.address().0.0.flags & ALWAYS_INHERITED_FLAGS) | FLAG_NEEDS_RESOLVE |
+                    FLAG_CONTAINS_MEMORY
             }
             SignExtend(val, _, _) => {
-                val.0.flags & (FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE)
+                val.0.flags & ALWAYS_INHERITED_FLAGS
             }
             Arithmetic(ref arith) => {
-                let base = (arith.left.0.flags | arith.right.0.flags) &
-                    (FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE);
+                let base = (arith.left.0.flags | arith.right.0.flags) & ALWAYS_INHERITED_FLAGS;
                 let could_remove_const_and = if
                     arith.ty == ArithOpType::And && arith.right.if_constant().is_some()
                 {
@@ -1844,8 +1847,7 @@ impl<'e> OperandType<'e> {
                 base | could_remove_const_and
             }
             ArithmeticFloat(ref arith, _) => {
-                (arith.left.0.flags | arith.right.0.flags) &
-                    (FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE)
+                (arith.left.0.flags | arith.right.0.flags) & ALWAYS_INHERITED_FLAGS
             }
             Xmm(..) | Flag(..) | Fpu(..) | Register(..) => FLAG_NEEDS_RESOLVE,
             // Note: constants not handled here; const_flags instead
@@ -2183,6 +2185,12 @@ impl<'e> Operand<'e> {
     #[inline]
     pub fn contains_undefined(self) -> bool {
         self.0.flags & FLAG_CONTAINS_UNDEFINED != 0
+    }
+
+    /// Returns true if self or any child operand is `Memory`.
+    #[inline]
+    pub fn contains_memory(self) -> bool {
+        self.0.flags & FLAG_CONTAINS_MEMORY != 0
     }
 
     /// Returns `(other, constant)` if operand is an and mask with constant,

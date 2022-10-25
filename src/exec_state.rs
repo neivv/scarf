@@ -12,6 +12,7 @@ use std::ops::{Add, Sub};
 use std::ptr;
 use std::rc::Rc;
 
+use arrayvec::ArrayVec;
 use fxhash::FxBuildHasher;
 
 use crate::analysis;
@@ -915,10 +916,7 @@ impl<'e> Constraint<'e> {
 
     /// Invalidates any assumptions about memory
     pub(crate) fn invalidate_memory(&mut self, ctx: OperandCtx<'e>) -> ConstraintFullyInvalid {
-        let result = remove_matching_ands(ctx, self.0, &mut |x| match x {
-            OperandType::Memory(..) => true,
-            _ => false,
-        });
+        let result = remove_matching_ands_memory(ctx, self.0);
         match result {
             Some(s) => {
                 self.0 = s;
@@ -939,7 +937,7 @@ impl<'e> Constraint<'e> {
                 DestOperand::Register8High(reg) | DestOperand::Register8Low(reg) |
                 DestOperand::Register64(reg) =>
             {
-                remove_matching_ands(ctx, self.0, &mut |x| *x == OperandType::Register(reg))
+                remove_matching_ands(ctx, self.0, ctx.register(reg))
             }
             DestOperand::Xmm(_, _) => {
                 None
@@ -948,14 +946,11 @@ impl<'e> Constraint<'e> {
                 None
             }
             DestOperand::Flag(flag) => {
-                remove_matching_ands(ctx, self.0, &mut |x| *x == OperandType::Flag(flag))
+                remove_matching_ands(ctx, self.0, ctx.flag(flag))
             },
             DestOperand::Memory(_) => {
                 // Assuming that everything may alias with memory
-                remove_matching_ands(ctx, self.0, &mut |x| match x {
-                    OperandType::Memory(..) => true,
-                    _ => false,
-                })
+                remove_matching_ands_memory(ctx, self.0)
             }
         }.map(Constraint::new)
      }
@@ -973,35 +968,169 @@ pub enum ConstraintFullyInvalid {
 }
 
 /// Constraint invalidation helper
-fn remove_matching_ands<'e, F>(
+fn remove_matching_ands<'e>(
     ctx: OperandCtx<'e>,
     oper: Operand<'e>,
-    fun: &mut F,
-) -> Option<Operand<'e>>
-where F: FnMut(&OperandType<'e>) -> bool,
-{
-    if let Some((l, r)) = oper.if_arithmetic_and() {
+    compare: Operand<'e>,
+) -> Option<Operand<'e>> {
+    let mut state = InvalidateConstraintState::new(oper, compare);
+    if oper.relevant_bits() != (0..1) || oper.if_arithmetic_and().is_none() {
         // Only going to try partially invalidate cases with logical ands
-        if l.relevant_bits() != (0..1) || r.relevant_bits() != (0..1) {
-            match oper.iter().any(|x| fun(x.ty())) {
-                true => None,
-                false => Some(oper.clone()),
-            }
+        if state.check_remove(oper) == ConstraintRemoveCheckResult::Keep {
+            return Some(oper);
         } else {
-            let left = remove_matching_ands(ctx, l, fun);
-            let right = remove_matching_ands(ctx, r, fun);
-            match (left, right) {
-                (None, None) => None,
-                (Some(x), None) | (None, Some(x)) => Some(x),
-                (Some(left), Some(right)) => Some(ctx.and(left, right)),
-            }
-        }
-    } else {
-        match oper.iter().any(|x| fun(x.ty())) {
-            true => None,
-            false => Some(oper.clone()),
+            return None;
         }
     }
+    let mut next = Some(oper);
+    while let Some(x) = next {
+        let part;
+        if let Some((l, r)) = x.if_arithmetic_and() {
+            next = Some(l);
+            part = r;
+        } else {
+            next = None;
+            part = x;
+        }
+        if !state.check_and_part(part) {
+            return None;
+        }
+    }
+    state.build_and(ctx)
+}
+
+struct InvalidateConstraintState<'e> {
+    build_and_buffer: ArrayVec<Operand<'e>, 8>,
+    iter_buffer: ArrayVec<Operand<'e>, 16>,
+    ops_checked: u32,
+    // Allows skipping and building if the operand doesn't change
+    all_checks_ok: bool,
+    compare: Operand<'e>,
+    oper: Operand<'e>,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum ConstraintRemoveCheckResult {
+    Remove,
+    Keep,
+    Limit,
+}
+
+impl<'e> InvalidateConstraintState<'e> {
+    fn new(oper: Operand<'e>, compare: Operand<'e>) -> InvalidateConstraintState<'e> {
+        InvalidateConstraintState {
+            all_checks_ok: true,
+            ops_checked: 0,
+            compare,
+            oper,
+            iter_buffer: ArrayVec::new(),
+            build_and_buffer: ArrayVec::new(),
+        }
+    }
+
+    /// Returns true if the part should be invalidated, false if not
+    fn check_remove(&mut self, op: Operand<'e>) -> ConstraintRemoveCheckResult {
+        self.iter_buffer.clear();
+        self.iter_buffer.push(op);
+        while let Some(next) = self.iter_buffer.pop() {
+            let mut part = next;
+            'inner_loop: loop {
+                if part == self.compare {
+                    return ConstraintRemoveCheckResult::Remove;
+                }
+                if self.ops_checked >= 64 {
+                    return ConstraintRemoveCheckResult::Limit;
+                }
+                self.ops_checked = self.ops_checked + 1;
+                match *part.ty() {
+                    OperandType::Arithmetic(ref arith) |
+                        OperandType::ArithmeticFloat(ref arith, _) =>
+                    {
+                        part = arith.right;
+                        if self.iter_buffer.is_full() {
+                            return ConstraintRemoveCheckResult::Limit;
+                        }
+                        self.iter_buffer.push(arith.left);
+                    },
+                    OperandType::Memory(ref m) => {
+                        part = m.address().0;
+                    }
+                    OperandType::SignExtend(val, _, _) => {
+                        part = val;
+                    }
+                    _ => break 'inner_loop,
+                }
+            }
+        }
+        ConstraintRemoveCheckResult::Keep
+    }
+
+    /// Returns false if entire constraint should be invalidated
+    fn check_and_part(&mut self, part: Operand<'e>) -> bool {
+        match self.check_remove(part) {
+            ConstraintRemoveCheckResult::Remove => {
+                self.all_checks_ok = false;
+                true
+            }
+            ConstraintRemoveCheckResult::Keep => {
+                if self.build_and_buffer.is_full() {
+                    false
+                } else {
+                    self.build_and_buffer.push(part);
+                    true
+                }
+            }
+            ConstraintRemoveCheckResult::Limit => false,
+        }
+    }
+
+    fn build_and(&self, ctx: OperandCtx<'e>) -> Option<Operand<'e>> {
+        if self.all_checks_ok {
+            return Some(self.oper);
+        }
+        let mut result = match self.build_and_buffer.get(0) {
+            Some(&s) => s,
+            None => return None,
+        };
+        for &op in &self.build_and_buffer[1..] {
+            result = ctx.and(result, op);
+        }
+        Some(result)
+    }
+}
+
+/// Constraint invalidation helper; Removes parts of constraint referring to memory
+fn remove_matching_ands_memory<'e>(
+    ctx: OperandCtx<'e>,
+    oper: Operand<'e>,
+) -> Option<Operand<'e>> {
+    if !oper.contains_memory() {
+        return Some(oper);
+    }
+    if oper.relevant_bits() != (0..1) {
+        // Only going to try partially invalidate cases with logical ands
+        return None;
+    }
+    let mut next = Some(oper);
+    let mut result = None;
+    while let Some(x) = next {
+        let part;
+        if let Some((l, r)) = x.if_arithmetic_and() {
+            next = Some(l);
+            part = r;
+        } else {
+            next = None;
+            part = x;
+        }
+        if !part.contains_memory() {
+            if let Some(old) = result {
+                result = Some(ctx.and(old, part));
+            } else {
+                result = Some(part);
+            }
+        }
+    }
+    result
 }
 
 fn other_if_eq_zero<'e>(op: Operand<'e>) -> Option<Operand<'e>> {

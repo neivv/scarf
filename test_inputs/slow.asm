@@ -5,6 +5,8 @@ dd hash
 dd hash2
 dd hash3
 dd slow4
+dd slow5
+dd slow6
 
 ; Interestingly this was slow since it analyzed the loop twice, creating two distinct Operand
 ; trees which it then compared.
@@ -10957,4 +10959,222 @@ pop esi
 pop ebx
 mov esp,ebp
 pop ebp
+ret
+
+; Fuzzer-generated semi-slow input
+slow5:
+and byte [eax], al
+and byte [ebx], dl
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc [ebx], edx
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+add byte [eax], al
+add byte [eax], al
+adc byte [eax], al
+add bh, bh
+dec eax
+dec eax
+cwde
+cwde
+cwde
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [ecx], bl
+cwde
+js .end1
+js .end2
+js .end3
+js .end4
+js .end5
+js .end6
+js .end7
+sub bh, byte [eax+78]
+js .end8
+js .end9
+js .end10
+js .end11
+js .end12
+js .end13
+js .end14
+adc edx, [ebx]
+adc ebp, [eax]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc edx, [ebx]
+adc eax, [eax]
+and byte [eax],al
+add byte [eax],al
+add byte [eax],al
+add byte [eax],al
+sbb al, byte [edx]
+stosb ; mov byte [edi], al (No REP)
+add byte [edi+0x6a000000], bl
+jne slow5
+ret
+.end1:
+ret
+.end2:
+ret
+.end3:
+ret
+.end4:
+ret
+.end5:
+ret
+.end6:
+ret
+.end7:
+ret
+.end8:
+ret
+.end9:
+ret
+.end10:
+ret
+.end11:
+ret
+.end12:
+ret
+.end13:
+ret
+.end14:
+ret
+
+align 0x100
+; Fuzzer-generated case that made scarf get stuck
+slow6:
+inc eax
+and byte [ebp + 0x2d], dh
+sub eax, 0x2d2d2d2d
+sub eax, 0x7575752d
+sub eax, 0x752d2d2d
+xor [eax], eax
+add byte [eax + 0x20], al
+add byte [eax], al
+inc eax
+sub byte [eax], al
+add [ecx], ecx
+add bh, bh
+add byte [eax + 0x20], al
+sub eax, 0x2d2d2d2d
+sub eax, 0x7575752d
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+div edi
+jne $ + 0x800000 ; Jumps that go out of bounds
+jne $ + 0x800000
+jne $ + 0x800000
+sub eax, 0x752d2d2d
+jne $ + 0x800000
+jne $ + 0x800000
+xor byte [0x2d2d2d2d], ch
+sub eax, 0x2d00ff2d
+and byte [ebp + 0x40], dh
+or byte [eax], cl
+or byte [eax], cl
+add byte [ecx], cl
+add byte [ecx], al
+add byte [eax], al
 ret
