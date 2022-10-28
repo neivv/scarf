@@ -2061,12 +2061,16 @@ impl<'e> Operand<'e> {
     }
 
     pub fn relevant_bits_mask(self) -> u64 {
-        if self.0.relevant_bits.start >= self.0.relevant_bits.end {
-            0
+        let start = self.0.relevant_bits.start as u32;
+        let end = self.0.relevant_bits.end as u32;
+        if end >= 64 {
+            !(1u64.wrapping_shl(start)
+                .wrapping_sub(1))
         } else {
-            let low = self.0.relevant_bits.start;
-            let high = 64 - self.0.relevant_bits.end;
-            !0u64 << high >> high >> low << low
+            1u64.wrapping_shl(end)
+                .wrapping_sub(1)
+                .wrapping_shr(start)
+                .wrapping_shl(start)
         }
     }
 
