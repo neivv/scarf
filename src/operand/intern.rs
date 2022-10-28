@@ -81,11 +81,13 @@ impl<'e> Interner<'e> {
         let min_zero_bit_simplify_size =
             ty.min_zero_bit_simplify_size(relevant_bits.clone());
         let flags = ty.flags();
+        let sort_order = ty.sort_order();
         let base = OperandBase {
             ty,
             min_zero_bit_simplify_size,
             relevant_bits,
             flags,
+            sort_order,
         };
         Operand(self.arena.alloc(base), PhantomData)
     }
@@ -127,6 +129,7 @@ impl<'e> ConstInterner<'e> {
             min_zero_bit_simplify_size,
             relevant_bits,
             flags,
+            sort_order: value,
         };
         Operand(self.arena.alloc(base), PhantomData)
     }

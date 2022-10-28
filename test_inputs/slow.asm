@@ -7,6 +7,7 @@ dd hash3
 dd slow4
 dd slow5
 dd slow6
+dd many_adc
 
 ; Interestingly this was slow since it analyzed the loop twice, creating two distinct Operand
 ; trees which it then compared.
@@ -11177,4 +11178,23 @@ or byte [eax], cl
 add byte [ecx], cl
 add byte [ecx], al
 add byte [eax], al
+ret
+
+; Was causing comparisions (PartialOrd) of Operands need to
+; recurse a lot before finding something that differed.
+; Fixed by adding sort_order to OperandBase
+many_adc:
+and byte [edx], dl
+adc dl, byte [edx]
+adc dl, byte [eax]
+and byte [edx], dl
+times 100 adc dl, byte [edx]
+js .skip_some
+times 20 adc dl, byte [edx]
+.skip_some:
+times 100 adc dl, byte [edx]
+js .skip_some2
+times 20 adc dl, byte [edx]
+.skip_some2:
+times 100 adc dl, byte [edx]
 ret

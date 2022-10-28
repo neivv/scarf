@@ -189,6 +189,30 @@ pub(crate) struct OperandBase<'e> {
     relevant_bits: Range<u8>,
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     flags: u8,
+    /// Used to implement Ord in almost-always-constant time.
+    ///
+    /// - For OperandType variants that fit in u64,
+    ///     this variable just holds the same data as the variant
+    ///     that can be used to compare this.
+    /// - For Arithmetic / ArithmeticFloat, this has high 5 bits set to ArithOpType
+    ///     and rest are hash (stable across executions) of sort_order of the
+    ///     left/right ops (ArithmeticFloat size is not included at all)
+    /// - For Memory / SignExtend, this holds discriminant and sort_order
+    ///     (Shifted right to fit in discriminant) of `base`
+    ///     (Offset / size are not included)
+    /// The values are picked so that there wouldn't be too many conflicts
+    /// in average sort case, and that the sort order is 'sensible' for most
+    /// operands (Registers sorted by their index, constants by constant value)
+    /// And when there are conflicts (E.g. Mem32[rax], Mem8[rax], Mem32[rax + 8]
+    /// have all same sort_order) it should be quick to check remaining variables.
+    /// (In general you'd never compare two equal `OperandBase`s, since `Operand`
+    /// comparision includes equality check already.)
+    ///
+    /// `sort_order` could be also used as input to hash, though it would require
+    /// remembering to add data that is not included, with `Memory` and other
+    /// large types.
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
+    sort_order: u64,
 }
 
 const FLAG_CONTAINS_UNDEFINED: u8 = 0x1;
@@ -229,8 +253,22 @@ impl<'e> Ord for Operand<'e> {
                 min_zero_bit_simplify_size: _,
                 relevant_bits: _,
                 flags: _,
+                sort_order,
             } = *self.0;
-            ty.cmp(&other.0.ty)
+
+            let other_ty = &other.0.ty;
+            let self_discr = ty.discriminant();
+            let other_discr = other_ty.discriminant();
+            let order = self_discr.cmp(&other_discr);
+            if order != Ordering::Equal {
+                return order;
+            }
+
+            let order = sort_order.cmp(&other.0.sort_order);
+            if order != Ordering::Equal {
+                return order;
+            }
+            ty.cmp_sort_order_was_eq(other_ty)
         }
     }
 }
@@ -238,6 +276,33 @@ impl<'e> Ord for Operand<'e> {
 impl<'e> PartialOrd for Operand<'e> {
     fn partial_cmp(&self, other: &Operand<'e>) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+
+    // Explicit lt implementation is bit faster for sorting which uses it
+    fn lt(&self, other: &Operand<'e>) -> bool {
+        let OperandBase {
+            ref ty,
+            min_zero_bit_simplify_size: _,
+            relevant_bits: _,
+            flags: _,
+            sort_order,
+        } = *self.0;
+
+        let other_ty = &other.0.ty;
+        let self_discr = ty.discriminant();
+        let other_discr = other_ty.discriminant();
+        if self_discr != other_discr {
+            return self_discr < other_discr;
+        }
+
+        if sort_order != other.0.sort_order {
+            return sort_order < other.0.sort_order;
+        }
+
+        if ptr::eq(self.0, other.0) {
+            return false;
+        }
+        matches!(ty.cmp_sort_order_was_eq(other_ty), Ordering::Less)
     }
 }
 
@@ -363,7 +428,7 @@ impl<'e> fmt::Display for Operand<'e> {
 
 /// Different values an [`Operand`] can hold.
 #[cfg_attr(feature = "serde", derive(Serialize))]
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum OperandType<'e> {
     /// A variable representing single general-purpose-register of a CPU.
     Register(u8),
@@ -1507,6 +1572,7 @@ impl<'e> OperandContext<'e> {
                 min_zero_bit_simplify_size: 0,
                 relevant_bits: 0..64,
                 flags: FLAG_CONTAINS_UNDEFINED,
+                sort_order: id as u64,
             })
         } else {
             self.undef_interner.get(id as usize)
@@ -1859,6 +1925,95 @@ impl<'e> OperandType<'e> {
     #[inline]
     fn const_flags() -> u8 {
         0
+    }
+
+    fn sort_order(&self) -> u64 {
+        use OperandType::*;
+        match *self {
+            Memory(ref mem) => {
+                let base = mem.address().0;
+                let base_discriminant = base.ty().discriminant();
+                ((base_discriminant as u64) << 59) | (base.0.sort_order >> 5)
+            }
+            SignExtend(base, _, _) => {
+                let base_discriminant = base.ty().discriminant();
+                ((base_discriminant as u64) << 59) | (base.0.sort_order >> 5)
+            }
+            Arithmetic(ref arith) | ArithmeticFloat(ref arith, _) => {
+                let ty = arith.ty as u8;
+                let hash = fxhash::hash64(&(arith.left.0.sort_order, arith.right.0.sort_order));
+                ((ty as u64) << 59) | (hash >> 5)
+            }
+            // Shift these left so that Arithmetic / Memory sort_order won't
+            // shift these out. Shifting left by 32 may compile on 32bit host to
+            // just zeroing the low half without actually doing 64-bit shifts?
+            Register(a) | Fpu(a) => (a as u64) << 32,
+            Flag(a) => (a as u64) << 32,
+            Custom(a) => (a as u64) << 32,
+            Xmm(a, b) => (((a as u64) << 8) | (b as u64)) << 32,
+            // Note: constants / undefined not handled here
+            Constant(..) | Undefined(..) => 0,
+        }
+    }
+
+    /// Separate function for comparision when fast path doesn't work
+    /// (Give compiler chance to inline only fast path if it wants)
+    ///
+    /// Assumes that self and other have same `OperandType` variant
+    /// and that their sort_order was equal
+    fn cmp_sort_order_was_eq(&self, other: &OperandType<'e>) -> Ordering {
+        if let OperandType::Memory(ref self_mem) = *self {
+            if let OperandType::Memory(ref other_mem) = *other {
+                return self_mem.cmp(other_mem);
+            }
+        } else if let OperandType::Arithmetic(ref self_arith) = *self {
+            if let OperandType::Arithmetic(ref other_arith) = *other {
+                // Note that ArithOperand (i.e. without sort_order)
+                // comparision can give different result than OperandType comparision since
+                // sort_order depends on both left and right, while ArithOperand
+                // is left-then-right comparision.
+                return self_arith.cmp(other_arith);
+            }
+        } else if let OperandType::ArithmeticFloat(ref self_arith, self_size) = *self {
+            if let OperandType::ArithmeticFloat(ref other_arith, other_size) = *other {
+                let order = self_arith.cmp(other_arith);
+                if order != Ordering::Equal {
+                    return order;
+                }
+                return self_size.cmp(&other_size);
+            }
+        } else if let OperandType::SignExtend(inner, from, to) = *self {
+            if let OperandType::SignExtend(inner2, from2, to2) = *other {
+                let order = inner.cmp(&inner2);
+                if order != Ordering::Equal {
+                    return order;
+                }
+                let sizes = ((from as u8) << 4) | (to as u8);
+                let sizes2 = ((from2 as u8) << 4) | (to2 as u8);
+                return sizes.cmp(&sizes2);
+            }
+        }
+        debug_assert!(false, "supposed to be unreachable");
+        Ordering::Equal
+    }
+
+    #[inline]
+    fn discriminant(&self) -> u8 {
+        // This gets optimized to just Mem8[x] read as long
+        // as ordering matches OperandType definition
+        match *self {
+            OperandType::Register(..) => 0,
+            OperandType::Xmm(..) => 1,
+            OperandType::Fpu(..) => 2,
+            OperandType::Flag(..) => 3,
+            OperandType::Constant(..) => 4,
+            OperandType::Memory(..) => 5,
+            OperandType::Arithmetic(..) => 6,
+            OperandType::ArithmeticFloat(..) => 7,
+            OperandType::Undefined(..) => 8,
+            OperandType::SignExtend(..) => 9,
+            OperandType::Custom(..) => 10,
+        }
     }
 
     /// Returns whether the operand is 8, 16, 32, or 64 bits.
@@ -2414,6 +2569,8 @@ impl Clone for SelfOwnedOperand {
 #[cfg_attr(feature = "serde", derive(Serialize))]
 #[derive(Copy, Clone, Eq, Ord, PartialOrd)]
 pub struct MemAccess<'e> {
+    // Note: OperandType comparision relies on base being compared
+    // first here with Ord derive
     base: Operand<'e>,
     offset: u64,
     pub size: MemAccessSize,
