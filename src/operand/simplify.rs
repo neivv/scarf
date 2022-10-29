@@ -5175,34 +5175,48 @@ fn simplify_or_ops<'e>(
 /// simplify_rsh/lsh do that as well.
 /// Too long xors should not be tried to be simplified in shifts.
 fn simplify_shift_is_too_long_xor(ops: &[Operand<'_>]) -> bool {
-    fn count(op: Operand<'_>) -> usize {
-        match op.ty() {
-            OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
-                if arith.right.if_constant().is_some() {
-                    count(arith.left)
-                } else {
-                    1
+    fn count_children(op: Operand<'_>, left: &mut usize) -> bool {
+        let mut op = op;
+        loop {
+            match op.ty() {
+                OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
+                    if arith.right.if_constant().is_some() {
+                        op = arith.left;
+                        continue;
+                    }
                 }
+                OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Xor => {
+                    *left = match left.checked_sub(1) {
+                        Some(s) => s,
+                        None => return true,
+                    };
+                    if let Some((l, r)) = arith.right.if_arithmetic_and() {
+                        if r.if_constant().is_some() {
+                            if !count_children(l, left) {
+                                return true;
+                            }
+                        }
+                    }
+                    op = arith.left;
+                    continue;
+                }
+                _ => (),
             }
-            OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Xor => {
-                count(arith.left) + count(arith.right)
-            }
-            _ => 1,
+            return false;
         }
     }
 
-    const LIMIT: usize = 16;
-    if ops.len() > LIMIT {
-        return true;
-    }
-    let mut sum = 0;
+    let mut left = 8usize;
+    left = match left.checked_sub(ops.len()) {
+        Some(s) => s,
+        None => return true,
+    };
     for &op in ops {
-        sum += count(op);
-        if sum > LIMIT {
-            break;
+        if count_children(op, &mut left) {
+            return true;
         }
     }
-    sum > LIMIT
+    false
 }
 
 fn slice_filter_map<'e, F>(slice: &mut Slice<'e>, mut fun: F)
