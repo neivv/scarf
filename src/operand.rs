@@ -2580,6 +2580,13 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Xor(left, right))`
+    #[inline]
+    pub fn if_arithmetic_xor(self) -> Option<(Operand<'e>, Operand<'e>)> {
+        self.if_arithmetic(ArithOpType::Xor)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
     /// `OperandType::Arithmetic(ArithOpType::Lsh(left, right))`
     #[inline]
     pub fn if_arithmetic_lsh(self) -> Option<(Operand<'e>, Operand<'e>)> {
@@ -2591,6 +2598,90 @@ impl<'e> Operand<'e> {
     #[inline]
     pub fn if_arithmetic_rsh(self) -> Option<(Operand<'e>, Operand<'e>)> {
         self.if_arithmetic(ArithOpType::Rsh)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic({ ty: arith, left, right: OperandType::Constant(right) })`
+    pub fn if_arithmetic_with_const(self, arith: ArithOpType) -> Option<(Operand<'e>, u64)> {
+        let (l, r) = self.if_arithmetic(arith)?;
+        Some((l, r.if_constant()?))
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Add(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_add_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::Add)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Sub(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_sub_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::Sub)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Mul(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_mul_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::Mul)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::MulHigh(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_mul_high_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::MulHigh)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Equal(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_eq_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::Equal)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::GreaterThan(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_gt_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::GreaterThan)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::And(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_and_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::And)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Or(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_or_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::Or)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Xor(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_xor_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::Xor)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Lsh(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_lsh_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::Lsh)
+    }
+
+    /// Returns `Some((left, right))` if `self.ty` is
+    /// `OperandType::Arithmetic(ArithOpType::Rsh(left, OperandType::Constant(right)))`
+    #[inline]
+    pub fn if_rsh_with_const(self) -> Option<(Operand<'e>, u64)> {
+        self.if_arithmetic_with_const(ArithOpType::Rsh)
     }
 
     /// Returns `Some((val, from, to))` if `self.ty` is
