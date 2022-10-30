@@ -2636,11 +2636,11 @@ impl<'e> Operand<'e> {
     }
 
     /// Returns `(other, constant)` if operand is an and mask with constant,
-    /// or just (self, u64::max_value()) otherwise.
+    /// or just (self, u64::MAX) otherwise.
     pub fn and_masked(this: Operand<'e>) -> (Operand<'e>, u64) {
         this.if_arithmetic_and()
             .and_then(|(l, r)| Some((l, r.if_constant()?)))
-            .unwrap_or_else(|| (this, u64::max_value()))
+            .unwrap_or_else(|| (this, u64::MAX))
     }
 
     /// If either of `a` or `b` matches the filter-map `f`, return the mapped result and the other

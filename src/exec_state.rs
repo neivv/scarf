@@ -1317,8 +1317,8 @@ fn value_limits_recurse<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64
                     }
                     if let Some(c) = arith.right.if_constant() {
                         if is_subset(value, arith.left) {
-                            debug_assert!(c != u64::max_value());
-                            return (c.wrapping_add(1), u64::max_value());
+                            debug_assert!(c != u64::MAX);
+                            return (c.wrapping_add(1), u64::MAX);
                         }
                     }
                 }
@@ -1338,7 +1338,7 @@ fn value_limits_recurse<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64
         }
         _ => (),
     }
-    (0, u64::max_value())
+    (0, u64::MAX)
 }
 
 /// Returns true if sub == sup & some_const_mask (Eq is also fine)
@@ -1555,7 +1555,7 @@ impl<'e> Memory<'e> {
         let cached_value = self.cached_value?;
 
         let (value, mask) = Operand::and_masked(value);
-        let cached = if exec_state_mask != u64::max_value() {
+        let cached = if exec_state_mask != u64::MAX {
             ctx.and_const(cached_value, exec_state_mask)
         } else {
             cached_value

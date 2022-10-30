@@ -2293,17 +2293,17 @@ fn pointless_gt() {
             ctx.register(0),
             ctx.constant(0xffff_ffff),
         ),
-        ctx.constant(u32::max_value() as u64),
+        ctx.constant(0xffff_ffff),
     );
     let eq2 = ctx.constant(0);
     let op3 = ctx.gt(
         ctx.register(0),
-        ctx.constant(u64::max_value()),
+        ctx.constant(u64::MAX),
     );
     let eq3 = ctx.constant(0);
     let op4 = ctx.gt(
         ctx.register(0),
-        ctx.constant(u32::max_value() as u64),
+        ctx.constant(0xffff_ffff),
     );
     let ne4 = ctx.constant(0);
     assert_eq!(op1, eq1);
@@ -2540,7 +2540,7 @@ fn simplify_add_to_const_0() {
             ctx.constant(1),
             ctx.mem32(ctx.constant(0x5000), 0),
         ),
-        ctx.constant(u64::max_value()),
+        ctx.constant(u64::MAX),
     );
     let eq1 = ctx.mem32(ctx.constant(0x5000), 0);
     let op2 = ctx.and(

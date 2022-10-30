@@ -273,7 +273,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     }
 
     fn value_limits(&mut self, value: Operand<'e>) -> (u64, u64) {
-        let mut result = (0, u64::max_value());
+        let mut result = (0, u64::MAX);
         if let Some(constraint) = self.inner.resolved_constraint {
             let new = crate::exec_state::value_limits(constraint.0, value);
             result.0 = result.0.max(new.0);

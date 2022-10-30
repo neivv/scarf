@@ -220,7 +220,7 @@ pub fn find_functions<'a, E: ExecutionState<'a>>(
                 }
                 let next = match confirmed_pos.next() {
                     Some(s) => s,
-                    None => (u32::max_value(), u32::max_value()),
+                    None => (u32::MAX, u32::MAX),
                 };
                 current_start = file.base + next.0;
                 current_end = file.base + next.1;

@@ -3979,7 +3979,7 @@ impl ModRm_R {
         ModRm_Rm {
             size: self.1,
             base: self.0,
-            index: u8::max_value(),
+            index: u8::MAX,
             index_mul: 0,
             constant: 0,
         }
@@ -3988,7 +3988,7 @@ impl ModRm_R {
 
 impl ModRm_Rm {
     fn is_memory(&self) -> bool {
-        self.index != u8::max_value()
+        self.index != u8::MAX
     }
 
     fn constant_base(&self) -> bool {
@@ -4003,7 +4003,7 @@ impl ModRm_Rm {
         ModRm_Rm {
             size: RegisterSize::from_mem_access_size(size),
             base: reg,
-            index: u8::max_value(),
+            index: u8::MAX,
             index_mul: 0,
             constant: 0,
         }

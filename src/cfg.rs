@@ -282,7 +282,7 @@ impl<'e, S: CfgState> Cfg<'e, S> {
                 CheckState::Unchecked => {
                     nodes[pos] = CheckState::Checking(chain.len() as u16);
                     chain.push(pos);
-                    if chain.len() >= u16::max_value() as usize {
+                    if chain.len() >= u16::MAX as usize {
                         break 'main_loop;
                     }
                     let out1 = {
@@ -797,14 +797,14 @@ impl Predecessors {
                 continue;
             }
             let entry = &mut self.lookup[succ.index as usize];
-            if entry.1 == u32::max_value() {
+            if entry.1 == u32::MAX {
                 // 0 or 1 entries, can just add to the current list
-                if entry.0 == u32::max_value() {
+                if entry.0 == u32::MAX {
                     entry.0 = predecessor;
                 } else {
                     entry.1 = predecessor;
                 }
-            } else if entry.0 != u32::max_value() {
+            } else if entry.0 != u32::MAX {
                 // 2 entries, relocating to long_lists
                 let long_list_idx = self.long_lists.len() as u32;
                 self.long_lists.extend([
@@ -814,7 +814,7 @@ impl Predecessors {
                     predecessor,
                     !0,
                 ].iter().copied());
-                entry.0 = u32::max_value();
+                entry.0 = u32::MAX;
                 entry.1 = long_list_idx;
             } else {
                 // Already a long list
@@ -825,7 +825,7 @@ impl Predecessors {
                     let sublist_len = self.long_lists[tail_index];
                     next_location = tail_index + sublist_len as usize + 1;
                     let next = self.long_lists[next_location];
-                    if next == u32::max_value() {
+                    if next == u32::MAX {
                         break;
                     }
                     tail_index = next as usize;
@@ -834,7 +834,7 @@ impl Predecessors {
                     // Can just expand the list in place
                     self.long_lists[tail_index] += 1;
                     self.long_lists[next_location] = predecessor;
-                    self.long_lists.push(u32::max_value());
+                    self.long_lists.push(u32::MAX);
                 } else {
                     // Start a new sublist
                     let new_sublist_idx = self.long_lists.len();
@@ -859,7 +859,7 @@ impl Predecessors {
     ) -> NodePredecessors<'a, 'e, S> {
         let index = link.index as usize;
         let predecessors = self.lookup[index];
-        let mode = if predecessors.0 == u32::max_value() && predecessors.1 != u32::max_value() {
+        let mode = if predecessors.0 == u32::MAX && predecessors.1 != u32::MAX {
             PredecessorIterMode::Long(predecessors.1, 0)
         } else {
             PredecessorIterMode::Short(predecessors.0, predecessors.1)
@@ -890,16 +890,16 @@ impl<'a, 'e, S: CfgState> Iterator for NodePredecessors<'a, 'e, S> {
     fn next(&mut self) -> Option<Self::Item> {
         let next_index = match self.mode {
             PredecessorIterMode::Short(ref mut a, ref mut b) => {
-                if *a == u32::max_value() {
+                if *a == u32::MAX {
                     return None;
                 }
                 let next_index = *a;
                 *a = *b;
-                *b = u32::max_value();
+                *b = u32::MAX;
                 next_index
             }
             PredecessorIterMode::Long(ref mut sublist_index, ref mut pos) => {
-                if *sublist_index == u32::max_value() {
+                if *sublist_index == u32::MAX {
                     return None;
                 }
                 let sublist_len = self.parent.long_lists[*sublist_index as usize] as usize;
@@ -908,7 +908,7 @@ impl<'a, 'e, S: CfgState> Iterator for NodePredecessors<'a, 'e, S> {
                         self.parent.long_lists[*sublist_index as usize + sublist_len + 1];
                     *pos = 0;
                 }
-                if *sublist_index == u32::max_value() {
+                if *sublist_index == u32::MAX {
                     return None;
                 }
                 *pos += 1;

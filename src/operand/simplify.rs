@@ -262,7 +262,7 @@ pub fn simplify_float_arith<'e>(
             let val = left;
             if let Some(c) = val.if_constant() {
                 let float = f32::from_bits(c as u32);
-                let overflow = float > i32::max_value() as f32 ||
+                let overflow = float > i32::MAX as f32 ||
                     float < i32::min_value() as f32;
                 let int = if overflow {
                     0x8000_0000
@@ -285,7 +285,7 @@ pub fn simplify_float_arith<'e>(
             let val = left;
             if let Some(c) = val.if_constant() {
                 let float = f64::from_bits(c);
-                let overflow = float > i64::max_value() as f64 ||
+                let overflow = float > i64::MAX as f64 ||
                     float < i64::min_value() as f64;
                 let int = if overflow {
                     0x8000_0000_0000_0000
@@ -823,7 +823,7 @@ fn simplify_xor_ops<'e>(
                 ops_changed = true;
                 ops.swap_remove(i);
                 end -= 1;
-                collect_xor_ops(l, ops, usize::max_value())?;
+                collect_xor_ops(l, ops, usize::MAX)?;
                 if let Some(c) = r.if_constant() {
                     const_val ^= c;
                 } else {
@@ -878,7 +878,7 @@ fn simplify_xor_ops<'e>(
                     if l.relevant_bits_mask() & mask == c {
                         if let Some((l, r)) = l.if_arithmetic(ArithOpType::Xor) {
                             ops[i] = r;
-                            collect_xor_ops(l, ops, usize::max_value())?;
+                            collect_xor_ops(l, ops, usize::MAX)?;
                         } else {
                             ops[i] = l;
                         }
@@ -1553,7 +1553,7 @@ fn relevant_bits_for_eq<'e>(ops: &[(Operand<'e>, bool)], ctx: OperandCtx<'e>) ->
         };
         Some((pos_mask, neg_mask))
     }).unwrap_or_else(|| {
-        (0, u64::max_value())
+        (0, u64::MAX)
     })
 }
 
@@ -2021,7 +2021,7 @@ fn simplify_eq_ops<'e>(
                     }
                     true => {
                         let op = ctx.sub_const_left(0, op);
-                        if mask != u64::max_value() {
+                        if mask != u64::MAX {
                             simplify_and_const(op, mask, ctx, swzb_ctx)
                         } else {
                             op
@@ -3030,11 +3030,11 @@ fn simplify_and_main<'e>(
             if let Some((l, r)) = ops[i].if_arithmetic_and() {
                 ops.swap_remove(i);
                 end -= 1;
-                collect_and_ops(l, ops, usize::max_value())?;
+                collect_and_ops(l, ops, usize::MAX)?;
                 if let Some(c) = r.if_constant() {
                     const_remain &= c;
                 } else {
-                    collect_and_ops(r, ops, usize::max_value())?;
+                    collect_and_ops(r, ops, usize::MAX)?;
                 }
                 ops_changed = true;
             } else if let Some(c) = ops[i].if_constant() {
@@ -3258,7 +3258,7 @@ fn simplify_and_merge_gt_const<'e>(
                                 .filter(|&c| c.wrapping_add(1) & c == 0)?;
                             Some((mask, l))
                         })
-                        .unwrap_or_else(|| (u64::max_value(), arith.right));
+                        .unwrap_or_else(|| (u64::MAX, arith.right));
                     let (c2, inner) = inner.if_arithmetic_sub()
                         .and_then(|x| x.1.if_constant().map(|c2| (c2, x.0)))
                         .unwrap_or_else(|| (0, inner));
@@ -3274,7 +3274,7 @@ fn simplify_and_merge_gt_const<'e>(
                                 .filter(|&c| c.wrapping_add(1) & c == 0)?;
                             Some((mask, l))
                         })
-                        .unwrap_or_else(|| (u64::max_value(), arith.left));
+                        .unwrap_or_else(|| (u64::MAX, arith.left));
                     inner.if_arithmetic_sub()
                         .and_then(|x| {
                             x.1.if_constant()
@@ -3316,7 +3316,7 @@ fn simplify_and_merge_gt_const<'e>(
             // so allow reducing u64::max_value mask to a smaller mask
             // if that one has low == high
             let larger_masked = if base.2 < other.2 { other } else { &*base };
-            if larger_masked.0 == larger_masked.1 && larger_masked.2 == u64::max_value() {
+            if larger_masked.0 == larger_masked.1 && larger_masked.2 == u64::MAX {
                 mask = base.2.min(other.2);
             } else {
                 return false;
@@ -3329,7 +3329,7 @@ fn simplify_and_merge_gt_const<'e>(
             if pos.0 >= neg.0 && pos.1 <= neg.1 {
                 // Negative range contains all of the positive - e.g. the result can never
                 // be true
-                *base = (0, u64::max_value(), u64::max_value(), base.3, false);
+                *base = (0, u64::MAX, u64::MAX, base.3, false);
                 true
             } else if neg.1 < pos.0 || neg.0 > pos.1 {
                 // No overlap
@@ -3355,7 +3355,7 @@ fn simplify_and_merge_gt_const<'e>(
             let high = base.1.min(other.1);
             if low > high {
                 // Empty set
-                *base = (0, u64::max_value(), u64::max_value(), base.3, false);
+                *base = (0, u64::MAX, u64::MAX, base.3, false);
                 true
             } else {
                 base.0 = low;
@@ -4210,7 +4210,7 @@ fn collect_or_ops<'e>(
     s: Operand<'e>,
     ops: &mut Slice<'e>,
 ) -> Result<(), SizeLimitReached> {
-    collect_arith_ops(s, ops, ArithOpType::Or, usize::max_value())
+    collect_arith_ops(s, ops, ArithOpType::Or, usize::MAX)
 }
 
 fn collect_xor_ops<'e>(
@@ -4318,7 +4318,7 @@ fn try_merge_memory<'e>(
         2 => ctx.mem16(val, off1),
         3 => ctx.and_const(ctx.mem32(val, off1), 0x00ff_ffff),
         4 => ctx.mem32(val, off1),
-        5 | 6 | 7 => ctx.and_const(ctx.mem64(val, off1), u64::max_value() >> ((8 - len) << 3)),
+        5 | 6 | 7 => ctx.and_const(ctx.mem64(val, off1), u64::MAX >> ((8 - len) << 3)),
         8 => ctx.mem64(val, off1),
         _ => return None,
     };
@@ -4545,7 +4545,7 @@ pub fn simplify_add_sub<'e>(
         }
     }
     ctx.simplify_temp_stack().alloc(|ops| {
-        simplify_add_sub_ops(ops, left, right, is_sub, u64::max_value(), ctx)?;
+        simplify_add_sub_ops(ops, left, right, is_sub, u64::MAX, ctx)?;
         Ok(add_sub_ops_to_tree(ops, ctx))
     }).unwrap_or_else(|SizeLimitReached| {
         let arith = ArithOperand {
@@ -5082,7 +5082,7 @@ fn simplify_or_ops<'e>(
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum | x);
         ops.retain(|x| x.if_constant().is_none());
-        if ops.is_empty() || const_val == u64::max_value() {
+        if ops.is_empty() || const_val == u64::MAX {
             return Ok(ctx.constant(const_val));
         }
         heapsort::sort(ops);
@@ -5553,7 +5553,7 @@ fn simplify_with_zero_bits<'e>(
 
     if recurse_check {
         if swzb.xor_recurse > 4 {
-            swzb.simplify_count = u8::max_value();
+            swzb.simplify_count = u8::MAX;
         }
         if should_stop(swzb) {
             return Some(op);
@@ -6318,16 +6318,16 @@ fn test_sum_valid_range() {
     assert_eq!(
         sum_valid_range(
             &[(ctx.mem8(ctx.constant(4), 0), false), (ctx.mem8(ctx.constant(8), 0), true)],
-            u64::max_value(),
+            u64::MAX,
         ),
         (0xffff_ffff_ffff_ff01, 0xff),
     );
     assert_eq!(
-        sum_valid_range(&[(ctx.register(4), false)], u64::max_value()),
-        (0, u64::max_value()),
+        sum_valid_range(&[(ctx.register(4), false)], u64::MAX),
+        (0, u64::MAX),
     );
     assert_eq!(
-        sum_valid_range(&[(ctx.register(4), true)], u64::max_value()),
-        (0, u64::max_value()),
+        sum_valid_range(&[(ctx.register(4), true)], u64::MAX),
+        (0, u64::MAX),
     );
 }
