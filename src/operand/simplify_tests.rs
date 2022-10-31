@@ -8776,3 +8776,128 @@ fn div_relevant_bits() {
     );
     assert_eq!(op1, ctx.const_0());
 }
+
+#[test]
+fn simplify_xor_with_masks1() {
+    let ctx = &OperandContext::new();
+    // Effectively ((Mem32[2] << 8) ^ (Mem32[2] << 8) ^ esi) & ffff_ffff
+    // So memory shifts cancel out.
+    let op1 = ctx.xor(
+        ctx.lsh_const(
+            ctx.and_const(
+                ctx.mem32c(2),
+                0xff_ffff,
+            ),
+            8,
+        ),
+        ctx.and_const(
+            ctx.xor(
+                ctx.lsh_const(ctx.mem32c(2), 8),
+                ctx.register(6),
+            ),
+            0xffff_ffff,
+        ),
+    );
+    assert_eq!(op1, ctx.and_const(ctx.register(6), 0xffff_ffff));
+}
+
+#[test]
+fn simplify_xor_with_masks2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.xor(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff_ff00,
+            ),
+            ctx.and_const(
+                ctx.register(1),
+                0xffff_0000,
+            ),
+        ),
+        ctx.xor(
+            ctx.and_const(
+                ctx.register(0),
+                0x00ff_ffff,
+            ),
+            ctx.and_const(
+                ctx.register(1),
+                0x00ff_ffff,
+            ),
+        ),
+    );
+    let eq1 = ctx.xor(
+        ctx.and_const(
+            ctx.register(0),
+            0xff00_00ff,
+        ),
+        ctx.and_const(
+            ctx.register(1),
+            0xff00_ffff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn canonicalize_shifted_masked_op() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.lsh_const(
+        ctx.and_const(
+            ctx.register(0),
+            0xff_ffff,
+        ),
+        8,
+    );
+    let eq1 = ctx.and_const(
+        ctx.lsh_const(
+            ctx.register(0),
+            8,
+        ),
+        0xffff_ff00,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn canonicalize_u32_sub_mul() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.mul_const(
+        ctx.sub_const(
+            ctx.register(0),
+            0xd,
+        ),
+        4,
+    );
+    let eq1 = ctx.sub_const(
+        ctx.mul_const(
+            ctx.register(0),
+            0x4,
+        ),
+        0xd * 4,
+    );
+    assert_eq!(op1, eq1);
+
+    let ctx = &OperandContext::new();
+    let op1 = ctx.mul_const(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.register(0),
+                0xd,
+            ),
+            0xffff_ffff,
+        ),
+        4,
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.mul_const(
+                ctx.register(0),
+                0x4,
+            ),
+            0xd * 4,
+        ),
+        0x3_ffff_fffc,
+    );
+    assert_eq!(op1, eq1);
+}

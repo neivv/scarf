@@ -15,6 +15,7 @@ use super::util::{IterArithOps, IterAddSubArithOps};
 
 type Slice<'e> = slice_stack::Slice<'e, Operand<'e>>;
 type AddSlice<'e> = slice_stack::Slice<'e, (Operand<'e>, bool)>;
+type MaskedOpSlice<'e> = slice_stack::Slice<'e, (Operand<'e>, u64)>;
 
 #[derive(Default)]
 pub struct SimplifyWithZeroBits {
@@ -925,11 +926,36 @@ fn simplify_xor_remove_reverting<'e>(ops: &mut Slice<'e>) {
         let pos_u = pos as usize;
         let first_u = first_same as usize;
         if ops[pos_u] == ops[first_u] {
-            ops.remove(first_u);
-            ops.remove(pos_u);
+            ops.swap_remove(first_u);
+            ops.swap_remove(pos_u);
             first_same -= 2;
-            if pos > first_same {
+            pos = first_same;
+        } else {
+            first_same = pos;
+        }
+        pos -= 1;
+    }
+}
+
+/// Assumes that `ops` is sorted.
+fn simplify_masked_xor_merge_same_ops<'e>(ops: &mut MaskedOpSlice<'e>) {
+    let mut first_same = ops.len() as isize - 1;
+    let mut pos = first_same - 1;
+    while pos >= 0 {
+        let pos_u = pos as usize;
+        let first_u = first_same as usize;
+        if ops[pos_u].0 == ops[first_u].0 {
+            let new_mask = ops[pos_u].1 ^ ops[first_u].1;
+            let relbit_mask = ops[pos_u].0.relevant_bits_mask();
+            if new_mask & relbit_mask == 0 {
+                ops.swap_remove(first_u);
+                ops.swap_remove(pos_u);
+                first_same -= 2;
                 pos = first_same
+            } else {
+                ops.swap_remove(first_u);
+                ops[pos_u].1 = new_mask;
+                first_same -= 1;
             }
         } else {
             first_same = pos;
@@ -964,30 +990,36 @@ pub fn simplify_lsh<'e>(
     simplify_lsh_const(left, constant as u8, ctx, swzb_ctx)
 }
 
+fn intern_lsh_const<'e>(
+    left: Operand<'e>,
+    constant: u8,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    // Normalize small shifts to a mul
+    if constant < 0x6 {
+        let arith = ArithOperand {
+            ty: ArithOpType::Mul,
+            left: left,
+            right: ctx.constant(1 << constant),
+        };
+        ctx.intern(OperandType::Arithmetic(arith))
+    } else {
+        let arith = ArithOperand {
+            ty: ArithOpType::Lsh,
+            left: left,
+            right: ctx.constant(constant as u64),
+        };
+        ctx.intern(OperandType::Arithmetic(arith))
+    }
+}
+
 pub fn simplify_lsh_const<'e>(
     left: Operand<'e>,
     constant: u8,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
-    let default = || {
-        // Normalize small shifts to a mul
-        if constant < 0x6 {
-            let arith = ArithOperand {
-                ty: ArithOpType::Mul,
-                left: left,
-                right: ctx.constant(1 << constant),
-            };
-            ctx.intern(OperandType::Arithmetic(arith))
-        } else {
-            let arith = ArithOperand {
-                ty: ArithOpType::Lsh,
-                left: left,
-                right: ctx.constant(constant as u64),
-            };
-            ctx.intern(OperandType::Arithmetic(arith))
-        }
-    };
+    let default = move || intern_lsh_const(left, constant, ctx);
     if constant == 0 {
         return left;
     } else if constant >= 64 - left.relevant_bits().start {
@@ -1010,18 +1042,26 @@ pub fn simplify_lsh_const<'e>(
             match arith.ty {
                 ArithOpType::And => {
                     // Simplify (x & mask) << c to (x << c) & (mask << c)
-                    // (If it changes anything. Otherwise prefer keeping the shift/mul outside)
+                    // (If it changes anything.)
+                    // Ultimately canonical form is (x & mask) << c,
+                    // but some simplifications benefit from shifting
+                    // the inner value.
                     if let Some(c) = arith.right.if_constant() {
                         let high = 64 - zero_bits.start;
                         let low = left.relevant_bits().start;
                         let no_op_mask = !0u64 >> low << low << high >> high;
-
-                        let new = simplify_lsh_const(arith.left, constant, ctx, swzb_ctx);
-                        let changed = match *new.ty() {
-                            OperandType::Arithmetic(ref a) => a.left != arith.left,
-                            _ => true,
+                        let is_useful = match arith.left.ty() {
+                            OperandType::Arithmetic(arith) => {
+                                matches!(
+                                    arith.ty,
+                                    ArithOpType::Rsh | ArithOpType::Mul |
+                                        ArithOpType::Add | ArithOpType::Sub
+                                )
+                            }
+                            _ => false,
                         };
-                        if changed {
+                        if is_useful {
+                            let new = simplify_lsh_const(arith.left, constant, ctx, swzb_ctx);
                             if c == no_op_mask {
                                 return new;
                             } else {
@@ -2415,16 +2455,6 @@ fn try_merge_ands<'e>(
     if let Some((val, shift)) = is_offset_mem(a, ctx) {
         if let Some((other_val, other_shift)) = is_offset_mem(b, ctx) {
             if val == other_val {
-                let shift = (
-                    shift.0,
-                    shift.1,
-                    shift.2,
-                );
-                let other_shift = (
-                    other_shift.0,
-                    other_shift.1,
-                    other_shift.2,
-                );
                 let result = try_merge_memory(val, other_shift, shift, ctx);
                 if let Some(merged) = result {
                     return Some(merged);
@@ -2459,6 +2489,20 @@ fn try_merge_ands<'e>(
                                 try_merge_ands(c.left, d.left, c_mask, d_mask, ctx)
                             {
                                 return Some(ctx.lsh_const(result, shift));
+                            }
+                        }
+                    }
+                } else if c.ty == ArithOpType::And {
+                    if let Some(c_mask) = c.right.if_constant() {
+                        if let Some(d_mask) = d.right.if_constant() {
+                            if let Some(result) =
+                                try_merge_ands(c.left, d.left, c_mask, d_mask, ctx)
+                            {
+                                if c_mask | d_mask != a_mask | b_mask {
+                                    return Some(ctx.and_const(result, c_mask | d_mask));
+                                } else {
+                                    return Some(result);
+                                }
                             }
                         }
                     }
@@ -3096,13 +3140,41 @@ fn simplify_and_main<'e>(
     };
     match ops.len() {
         0 => return Ok(ctx.constant(final_const_remain)),
-        1 if final_const_remain == 0 => return Ok(ops[0]),
+        1 => {
+            let op = ops[0];
+            if final_const_remain == 0 {
+                return Ok(op);
+            }
+        }
         _ => {
             heapsort::sort(ops);
             ops.dedup();
         }
     };
     simplify_and_remove_unnecessary_ors(ops, const_remain);
+    if ops.len() == 1 && final_const_remain != 0 {
+        // Canonicalize mask to be inside left shift if there is only one operand.
+        // Right shifts are canonicalized to mask outside in simplify_rsh_const
+        // however.
+        let op = ops[0];
+        if let Some(arith) = op.if_arithmetic_any() {
+            if arith.ty == ArithOpType::Lsh {
+                if let Some(shift) = arith.right.if_constant() {
+                    let masked = ctx.and_const(
+                        arith.left,
+                        final_const_remain >> shift,
+                    );
+                    // I think just interning here is fine...
+                    // simplify_lsh_const would otherwise try to undo
+                    // what this does here by doing (arith.left << shift)
+                    // and seeing if it simplified further.
+                    // But since it was already shifted it shouldn't ever
+                    // simplify.
+                    return Ok(intern_lsh_const(masked, shift as u8, ctx));
+                }
+            }
+        }
+    }
 
     let mut tree = match ops.pop() {
         Some(s) => s,
@@ -4164,7 +4236,6 @@ fn collect_arith_ops<'e>(
     }
     if ops.len() >= limit {
         if ops.len() == limit {
-            ops.push(s)?;
             #[cfg(feature = "fuzz")]
             tls_simplification_incomplete();
         }
@@ -4220,22 +4291,71 @@ fn collect_xor_ops<'e>(
     collect_arith_ops(s, ops, ArithOpType::Xor, limit)
 }
 
-/// Return (base, (offset, len, value_offset))
+/// Return true if any ops with more limited mask were added.
+fn collect_masked_xor_ops<'e>(
+    s: Operand<'e>,
+    ops: &mut MaskedOpSlice<'e>,
+    limit: usize,
+    mut mask: u64,
+) -> Result<bool, SizeLimitReached> {
+    let mut s = s;
+    let arith_type = ArithOpType::Xor;
+    let mut any_masked = false;
+    for _ in ops.len()..limit {
+        match s.ty() {
+            OperandType::Arithmetic(arith) => {
+                if arith.ty == arith_type {
+                    s = arith.left;
+                    if let Some((l, r)) = arith.right.if_and_with_const() {
+                        collect_masked_xor_ops(l, ops, limit, mask & r)?;
+                        any_masked = true;
+                    } else {
+                        ops.push((arith.right, mask))?;
+                    }
+                    continue;
+                } else if arith.ty == ArithOpType::And {
+                    if let Some(r) = arith.right.if_constant() {
+                        mask &= r;
+                        s = arith.left;
+                        any_masked = true;
+                        continue;
+                    }
+                }
+            }
+            _ => (),
+        }
+        ops.push((s, mask))?;
+        return Ok(any_masked);
+    }
+    if ops.len() >= limit {
+        if ops.len() == limit {
+            #[cfg(feature = "fuzz")]
+            tls_simplification_incomplete();
+        }
+        return Err(SizeLimitReached);
+    }
+    Ok(any_masked)
+}
+
+/// Return (base, (offset, len, value_offset, mask))
+/// Mask is u64::MAX if there is no explicit and mask
+/// (Even if the memory op is not Mem64)
 ///
-/// E.g. Mem32[x + 100] => (x, (100, 4, 0))
-///     (Mem32[x + 100]) << 20 => (x, (100, 4, 4))
+/// E.g. Mem32[x + 100] => (x, (100, 4, 0, u64::MAX))
+///     (Mem32[x + 100]) << 20 => (x, (100, 4, 4, u64::MAX))
+///     (Mem32[x + 100] & f0f0f0f0) << 20 => (x, (100, 4, 4, f0f0f0f0))
 fn is_offset_mem<'e>(
     op: Operand<'e>,
     ctx: OperandCtx<'e>,
-) -> Option<(Operand<'e>, (u64, u32, u32))> {
+) -> Option<(Operand<'e>, (u64, u32, u32, u64))> {
     match op.ty() {
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Lsh => {
             if let Some(c) = arith.right.if_constant() {
                 if c & 0x7 == 0 && c < 0x40 {
                     let bytes = (c / 8) as u32;
                     return is_offset_mem(arith.left, ctx)
-                        .map(|(x, (off, len, val_off))| {
-                            (x, (off, len, val_off + bytes))
+                        .map(|(x, (off, len, val_off, mask))| {
+                            (x, (off, len, val_off + bytes, mask))
                         });
                 }
             }
@@ -4246,10 +4366,10 @@ fn is_offset_mem<'e>(
                 if c & 0x7 == 0 && c < 0x40 {
                     let bytes = (c / 8) as u32;
                     return is_offset_mem(arith.left, ctx)
-                        .and_then(|(x, (off, len, val_off))| {
+                        .and_then(|(x, (off, len, val_off, mask))| {
                             if bytes < len {
                                 let off = off.wrapping_add(bytes as u64);
-                                Some((x, (off, len - bytes, val_off)))
+                                Some((x, (off, len - bytes, val_off, mask)))
                             } else {
                                 None
                             }
@@ -4260,21 +4380,28 @@ fn is_offset_mem<'e>(
         }
         OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
             if let Some(c) = arith.right.if_constant() {
-                if c.wrapping_add(1) & c == 0 {
-                    return is_offset_mem(arith.left, ctx)
-                        .map(|(x, (off, _, val_off))| {
-                            let len_bits = op.relevant_bits().end;
-                            let len = len_bits.wrapping_add(7) / 8;
-                            (x, (off, len as u32, val_off))
-                        })
-                }
+                return is_offset_mem(arith.left, ctx)
+                    .map(|(x, (off, _, val_off, mask))| {
+                        // Mask is assumed be inside the shift.
+                        // (x & mask) << shift
+                        // So val_off is usually 0.
+                        // But still account for case where it isn't
+                        // by shifting mask right.
+
+                        let relbits = arith.right.relevant_bits();
+                        let start = relbits.start / 8;
+                        let end = relbits.end.wrapping_add(7) / 8;
+                        let len = end.wrapping_sub(start);
+                        let mask = (c & mask) >> (val_off * 8);
+                        (x, (off, len as u32, val_off, mask))
+                    })
             }
             None
         }
         OperandType::Memory(ref mem) => {
             let len = mem.size.bits() / 8;
             let (base, offset) = mem.address();
-            Some((base, (offset, len, 0)))
+            Some((base, (offset, len, 0, u64::MAX)))
         }
         _ => None,
     }
@@ -4290,19 +4417,20 @@ fn is_offset_mem<'e>(
 /// is too complex to follow and verify correct..
 ///
 /// shift and other_shift are (offset, len, left_shift_in_operand)
-/// E.g. `Mem32[x + 6] << 0x18` => (6, 4, 3)
+/// E.g. `Mem32[x + 6] << 0x18` => (6, 4, 3, u64::MAX)
+/// Same as in is_offset_mem return value.
 fn try_merge_memory<'e>(
     val: Operand<'e>,
-    shift: (u64, u32, u32),
-    other_shift: (u64, u32, u32),
+    shift: (u64, u32, u32, u64),
+    other_shift: (u64, u32, u32, u64),
     ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
     let (shift, other_shift) = match shift.2 < other_shift.2 {
         true => (shift, other_shift),
         false => (other_shift, shift),
     };
-    let (off1, len1, val_off1) = shift;
-    let (off2, len2, val_off2) = other_shift;
+    let (off1, len1, val_off1, mask1) = shift;
+    let (off2, len2, val_off2, mask2) = other_shift;
     let base = off1.wrapping_sub(u64::from(val_off1));
     if off2.wrapping_sub(u64::from(val_off2)) != base {
         return None;
@@ -4333,6 +4461,21 @@ fn try_merge_memory<'e>(
             oper,
             (val_off1 << 3).into(),
         );
+    }
+
+    if mask1 != u64::MAX || mask2 != u64::MAX {
+        let mask1 = if mask1 != u64::MAX {
+            mask1
+        } else {
+            (1u64 << (len1 * 8)).wrapping_sub(1)
+        };
+        let mask2 = if mask2 != u64::MAX {
+            mask2
+        } else {
+            (1u64 << (len2 * 8)).wrapping_sub(1)
+        };
+        let mask = (mask1 << (val_off1 * 8)) | (mask2 << (val_off2 * 8));
+        oper = ctx.and_const(oper, mask);
     }
     Some(oper)
 }
@@ -5956,23 +6099,56 @@ pub fn simplify_xor<'e>(
         let inner = simplify_xor(l, r, ctx, swzb);
         return simplify_and(inner, mask, ctx, swzb);
     }
-    ctx.simplify_temp_stack().alloc(|ops| {
-        collect_xor_ops(left, ops, 30)
-            .and_then(|()| collect_xor_ops(right, ops, 30))
-            .and_then(|()| simplify_xor_ops(ops, ctx, swzb))
-            .unwrap_or_else(|_| {
-                // This is likely some hash function being unrolled, give up
-                // Also set swzb to stop everything
-                swzb.simplify_count = u8::max_value();
-                swzb.with_and_mask_count = u8::max_value();
-                let arith = ArithOperand {
-                    ty: ArithOpType::Xor,
-                    left,
-                    right,
-                };
-                return ctx.intern(OperandType::Arithmetic(arith));
+    let temp_stack = ctx.simplify_temp_stack();
+    temp_stack
+        .alloc(|masked_ops| {
+            let mut any_masked = collect_masked_xor_ops(left, masked_ops, 30, u64::MAX)?;
+            any_masked |= collect_masked_xor_ops(right, masked_ops, 30, u64::MAX)?;
+            if any_masked {
+                simplify_masked_xor_ops(masked_ops);
+            }
+            temp_stack.alloc(|ops| {
+                move_masked_ops_to_operand_slice(ctx, masked_ops, ops)?;
+                simplify_xor_ops(ops, ctx, swzb)
             })
-    })
+        })
+        .unwrap_or_else(|_| {
+            // This is likely some hash function being unrolled, give up
+            // Also set swzb to stop everything
+            swzb.simplify_count = u8::MAX;
+            swzb.with_and_mask_count = u8::MAX;
+            let arith = ArithOperand {
+                ty: ArithOpType::Xor,
+                left,
+                right,
+            };
+            return ctx.intern(OperandType::Arithmetic(arith));
+        })
+}
+
+fn simplify_masked_xor_ops<'e>(
+    ops: &mut MaskedOpSlice<'e>,
+) {
+    if ops.len() > 1 {
+        heapsort::sort_by(ops, |a, b| a.0 < b.0);
+        simplify_masked_xor_merge_same_ops(ops);
+    }
+}
+
+fn move_masked_ops_to_operand_slice<'e>(
+    ctx: OperandCtx<'e>,
+    ops: &MaskedOpSlice<'e>,
+    out: &mut Slice<'e>,
+) -> Result<(), SizeLimitReached> {
+    for &(op, mask) in ops.iter() {
+        let relbit_mask = op.relevant_bits_mask();
+        if relbit_mask & mask == relbit_mask {
+            out.push(op)?;
+        } else {
+            out.push(ctx.and_const(op, mask))?;
+        }
+    }
+    Ok(())
 }
 
 fn simplify_xor_try_extract_constant<'e>(
