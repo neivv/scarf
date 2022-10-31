@@ -8,6 +8,7 @@ dd slow4
 dd slow5
 dd slow6
 dd many_adc
+dd slow7
 
 ; Interestingly this was slow since it analyzed the loop twice, creating two distinct Operand
 ; trees which it then compared.
@@ -11197,4 +11198,246 @@ js .skip_some2
 times 20 adc dl, byte [edx]
 .skip_some2:
 times 100 adc dl, byte [edx]
+ret
+
+
+
+; Another fuzzer-generated sequence with difficult instructions
+; Sign extend simplification had a path where the recursion didn't get capped.
+slow7:
+lahf
+lahf
+lahf
+lahf
+lahf
+lahf
+lahf
+lahf
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+or dword [eax], eax
+add byte [eax], al
+cwde
+cwde
+add byte [eax], al
+add byte [eax], al
+adc byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [0x1d1d1d1d], bl
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [0x1d1d1d1d], bl
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1a1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+add dword [eax], ebp
+sbb eax, 0x1d1d1d1d
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+cwde
+cwde
+cwde
+inc dword [edx]
+cwde
+pop edx
+add byte [eax], al
+add byte [eax + 0x98989898], bl
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x011d1d1d
+sub byte [0x1d1d1d1d], bl
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+cwde
+cwde
+cwde
+inc dword [edx]
+cwde
+pop edx
+add byte [eax], al
+add byte [eax + 0x98989898], bl
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+pop ebx
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+add dword [eax], 0xeb989898
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x0
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [0x1d1d1d1d], bl
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1a1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x1d1d1d1d
+add dword [eax], ebp
+sbb eax, 0x1d1d1d1d
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+cwde
+cwde
+cwde
+inc dword [edx]
+cwde
+pop edx
+add byte [eax], al
+add byte [eax + 0x98989898], bl
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+sbb eax, 0x1d1d1d1d
+sbb eax, 0x011d1d1d
+sub byte [0x1d1d1d1d], bl
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+cwde
+cwde
+cwde
+inc dword [edx]
+cwde
+pop edx
+add byte [eax], al
+add byte [eax + 0x98989898], bl
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+pop ebx
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+add dword [eax], 0xeb989898
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cwde
+cdq
+cwde
+cwde
+cwde
 ret

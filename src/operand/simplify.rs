@@ -5575,7 +5575,7 @@ fn simplify_with_and_mask_inner<'e>(
         OperandType::SignExtend(val, from, _) => {
             let from_mask = from.mask();
             if from_mask & mask == mask {
-                ctx.and_const(val, mask)
+                simplify_with_and_mask(val, mask, ctx, swzb_ctx)
             } else {
                 op
             }

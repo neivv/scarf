@@ -47,6 +47,11 @@ fn many_adc() {
     test(6);
 }
 
+#[test]
+fn slow7() {
+    test(7);
+}
+
 struct DummyAnalyzer;
 impl<'e> analysis::Analyzer<'e> for DummyAnalyzer {
     type State = analysis::DefaultState;
