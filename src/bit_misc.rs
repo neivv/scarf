@@ -2,7 +2,6 @@ use std::cmp::min;
 use std::ops::Range;
 
 pub struct ZeroBitRanges(u64, u8);
-pub struct OneBitRanges(u64, u8);
 
 impl Iterator for ZeroBitRanges {
     type Item = Range<u8>;
@@ -23,33 +22,8 @@ impl Iterator for ZeroBitRanges {
     }
 }
 
-impl Iterator for OneBitRanges {
-    type Item = Range<u8>;
-    fn next(&mut self) -> Option<Range<u8>> {
-        let skip = self.0.trailing_zeros() as u8;
-        self.1 += skip;
-        if self.1 >= 64 {
-            None
-        } else {
-            self.0 = self.0 >> skip;
-            let mut amt = 0;
-            while self.0 & 1 == 1 {
-                self.0 = self.0 >> 1;
-                amt += 1;
-            }
-            let range = self.1..self.1 + amt;
-            self.1 += amt;
-            Some(range)
-        }
-    }
-}
-
 pub fn zero_bit_ranges(val: u64) -> ZeroBitRanges {
     ZeroBitRanges(val, 0)
-}
-
-pub fn one_bit_ranges(val: u64) -> OneBitRanges {
-    OneBitRanges(val, 0)
 }
 
 pub fn bits_overlap(a: &Range<u8>, b: &Range<u8>) -> bool {
@@ -72,16 +46,6 @@ fn test_zero_bit_range() {
 }
 
 #[test]
-fn test_one_bit_range() {
-    let mut iter = one_bit_ranges(0xff00f40f);
-    assert_eq!(iter.next().unwrap(), 0x0..0x4);
-    assert_eq!(iter.next().unwrap(), 0xa..0xb);
-    assert_eq!(iter.next().unwrap(), 0xc..0x10);
-    assert_eq!(iter.next().unwrap(), 0x18..0x20);
-    assert_eq!(iter.next(), None);
-}
-
-#[test]
 fn test_zero_bit_range2() {
     let mut iter = zero_bit_ranges(0x0f00f40e);
     assert_eq!(iter.next().unwrap(), 0x0..0x1);
@@ -89,16 +53,6 @@ fn test_zero_bit_range2() {
     assert_eq!(iter.next().unwrap(), 0xb..0xc);
     assert_eq!(iter.next().unwrap(), 0x10..0x18);
     assert_eq!(iter.next().unwrap(), 0x1c..0x40);
-    assert_eq!(iter.next(), None);
-}
-
-#[test]
-fn test_one_bit_range2() {
-    let mut iter = one_bit_ranges(0x0f00f40e);
-    assert_eq!(iter.next().unwrap(), 0x1..0x4);
-    assert_eq!(iter.next().unwrap(), 0xa..0xb);
-    assert_eq!(iter.next().unwrap(), 0xc..0x10);
-    assert_eq!(iter.next().unwrap(), 0x18..0x1c);
     assert_eq!(iter.next(), None);
 }
 
@@ -113,11 +67,6 @@ fn test_bits_overlap() {
 
 #[test]
 fn test_full_ranges() {
-    let mut iter = one_bit_ranges(0);
-    assert_eq!(iter.next(), None);
-    let mut iter = one_bit_ranges(!0);
-    assert_eq!(iter.next().unwrap(), 0..64);
-    assert_eq!(iter.next(), None);
     let mut iter = zero_bit_ranges(0);
     assert_eq!(iter.next().unwrap(), 0..64);
     assert_eq!(iter.next(), None);

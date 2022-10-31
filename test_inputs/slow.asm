@@ -9,6 +9,7 @@ dd slow5
 dd slow6
 dd many_adc
 dd slow7
+dd slow8
 
 ; Interestingly this was slow since it analyzed the loop twice, creating two distinct Operand
 ; trees which it then compared.
@@ -11440,4 +11441,222 @@ cdq
 cwde
 cwde
 cwde
+ret
+
+slow8:
+or eax, 0x20240d0d
+and byte [eax], ah
+or dword [0x2020200d], ecx
+or eax, 0x0d0d0d0d
+and al, 0
+push esp
+xor eax, 0x00001020
+add byte [eax], al
+add byte [eax], ah
+and byte [eax], ah
+or eax, 0x0d0d0d0d
+and al, 0
+push esp
+and byte [0x1000], dh
+add byte [eax], al
+add byte [eax], al
+mov dword [ecx], 0
+add byte [eax], al
+and byte [eax+ecx], ah
+add byte [eax], al
+adc dword [ecx], eax
+add byte [eax], al
+add byte [eax], al
+add byte [eax + 0x20202010], al
+or eax, dword [eax]
+add dword [eax], eax
+and byte [eax], ah
+or dword [0x2020200d], ecx
+or eax, 0x0d0d0d0d
+and al, 0x00
+push esp
+xor eax, 0x00001020
+add byte [eax], al
+add byte [eax], ah
+and byte [eax], ah
+or eax, 0x0d0d0d0d
+and al, 0x00
+push esp
+and byte [0x1000], dh
+add byte [eax], al
+add byte [eax], al
+mov dword [ecx], 0
+add byte [eax], al
+and byte [eax+ecx], ah
+add byte [eax], al
+adc dword [ecx], eax
+add byte [eax], al
+add byte [eax], al
+add byte [eax + 0x20202010], al
+or eax, dword [eax]
+add dword [eax], eax
+add byte [eax], cl
+xor ah, byte [edx]
+and byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [eax], ah
+and byte [eax], al
+or eax, dword [eax]
+jns short $ + 2
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+add byte [eax + 0x20202010], al
+or eax, dword [eax]
+add dword [eax], eax
+add byte [eax], cl
+xor ah, byte [edx]
+and byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [eax], ah
+and byte [eax], al
+or eax, dword [eax]
+jns short $ + 2
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+and byte [ecx], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax + 0x20202010], al
+or eax, dword [eax]
+xor ah, byte [edx]
+and byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [ecx], cl
+or eax, 0xdfdfdff3
+shl dword [eax], cl
+and byte [eax], al
+or eax, dword [eax]
+add byte [eax], al
+add byte [eax], al
+xor dword [edx], esp
+and byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [ecx], cl
+or eax, 0xdfdfdff3
+adc byte [esi + 0x2420008d], ah
+and byte [ecx], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax + 0x20202010], al
+or eax, dword [eax]
+xor ah, byte [edx]
+and byte [eax], al
+or byte [edx], dh
+and ah, byte [eax]
+add al, dh
+and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [eax], ah
+and byte [eax], al
+or eax, dword [eax]
+jns short $ + 2
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+add byte [eax + 0x20202010], al
+or eax, dword [eax]
+add dword [eax], eax
+add byte [eax], cl
+xor ah, byte [edx]
+and byte [eax], al
+lock and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [eax], ah
+and byte [eax], al
+or eax, dword [eax]
+jns short $ + 2
+add byte [eax], al
+add byte [eax], al
+add byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+and byte [ecx], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax + 0x20202010], al
+or eax, dword [eax]
+xor ah, byte [edx]
+and byte [eax], al
+lock and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [ecx], cl
+or eax, 0xdfdfdff3
+shl dword [eax], cl
+and byte [eax], al
+or eax, dword [eax]
+add byte [eax], al
+add byte [eax], al
+xor dword [edx], esp
+and byte [eax], al
+lock and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [ecx], cl
+or eax, 0xdfdfdff3
+adc byte [esi + 0x2420008d], ah
+and byte [ecx], al
+add byte [eax], al
+add byte [eax], al
+add byte [eax + 0x20202010], al
+or eax, dword [eax]
+xor ah, byte [edx]
+and byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [ecx], cl
+or eax, 0xdfdfdff3
+shl dword [eax], cl
+and byte [eax], al
+or eax, dword [eax]
+add byte [eax], al
+add byte [eax], al
+xor ah, byte [edx]
+and byte [eax], al
+and byte [eax], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [ecx], cl
+or eax, 0xdfdfdff3
+adc byte [esi + 0x2420008d], ah
+and byte [eax], ah
+and byte [eax], ah
+or eax, dword [eax]
+add byte [eax], al
+and byte [ecx], ah
+and byte [eax], ah
 ret

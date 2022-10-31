@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use smallvec::SmallVec;
 
-use crate::bit_misc::{bits_overlap, one_bit_ranges, zero_bit_ranges};
+use crate::bit_misc::{bits_overlap, zero_bit_ranges};
 use crate::heapsort;
 
 use super::{
@@ -5230,9 +5230,6 @@ fn simplify_or_ops<'e>(
                 }
             });
         }
-        for bits in one_bit_ranges(const_val) {
-            slice_filter_map(ops, |op| simplify_with_one_bits(op, &bits, ctx));
-        }
         if ops.len() > 1 {
             simplify_or_merge_child_ands(ops, ctx, swzb_ctx, !const_val, ArithOpType::Or)?;
             simplify_or_merge_xors(ops, ctx, swzb_ctx);
@@ -5849,140 +5846,6 @@ fn simplify_with_zero_bits<'e>(
         _ => (),
     }
     Some(op)
-}
-
-/// Simplifies `op` when the bits in the range `bits` are guaranteed to be one.
-/// Returning `None` means that `op | constval(bits) == constval(bits)`
-fn simplify_with_one_bits<'e>(
-    op: Operand<'e>,
-    bits: &Range<u8>,
-    ctx: OperandCtx<'e>,
-) -> Option<Operand<'e>> {
-    fn check_useless_and_mask<'e>(
-        left: Operand<'e>,
-        right: Operand<'e>,
-        bits: &Range<u8>,
-    ) -> Option<Operand<'e>> {
-        // one_bits | (other & c) can be transformed to other & (c | one_bits)
-        // if c | one_bits is all ones for other's relevant bits, const mask
-        // can be removed.
-        let const_other = Operand::either(left, right, |x| x.if_constant());
-        if let Some((c, other)) = const_other {
-            let low = bits.start;
-            let high = 64 - bits.end;
-            let mask = !0u64 >> low << low << high >> high;
-            let nop_mask = other.relevant_bits_mask();
-            if c | mask == nop_mask {
-                return Some(other);
-            }
-        }
-        None
-    }
-
-    if bits.start >= bits.end {
-        return Some(op);
-    }
-    let default = || {
-        let relevant_bits = op.relevant_bits();
-        match relevant_bits.start >= bits.start && relevant_bits.end <= bits.end {
-            true => None,
-            false => Some(op),
-        }
-    };
-    match *op.ty() {
-        OperandType::Arithmetic(ref arith) => {
-            let left = arith.left;
-            let right = arith.right;
-            match arith.ty {
-                ArithOpType::And => {
-                    if let Some(other) = check_useless_and_mask(left, right, bits) {
-                        return simplify_with_one_bits(other, bits, ctx);
-                    }
-                    let left = simplify_with_one_bits(left, bits, ctx);
-                    let right = simplify_with_one_bits(right, bits, ctx);
-                    match (left, right) {
-                        (None, None) => None,
-                        (None, Some(s)) | (Some(s), None) => {
-                            let low = bits.start;
-                            let high = 64 - bits.end;
-                            let mask = !0u64 >> low << low << high >> high;
-                            if mask == s.relevant_bits_mask() {
-                                Some(s)
-                            } else {
-                                Some(ctx.and_const(s, mask))
-                            }
-                        }
-                        (Some(l), Some(r)) => {
-                            if l != arith.left || r != arith.right {
-                                if let Some(other) = check_useless_and_mask(l, r, bits) {
-                                    return simplify_with_one_bits(other, bits, ctx);
-                                }
-                                let new = ctx.and(l, r);
-                                if new == op {
-                                    Some(new)
-                                } else {
-                                    simplify_with_one_bits(new, bits, ctx)
-                                }
-                            } else {
-                                Some(op)
-                            }
-                        }
-                    }
-                }
-                ArithOpType::Or => {
-                    let left = simplify_with_one_bits(left, bits, ctx);
-                    let right = simplify_with_one_bits(right, bits, ctx);
-                    match (left, right) {
-                        (None, None) => None,
-                        (None, Some(s)) | (Some(s), None) => Some(s),
-                        (Some(l), Some(r)) => {
-                            if l != arith.left || r != arith.right {
-                                let new = ctx.or(l, r);
-                                if new == op {
-                                    Some(new)
-                                } else {
-                                    simplify_with_one_bits(new, bits, ctx)
-                                }
-                            } else {
-                                Some(op)
-                            }
-                        }
-                    }
-                }
-                _ => default(),
-            }
-        }
-        OperandType::Constant(c) => {
-            let low = bits.start;
-            let high = 64 - bits.end;
-            let mask = !0u64 >> low << low << high >> high;
-            let new_val = c | mask;
-            match new_val & !mask {
-                0 => None,
-                c => Some(ctx.constant(c)),
-            }
-        }
-        OperandType::Memory(ref mem) => {
-            let max_bits = op.relevant_bits();
-            if bits.start == 0 && bits.end >= max_bits.end {
-                None
-            } else if bits.end >= max_bits.end {
-                let (address, offset) = mem.address();
-                if bits.start <= 8 && max_bits.end > 8 {
-                    Some(ctx.mem8(address, offset))
-                } else if bits.start <= 16 && max_bits.end > 16 {
-                    Some(ctx.mem16(address, offset))
-                } else if bits.start <= 32 && max_bits.end > 32 {
-                    Some(ctx.mem32(address, offset))
-                } else {
-                    Some(op)
-                }
-            } else {
-                Some(op)
-            }
-        }
-        _ => default(),
-    }
 }
 
 /// Merges things like [2 * b, a, c, b, c] to [a, 3 * b, 2 * c]
