@@ -1789,6 +1789,18 @@ impl<'e> OperandContext<'e> {
         let mut needs_mask = None;
         let mut needs_is_sub = false;
         let mut doesnt_need_mask = self.const_0();
+        let mut loop_count = 0;
+        for _ in util::IterAddSubArithOps::new(value) {
+            loop_count += 1;
+            if loop_count >= 16 {
+                // Too big, just mask the value and consider the work done.
+                // slow::slow4 test especially ends up hitting edge cases with
+                // massive (up to ~1000 ops) add/sub chains .
+                #[cfg(feature = "fuzz")]
+                tls_simplification_incomplete();
+                return value;
+            }
+        }
         for (op, is_sub) in util::IterAddSubArithOps::new(value) {
             if op.0.flags & FLAG_32BIT_NORMALIZED == 0 {
                 needs_mask = match needs_mask {
