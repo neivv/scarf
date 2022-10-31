@@ -774,7 +774,6 @@ fn simplify_xor_ops<'e>(
         if ops.len() > 1 {
             heapsort::sort(ops);
             simplify_xor_remove_reverting(ops);
-            simplify_or_merge_mem(ops, ctx); // Yes, this is supposed to stay valid for xors.
             simplify_or_merge_child_ands(ops, ctx, swzb_ctx, u64::MAX, ArithOpType::Xor)?;
             simplify_xor_merge_ands_with_same_mask(ops, false, ctx, swzb_ctx);
             simplify_xor_or_bools(ops, ctx);
@@ -4281,7 +4280,14 @@ fn is_offset_mem<'e>(
     }
 }
 
-/// Returns simplified operands.
+/// The returned result may need an additional and mask
+/// if there is hole between the input values.
+/// (Mem16[x] and (Mem8[x + 3] << 18) are merged to Mem32[x]
+/// which the caller has to mask as Mem32[x] & ff00_ffff.)
+///
+/// The masking is not done here, expecting that the caller
+/// will eventually mask it anyways, but not sure if that
+/// is too complex to follow and verify correct..
 ///
 /// shift and other_shift are (offset, len, left_shift_in_operand)
 /// E.g. `Mem32[x + 6] << 0x18` => (6, 4, 3)
@@ -4329,31 +4335,6 @@ fn try_merge_memory<'e>(
         );
     }
     Some(oper)
-}
-
-/// Simplify or: merge memory
-/// Converts (Mem32[x] >> 8) | (Mem32[x + 4] << 18) to Mem32[x + 1]
-/// Also used for xor since x ^ y == x | y if x and y do not overlap at all.
-fn simplify_or_merge_mem<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
-    let mut i = 0;
-    'outer: while i < ops.len() {
-        if let Some((val, shift)) = is_offset_mem(ops[i], ctx) {
-            let mut j = i + 1;
-            while j < ops.len() {
-                if let Some((other_val, other_shift)) = is_offset_mem(ops[j], ctx) {
-                    if val == other_val {
-                        if let Some(merged) = try_merge_memory(val, other_shift, shift, ctx) {
-                            ops[i] = merged;
-                            ops.swap_remove(j);
-                            continue 'outer;
-                        }
-                    }
-                }
-                j += 1;
-            }
-        }
-        i += 1;
-    }
 }
 
 fn is_sub_with_lhs_const<'e>(left: Operand<'e>) -> Option<u64> {
@@ -5108,7 +5089,6 @@ fn simplify_or_ops<'e>(
         if ops.len() > 1 {
             simplify_or_merge_child_ands(ops, ctx, swzb_ctx, !const_val, ArithOpType::Or)?;
             simplify_or_merge_xors(ops, ctx, swzb_ctx);
-            simplify_or_merge_mem(ops, ctx);
             simplify_or_merge_comparisions(ops, ctx);
             simplify_xor_merge_ands_with_same_mask(ops, true, ctx, swzb_ctx);
             simplify_demorgan(ops, ctx, ArithOpType::And);
