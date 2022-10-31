@@ -8901,3 +8901,41 @@ fn canonicalize_u32_sub_mul() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_xor_with_masks3() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.or(
+            ctx.and_const(
+                ctx.xor_const(
+                    ctx.and_const(
+                        ctx.register(0),
+                        0xff_ff00,
+                    ),
+                    0xff,
+                ),
+                0xff_ffff,
+            ),
+            ctx.and_const(
+                ctx.register(0),
+                0xff00_0000,
+            ),
+        ),
+        ctx.and_const(
+            ctx.xor_const(
+                ctx.xor(
+                    ctx.and_const(ctx.register(0), 0xffff_ff00),
+                    ctx.register(6),
+                ),
+                0xff,
+            ),
+            0xffff_ffff,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.register(6),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}

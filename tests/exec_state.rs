@@ -879,6 +879,31 @@ fn mov_mem32_consistency_4() {
 }
 
 #[test]
+fn or_xor_simplify_bug() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x09, 0x09, // or [ecx], ecx ; [ecx] | ecx
+        0x41, // inc ecx ; ecx + 1
+        // Let [ecx1] = read_memory(ecx + 1, Mem32) =
+        //      (((Mem32[ecx] | ecx) >> 8) & ff_ffff) | (Mem8 [ecx + 4] << 18)
+        0x31, 0x31, // xor [ecx], esi ; [ecx1] ^ esi
+        0x00, 0x31, // add [ecx], dh ; ([ecx1] ^ esi) + ((edx >> 8) & ff)
+        0x31, 0x31, // xor [ecx], esi ; (([ecx1] ^ esi) + ((edx >> 8) & ff)) ^ esi
+        0x0c, 0xff, // or al, ff ; eax | ff
+        0x31, 0x01, // xor [ecx], eax ; (([ecx1] ^ esi) + ((edx >> 8) & ff)) ^ esi ^ (eax | ff)
+        0x33, 0x31, // xor esi, [ecx] ; (([ecx1] ^ esi) + ((edx >> 8) & ff)) ^ (eax | ff)
+        0x31, 0x31, // xor [ecx], esi ; esi
+        0x8b, 0x01, // mov eax, [ecx] ; esi
+        0x31, 0xf6, // xor esi, esi ; 0
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.register(6)),
+        (ctx.register(1), ctx.add_const(ctx.register(1), 1)),
+        (ctx.register(6), ctx.constant(0)),
+    ]);
+}
+
+#[test]
 fn jump_conditions() {
     let ctx = &OperandContext::new();
     test(5, &[

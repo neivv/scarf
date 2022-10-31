@@ -603,8 +603,6 @@ fn simplify_xor_merge_ands_with_same_mask<'e>(
                             }
                         });
                     if let Ok(result) = result {
-                        let masked = ctx.and_const(result, mask);
-                        ops[i] = masked;
                         for j in ((i + 1)..ops.len()).rev() {
                             let matched = ops[j].if_arithmetic_and()
                                 .and_then(|x| x.1.if_constant())
@@ -613,6 +611,12 @@ fn simplify_xor_merge_ands_with_same_mask<'e>(
                             if matched {
                                 ops.swap_remove(j);
                             }
+                        }
+                        if result == ctx.const_0() {
+                            ops.swap_remove(i);
+                        } else {
+                            let masked = ctx.and_const(result, mask);
+                            ops[i] = masked;
                         }
                     }
                 }
