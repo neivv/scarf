@@ -11,6 +11,23 @@ pub struct IterArithOps<'e> {
     pub next_inner: Option<Operand<'e>>,
 }
 
+impl<'e> IterArithOps<'e> {
+    pub fn new(op: Operand<'e>, ty: ArithOpType) -> IterArithOps<'e> {
+        match op.if_arithmetic(ty) {
+            Some((l, r)) => IterArithOps {
+                ty,
+                next: Some(r),
+                next_inner: Some(l),
+            },
+            None => IterArithOps {
+                ty,
+                next: Some(op),
+                next_inner: None,
+            },
+        }
+    }
+}
+
 impl<'e> Iterator for IterArithOps<'e> {
     type Item = Operand<'e>;
     fn next(&mut self) -> Option<Self::Item> {

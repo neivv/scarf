@@ -8939,3 +8939,79 @@ fn simplify_xor_with_masks3() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_xor_with_masks4() {
+    let ctx = &OperandContext::new();
+
+    let a = ctx.lsh_const(
+        ctx.xor(
+            ctx.mem8(ctx.register(1), 3),
+            ctx.rsh_const(
+                ctx.register(0),
+                0x18,
+            ),
+        ),
+        0x18,
+    );
+    let b = ctx.xor(
+        ctx.lsh_const(
+            ctx.mem8(ctx.register(1), 3),
+            0x18,
+        ),
+        ctx.register(0),
+    );
+    let op1 = ctx.xor(
+        a,
+        b,
+    );
+    let eq1 = ctx.and_const(
+        ctx.register(0),
+        0x00ff_ffff,
+    );
+    assert_eq!(op1, eq1);
+
+    // base and second are otherwise same, but
+    // base clears low 0x18 bytes of rax
+    let base = ctx.lsh_const(
+        ctx.or(
+            ctx.xor(
+                ctx.mem8(ctx.register(1), 3),
+                ctx.rsh_const(
+                    ctx.register(0),
+                    0x18,
+                ),
+            ),
+            ctx.xor(
+                ctx.register(3),
+                ctx.mem8(ctx.register(2), 3),
+            ),
+        ),
+        0x18,
+    );
+    let second = ctx.or(
+        ctx.xor(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(1), 3),
+                0x18,
+            ),
+            ctx.register(0),
+        ),
+        ctx.lsh_const(
+            ctx.xor(
+                ctx.register(3),
+                ctx.mem8(ctx.register(2), 3),
+            ),
+            0x18,
+        ),
+    );
+    let op1 = ctx.xor(
+        base,
+        second,
+    );
+    let eq1 = ctx.and_const(
+        ctx.register(0),
+        0x00ff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}
