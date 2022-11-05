@@ -737,7 +737,7 @@ fn simplify_masked_xor_merge_or<'e>(
 
                     slice_stack.alloc(|result_parts| {
                         let mut idx1 = 0;
-                        while idx1 < parts1.len() {
+                        'part1_loop: while idx1 < parts1.len() {
                             let part1 = parts1[idx1];
                             idx1 += 1;
                             let mut idx2 = 0;
@@ -750,9 +750,9 @@ fn simplify_masked_xor_merge_or<'e>(
                                 };
                                 let is_same = simplify_xor_is_same_shifted(
                                     part1,
-                                    shift1,
+                                    (shift1, mask1),
                                     part2,
-                                    shift2,
+                                    (shift2, mask2),
                                     &mut limit,
                                 );
                                 if is_same {
@@ -761,6 +761,7 @@ fn simplify_masked_xor_merge_or<'e>(
                                     idx2 -= 1;
                                     parts1.swap_remove(idx1);
                                     parts2.swap_remove(idx2);
+                                    continue 'part1_loop;
                                 }
                             }
                         }
@@ -829,11 +830,110 @@ fn simplify_masked_xor_merge_or<'e>(
     }
 }
 
+/// If there is an operand for which the
+/// operation, `(op >> shift) & mask` for (shift1, mask1) results `op1`,
+/// and same for op2, return `Some(op)`
+///
+/// Example:
+/// `(Mem16[rax] & ffff) << 0`,
+/// `(Mem8[rax + 2] & ff) << 10`,
+/// `(Mem8[rax + 3] & 34) << 18`,
+/// are all equal with each other.
+/// `(Mem16[rax] & f_ffff) << 0`,
+/// is only equal with the first and third, since the
+/// mask requires rax + 2 byte be 0.
+fn simplify_xor_base_for_shifted<'e>(
+    op1: Operand<'e>,
+    (shift1, mask1): (u8, u64),
+    op2: Operand<'e>,
+    (shift2, mask2): (u8, u64),
+    ctx: OperandCtx<'e>,
+    limit: &mut u32,
+) -> Option<Operand<'e>> {
+    let (op1, shift1_add) = op1.if_lsh_with_const()
+        .unwrap_or((op1, 0));
+    let shift1 = shift1.wrapping_add(shift1_add as u8);
+    let mask1 = mask1 >> shift1_add;
+    let (op2, shift2_add) = op2.if_lsh_with_const()
+        .unwrap_or((op2, 0));
+    let shift2 = shift2.wrapping_add(shift2_add as u8);
+    let mask2 = mask2 >> shift2_add;
+    if op1 == op2 && shift1 == shift2 {
+        return Some(op1);
+    }
+    let mut result = None;
+    if let Some(a1) = op1.if_arithmetic_any() {
+        if let Some(a2) = op2.if_arithmetic_any() {
+            if a1.ty == a2.ty && matches!(a1.ty, ArithOpType::Xor | ArithOpType::Or) {
+                *limit = match limit.checked_sub(1) {
+                    Some(s) => s,
+                    None => return None,
+                };
+                let s1 = (shift1, mask1);
+                let s2 = (shift2, mask2);
+                if let Some(l) = simplify_xor_base_for_shifted(a1.left, s1, a2.left, s2, ctx, limit) {
+                    if let Some(r) = simplify_xor_base_for_shifted(a1.right, s1, a2.right, s2, ctx, limit) {
+                        result = Some(ctx.arithmetic(a1.ty, l, r));
+                    }
+                } else if let Some(l) = simplify_xor_base_for_shifted(a1.left, s1, a2.right, s2, ctx, limit) {
+                    if let Some(r) = simplify_xor_base_for_shifted(a1.right, s1, a2.left, s2, ctx, limit) {
+                        result = Some(ctx.arithmetic(a1.ty, l, r));
+                    }
+                }
+            }
+        }
+    } else {
+        if let Some((val, mut off1)) = is_offset_mem(op1) {
+            if let Some((other_val, mut off2)) = is_offset_mem(op2) {
+                if val == other_val && shift1 & 7 == 0 && shift2 & 7 == 0 {
+                    off1.3 = off1.3 & (mask1 >> (off1.2 * 8));
+                    off1.2 = off1.2.wrapping_add((shift1 / 8) as u32);
+                    off2.3 = off2.3 & (mask2 >> (off2.2 * 8));
+                    off2.2 = off2.2.wrapping_add((shift2 / 8) as u32);
+                    if (off1.3 << (off1.2 * 8)) & (off2.3 << (off2.2 * 8)) != 0 {
+                        return None;
+                    }
+                    let size_mask1 = 1u64.checked_shl(off1.1 * 8).unwrap_or(0).wrapping_sub(1);
+                    let size_mask2 = 1u64.checked_shl(off2.1 * 8).unwrap_or(0).wrapping_sub(1);
+                    let mask = ((off1.3 & size_mask1) << (off1.2 * 8)) |
+                        ((off2.3 & size_mask2) << (off2.2 * 8));
+                    if let Some(merged) = try_merge_memory(val, off1, off2, ctx) {
+                        if mask.wrapping_add(1) & mask != 0 {
+                            // Not continuous mask, try_merge_memory won't mask in
+                            // such cases so do it here.
+                            result = Some(ctx.and_const(merged, mask));
+                        } else {
+                            result = Some(merged);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(result) = result {
+        // Is shifting by min_shift_add correct / expected?
+        // What should this function exactly do with correcting for shift
+        // not explicitly given in input arguments?
+        // At least this gives sensible shift for
+        // (Mem16[x + 2] << 8), (Mem8[x + 4] << 10) etc.
+        let min_shift = (shift1_add as u32).min(shift2_add as u32);
+        if min_shift != 0 {
+            Some(ctx.lsh_const(result, min_shift as u64))
+        } else {
+            Some(result)
+        }
+    } else {
+        None
+    }
+}
+
+/// Returns if `(op1 & mask1) << shift1` and `(op2 & mask2) << shift2`
+/// are same/mergeable. I.e. simplify_xor_base_for_shifted returns `Some`.
 fn simplify_xor_is_same_shifted<'e>(
     op1: Operand<'e>,
-    shift1: u8,
+    (shift1, mask1): (u8, u64),
     op2: Operand<'e>,
-    shift2: u8,
+    (shift2, mask2): (u8, u64),
     limit: &mut u32,
 ) -> bool {
     let (op1, shift1_add) = op1.if_lsh_with_const()
@@ -847,17 +947,19 @@ fn simplify_xor_is_same_shifted<'e>(
     }
     if let Some(a1) = op1.if_arithmetic_any() {
         if let Some(a2) = op2.if_arithmetic_any() {
-            if a1.ty == a2.ty && a1.ty == ArithOpType::Xor {
+            if a1.ty == a2.ty && matches!(a1.ty, ArithOpType::Xor | ArithOpType::Or) {
                 *limit = match limit.checked_sub(1) {
                     Some(s) => s,
                     None => return false,
                 };
-                if simplify_xor_is_same_shifted(a1.left, shift1, a2.left, shift2, limit) {
-                    if simplify_xor_is_same_shifted(a1.right, shift1, a2.right, shift2, limit) {
+                let s1 = (shift1, mask1);
+                let s2 = (shift2, mask2);
+                if simplify_xor_is_same_shifted(a1.left, s1, a2.left, s2, limit) {
+                    if simplify_xor_is_same_shifted(a1.right, s1, a2.right, s2, limit) {
                         return true;
                     }
-                } else if simplify_xor_is_same_shifted(a1.left, shift1, a2.right, shift2, limit) {
-                    if simplify_xor_is_same_shifted(a1.right, shift1, a2.left, shift2, limit) {
+                } else if simplify_xor_is_same_shifted(a1.left, s1, a2.right, s2, limit) {
+                    if simplify_xor_is_same_shifted(a1.right, s1, a2.left, s2, limit) {
                         return true;
                     }
                 }
@@ -1043,15 +1145,25 @@ fn simplify_xor_remove_reverting<'e>(ops: &mut Slice<'e>) {
 }
 
 /// Assumes that `ops` is sorted by x.0 (Mask ordering not determined), and keeps it sorted.
-fn simplify_masked_xor_merge_same_ops<'e>(ops: &mut MaskedOpSlice<'e>) {
+fn simplify_masked_xor_merge_same_ops<'e>(ops: &mut MaskedOpSlice<'e>, ctx: OperandCtx<'e>) {
     let mut first_same = ops.len() as isize - 1;
     let mut pos = first_same - 1;
+    let mut limit = 50;
     while pos >= 0 {
         let pos_u = pos as usize;
         let first_u = first_same as usize;
-        if ops[pos_u].0 == ops[first_u].0 {
-            let new_mask = ops[pos_u].1 ^ ops[first_u].1;
-            let relbit_mask = ops[pos_u].0.relevant_bits_mask();
+        let result = simplify_xor_base_for_shifted(
+            ops[pos_u].0,
+            (0u8, ops[pos_u].1),
+            ops[first_u].0,
+            (0u8, ops[first_u].1),
+            ctx,
+            &mut limit,
+        );
+        if let Some(new) = result {
+            let new_mask = (ops[pos_u].0.relevant_bits_mask() & ops[pos_u].1) ^
+                (ops[first_u].0.relevant_bits_mask() & ops[first_u].1);
+            let relbit_mask = new.relevant_bits_mask();
             if new_mask & relbit_mask == 0 {
                 ops.remove(first_u);
                 ops.remove(pos_u);
@@ -1059,6 +1171,7 @@ fn simplify_masked_xor_merge_same_ops<'e>(ops: &mut MaskedOpSlice<'e>) {
                 pos = first_same
             } else {
                 ops.remove(first_u);
+                ops[pos_u].0 = new;
                 ops[pos_u].1 = new_mask;
                 first_same -= 1;
             }
@@ -6121,7 +6234,7 @@ fn simplify_masked_xor_ops<'e>(
 ) {
     if ops.len() > 1 {
         heapsort::sort_by(ops, |a, b| a.0 < b.0);
-        simplify_masked_xor_merge_same_ops(ops);
+        simplify_masked_xor_merge_same_ops(ops, ctx);
         simplify_masked_xor_merge_or(ops, ctx, swzb);
     }
 }
@@ -6476,5 +6589,37 @@ fn test_sum_valid_range() {
     assert_eq!(
         sum_valid_range(&[(ctx.register(4), true)], u64::MAX),
         (0, u64::MAX),
+    );
+}
+
+#[test]
+fn test_simplify_xor_base_for_shifted() {
+    let ctx = &crate::OperandContext::new();
+    let mem16 = ctx.mem16(ctx.register(0), 0);
+    let mem8_2 = ctx.mem32(ctx.register(0), 2);
+    let mem8_3 = ctx.mem32(ctx.register(0), 3);
+    let limit = &mut 500000;
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_2, (0x10, 0xff), ctx, limit),
+        // and_const wouldn't be exactly required by the function's contract
+        // but is a valid return value.
+        Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0xffffff)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_3, (0x18, 0x34), ctx, limit),
+        Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0x3400ffff)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem16, (0, 0xf_ffff), ctx, limit),
+        Some(ctx.mem16(ctx.register(0), 0)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0, 0xf_ffff), mem8_3, (0x18, 0x34), ctx, limit),
+        Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0x3400_ffff)),
+    );
+    // This must be none, as Mem16 with mask f_ffff requires the lower half of third byte be 0
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0, 0xf_ffff), mem8_2, (0x10, 0x34), ctx, limit),
+        None,
     );
 }

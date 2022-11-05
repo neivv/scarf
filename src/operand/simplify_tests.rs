@@ -9015,3 +9015,130 @@ fn simplify_xor_with_masks4() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_xor_with_masks5() {
+    let ctx = &OperandContext::new();
+
+    let base = ctx.or(
+        ctx.xor(
+            ctx.xor(
+                ctx.mem32(ctx.register(2), 0),
+                ctx.mem32(ctx.register(1), 1),
+            ),
+            ctx.register(6),
+        ),
+        ctx.xor(
+            ctx.mem32(ctx.register(2), 0),
+            ctx.register(6),
+        ),
+    );
+    let base_high = ctx.or(
+        ctx.xor(
+            ctx.xor(
+                ctx.lsh_const(
+                    ctx.mem8(ctx.register(2), 3),
+                    0x18,
+                ),
+                ctx.lsh_const(
+                    ctx.mem8(ctx.register(1), 4),
+                    0x18,
+                ),
+            ),
+            ctx.register(6),
+        ),
+        ctx.xor(
+            ctx.lsh_const(
+                ctx.mem32(ctx.register(2), 3),
+                0x18,
+            ),
+            ctx.register(6),
+        ),
+    );
+    let op1 = ctx.xor(
+        ctx.and_const(base, 0xff_ffff),
+        ctx.and_const(
+            base_high,
+            0xff00_0000,
+        ),
+    );
+    let eq1 = ctx.and_const(base, 0xffff_ffff);
+    assert_eq!(op1, eq1);
+
+    // Check that similar op with Mem16[rdx] ^ (Mem8[rdx] << 0x18)
+    // doesn't become Mem32[rdx]
+    let base = ctx.or(
+        ctx.xor(
+            ctx.xor(
+                ctx.mem16(ctx.register(2), 0),
+                ctx.mem32(ctx.register(1), 1),
+            ),
+            ctx.register(6),
+        ),
+        ctx.xor(
+            ctx.mem32(ctx.register(2), 0),
+            ctx.register(6),
+        ),
+    );
+    let base_high = ctx.or(
+        ctx.xor(
+            ctx.xor(
+                ctx.lsh_const(
+                    ctx.mem8(ctx.register(2), 3),
+                    0x18,
+                ),
+                ctx.lsh_const(
+                    ctx.mem8(ctx.register(1), 4),
+                    0x18,
+                ),
+            ),
+            ctx.register(6),
+        ),
+        ctx.xor(
+            ctx.lsh_const(
+                ctx.mem32(ctx.register(2), 3),
+                0x18,
+            ),
+            ctx.register(6),
+        ),
+    );
+    let op1 = ctx.xor(
+        ctx.and_const(base, 0xff_ffff),
+        ctx.and_const(
+            base_high,
+            0xff00_0000,
+        ),
+    );
+    let ne1 = ctx.or(
+        ctx.xor(
+            ctx.xor(
+                ctx.mem32(ctx.register(2), 0),
+                ctx.mem32(ctx.register(1), 1),
+            ),
+            ctx.register(6),
+        ),
+        ctx.xor(
+            ctx.mem32(ctx.register(2), 0),
+            ctx.register(6),
+        ),
+    );
+    assert_ne!(op1, ctx.and_const(ne1, 0xffff_ffff));
+
+    let eq1 = ctx.or(
+        ctx.xor(
+            ctx.xor(
+                ctx.and_const(
+                    ctx.mem32(ctx.register(2), 0),
+                    0xff00_ffff,
+                ),
+                ctx.mem32(ctx.register(1), 1),
+            ),
+            ctx.register(6),
+        ),
+        ctx.xor(
+            ctx.mem32(ctx.register(2), 0),
+            ctx.register(6),
+        ),
+    );
+    assert_eq!(op1, ctx.and_const(eq1, 0xffff_ffff));
+}
