@@ -27,6 +27,23 @@ pub struct SimplifyWithZeroBits {
     xor_recurse: u8,
 }
 
+impl SimplifyWithZeroBits {
+    fn has_reached_limit(&self) -> bool {
+        self.zero_bits_simplify_count_at_limit() ||
+            self.with_and_mask_count_at_limit()
+    }
+
+    #[inline]
+    fn zero_bits_simplify_count_at_limit(&self) -> bool {
+        self.simplify_count > 40
+    }
+
+    #[inline]
+    fn with_and_mask_count_at_limit(&self) -> bool {
+        self.with_and_mask_count > 120
+    }
+}
+
 pub fn simplify_arith<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
@@ -772,18 +789,33 @@ fn simplify_masked_xor_merge_or<'e>(
                             }
                             if shift1 != 0 {
                                 result = simplify_lsh_const(result, shift1, ctx, swzb);
+                                if swzb.has_reached_limit() {
+                                    return Err(SizeLimitReached);
+                                }
                             }
                             let xor_left = match parts1.get(0) {
                                 Some(&s) => match shift1 {
                                     0 => Some(s),
-                                    shift => Some(simplify_lsh_const(s, shift, ctx, swzb)),
+                                    shift => {
+                                        let val = simplify_lsh_const(s, shift, ctx, swzb);
+                                        if swzb.has_reached_limit() {
+                                            return Err(SizeLimitReached);
+                                        }
+                                        Some(val)
+                                    }
                                 },
                                 None => None,
                             };
                             let xor_right = match parts2.get(0) {
                                 Some(&s) => match shift2 {
                                     0 => Some(s),
-                                    shift => Some(simplify_lsh_const(s, shift, ctx, swzb)),
+                                    shift => {
+                                        let val = simplify_lsh_const(s, shift, ctx, swzb);
+                                        if swzb.has_reached_limit() {
+                                            return Err(SizeLimitReached);
+                                        }
+                                        Some(val)
+                                    }
                                 },
                                 None => None,
                             };
@@ -792,6 +824,9 @@ fn simplify_masked_xor_merge_or<'e>(
                                 (Some(x), None) | (None, Some(x)) => x,
                                 (None, None) => ctx.const_0(),
                             };
+                            if swzb.has_reached_limit() {
+                                return Err(SizeLimitReached);
+                            }
                             // Currently lacking canonicalization between
                             // x ^ 1 and x == 0 when x is 1bit value, but
                             // x == 0 should be preferred.
@@ -800,12 +835,15 @@ fn simplify_masked_xor_merge_or<'e>(
                             {
                                 ctx.eq_const(result, 0)
                             } else {
-                                ctx.xor_const(result, u64::MAX)
+                                simplify_xor(result, ctx.constant(u64::MAX), ctx, swzb)
                             };
-                            let result = ctx.and(
-                                inv_result,
-                                xor_result,
-                            );
+                            if swzb.has_reached_limit() {
+                                return Err(SizeLimitReached);
+                            }
+                            let result = simplify_and(inv_result, xor_result, ctx, swzb);
+                            if swzb.has_reached_limit() {
+                                return Err(SizeLimitReached);
+                            }
                             let mask = mask1 << shift1;
                             Ok(Some((result, mask)))
                         } else {
@@ -5585,7 +5623,7 @@ where F: FnMut(Operand<'e>) -> Option<Operand<'e>>,
 }
 
 fn should_stop_with_and_mask(swzb_ctx: &mut SimplifyWithZeroBits) -> bool {
-    if swzb_ctx.with_and_mask_count > 120 {
+    if swzb_ctx.with_and_mask_count_at_limit() {
         #[cfg(feature = "fuzz")]
         tls_simplification_incomplete();
         true
@@ -5893,7 +5931,7 @@ fn simplify_with_zero_bits<'e>(
     };
 
     fn should_stop(swzb: &mut SimplifyWithZeroBits) -> bool {
-        if swzb.simplify_count > 40 {
+        if swzb.zero_bits_simplify_count_at_limit() {
             #[cfg(feature = "fuzz")]
             tls_simplification_incomplete();
             true
