@@ -2557,8 +2557,8 @@ fn try_merge_ands<'e>(
             return Some(ctx.constant(a | b));
         }
     }
-    if let Some((val, shift)) = is_offset_mem(a, ctx) {
-        if let Some((other_val, other_shift)) = is_offset_mem(b, ctx) {
+    if let Some((val, shift)) = is_offset_mem(a) {
+        if let Some((other_val, other_shift)) = is_offset_mem(b) {
             if val == other_val {
                 let result = try_merge_memory(val, other_shift, shift, ctx);
                 if let Some(merged) = result {
@@ -4457,65 +4457,71 @@ fn collect_masked_xor_ops<'e>(
 ///     (Mem32[x + 100]) << 20 => (x, (100, 4, 4, u64::MAX))
 ///     (Mem32[x + 100] & f0f0f0f0) << 20 => (x, (100, 4, 4, f0f0f0f0))
 fn is_offset_mem<'e>(
-    op: Operand<'e>,
-    ctx: OperandCtx<'e>,
+    mut op: Operand<'e>,
 ) -> Option<(Operand<'e>, (u64, u32, u32, u64))> {
-    match op.ty() {
-        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Lsh => {
-            if let Some(c) = arith.right.if_constant() {
-                if c & 0x7 == 0 && c < 0x40 {
-                    let bytes = (c / 8) as u32;
-                    return is_offset_mem(arith.left, ctx)
-                        .map(|(x, (off, len, val_off, mask))| {
-                            (x, (off, len, val_off + bytes, mask))
-                        });
-                }
-            }
-            None
+    // 3 is enough to have shift + and + actual mem
+    let mut loop_limit = 3;
+    let mut result = (op, (0, 0, 0, u64::MAX));
+    let mut rsh_bytes = 0;
+    loop {
+        if loop_limit == 0 {
+            return None;
         }
-        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Rsh => {
-            if let Some(c) = arith.right.if_constant() {
-                if c & 0x7 == 0 && c < 0x40 {
-                    let bytes = (c / 8) as u32;
-                    return is_offset_mem(arith.left, ctx)
-                        .and_then(|(x, (off, len, val_off, mask))| {
-                            if bytes < len {
-                                let off = off.wrapping_add(bytes as u64);
-                                Some((x, (off, len - bytes, val_off, mask)))
+        match op.ty() {
+            OperandType::Memory(mem) => {
+                let (base, offset) = mem.address();
+                result.0 = base;
+                // If and mask existed, length is determined by it, but otherwise
+                // set it to mem size
+                result.0 = base;
+                result.1.0 = offset.wrapping_add(rsh_bytes as u64);
+                if result.1.1 == 0 {
+                    let len = mem.size.bits() / 8;
+                    result.1.1 = len.wrapping_sub(rsh_bytes);
+                }
+                return Some(result);
+            }
+            OperandType::Arithmetic(arith) => {
+                if matches!(arith.ty, ArithOpType::Lsh | ArithOpType::Rsh | ArithOpType::And) {
+                    if let Some(c) = arith.right.if_constant() {
+                        if arith.ty == ArithOpType::Lsh {
+                            if c & 0x7 == 0 {
+                                result.1.2 = (c / 8) as u32;
+                                // result.1.1 is only nonzero if and was seen
+                                if result.1.1 != 0 {
+                                    // Mask is usually be inside the shift.
+                                    // (x & mask) << shift,
+                                    // but here it wasn't, so shift the mask
+                                    result.1.3 = result.1.3.wrapping_shr(c as u32);
+                                }
                             } else {
-                                None
+                                return None;
                             }
-                        });
+                        } else if arith.ty == ArithOpType::Rsh {
+                            if c & 0x7 == 0 {
+                                // Increases offset by this and decreases length by this
+                                rsh_bytes = (c / 8) as u32;
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            // And
+                            let relbits = arith.right.relevant_bits();
+                            let start = relbits.start / 8;
+                            let end = relbits.end.wrapping_add(7) / 8;
+                            let len = end.wrapping_sub(start);
+                            result.1.1 = (len as u32).wrapping_sub(rsh_bytes);
+                            result.1.3 = c;
+                        }
+                        op = arith.left;
+                        loop_limit -= 1;
+                        continue;
+                    }
                 }
+                return None;
             }
-            None
+            _ => return None,
         }
-        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
-            if let Some(c) = arith.right.if_constant() {
-                return is_offset_mem(arith.left, ctx)
-                    .map(|(x, (off, _, val_off, mask))| {
-                        // Mask is assumed be inside the shift.
-                        // (x & mask) << shift
-                        // So val_off is usually 0.
-                        // But still account for case where it isn't
-                        // by shifting mask right.
-
-                        let relbits = arith.right.relevant_bits();
-                        let start = relbits.start / 8;
-                        let end = relbits.end.wrapping_add(7) / 8;
-                        let len = end.wrapping_sub(start);
-                        let mask = (c & mask) >> (val_off * 8);
-                        (x, (off, len as u32, val_off, mask))
-                    })
-            }
-            None
-        }
-        OperandType::Memory(ref mem) => {
-            let len = mem.size.bits() / 8;
-            let (base, offset) = mem.address();
-            Some((base, (offset, len, 0, u64::MAX)))
-        }
-        _ => None,
     }
 }
 
