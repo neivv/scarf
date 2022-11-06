@@ -868,6 +868,31 @@ fn simplify_masked_xor_merge_or<'e>(
     }
 }
 
+fn simplify_xor_shifted_unwrap_shifts<'e>(
+    op: Operand<'e>,
+    shift: u8,
+    mask: u64,
+) -> (Operand<'e>, i8, u64) {
+    match op.if_arithmetic_any() {
+        Some(arith) => {
+            if let Some(c) = arith.right.if_constant() {
+                let c = c as u8;
+                if arith.ty == ArithOpType::Lsh {
+                    return (arith.left, c as i8, mask >> c);
+                } else if arith.ty == ArithOpType::Rsh {
+                    // Not trying to keep shift state as negative
+                    // right now, but should be possible if needed?
+                    if c >= shift {
+                        return (arith.left, 0i8.wrapping_sub(c as i8), mask << c);
+                    }
+                }
+            }
+            (op, 0, mask)
+        }
+        None => (op, 0, mask),
+    }
+}
+
 /// If there is an operand for which the
 /// operation, `(op >> shift) & mask` for (shift1, mask1) results `op1`,
 /// and same for op2, return `Some(op)`
@@ -882,22 +907,34 @@ fn simplify_masked_xor_merge_or<'e>(
 /// mask requires rax + 2 byte be 0.
 fn simplify_xor_base_for_shifted<'e>(
     op1: Operand<'e>,
+    s1: (u8, u64),
+    op2: Operand<'e>,
+    s2: (u8, u64),
+    ctx: OperandCtx<'e>,
+    limit: &mut u32,
+) -> Option<Operand<'e>> {
+    let (op, shift) = simplify_xor_base_for_shifted_rec(op1, s1, op2, s2, ctx, limit)?;
+    if shift != 0 {
+        Some(ctx.lsh_const(op, shift as u64))
+    } else {
+        Some(op)
+    }
+}
+
+fn simplify_xor_base_for_shifted_rec<'e>(
+    op1: Operand<'e>,
     (shift1, mask1): (u8, u64),
     op2: Operand<'e>,
     (shift2, mask2): (u8, u64),
     ctx: OperandCtx<'e>,
     limit: &mut u32,
-) -> Option<Operand<'e>> {
-    let (op1, shift1_add) = op1.if_lsh_with_const()
-        .unwrap_or((op1, 0));
-    let shift1 = shift1.wrapping_add(shift1_add as u8);
-    let mask1 = mask1 >> shift1_add;
-    let (op2, shift2_add) = op2.if_lsh_with_const()
-        .unwrap_or((op2, 0));
-    let shift2 = shift2.wrapping_add(shift2_add as u8);
-    let mask2 = mask2 >> shift2_add;
+) -> Option<(Operand<'e>, u8)> {
+    let (op1, shift1_add, mask1) = simplify_xor_shifted_unwrap_shifts(op1, shift1, mask1);
+    let shift1 = (shift1 as i8).wrapping_add(shift1_add) as u8;
+    let (op2, shift2_add, mask2) = simplify_xor_shifted_unwrap_shifts(op2, shift2, mask2);
+    let shift2 = (shift2 as i8).wrapping_add(shift2_add) as u8;
     if op1 == op2 && shift1 == shift2 {
-        return Some(op1);
+        return Some((op1, shift1));
     }
     let mut result = None;
     if let Some(a1) = op1.if_arithmetic_any() {
@@ -909,15 +946,7 @@ fn simplify_xor_base_for_shifted<'e>(
                 };
                 let s1 = (shift1, mask1);
                 let s2 = (shift2, mask2);
-                if let Some(l) = simplify_xor_base_for_shifted(a1.left, s1, a2.left, s2, ctx, limit) {
-                    if let Some(r) = simplify_xor_base_for_shifted(a1.right, s1, a2.right, s2, ctx, limit) {
-                        result = Some(ctx.arithmetic(a1.ty, l, r));
-                    }
-                } else if let Some(l) = simplify_xor_base_for_shifted(a1.left, s1, a2.right, s2, ctx, limit) {
-                    if let Some(r) = simplify_xor_base_for_shifted(a1.right, s1, a2.left, s2, ctx, limit) {
-                        result = Some(ctx.arithmetic(a1.ty, l, r));
-                    }
-                }
+                result = simplify_xor_base_for_shifted_arith_chain(a1, s1, a2, s2, ctx, limit);
             }
         }
     } else {
@@ -936,33 +965,80 @@ fn simplify_xor_base_for_shifted<'e>(
                     let mask = ((off1.3 & size_mask1) << (off1.2 * 8)) |
                         ((off2.3 & size_mask2) << (off2.2 * 8));
                     if let Some(merged) = try_merge_memory(val, off1, off2, ctx) {
+                        // Return shift == 0 since try_merge_memory always shifts
+                        // if needed
                         if mask.wrapping_add(1) & mask != 0 {
                             // Not continuous mask, try_merge_memory won't mask in
                             // such cases so do it here.
-                            result = Some(ctx.and_const(merged, mask));
+                            result = Some((ctx.and_const(merged, mask), 0));
                         } else {
-                            result = Some(merged);
+                            result = Some((merged, 0));
                         }
                     }
                 }
             }
         }
     }
-    if let Some(result) = result {
-        // Is shifting by min_shift_add correct / expected?
-        // What should this function exactly do with correcting for shift
-        // not explicitly given in input arguments?
-        // At least this gives sensible shift for
-        // (Mem16[x + 2] << 8), (Mem8[x + 4] << 10) etc.
-        let min_shift = (shift1_add as u32).min(shift2_add as u32);
-        if min_shift != 0 {
-            Some(ctx.lsh_const(result, min_shift as u64))
-        } else {
-            Some(result)
+    result
+}
+
+fn simplify_xor_base_for_shifted_arith_chain<'e>(
+    arith1: &ArithOperand<'e>,
+    s1: (u8, u64),
+    arith2: &ArithOperand<'e>,
+    s2: (u8, u64),
+    ctx: OperandCtx<'e>,
+    limit: &mut u32,
+) -> Option<(Operand<'e>, u8)> {
+    ctx.simplify_temp_stack().alloc(|parts1| {
+        for op in IterArithOps::new_arith(arith1) {
+            parts1.push(op).ok()?;
         }
-    } else {
-        None
-    }
+        ctx.simplify_temp_stack().alloc(|parts2| {
+            for op in IterArithOps::new_arith(arith2) {
+                parts2.push(op).ok()?;
+            }
+            if parts1.len() != parts2.len() {
+                return None;
+            }
+            ctx.simplify_temp_stack().alloc(|result_parts| {
+                'outer: for &part1 in parts1.iter() {
+                    for j in 0..parts2.len() {
+                        let part2 = parts2[j];
+                        *limit = match limit.checked_sub(1) {
+                            Some(s) => s,
+                            None => return None,
+                        };
+                        let result =
+                            simplify_xor_base_for_shifted_rec(part1, s1, part2, s2, ctx, limit);
+                        if let Some(result) = result {
+                            result_parts.push(result).ok()?;
+                            parts2.swap_remove(j);
+                            continue 'outer;
+                        }
+                    }
+                    // Didn't find match
+                    return None;
+                }
+                // Found match for all, join them back
+                let min_shift = result_parts.iter().map(|&(_op, shift)| shift).min().unwrap_or(0);
+                result_parts.iter()
+                    .fold(None, |result, &(next, shift)| {
+                        let next = if shift > min_shift {
+                            ctx.lsh_const(next, (shift - min_shift) as u64)
+                        } else {
+                            next
+                        };
+                        if let Some(old) = result {
+                            Some(ctx.arithmetic(arith1.ty, old, next))
+                        } else {
+                            Some(next)
+                        }
+                    })
+                    .map(|op| (op, min_shift))
+            })
+        })
+    })
 }
 
 /// Returns if `(op1 & mask1) << shift1` and `(op2 & mask2) << shift2`
@@ -974,12 +1050,10 @@ fn simplify_xor_is_same_shifted<'e>(
     (shift2, mask2): (u8, u64),
     limit: &mut u32,
 ) -> bool {
-    let (op1, shift1_add) = op1.if_lsh_with_const()
-        .unwrap_or((op1, 0));
-    let shift1 = shift1.wrapping_add(shift1_add as u8);
-    let (op2, shift2_add) = op2.if_lsh_with_const()
-        .unwrap_or((op2, 0));
-    let shift2 = shift2.wrapping_add(shift2_add as u8);
+    let (op1, shift1_add, mask1) = simplify_xor_shifted_unwrap_shifts(op1, shift1, mask1);
+    let shift1 = (shift1 as i8).wrapping_add(shift1_add) as u8;
+    let (op2, shift2_add, mask2) = simplify_xor_shifted_unwrap_shifts(op2, shift2, mask2);
+    let shift2 = (shift2 as i8).wrapping_add(shift2_add) as u8;
     if op1 == op2 && shift1 == shift2 {
         return true;
     }

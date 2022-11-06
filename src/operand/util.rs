@@ -1,4 +1,4 @@
-use super::{ArithOpType, Operand, OperandType};
+use super::{ArithOperand, ArithOpType, Operand, OperandType};
 
 /// Iterates through parts of a arithmetic op tree where it is guaranteed
 /// that right has never subtrees, only left (E.g. for and, or, xor).
@@ -24,6 +24,15 @@ impl<'e> IterArithOps<'e> {
                 next: Some(op),
                 next_inner: None,
             },
+        }
+    }
+
+    #[inline]
+    pub fn new_arith(arith: &ArithOperand<'e>) -> IterArithOps<'e> {
+        IterArithOps {
+            ty: arith.ty,
+            next: Some(arith.right),
+            next_inner: Some(arith.left),
         }
     }
 }
