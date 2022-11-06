@@ -5778,10 +5778,11 @@ fn simplify_with_and_mask_inner<'e>(
         OperandType::Arithmetic(ref arith) => {
             match arith.ty {
                 ArithOpType::And => {
+                    let simplified_left;
                     let simplified_right;
+                    let self_mask = mask & arith.left.relevant_bits_mask();
                     if let Some(c) = arith.right.if_constant() {
-                        let self_mask = mask & arith.left.relevant_bits_mask();
-                        if c == self_mask {
+                        if c & mask == self_mask {
                             return arith.left;
                         } else if c & self_mask == 0 {
                             return ctx.const_0();
@@ -5790,24 +5791,40 @@ fn simplify_with_and_mask_inner<'e>(
                             // so it won't simplify anything further
                             return op;
                         } else {
+                            let left_simplify_mask = c & mask;
+                            simplified_left = simplify_with_and_mask(
+                                arith.left,
+                                left_simplify_mask,
+                                ctx,
+                                swzb_ctx,
+                            );
+                            let new_self_mask = mask & simplified_left.relevant_bits_mask();
+                            if c & mask == new_self_mask {
+                                // Left became something that won't need constant mask like the
+                                // above check `c & mask == self_mask`
+                                return simplified_left;
+                            }
+                            if should_stop_with_and_mask(swzb_ctx) {
+                                return op;
+                            }
                             // This is just avoid recursing to simplify_with_and_mask
                             // when it's already known to do this.
                             simplified_right = ctx.constant(c & mask);
                         }
                     } else {
                         simplified_right =
-                            simplify_with_and_mask(arith.right, mask, ctx, swzb_ctx);
-                    }
-                    let simplified_left =
-                        simplify_with_and_mask(arith.left, mask, ctx, swzb_ctx);
-                    if should_stop_with_and_mask(swzb_ctx) {
-                        return op;
+                            simplify_with_and_mask(arith.right, self_mask, ctx, swzb_ctx);
+                        if should_stop_with_and_mask(swzb_ctx) {
+                            return op;
+                        }
+                        let left_simplify_mask = mask & simplified_right.relevant_bits_mask();
+                        simplified_left =
+                            simplify_with_and_mask(arith.left, left_simplify_mask, ctx, swzb_ctx);
                     }
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op
                     } else {
-                        let op = simplify_and(simplified_left, simplified_right, ctx, swzb_ctx);
-                        simplify_with_and_mask(op, mask, ctx, swzb_ctx)
+                        simplify_and(simplified_left, simplified_right, ctx, swzb_ctx)
                     }
                 }
                 ArithOpType::Or => {
@@ -5843,11 +5860,12 @@ fn simplify_with_and_mask_inner<'e>(
                 }
                 ArithOpType::Lsh => {
                     if let Some(c) = arith.right.if_constant() {
+                        let c = c as u8;
                         let left = simplify_with_and_mask(arith.left, mask >> c, ctx, swzb_ctx);
                         if left == arith.left {
                             op
                         } else {
-                            ctx.lsh_const(left, c)
+                            simplify_lsh_const(left, c, ctx, swzb_ctx)
                         }
                     } else {
                         op
@@ -5855,11 +5873,12 @@ fn simplify_with_and_mask_inner<'e>(
                 }
                 ArithOpType::Rsh => {
                     if let Some(c) = arith.right.if_constant() {
+                        let c = c as u8;
                         let left = simplify_with_and_mask(arith.left, mask << c, ctx, swzb_ctx);
                         if left == arith.left {
                             op
                         } else {
-                            ctx.rsh_const(left, c)
+                            simplify_rsh_const(left, c, ctx, swzb_ctx)
                         }
                     } else {
                         op
@@ -5881,7 +5900,7 @@ fn simplify_with_and_mask_inner<'e>(
                                 if left == arith.left {
                                     return op;
                                 } else {
-                                    return ctx.lsh_const(left, shift as u64);
+                                    return simplify_lsh_const(left, shift as u8, ctx, swzb_ctx);
                                 }
                             }
                         }
@@ -5936,10 +5955,13 @@ fn simplify_with_and_mask_inner<'e>(
                             }
                         }
                     }
-                    let simplified_left =
-                        simplify_with_and_mask(arith.left, mask, ctx, swzb_ctx);
                     let simplified_right =
                         simplify_with_and_mask(arith.right, mask, ctx, swzb_ctx);
+                    if should_stop_with_and_mask(swzb_ctx) {
+                        return op;
+                    }
+                    let simplified_left =
+                        simplify_with_and_mask(arith.left, mask, ctx, swzb_ctx);
                     if should_stop_with_and_mask(swzb_ctx) {
                         return op;
                     }
