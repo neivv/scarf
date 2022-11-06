@@ -9303,3 +9303,20 @@ fn xor_rotate_mem_crash() {
         ),
     );
 }
+
+#[test]
+fn xor_mem64_crash() {
+    let ctx = &OperandContext::new();
+
+    let op1 = ctx.or(
+        ctx.lsh_const(
+            ctx.and_const(
+                ctx.mem8(ctx.register(0), 7),
+                0xfe,
+            ),
+            0x38,
+        ),
+        ctx.mem64(ctx.register(0), 0),
+    );
+    assert_eq!(op1, ctx.mem64(ctx.register(0), 0));
+}

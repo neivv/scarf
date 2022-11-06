@@ -4842,12 +4842,14 @@ fn try_merge_memory<'e>(
     }
 
     if mask1 != u64::MAX || mask2 != u64::MAX {
-        let mask1 = if mask1 != u64::MAX {
+        // If mask1 is not u64::MAX use that, otherwise 1.checked_shl(len * 8).unwrap_or(0)
+        // but write the conditions like this as a micro-optimization
+        let mask1 = if mask1 != u64::MAX || len1 >= 8 {
             mask1
         } else {
             (1u64 << (len1 * 8)).wrapping_sub(1)
         };
-        let mask2 = if mask2 != u64::MAX {
+        let mask2 = if mask2 != u64::MAX || len2 >= 8 {
             mask2
         } else {
             (1u64 << (len2 * 8)).wrapping_sub(1)
