@@ -1719,7 +1719,8 @@ impl<'e> OperandContext<'e> {
     /// if they would otherwise be included in the rules below. (E.g. `Mem32[x] << 0x20`)
     ///
     /// - Any 'pure 64-bit variable'; `Register`, `Undefined`, `Custom`
-    /// - Additions and subtractions consisting only 32-bit normalized `Operand`s
+    /// - Additions, subtractions, and bitwise ANDs/XORs consisting only 32-bit normalized
+    ///     `Operand`s
     /// - Multiplications and left shifts consisting 32-bit normalized `Operand` and a constant
     /// - `OperandType::ArithmeticFloat`
     ///
@@ -2205,7 +2206,13 @@ impl<'e> OperandType<'e> {
                         }
                     }
                 }
-                default_32_bit_normalized
+                ((arith.left.0.flags & arith.right.0.flags) & FLAG_32BIT_NORMALIZED) |
+                    default_32_bit_normalized
+            }
+            // Would be nice to have or here too, but (x | y) & c may become
+            // (x & c) | y which complicates things.
+            ArithOpType::Xor => {
+                (arith.left.0.flags & arith.right.0.flags) & FLAG_32BIT_NORMALIZED
             }
             ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul |
                 ArithOpType::Lsh =>
@@ -3740,12 +3747,9 @@ mod test {
         );
         let eq = ctx.add(
             ctx.register(0),
-            ctx.and_const(
-                ctx.xor(
-                    ctx.register(1),
-                    ctx.register(2),
-                ),
-                0xffff_ffff,
+            ctx.xor(
+                ctx.register(1),
+                ctx.register(2),
             ),
         );
         assert_eq!(ctx.normalize_32bit(op), eq);
@@ -3838,6 +3842,27 @@ mod test {
         );
         assert_eq!(ctx.normalize_32bit(op), eq);
         assert_eq!(ctx.normalize_32bit(op_masked), eq);
+    }
+
+    #[test]
+    fn normalize_bitop() {
+        let ctx = &crate::operand::OperandContext::new();
+        let add = ctx.add_const(
+            ctx.register(0),
+            0x1234567890,
+        );
+        let xor = ctx.xor_const(
+            add,
+            0xaaffaaff,
+        );
+        let xor_eq = ctx.xor_const(
+            ctx.add_const(
+                ctx.register(0),
+                0x34567890,
+            ),
+            0xaaffaaff,
+        );
+        assert_eq!(ctx.normalize_32bit(xor), xor_eq);
     }
 }
 
