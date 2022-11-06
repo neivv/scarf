@@ -904,6 +904,39 @@ fn or_xor_simplify_bug() {
 }
 
 #[test]
+fn or_xor_simplify_complex() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x41, // 00 inc ecx
+        0x33, 0x33, // 01 xor esi, [ebx] ; esi ^ [ebx]
+        0x33, 0x32, // 03 xor esi, [edx] ; esi ^ [ebx] ^ [edx]
+        0x31, 0x31, // 05 xor [ecx], esi ; esi ^ [ebx] ^ [edx] ^ [ecx] = E4
+        0x33, 0x33, // 07 xor esi, [ebx] ; esi ^ [edx]
+        0x0b, 0x31, // 09 or esi, [ecx] ; (esi ^ [edx]) | E4
+        0x29, 0x33, // 0b sub [ebx], esi ; [ebx] - ((esi ^ [edx]) | E4)
+        0x31, 0x31, // 0d xor [ecx], esi ; ((esi ^ [edx]) | E4) ^ E4
+        0x33, 0x31, // 0f xor esi, [ecx] ; E4
+        0x31, 0x31, // 11 xor [ecx], esi ; (esi ^ [edx]) | E4
+        0x0b, 0x31, // 13 or esi, [ecx] ; E4 | (esi ^ [edx])
+        // Complicates [ebx] to hit a bug; won't change result otherwise
+        0x29, 0x33, // 15 sub [ebx], esi
+        0x31, 0x31, // 17 xor [ecx], esi ; 0
+        // Xor [ecx] twice with same value won't matter
+        // (As long as simplification doesn't give up)
+        0x33, 0x33, // 19 xor esi, [ebx]
+        0x31, 0x31, // 1b xor [ecx], esi
+        0x31, 0x31, // 1d xor [ecx], esi
+        0x8b, 0x01, // 1f mov eax, [ecx]
+        0x31, 0xf6, // 21 xor esi, esi ; 0
+        0xc3, // 22 ret
+    ], &[
+        (ctx.register(0), ctx.constant(0)),
+        (ctx.register(1), ctx.add_const(ctx.register(1), 1)),
+        (ctx.register(6), ctx.constant(0)),
+    ]);
+}
+
+#[test]
 fn jump_conditions() {
     let ctx = &OperandContext::new();
     test(5, &[

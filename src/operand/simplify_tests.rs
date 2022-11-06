@@ -9201,3 +9201,68 @@ fn simplify_xor_with_masks6() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_xor_with_masks7() {
+    let ctx = &OperandContext::new();
+
+    let high = ctx.lsh_const(
+        ctx.and_const(
+            ctx.or(
+                ctx.xor(
+                    ctx.xor(
+                        ctx.mem8(ctx.register(2), 3),
+                        ctx.mem8(ctx.register(1), 4),
+                    ),
+                    ctx.rsh_const(
+                        ctx.register(6),
+                        0x18,
+                    ),
+                ),
+                ctx.xor(
+                    ctx.mem8(ctx.register(2), 3),
+                    ctx.rsh_const(
+                        ctx.register(6),
+                        0x18,
+                    ),
+                ),
+            ),
+            0xff,
+        ),
+        0x18,
+    );
+    let low = ctx.and_const(
+        ctx.or(
+            ctx.xor(
+                ctx.xor(
+                    ctx.mem32(ctx.register(2), 0),
+                    ctx.mem32(ctx.register(1), 1),
+                ),
+                ctx.register(6),
+            ),
+            ctx.xor(
+                ctx.mem32(ctx.register(2), 0),
+                ctx.register(6),
+            ),
+        ),
+        0x00ff_ffff,
+    );
+    let op1 = ctx.xor(high, low);
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.xor(
+                ctx.xor(
+                    ctx.mem32(ctx.register(2), 0),
+                    ctx.mem32(ctx.register(1), 1),
+                ),
+                ctx.register(6),
+            ),
+            ctx.xor(
+                ctx.mem32(ctx.register(2), 0),
+                ctx.register(6),
+            ),
+        ),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}

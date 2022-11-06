@@ -873,24 +873,38 @@ fn simplify_xor_shifted_unwrap_shifts<'e>(
     shift: u8,
     mask: u64,
 ) -> (Operand<'e>, i8, u64) {
+    let mut result;
     match op.if_arithmetic_any() {
         Some(arith) => {
-            if let Some(c) = arith.right.if_constant() {
-                let c = c as u8;
+            if let Some(c_u64) = arith.right.if_constant() {
+                let c = c_u64 as u8;
                 if arith.ty == ArithOpType::Lsh {
-                    return (arith.left, c as i8, mask >> c);
+                    result = (arith.left, c as i8, mask >> c);
                 } else if arith.ty == ArithOpType::Rsh {
                     // Not trying to keep shift state as negative
                     // right now, but should be possible if needed?
                     if c >= shift {
-                        return (arith.left, 0i8.wrapping_sub(c as i8), mask << c);
+                        result = (arith.left, 0i8.wrapping_sub(c as i8), mask << c);
+                    } else {
+                        result = (op, 0, mask);
                     }
+                } else if arith.ty == ArithOpType::And {
+                    return (op, 0, mask & c_u64);
+                } else {
+                    return (op, 0, mask);
                 }
+            } else {
+                return (op, 0, mask);
             }
-            (op, 0, mask)
         }
-        None => (op, 0, mask),
+        None => return (op, 0, mask),
+    };
+    // Reached only if there was lsh/rsh. Unpack inner and too.
+    if let Some((l, r)) = result.0.if_and_with_const() {
+        result.2 &= r;
+        result.0 = l;
     }
+    result
 }
 
 /// If there is an operand for which the
@@ -913,6 +927,13 @@ fn simplify_xor_base_for_shifted<'e>(
     ctx: OperandCtx<'e>,
     limit: &mut u32,
 ) -> Option<Operand<'e>> {
+    // This maybe should also return and mask if it is being limited by
+    // inner ands? Things seem line up fine due to accurate relevant_bits
+    // and simplification canonicalization, but if simplification
+    // gives up there may be incorrect results? Or just make sure to not
+    // return anything when simplification gives up.
+    // simplify_xor_with_masks7 (and other xor_with_masks tests) do test for
+    // correct masking so it's probably fine to not do anything extra right now.
     let (op, shift) = simplify_xor_base_for_shifted_rec(op1, s1, op2, s2, ctx, limit)?;
     if shift != 0 {
         Some(ctx.lsh_const(op, shift as u64))
