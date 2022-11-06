@@ -954,6 +954,10 @@ fn simplify_xor_base_for_shifted_rec<'e>(
     let shift1 = (shift1 as i8).wrapping_add(shift1_add) as u8;
     let (op2, shift2_add, mask2) = simplify_xor_shifted_unwrap_shifts(op2, shift2, mask2);
     let shift2 = (shift2 as i8).wrapping_add(shift2_add) as u8;
+    if (shift1 as i8) < 0 || (shift2 as i8) < 0 {
+        // Maybe could handle but other parts of this are not ready to do it now
+        return None;
+    }
     if op1 == op2 && shift1 == shift2 {
         return Some((op1, shift1));
     }

@@ -9287,3 +9287,19 @@ fn canonicalize_and_mul_poweroftwo() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn xor_rotate_mem_crash() {
+    let ctx = &OperandContext::new();
+
+    let _ = ctx.xor(
+        ctx.rsh_const(
+            ctx.mem32(ctx.register(0), 4),
+            0x8,
+        ),
+        ctx.lsh_const(
+            ctx.mem8(ctx.register(0), 4),
+            0x18,
+        ),
+    );
+}
