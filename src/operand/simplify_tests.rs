@@ -9266,3 +9266,24 @@ fn simplify_xor_with_masks7() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn canonicalize_and_mul_poweroftwo() {
+    let ctx = &OperandContext::new();
+
+    let op1 = ctx.mul_const(
+        ctx.and_const(
+            ctx.register(4),
+            0xff,
+        ),
+        0x4,
+    );
+    let eq1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.register(4),
+            0x4,
+        ),
+        0x3ff,
+    );
+    assert_eq!(op1, eq1);
+}
