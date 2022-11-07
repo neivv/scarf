@@ -2133,12 +2133,25 @@ impl<'e> OperandType<'e> {
                     }
                     true
                 }
+                ArithOpType::Mul | ArithOpType::Lsh => {
+                    if let Some(c) = arith.right.if_constant() {
+                        let shift2 = match arith.ty {
+                            ArithOpType::Lsh => c as u8,
+                            _ => c.trailing_zeros() as u8,
+                        };
+                        Self::is_32bit_normalized_for_mul_shift(
+                            arith.left,
+                            shift.wrapping_add(shift2),
+                        )
+                    } else {
+                        op.is_32bit_normalized()
+                    }
+                }
                 ArithOpType::And => {
                     if let Some(c) = arith.right.if_constant() {
                         let shifted_c = c << shift;
                         // E.g. ((rax & ff) << 18) normalizes to (rax << 18)
                         // But any more limiting mask is already normalized.
-
 
                         // High bits of the shifted mask must be 0,
                         // otherwise the normalized form will be one without them.
@@ -2167,12 +2180,7 @@ impl<'e> OperandType<'e> {
                     false
                 }
                 _ => {
-                    // Require all other arith with const mul / shift
-                    // be masked.
-                    // Not sure if there are patterns that 32-bit
-                    // code uses which would benefit from this
-                    // being less strict.
-                    false
+                    op.is_32bit_normalized()
                 }
             }
         } else if let OperandType::Memory(mem) = ty {
@@ -2808,6 +2816,11 @@ impl<'e> Operand<'e> {
     #[inline]
     pub fn contains_memory(self) -> bool {
         self.0.flags & FLAG_CONTAINS_MEMORY != 0
+    }
+
+    #[inline]
+    fn is_32bit_normalized(self) -> bool {
+        self.0.flags & FLAG_32BIT_NORMALIZED != 0
     }
 
     /// Returns `(other, constant)` if operand is an and mask with constant,
@@ -3866,6 +3879,167 @@ mod test {
         );
         assert_eq!(ctx.normalize_32bit(op), eq);
         assert_eq!(ctx.normalize_32bit(eq), eq);
+    }
+
+    #[test]
+    fn normalize_shift_index() {
+        let ctx = &crate::operand::OperandContext::new();
+        // ((((rax * 12) + rdx) & ff) << 18) to (((rax * 12) + rdx) << 18)
+        let op = ctx.lsh_const(
+            ctx.and_const(
+                ctx.add(
+                    ctx.mul_const(
+                        ctx.register(0),
+                        12,
+                    ),
+                    ctx.register(2),
+                ),
+                0xff,
+            ),
+            0x18,
+        );
+        let op_masked = ctx.and_const(op, 0xffff_ffff);
+        let eq = ctx.lsh_const(
+            ctx.add(
+                ctx.mul_const(
+                    ctx.register(0),
+                    12,
+                ),
+                ctx.register(2),
+            ),
+            0x18,
+        );
+        assert_eq!(ctx.normalize_32bit(op), eq);
+        assert_eq!(ctx.normalize_32bit(op_masked), eq);
+    }
+
+    #[test]
+    fn normalize_shift_index_mem() {
+        let ctx = &crate::operand::OperandContext::new();
+        // ((((rax * 12) + Mem8[rdx]) & ff) << 18)
+        // and (((rax * 12) + Mem16[rdx]) << 18)
+        // to (((rax * 12) + Mem8[rdx]) << 18)
+        let op = ctx.lsh_const(
+            ctx.and_const(
+                ctx.add(
+                    ctx.mul_const(
+                        ctx.register(0),
+                        12,
+                    ),
+                    ctx.mem8(ctx.register(2), 0),
+                ),
+                0xff,
+            ),
+            0x18,
+        );
+        let op16 = ctx.lsh_const(
+            ctx.add(
+                ctx.mul_const(
+                    ctx.register(0),
+                    12,
+                ),
+                ctx.mem16(ctx.register(2), 0),
+            ),
+            0x18,
+        );
+        let op_masked = ctx.and_const(op, 0xffff_ffff);
+        let op16_masked = ctx.and_const(op16, 0xffff_ffff);
+        let eq = ctx.lsh_const(
+            ctx.add(
+                ctx.mul_const(
+                    ctx.register(0),
+                    12,
+                ),
+                ctx.mem8(ctx.register(2), 0),
+            ),
+            0x18,
+        );
+        assert_eq!(ctx.normalize_32bit(op), eq);
+        assert_eq!(ctx.normalize_32bit(op_masked), eq);
+        assert_eq!(ctx.normalize_32bit(eq), eq);
+        assert_eq!(ctx.normalize_32bit(op16), eq);
+        assert_eq!(ctx.normalize_32bit(op16_masked), eq);
+    }
+
+    #[test]
+    fn normalize_shift_index_mem_2() {
+        let ctx = &crate::operand::OperandContext::new();
+        // ((((Mem8[rax] * 12) + rdx) & ff) << 18)
+        // and (((Mem16[rax] * 12) + rdx) << 18)
+        // to (((Mem8[rax] * 12) + rdx) << 18)
+        let op = ctx.lsh_const(
+            ctx.and_const(
+                ctx.add(
+                    ctx.mul_const(
+                        ctx.mem8(ctx.register(0), 0),
+                        12,
+                    ),
+                    ctx.register(2),
+                ),
+                0xff,
+            ),
+            0x18,
+        );
+        let op16 = ctx.lsh_const(
+            ctx.add(
+                ctx.mul_const(
+                    ctx.mem16(ctx.register(0), 0),
+                    12,
+                ),
+                ctx.register(2),
+            ),
+            0x18,
+        );
+        let op_masked = ctx.and_const(op, 0xffff_ffff);
+        let op16_masked = ctx.and_const(op16, 0xffff_ffff);
+        let eq = ctx.lsh_const(
+            ctx.add(
+                ctx.mul_const(
+                    ctx.mem8(ctx.register(0), 0),
+                    12,
+                ),
+                ctx.register(2),
+            ),
+            0x18,
+        );
+        assert_eq!(ctx.normalize_32bit(op), eq);
+        assert_eq!(ctx.normalize_32bit(op_masked), eq);
+        assert_eq!(ctx.normalize_32bit(eq), eq);
+        assert_eq!(ctx.normalize_32bit(op16), ctx.normalize_32bit(op16_masked));
+        assert_eq!(ctx.normalize_32bit(op16), eq);
+        assert_eq!(ctx.normalize_32bit(op16_masked), eq);
+    }
+
+    #[test]
+    fn normalize_mul_power_of_two_index() {
+        let ctx = &crate::operand::OperandContext::new();
+        // ((((rax * 12) + rdx) & 3fff_ffff) << 2) to (((rax * 12) + rdx) << 2)
+        let op = ctx.lsh_const(
+            ctx.and_const(
+                ctx.add(
+                    ctx.mul_const(
+                        ctx.register(0),
+                        12,
+                    ),
+                    ctx.register(2),
+                ),
+                0x3fff_ffff,
+            ),
+            0x2,
+        );
+        let op_masked = ctx.and_const(op, 0xffff_ffff);
+        let eq = ctx.lsh_const(
+            ctx.add(
+                ctx.mul_const(
+                    ctx.register(0),
+                    12,
+                ),
+                ctx.register(2),
+            ),
+            0x2,
+        );
+        assert_eq!(ctx.normalize_32bit(op), eq);
+        assert_eq!(ctx.normalize_32bit(op_masked), eq);
     }
 
     #[test]
