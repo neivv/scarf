@@ -5912,29 +5912,6 @@ fn simplify_with_and_mask_inner<'e>(
                 ArithOpType::Xor | ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
                     let orig_mask = mask;
                     let mut mask = mask;
-                    // Simplify mul with power-of-two as left shift,
-                    // or even when not power-of-two, reduce mask
-                    // by what will be always shifted out
-                    if arith.ty == ArithOpType::Mul {
-                        if let Some(c) = arith.right.if_constant() {
-                            let shift = c.trailing_zeros();
-                            mask = mask >> shift;
-                            if c & c.wrapping_sub(1) == 0 {
-                                // Is power of two, give left shift treatment.
-                                let left = simplify_with_and_mask(
-                                    arith.left,
-                                    mask,
-                                    ctx,
-                                    swzb_ctx,
-                                );
-                                if left == arith.left {
-                                    return op;
-                                } else {
-                                    return simplify_lsh_const(left, shift as u8, ctx, swzb_ctx);
-                                }
-                            }
-                        }
-                    }
                     if arith.ty != ArithOpType::Xor {
                         // The mask can be applied separately to left and right if
                         // any of the unmasked bits input don't affect masked bits in result.
@@ -5985,13 +5962,52 @@ fn simplify_with_and_mask_inner<'e>(
                             }
                         }
                     }
-                    let simplified_right =
-                        simplify_with_and_mask(arith.right, mask, ctx, swzb_ctx);
+
+                    let mut simplified_right = None;
+                    let mut left_mask = mask;
+                    // Simplify mul with power-of-two as left shift.
+                    // or even when not power-of-two, reduce mask
+                    // by what will be always shifted out
+                    if arith.ty == ArithOpType::Mul {
+                        if let Some(orig_c) = arith.right.if_constant() {
+                            let c = orig_c & mask;
+                            let shift = c.trailing_zeros();
+                            if c & c.wrapping_sub(1) == 0 {
+                                let shift = c.trailing_zeros();
+                                // Is power of two, give left shift treatment.
+                                let left = simplify_with_and_mask(
+                                    arith.left,
+                                    mask >> shift,
+                                    ctx,
+                                    swzb_ctx,
+                                );
+                                if left == arith.left {
+                                    return op;
+                                } else {
+                                    return simplify_lsh_const(left, shift as u8, ctx, swzb_ctx);
+                                }
+                            } else {
+                                // High bits of left mask can be known to be useless
+                                // shift them out
+                                left_mask = mask >> shift;
+                                if orig_c == c {
+                                    // No need to reintern
+                                    simplified_right = Some(arith.right);
+                                } else {
+                                    simplified_right = Some(ctx.constant(c));
+                                }
+                            }
+                        }
+                    }
+                    let simplified_right = simplified_right.unwrap_or_else(|| {
+                        simplify_with_and_mask(arith.right, mask, ctx, swzb_ctx)
+                    });
+
                     if should_stop_with_and_mask(swzb_ctx) {
                         return op;
                     }
                     let simplified_left =
-                        simplify_with_and_mask(arith.left, mask, ctx, swzb_ctx);
+                        simplify_with_and_mask(arith.left, left_mask, ctx, swzb_ctx);
                     if should_stop_with_and_mask(swzb_ctx) {
                         return op;
                     }

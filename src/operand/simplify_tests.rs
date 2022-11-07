@@ -9351,3 +9351,19 @@ fn mul_masked_reduce_inner_mask() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn mul_large_const_bug() {
+    let ctx = &OperandContext::new();
+
+    let op1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.register(0),
+            0xa600_0000,
+        ),
+        0xffff_ffff,
+    );
+    // Check that it at least isn't (rax & mask), mul should still be kept somewhere
+    let (l, _) = op1.if_and_with_const().unwrap_or_else(|| panic!("Invalid op {}", op1));
+    l.if_mul_with_const().unwrap_or_else(|| panic!("Invalid op {}", op1));
+}

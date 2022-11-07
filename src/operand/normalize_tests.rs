@@ -9,7 +9,10 @@ impl<'e> CtxExt<'e> for OperandContext<'e> {
         let result = self.normalize_32bit(op);
         let masked = self.and_const(op, 0xffff_ffff);
         let result_masked = self.normalize_32bit(masked);
-        assert_eq!(result, result_masked, "Different results when zero masked");
+        assert_eq!(
+            result, result_masked,
+            "Different results when zero masked, masked was {}", masked
+        );
         assert!(
             result.is_32bit_normalized(),
             "{} became {} but normalize flag is not set", op, result,
@@ -705,4 +708,17 @@ fn normalize_with_mask() {
         0x78,
     );
     assert_eq!(ctx.normalize(op), eq);
+}
+
+#[test]
+fn normalize_mul_large_const() {
+    let ctx = &crate::operand::OperandContext::new();
+    let op = ctx.mul_const(
+        ctx.add(
+            ctx.register(0),
+            ctx.register(1),
+        ),
+        0xa600_0000,
+    );
+    assert_eq!(ctx.normalize(op), op);
 }
