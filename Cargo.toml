@@ -2,7 +2,7 @@
 name = "scarf"
 version = "0.3.0"
 authors = ["Markus Heikkinen <ittevien@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 [profile.release]
 debug = true
