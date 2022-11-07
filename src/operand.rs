@@ -2167,7 +2167,10 @@ impl<'e> OperandType<'e> {
                         let nop_mask_if_u32 = (
                                 shifted_c as u32 |
                                     // Any shifted-in bits to 1
-                                    (1u32.wrapping_shl(shift as u32)).wrapping_sub(1)
+                                    (1u32.wrapping_shl(shift as u32)).wrapping_sub(1) |
+                                    // Any bits that are known to be zero in arith.left to 1
+                                    ((!(arith.left.relevant_bits_mask() as u32))
+                                        .wrapping_shl(shift as u32))
                             ) == u32::MAX;
                         if nop_mask_if_u32 {
                             // ((rax & ff) << 18) to (rax << 18)

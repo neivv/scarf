@@ -661,3 +661,22 @@ fn normalize_bitop_or() {
     );
     assert_eq!(ctx.normalize(or), ctx.normalize(or_eq));
 }
+
+#[test]
+fn normalize_shifted_mul2() {
+    let ctx = &crate::operand::OperandContext::new();
+    let op = ctx.lsh_const(
+        ctx.add(
+            ctx.mul_const(
+                ctx.register(0),
+                2,
+            ),
+            ctx.mul_const(
+                ctx.xmm(0, 0),
+                2,
+            ),
+        ),
+        0x11,
+    );
+    assert_eq!(ctx.normalize(op), op);
+}
