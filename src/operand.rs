@@ -1765,12 +1765,20 @@ impl<'e> OperandContext<'e> {
             } else {
                 if arith.ty == ArithOpType::And {
                     return arith.left;
-                } else if arith.ty == ArithOpType::Lsh {
+                } else if matches!(arith.ty, ArithOpType::Lsh | ArithOpType::Mul) {
                     // `(x & mask) << shift` to `x << shift`
                     // (Expected that mask can be removed or else it would
                     // already be 32bit normalized)
                     if let Some(inner_arith) = arith.left.if_arithmetic_any() {
-                        if let Some(shift) = arith.right.if_constant() {
+                        if let Some(mut shift) = arith.right.if_constant() {
+                            if arith.ty == ArithOpType::Mul {
+                                if shift & shift.wrapping_sub(1) != 0 {
+                                    // Expected to be unreachable but avoid big errors
+                                    // if there is non-power-of-two mul
+                                    return value;
+                                }
+                                shift = shift.trailing_zeros() as u64;
+                            }
                             if inner_arith.left.0.flags & FLAG_32BIT_NORMALIZED != 0 {
                                 return self.lsh_const(inner_arith.left, shift);
                             }
@@ -3522,9 +3530,7 @@ mod test {
             ),
             2,
         );
-        // Should be rcx * 2 but simplification only is able to do this for
-        // shifts and not multiplications right now.
-        let expected = ctx.and_const(op, 0xffff_ffff);
+        let expected = ctx.mul_const(ctx.register(1), 2);
         assert_eq!(ctx.normalize_32bit(op), expected);
 
         let op = ctx.lsh_const(
@@ -3845,6 +3851,24 @@ mod test {
     }
 
     #[test]
+    fn normalize_mul_power_of_two() {
+        let ctx = &crate::operand::OperandContext::new();
+        let op = ctx.mul_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x7fff_ffff,
+            ),
+            2,
+        );
+        let eq = ctx.mul_const(
+            ctx.register(0),
+            2,
+        );
+        assert_eq!(ctx.normalize_32bit(op), eq);
+        assert_eq!(ctx.normalize_32bit(eq), eq);
+    }
+
+    #[test]
     fn normalize_bitop() {
         let ctx = &crate::operand::OperandContext::new();
         let add = ctx.add_const(
@@ -3863,6 +3887,27 @@ mod test {
             0xaaffaaff,
         );
         assert_eq!(ctx.normalize_32bit(xor), xor_eq);
+    }
+
+    #[test]
+    fn normalize_bitop_or() {
+        let ctx = &crate::operand::OperandContext::new();
+        let add = ctx.add_const(
+            ctx.register(0),
+            0x1234567890,
+        );
+        let or = ctx.or_const(
+            add,
+            0xaaffaaff,
+        );
+        let or_eq = ctx.or_const(
+            ctx.add_const(
+                ctx.register(0),
+                0x34567890,
+            ),
+            0xaaffaaff,
+        );
+        assert_eq!(ctx.normalize_32bit(or), ctx.normalize_32bit(or_eq));
     }
 }
 
