@@ -5805,7 +5805,9 @@ fn simplify_with_and_mask_inner<'e>(
                     let simplified_right;
                     let self_mask = mask & arith.left.relevant_bits_mask();
                     if let Some(c) = arith.right.if_constant() {
-                        if c & mask == self_mask {
+                        if c == self_mask {
+                            // This constant mask was already applied to arith.left
+                            // since the mask is same; can just return it as is.
                             return arith.left;
                         } else if c & self_mask == 0 {
                             return ctx.const_0();
@@ -5824,7 +5826,7 @@ fn simplify_with_and_mask_inner<'e>(
                             let new_self_mask = mask & simplified_left.relevant_bits_mask();
                             if c & mask == new_self_mask {
                                 // Left became something that won't need constant mask like the
-                                // above check `c & mask == self_mask`
+                                // above check `c == self_mask`
                                 return simplified_left;
                             }
                             if should_stop_with_and_mask(swzb_ctx) {
@@ -6839,4 +6841,33 @@ fn test_simplify_xor_base_for_shifted() {
         simplify_xor_base_for_shifted(mem16, (0, 0xf_ffff), mem8_2, (0x10, 0x34), ctx, limit),
         None,
     );
+}
+
+#[test]
+fn simplify_with_and_mask_reduce_inner_and_mask() {
+    let ctx = &super::OperandContext::new();
+
+    // Check that outer mask gets removed, and that inner mask gets reduced to 0xfffe
+    // in single simplify_with_and_mask call
+    // ctx.and_const(op1, 0xffff) has enough redundancy that it will still simplify
+    // things correctly.
+    let op1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x1_fffe,
+            ),
+            0x6b3e,
+        ),
+        0x1_fffe,
+    );
+    let op1 = simplify_with_and_mask(op1, 0xffff, ctx, &mut SimplifyWithZeroBits::default());
+    let eq1 = ctx.sub_const(
+        ctx.and_const(
+            ctx.register(0),
+            0xfffe,
+        ),
+        0x6b3e,
+    );
+    assert_eq!(op1, eq1);
 }
