@@ -1,5 +1,27 @@
 use super::*;
 
+trait CtxExt<'e> {
+    fn normalize(&'e self, op: Operand<'e>) -> Operand<'e>;
+}
+
+impl<'e> CtxExt<'e> for OperandContext<'e> {
+    fn normalize(&'e self, op: Operand<'e>) -> Operand<'e> {
+        let result = self.normalize_32bit(op);
+        let masked = self.and_const(op, 0xffff_ffff);
+        let result_masked = self.normalize_32bit(masked);
+        assert_eq!(result, result_masked, "Different results when zero masked");
+        assert!(
+            result.is_32bit_normalized(),
+            "{} became {} but normalize flag is not set", op, result,
+        );
+        assert!(
+            result_masked.is_32bit_normalized(),
+            "(masked) {} became {} but normalize flag is not set", masked, result_masked,
+        );
+        result
+    }
+}
+
 #[test]
 fn test_normalize_32bit() {
     let ctx = &crate::operand::OperandContext::new();
@@ -8,7 +30,7 @@ fn test_normalize_32bit() {
         ctx.constant(0x1_0000_0000),
     );
     let expected = ctx.register(0);
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 
     let op = ctx.or(
         ctx.register(2),
@@ -18,25 +40,25 @@ fn test_normalize_32bit() {
         ),
     );
     let expected = ctx.register(2);
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 
     let op = ctx.and(
         ctx.register(0),
         ctx.constant(0xffff_ffff),
     );
     let expected = ctx.register(0);
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 
     let op = ctx.and(
         ctx.custom(0),
         ctx.constant(0xffff_ffff),
     );
     let expected = ctx.custom(0);
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 
     let op = ctx.constant(0x1_0000_0000);
     let expected = ctx.constant(0);
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 
     let op = ctx.sub(
         ctx.register(0),
@@ -46,7 +68,7 @@ fn test_normalize_32bit() {
         ctx.register(0),
         ctx.constant(0x04fe_ff02),
     );
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 
     let op = ctx.sub(
         ctx.register(0),
@@ -56,8 +78,8 @@ fn test_normalize_32bit() {
         ctx.register(0),
         ctx.constant(0x8000_0000),
     );
-    assert_eq!(ctx.normalize_32bit(op), expected);
-    assert_eq!(ctx.normalize_32bit(expected), expected);
+    assert_eq!(ctx.normalize(op), expected);
+    assert_eq!(ctx.normalize(expected), expected);
 
     let op = ctx.add(
         ctx.register(0),
@@ -67,8 +89,8 @@ fn test_normalize_32bit() {
         ctx.register(0),
         ctx.constant(0x7fff_ffff),
     );
-    assert_eq!(ctx.normalize_32bit(op), expected);
-    assert_eq!(ctx.normalize_32bit(expected), expected);
+    assert_eq!(ctx.normalize(op), expected);
+    assert_eq!(ctx.normalize(expected), expected);
 
     let op = ctx.and(
         ctx.register(0),
@@ -78,7 +100,7 @@ fn test_normalize_32bit() {
         ctx.register(0),
         ctx.constant(0x7516_0007),
     );
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 }
 
 #[test]
@@ -100,7 +122,7 @@ fn normalize_32bit_complex_multiply_add() {
         2,
     );
     let expected = ctx.mul_const(ctx.register(1), 2);
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 
     let op = ctx.lsh_const(
         ctx.add(
@@ -116,7 +138,7 @@ fn normalize_32bit_complex_multiply_add() {
         ctx.register(1),
         0x10000,
     );
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 
     // No change possible
     let op = ctx.mul_const(
@@ -129,7 +151,7 @@ fn normalize_32bit_complex_multiply_add() {
         ),
         0x10001,
     );
-    assert_eq!(ctx.normalize_32bit(op), op);
+    assert_eq!(ctx.normalize(op), op);
 
     let op = ctx.lsh_const(
         ctx.add(
@@ -145,7 +167,7 @@ fn normalize_32bit_complex_multiply_add() {
         ctx.xmm(0, 0),
         0x1f,
     );
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 }
 
 #[test]
@@ -166,7 +188,7 @@ fn normalize_32bit_complex_multiply_and_const() {
         ),
         0x10,
     );
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 
     let op = ctx.lsh_const(
         ctx.add(
@@ -188,7 +210,7 @@ fn normalize_32bit_complex_multiply_and_const() {
         ),
         0x10,
     );
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 }
 
 #[test]
@@ -206,7 +228,7 @@ fn normalize_32bit_complex_multiply_mem() {
         ),
         0x10,
     );
-    assert_eq!(ctx.normalize_32bit(op), expected);
+    assert_eq!(ctx.normalize(op), expected);
 }
 
 #[test]
@@ -251,19 +273,19 @@ fn normalize_32bit_multiply_nonconst() {
         0x11,
     );
     assert!(
-        ctx.normalize_32bit(op).0.flags & FLAG_32BIT_NORMALIZED != 0,
+        ctx.normalize(op).0.flags & FLAG_32BIT_NORMALIZED != 0,
         "Normalized to {} but result doesn't have normalize flag",
-        ctx.normalize_32bit(op),
+        ctx.normalize(op),
     );
     let masked = ctx.and_const(op, 0xffff_ffff);
     assert!(
-        ctx.normalize_32bit(masked).0.flags & FLAG_32BIT_NORMALIZED != 0,
+        ctx.normalize(masked).0.flags & FLAG_32BIT_NORMALIZED != 0,
         "Normalized masked to {} but result doesn't have normalize flag",
-        ctx.normalize_32bit(masked),
+        ctx.normalize(masked),
     );
     assert_eq!(
-        ctx.normalize_32bit(op),
-        ctx.normalize_32bit(masked),
+        ctx.normalize(op),
+        ctx.normalize(masked),
     );
 }
 
@@ -289,8 +311,8 @@ fn normalize_sign_extend() {
         ctx.register(0),
         0x11,
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
-    assert_eq!(ctx.normalize_32bit(op2), eq);
+    assert_eq!(ctx.normalize(op), eq);
+    assert_eq!(ctx.normalize(op2), eq);
 
     let op = ctx.lsh_const(
         ctx.sign_extend(
@@ -304,7 +326,7 @@ fn normalize_sign_extend() {
         ctx.register(0),
         0x10,
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
+    assert_eq!(ctx.normalize(op), eq);
 }
 
 #[test]
@@ -327,7 +349,7 @@ fn normalize_masked_xor_in_add() {
             ctx.register(2),
         ),
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
+    assert_eq!(ctx.normalize(op), eq);
 }
 
 #[test]
@@ -369,8 +391,8 @@ fn normalize_masked_sub() {
     assert_ne!(op, eq);
     assert_ne!(op, op_masked);
     assert_ne!(eq, op_masked);
-    assert_eq!(ctx.normalize_32bit(op), ctx.normalize_32bit(eq));
-    assert_eq!(ctx.normalize_32bit(op), ctx.normalize_32bit(op_masked));
+    assert_eq!(ctx.normalize(op), ctx.normalize(eq));
+    assert_eq!(ctx.normalize(op), ctx.normalize(op_masked));
 }
 
 #[test]
@@ -389,8 +411,8 @@ fn normalize_shift() {
         ctx.register(0),
         0x18,
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
-    assert_eq!(ctx.normalize_32bit(op_masked), eq);
+    assert_eq!(ctx.normalize(op), eq);
+    assert_eq!(ctx.normalize(op_masked), eq);
 
     // ((rax * rcx) << 18) to (((rax * rcx) & ff) << 18)
     // (Other way around since non-const multiplication)
@@ -415,8 +437,8 @@ fn normalize_shift() {
         ),
         0x18,
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
-    assert_eq!(ctx.normalize_32bit(op_masked), eq);
+    assert_eq!(ctx.normalize(op), eq);
+    assert_eq!(ctx.normalize(op_masked), eq);
 }
 
 #[test]
@@ -433,8 +455,8 @@ fn normalize_mul_power_of_two() {
         ctx.register(0),
         2,
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
-    assert_eq!(ctx.normalize_32bit(eq), eq);
+    assert_eq!(ctx.normalize(op), eq);
+    assert_eq!(ctx.normalize(eq), eq);
 }
 
 #[test]
@@ -465,8 +487,8 @@ fn normalize_shift_index() {
         ),
         0x18,
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
-    assert_eq!(ctx.normalize_32bit(op_masked), eq);
+    assert_eq!(ctx.normalize(op), eq);
+    assert_eq!(ctx.normalize(op_masked), eq);
 }
 
 #[test]
@@ -510,11 +532,11 @@ fn normalize_shift_index_mem() {
         ),
         0x18,
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
-    assert_eq!(ctx.normalize_32bit(op_masked), eq);
-    assert_eq!(ctx.normalize_32bit(eq), eq);
-    assert_eq!(ctx.normalize_32bit(op16), eq);
-    assert_eq!(ctx.normalize_32bit(op16_masked), eq);
+    assert_eq!(ctx.normalize(op), eq);
+    assert_eq!(ctx.normalize(op_masked), eq);
+    assert_eq!(ctx.normalize(eq), eq);
+    assert_eq!(ctx.normalize(op16), eq);
+    assert_eq!(ctx.normalize(op16_masked), eq);
 }
 
 #[test]
@@ -558,12 +580,12 @@ fn normalize_shift_index_mem_2() {
         ),
         0x18,
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
-    assert_eq!(ctx.normalize_32bit(op_masked), eq);
-    assert_eq!(ctx.normalize_32bit(eq), eq);
-    assert_eq!(ctx.normalize_32bit(op16), ctx.normalize_32bit(op16_masked));
-    assert_eq!(ctx.normalize_32bit(op16), eq);
-    assert_eq!(ctx.normalize_32bit(op16_masked), eq);
+    assert_eq!(ctx.normalize(op), eq);
+    assert_eq!(ctx.normalize(op_masked), eq);
+    assert_eq!(ctx.normalize(eq), eq);
+    assert_eq!(ctx.normalize(op16), ctx.normalize(op16_masked));
+    assert_eq!(ctx.normalize(op16), eq);
+    assert_eq!(ctx.normalize(op16_masked), eq);
 }
 
 #[test]
@@ -594,8 +616,8 @@ fn normalize_mul_power_of_two_index() {
         ),
         0x2,
     );
-    assert_eq!(ctx.normalize_32bit(op), eq);
-    assert_eq!(ctx.normalize_32bit(op_masked), eq);
+    assert_eq!(ctx.normalize(op), eq);
+    assert_eq!(ctx.normalize(op_masked), eq);
 }
 
 #[test]
@@ -616,7 +638,7 @@ fn normalize_bitop() {
         ),
         0xaaffaaff,
     );
-    assert_eq!(ctx.normalize_32bit(xor), xor_eq);
+    assert_eq!(ctx.normalize(xor), xor_eq);
 }
 
 #[test]
@@ -637,5 +659,5 @@ fn normalize_bitop_or() {
         ),
         0xaaffaaff,
     );
-    assert_eq!(ctx.normalize_32bit(or), ctx.normalize_32bit(or_eq));
+    assert_eq!(ctx.normalize(or), ctx.normalize(or_eq));
 }
