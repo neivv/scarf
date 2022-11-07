@@ -9320,3 +9320,34 @@ fn xor_mem64_crash() {
     );
     assert_eq!(op1, ctx.mem64(ctx.register(0), 0));
 }
+
+#[test]
+fn mul_masked_reduce_inner_mask() {
+    let ctx = &OperandContext::new();
+
+    // (x & ffff_f00f) * 0x28 is same as
+    // ((x & ffff_f00f) << 3) + ((x & ffff_f00f) << 5)
+    // Meaning that high 3 bits of the mask become useless
+    // when masked with ffff_ffff
+    let op1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff_f00f,
+            ),
+            0x28,
+        ),
+        0xffff_ffff,
+    );
+    let eq1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x1fff_f00f,
+            ),
+            0x28,
+        ),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}

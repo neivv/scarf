@@ -5908,15 +5908,20 @@ fn simplify_with_and_mask_inner<'e>(
                     }
                 }
                 ArithOpType::Xor | ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
+                    let orig_mask = mask;
                     let mut mask = mask;
-                    // Simplify mul with power-of-two as left shift
+                    // Simplify mul with power-of-two as left shift,
+                    // or even when not power-of-two, reduce mask
+                    // by what will be always shifted out
                     if arith.ty == ArithOpType::Mul {
                         if let Some(c) = arith.right.if_constant() {
+                            let shift = c.trailing_zeros();
+                            mask = mask >> shift;
                             if c & c.wrapping_sub(1) == 0 {
-                                let shift = c.trailing_zeros();
+                                // Is power of two, give left shift treatment.
                                 let left = simplify_with_and_mask(
                                     arith.left,
-                                    mask >> shift,
+                                    mask,
                                     ctx,
                                     swzb_ctx,
                                 );
@@ -5969,12 +5974,12 @@ fn simplify_with_and_mask_inner<'e>(
                         if arith.ty == ArithOpType::Add {
                             if c > limit {
                                 let new = ctx.sub_const(arith.left, max.wrapping_sub(c));
-                                return simplify_with_and_mask(new, mask, ctx, swzb_ctx);
+                                return simplify_with_and_mask(new, orig_mask, ctx, swzb_ctx);
                             }
                         } else if arith.ty == ArithOpType::Sub {
                             if c >= limit {
                                 let new = ctx.add_const(arith.left, max.wrapping_sub(c));
-                                return simplify_with_and_mask(new, mask, ctx, swzb_ctx);
+                                return simplify_with_and_mask(new, orig_mask, ctx, swzb_ctx);
                             }
                         }
                     }
@@ -5994,7 +5999,7 @@ fn simplify_with_and_mask_inner<'e>(
                         let op = ctx.arithmetic(arith.ty, simplified_left, simplified_right);
                         // The result may simplify again, for example with mask 0x1
                         // Mem16[x] + Mem32[x] + Mem8[x] => 3 * Mem8[x] => 1 * Mem8[x]
-                        simplify_with_and_mask(op, mask, ctx, swzb_ctx)
+                        simplify_with_and_mask(op, orig_mask, ctx, swzb_ctx)
                     }
                 }
                 _ => op,

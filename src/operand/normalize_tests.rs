@@ -680,3 +680,29 @@ fn normalize_shifted_mul2() {
     );
     assert_eq!(ctx.normalize(op), op);
 }
+
+#[test]
+fn normalize_with_mask() {
+    let ctx = &crate::operand::OperandContext::new();
+    // Mask in `Mem32[rax] & ffff_f00f` should not prevent
+    // the outer mask from being removed.
+    let op = ctx.and_const(
+        ctx.mul_const(
+            ctx.and_const(
+                ctx.mem32(ctx.register(0), 0),
+                0xffff_f00f,
+            ),
+            0x78,
+        ),
+        0xffff_fff8,
+    );
+
+    let eq = ctx.mul_const(
+        ctx.and_const(
+            ctx.mem32(ctx.register(0), 0),
+            0x1fff_f00f,
+        ),
+        0x78,
+    );
+    assert_eq!(ctx.normalize(op), eq);
+}
