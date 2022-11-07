@@ -937,6 +937,46 @@ fn or_xor_simplify_complex() {
 }
 
 #[test]
+fn many_xor_bug() {
+    // Caused simplification debug assert due to constants not being properly folded in xor
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x20, 0x22, // and byte [edx], ah
+        0x09, 0x09, // or [ecx], ecx
+        0x09, 0x31, // or [ecx], esi
+        0x35, 0x36, 0x37, 0x32, 0x37, // xor eax, 37323736
+        0x31, 0x41, 0xff, // xor [ecx - 1], eax
+        0x31, 0x31, // xor [ecx], esi
+        0x41, // inc ecx
+        0x00, 0x31, // add byte [ecx], dh
+        0x31, 0x39, // xor [ecx], edi
+        0x10, 0x29, // adc [ecx], ch
+        0x33, 0x34, 0x03, // xor esi, [eax + ebx]
+        0x33, 0x32, // xor esi, [edx]
+        0x32, 0x32, // xor dh, byte [edx]
+        0x33, 0x33, // xor esi, [ebx]
+        0x33, 0x34, 0x33, // xor esi, [esi + ebx]
+        0x33, 0x31, // xor esi, [ecx]
+        0x41, // inc ecx
+        0x33, 0x32, // xor esi, [edx]
+        0x33, 0x31, // xor esi, [ecx]
+        0x31, 0x31, // xor [ecx], esi
+        0x21, 0x31, // and [ecx], esi
+        0x31, 0x31, // xor [ecx], esi
+        0x31, 0x31, // xor [ecx], esi
+        0x09, 0x09, // or [ecx], ecx
+        0x33, 0xd2, // xor edx, edx
+        0x31, 0xf6, // xor esi, esi
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.xor_const(ctx.register(0), 0x37323736)),
+        (ctx.register(1), ctx.add_const(ctx.register(1), 2)),
+        (ctx.register(2), ctx.constant(0)),
+        (ctx.register(6), ctx.constant(0)),
+    ]);
+}
+
+#[test]
 fn jump_conditions() {
     let ctx = &OperandContext::new();
     test(5, &[

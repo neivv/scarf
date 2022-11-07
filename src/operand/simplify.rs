@@ -1122,6 +1122,10 @@ fn simplify_xor_ops<'e>(
             simplify_xor_remove_reverting(ops);
             simplify_or_merge_child_ands(ops, ctx, swzb_ctx, u64::MAX, ArithOpType::Xor)?;
             simplify_xor_merge_ands_with_same_mask(ops, false, ctx, swzb_ctx);
+
+            const_val = ops.iter().flat_map(|x| x.if_constant())
+                .fold(const_val, |sum, x| sum ^ x);
+            ops.retain(|x| x.if_constant().is_none());
         }
         if ops.is_empty() {
             return Ok(ctx.constant(const_val));
@@ -1226,16 +1230,29 @@ fn simplify_xor_ops<'e>(
             };
             let op = simplify_with_and_mask(op, mask, ctx, swzb_ctx);
             if let Some((l, r)) = op.if_arithmetic(ArithOpType::Xor) {
-                ops[i] = r;
+                if let Some(c) = r.if_constant() {
+                    const_val ^= c;
+                    ops.swap_remove(i);
+                } else {
+                    ops[i] = r;
+                }
                 collect_xor_ops(l, ops, usize::MAX)?;
+            } else if let Some(c) = op.if_constant() {
+                const_val ^= c;
             } else {
                 ops[i] = op;
             }
         }
     }
     heapsort::sort(ops);
-    let mut tree = ops.pop()
-        .unwrap_or_else(|| ctx.const_0());
+    let mut tree = match ops.pop() {
+        Some(s) => s,
+        None => {
+            let val = ctx.constant(const_val);
+            const_val = 0;
+            val
+        }
+    };
     while let Some(op) = ops.pop() {
         let arith = ArithOperand {
             ty: ArithOpType::Xor,
