@@ -722,3 +722,35 @@ fn normalize_mul_large_const() {
     );
     assert_eq!(ctx.normalize(op), op);
 }
+
+#[test]
+fn normalize_or_with_shift() {
+    let ctx = &crate::operand::OperandContext::new();
+    let op = ctx.lsh_const(
+        ctx.or(
+            ctx.lsh_const(
+                ctx.and_const(
+                    ctx.mem8(ctx.register(0), 0),
+                    0x5,
+                ),
+                0x8,
+            ),
+            ctx.and_const(
+                ctx.mul(
+                    ctx.register(0),
+                    ctx.register(0),
+                ),
+                0x4000_0000,
+            ),
+        ),
+        0x8,
+    );
+    let eq = ctx.lsh_const(
+        ctx.and_const(
+            ctx.mem8(ctx.register(0), 0),
+            0x5,
+        ),
+        0x10,
+    );
+    assert_eq!(ctx.normalize(op), eq);
+}

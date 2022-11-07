@@ -2185,7 +2185,10 @@ impl<'e> OperandType<'e> {
                     false
                 }
                 _ => {
-                    op.is_32bit_normalized()
+                    // Require other arithmetic always be masked.
+                    // Technically could keep recursing for or/xor but
+                    // maybe better to not make this take excessively long?
+                    false
                 }
             }
         } else if let OperandType::Memory(mem) = ty {
