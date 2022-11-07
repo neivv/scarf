@@ -6001,7 +6001,13 @@ fn simplify_with_and_mask_inner<'e>(
                         let op = ctx.arithmetic(arith.ty, simplified_left, simplified_right);
                         // The result may simplify again, for example with mask 0x1
                         // Mem16[x] + Mem32[x] + Mem8[x] => 3 * Mem8[x] => 1 * Mem8[x]
-                        simplify_with_and_mask(op, orig_mask, ctx, swzb_ctx)
+                        // But assuming for now that this only happens when non-mul was
+                        // converted to mul to save some time in other cases.
+                        if arith.ty != ArithOpType::Mul && op.if_arithmetic_mul().is_some() {
+                            simplify_with_and_mask(op, orig_mask, ctx, swzb_ctx)
+                        } else {
+                            op
+                        }
                     }
                 }
                 _ => op,
