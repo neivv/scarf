@@ -220,6 +220,8 @@ pub(crate) struct OperandBase<'e> {
 const FLAG_CONTAINS_UNDEFINED: u8 = 0x1;
 // For simplify_with_and_mask optimization.
 // For example, ((x & ff) | y) & ff should remove the inner mask.
+// Also now used with 32bit normalization to quickly check
+// if there are constant and masks inside.
 const FLAG_COULD_REMOVE_CONST_AND: u8 = 0x2;
 // If not set, resolve(x) == x
 // (Constants, undef, custom, and arithmetic using them)
@@ -1721,9 +1723,11 @@ impl<'e> OperandContext<'e> {
     /// if they would otherwise be included in the rules below. (E.g. `Mem32[x] << 0x20`)
     ///
     /// - Any 'pure 64-bit variable'; `Register`, `Undefined`, `Custom`
-    /// - Additions, subtractions, and bitwise ANDs/XORs consisting only 32-bit normalized
+    /// - Additions, subtractions, consisting only 32-bit normalized
     ///     `Operand`s
-    /// - Multiplications and left shifts consisting 32-bit normalized `Operand` and a constant
+    /// - Multiplications, left shifts consisting 32-bit normalized `Operand` and a constant
+    /// - *Most XORs* that have both halves 32-bit normalized. (Details left loosely defined
+    ///     for now though)
     /// - `OperandType::ArithmeticFloat`
     ///
     /// If the `Operand` is `AND 0xffff_ffff` masked, but the value being masked
@@ -2236,7 +2240,11 @@ impl<'e> OperandType<'e> {
             // Would be nice to have or here too, but (x | y) & c may become
             // (x & c) | y which complicates things.
             ArithOpType::Xor => {
-                (arith.left.0.flags & arith.right.0.flags) & FLAG_32BIT_NORMALIZED
+                if (arith.left.0.flags | arith.right.0.flags) & FLAG_COULD_REMOVE_CONST_AND == 0 {
+                    (arith.left.0.flags & arith.right.0.flags) & FLAG_32BIT_NORMALIZED
+                } else {
+                    default_32_bit_normalized
+                }
             }
             ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul |
                 ArithOpType::Lsh =>

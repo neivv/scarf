@@ -645,6 +645,38 @@ fn normalize_bitop() {
 }
 
 #[test]
+fn normalize_xor_2() {
+    let ctx = &crate::operand::OperandContext::new();
+    // Xor without constant
+    // Becomes ((((rax + rax)[f32] >> 1) & 7ffffffe) ^ (rax * 2))
+    // If this is considered normalized (Technically could be),
+    // there's issue that and masking makes it
+    // (((rax + rax)[f32] >> 1) ^ (rax * 2)) & fffffffe
+    // instead, and determining that to not be normalized would
+    // require walking through xor with and mask and realizing that
+    // it's not needed for (rax * 2)
+    //
+    // So just making non-constant xors not be normalized
+    // if they don't fit in u32. May be changed later.
+    let op1 = ctx.mul_const(
+        ctx.xor(
+            ctx.rsh_const(
+                ctx.float_arithmetic(
+                    ArithOpType::Add,
+                    ctx.register(0),
+                    ctx.register(0),
+                    MemAccessSize::Mem32,
+                ),
+                2,
+            ),
+            ctx.register(0),
+        ),
+        2,
+    );
+    assert_eq!(ctx.normalize(op1), ctx.and_const(op1, 0xffff_ffff));
+}
+
+#[test]
 fn normalize_bitop_or() {
     let ctx = &crate::operand::OperandContext::new();
     let add = ctx.add_const(
