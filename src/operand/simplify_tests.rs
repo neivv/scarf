@@ -9433,3 +9433,26 @@ fn and_unnecesary_const_mask() {
         .unwrap_or_else(|| panic!("Incorrect op {op1}"));
     assert_eq!(other, ctx.xmm(1, 0));
 }
+
+#[test]
+fn and_unnecesary_const_mask_2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.lsh_const(
+                ctx.register(1),
+                0x20,
+            ),
+            ctx.or_const(
+                ctx.mem8(ctx.register(0), 0),
+                0x50200,
+            ),
+        ),
+        0xffff_ffff
+    );
+    let eq1 = ctx.or_const(
+        ctx.mem8(ctx.register(0), 0),
+        0x50200,
+    );
+    assert_eq!(op1, eq1);
+}

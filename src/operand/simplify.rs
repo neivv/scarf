@@ -3338,6 +3338,52 @@ fn simplify_and_insert_mask_to_or<'e>(
     None
 }
 
+fn relevant_bits_for_and_simplify<'e>(op: Operand<'e>) -> u64 {
+    match *op.ty() {
+        OperandType::Constant(c) => c,
+        OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Or => {
+            // Special case ors to extract more accurate masks than relevant_bits_mask
+            // (To not regress tests where older solution was inadequate..)
+            // Specifically gets better result for things like
+            // (rax & ff66) | ffff_0000 => ffff_ff66 instead of ffff_fffe
+            let mut relevant_bits = if let Some(c) = arith.right.if_constant() {
+                c
+            } else if let Some((_, r)) = arith.right.if_and_with_const() {
+                r
+            } else {
+                arith.right.relevant_bits_mask()
+            };
+            // Walk through or chain, but have relatively low limit
+            // after which rest are just from relevant_bits
+            let mut pos = Some(arith.left);
+            let mut limit = 6u32;
+            while let Some(next) = pos {
+                let part = if let Some((l, r)) = next.if_arithmetic_or() {
+                    pos = Some(l);
+                    r
+                } else {
+                    pos = None;
+                    next
+                };
+                if let Some((_, r)) = part.if_and_with_const() {
+                    relevant_bits |= r;
+                } else {
+                    relevant_bits |= part.relevant_bits_mask();
+                };
+                limit = match limit.checked_sub(1) {
+                    Some(s) => s,
+                    None => break,
+                };
+            }
+            if let Some(rest) = pos {
+                relevant_bits |= rest.relevant_bits_mask();
+            }
+            relevant_bits
+        }
+        _ => op.relevant_bits_mask(),
+    }
+}
+
 fn simplify_and_main<'e>(
     ops: &mut Slice<'e>,
     mut const_remain: u64,
@@ -3348,49 +3394,7 @@ fn simplify_and_main<'e>(
     // as that allows simplifying add/sub/mul a bit more
     loop {
         const_remain = ops.iter()
-            .map(|op| match *op.ty() {
-                OperandType::Constant(c) => c,
-                OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Or => {
-                    // Special case ors to extract more accurate masks than relevant_bits_mask
-                    // (To not regress tests where older solution was inadequate..)
-                    // Specifically gets better result for things like
-                    // (rax & ff66) | ffff_0000 => ffff_ff66 instead of ffff_fffe
-                    let mut relevant_bits = if let Some(c) = arith.right.if_constant() {
-                        c
-                    } else if let Some((_, r)) = arith.right.if_and_with_const() {
-                        r
-                    } else {
-                        arith.right.relevant_bits_mask()
-                    };
-                    // Walk through or chain, but have relatively low limit
-                    // after which rest are just from relevant_bits
-                    let mut pos = Some(arith.left);
-                    let mut limit = 6u32;
-                    while let Some(next) = pos {
-                        let part = if let Some((l, r)) = next.if_arithmetic_or() {
-                            pos = Some(l);
-                            r
-                        } else {
-                            pos = None;
-                            next
-                        };
-                        if let Some((_, r)) = part.if_and_with_const() {
-                            relevant_bits |= r;
-                        } else {
-                            relevant_bits |= part.relevant_bits_mask();
-                        };
-                        limit = match limit.checked_sub(1) {
-                            Some(s) => s,
-                            None => break,
-                        };
-                    }
-                    if let Some(rest) = pos {
-                        relevant_bits |= rest.relevant_bits_mask();
-                    }
-                    relevant_bits
-                }
-                _ => op.relevant_bits_mask(),
-            })
+            .map(|&op| relevant_bits_for_and_simplify(op))
             .fold(const_remain, |sum, x| sum & x);
         ops.retain(|x| x.if_constant().is_none());
         if ops.is_empty() || const_remain == 0 {
@@ -3528,8 +3532,8 @@ fn simplify_and_main<'e>(
         }
     }
 
-    let relevant_bits = ops.iter().fold(!0, |bits, op| {
-        bits & op.relevant_bits_mask()
+    let relevant_bits = ops.iter().fold(!0, |bits, &op| {
+        bits & relevant_bits_for_and_simplify(op)
     });
     // Don't use a const mask which has all 1s for relevant bits.
     let final_const_remain = if const_remain & relevant_bits == relevant_bits {
