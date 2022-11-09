@@ -9393,3 +9393,43 @@ fn mul_large_const_bug() {
     let (l, _) = op1.if_and_with_const().unwrap_or_else(|| panic!("Invalid op {}", op1));
     l.if_mul_with_const().unwrap_or_else(|| panic!("Invalid op {}", op1));
 }
+
+#[test]
+fn mul_simplify_crash() {
+    let ctx = &OperandContext::new();
+    let _ = ctx.mul(
+        ctx.mul_const(
+            ctx.and(
+                ctx.or(
+                    ctx.xmm(0, 0),
+                    ctx.register(1),
+                ),
+                ctx.xmm(1, 0),
+            ),
+            0x0100_0000_0000_0000,
+        ),
+        ctx.register(0),
+    );
+}
+
+#[test]
+fn and_unnecesary_const_mask() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and(
+        ctx.or(
+            ctx.register(1),
+            ctx.xmm(1, 0),
+        ),
+        ctx.xmm(1, 1),
+    );
+    // Check that there are no constant ffff_ffff mask added uselessly
+    let (l, r) = op1.if_arithmetic_and().unwrap_or_else(|| panic!("Incorrect op {op1}"));
+    let ((), other) = Operand::either(l, r, |x| match x.ty() {
+        OperandType::Xmm(..) => Some(()),
+        _ => None,
+    }).unwrap_or_else(|| panic!("Incorrect op {op1}"));
+    let (l, r) = other.if_arithmetic_or().unwrap_or_else(|| panic!("Incorrect op {op1}"));
+    let (_, other) = Operand::either(l, r, |x| x.if_register())
+        .unwrap_or_else(|| panic!("Incorrect op {op1}"));
+    assert_eq!(other, ctx.xmm(1, 0));
+}

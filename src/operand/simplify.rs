@@ -3279,80 +3279,63 @@ pub fn simplify_and<'e>(
 /// won't need constant mask since anding with the or which was
 /// modified to include the mask will clear out the bits that the mask
 /// would have.
-///
-/// Returns if the mask insertion was done, and if it changed anything.
 fn simplify_and_insert_mask_to_or<'e>(
     ctx: OperandCtx<'e>,
-    ops: &mut [Operand<'e>],
+    op: Operand<'e>,
     const_remain: u64,
     swzb_ctx: &mut SimplifyWithZeroBits,
-) -> (bool, bool) {
-    let mut any_changed = false;
-    let mut any_merged = false;
-    for i in 0..ops.len() {
-        if let OperandType::Arithmetic(arith) = ops[i].ty() {
-            if !matches!(arith.ty, ArithOpType::Or) {
-                continue;
-            }
-            let parts = IterArithOps {
-                ty: arith.ty,
-                next: Some(arith.right),
-                next_inner: Some(arith.left),
-            };
-            let mut mask_result = 0;
-            for op in parts {
-                let mask = match op.if_constant() {
-                    Some(c) => c,
-                    None => op.relevant_bits_mask(),
-                };
-                if mask & const_remain != mask {
-                    // Needs mask
-                    mask_result |= 1;
-                } else {
-                    mask_result |= 2;
-                }
-                if mask_result == 3 {
-                    break;
-                }
-            }
-            if mask_result != 3 {
-                continue;
-            }
-            let mut needing_mask = ctx.const_0();
-            let mut not_needing_mask = ctx.const_0();
-            let parts = IterArithOps {
-                ty: arith.ty,
-                next: Some(arith.right),
-                next_inner: Some(arith.left),
-            };
-            for op in parts {
-                let mask = match op.if_constant() {
-                    Some(c) => c,
-                    None => op.relevant_bits_mask(),
-                };
-                if mask & const_remain != mask {
-                    needing_mask = ctx.arithmetic(arith.ty, op, needing_mask);
-                } else {
-                    not_needing_mask = ctx.arithmetic(arith.ty, op, not_needing_mask);
-                }
-            }
-            let masked = simplify_and_const(needing_mask, const_remain, ctx, swzb_ctx);
-            let new = ctx.arithmetic(arith.ty, not_needing_mask, masked);
-            if ops[i] != new {
-                ops[i] = new;
-                any_changed = true;
-            }
-            any_merged = true;
-            // Technically could return here since the mask will cause
-            // any remaining ones be masked the same, but going to mask
-            // every part for more consistent canonicalization.
-            //
-            // Alternatively could only insert mask if only one part is
-            // maskable, but it would require undoing the masks when
-            // and with one applied is being used as input to another and.
+) -> Option<Operand<'e>> {
+    if let OperandType::Arithmetic(arith) = op.ty() {
+        if !matches!(arith.ty, ArithOpType::Or) {
+            return None;
         }
+        let parts = IterArithOps {
+            ty: arith.ty,
+            next: Some(arith.right),
+            next_inner: Some(arith.left),
+        };
+        let mut mask_result = 0;
+        for op in parts {
+            let mask = match op.if_constant() {
+                Some(c) => c,
+                None => op.relevant_bits_mask(),
+            };
+            if mask & const_remain != mask {
+                // Needs mask
+                mask_result |= 1;
+            } else {
+                mask_result |= 2;
+            }
+            if mask_result == 3 {
+                break;
+            }
+        }
+        if mask_result != 3 {
+            return None;
+        }
+        let mut needing_mask = ctx.const_0();
+        let mut not_needing_mask = ctx.const_0();
+        let parts = IterArithOps {
+            ty: arith.ty,
+            next: Some(arith.right),
+            next_inner: Some(arith.left),
+        };
+        for op in parts {
+            let mask = match op.if_constant() {
+                Some(c) => c,
+                None => op.relevant_bits_mask(),
+            };
+            if mask & const_remain != mask {
+                needing_mask = ctx.arithmetic(arith.ty, op, needing_mask);
+            } else {
+                not_needing_mask = ctx.arithmetic(arith.ty, op, not_needing_mask);
+            }
+        }
+        let masked = simplify_and_const(needing_mask, const_remain, ctx, swzb_ctx);
+        let new = ctx.arithmetic(arith.ty, not_needing_mask, masked);
+        return Some(new);
     }
-    (any_merged, any_changed)
+    None
 }
 
 fn simplify_and_main<'e>(
@@ -3365,9 +3348,48 @@ fn simplify_and_main<'e>(
     // as that allows simplifying add/sub/mul a bit more
     loop {
         const_remain = ops.iter()
-            .map(|op| match op.if_constant() {
-                Some(c) => c,
-                None => op.relevant_bits_mask(),
+            .map(|op| match *op.ty() {
+                OperandType::Constant(c) => c,
+                OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Or => {
+                    // Special case ors to extract more accurate masks than relevant_bits_mask
+                    // (To not regress tests where older solution was inadequate..)
+                    // Specifically gets better result for things like
+                    // (rax & ff66) | ffff_0000 => ffff_ff66 instead of ffff_fffe
+                    let mut relevant_bits = if let Some(c) = arith.right.if_constant() {
+                        c
+                    } else if let Some((_, r)) = arith.right.if_and_with_const() {
+                        r
+                    } else {
+                        arith.right.relevant_bits_mask()
+                    };
+                    // Walk through or chain, but have relatively low limit
+                    // after which rest are just from relevant_bits
+                    let mut pos = Some(arith.left);
+                    let mut limit = 6u32;
+                    while let Some(next) = pos {
+                        let part = if let Some((l, r)) = next.if_arithmetic_or() {
+                            pos = Some(l);
+                            r
+                        } else {
+                            pos = None;
+                            next
+                        };
+                        if let Some((_, r)) = part.if_and_with_const() {
+                            relevant_bits |= r;
+                        } else {
+                            relevant_bits |= part.relevant_bits_mask();
+                        };
+                        limit = match limit.checked_sub(1) {
+                            Some(s) => s,
+                            None => break,
+                        };
+                    }
+                    if let Some(rest) = pos {
+                        relevant_bits |= rest.relevant_bits_mask();
+                    }
+                    relevant_bits
+                }
+                _ => op.relevant_bits_mask(),
             })
             .fold(const_remain, |sum, x| sum & x);
         ops.retain(|x| x.if_constant().is_none());
@@ -3433,12 +3455,14 @@ fn simplify_and_main<'e>(
             }
         }
 
-        if const_remain != u64::MAX {
-            let (const_remain_unnecessary, any_changed) =
-                simplify_and_insert_mask_to_or(ctx, ops, const_remain, swzb_ctx);
-            ops_changed |= any_changed;
-            if const_remain_unnecessary {
-                const_remain = u64::MAX;
+        if const_remain != u64::MAX && ops.len() == 1 {
+            let new = simplify_and_insert_mask_to_or(ctx, ops[0], const_remain, swzb_ctx);
+            if let Some(new) = new {
+                if ops[0] != new {
+                    ops[0] = new;
+                    ops_changed = true;
+                }
+                const_remain = new.relevant_bits_mask();
             }
         }
 
@@ -5854,17 +5878,23 @@ fn simplify_with_and_mask_inner<'e>(
                     }
                 }
                 ArithOpType::Or => {
-                    let simplified_left = simplify_with_and_mask(arith.left, mask, ctx, swzb_ctx);
-                    if let Some(c) = simplified_left.if_constant() {
-                        if mask & c == mask & arith.right.relevant_bits_mask() {
-                            return simplified_left;
-                        }
-                    }
                     let simplified_right =
                         simplify_with_and_mask(arith.right, mask, ctx, swzb_ctx);
                     if let Some(c) = simplified_right.if_constant() {
                         if mask & c == mask & arith.left.relevant_bits_mask() {
                             return simplified_right;
+                        }
+                    }
+                    // Left won't need bits that are always set to one by constant
+                    let left_mask = match simplified_right.if_constant() {
+                        Some(c) => mask & !c,
+                        None => mask,
+                    };
+                    let simplified_left =
+                        simplify_with_and_mask(arith.left, left_mask, ctx, swzb_ctx);
+                    if let Some(c) = simplified_left.if_constant() {
+                        if mask & c == mask & arith.right.relevant_bits_mask() {
+                            return simplified_left;
                         }
                     }
                     // Possibly common to get zeros here
