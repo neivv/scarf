@@ -2063,11 +2063,6 @@ pub fn simplify_eq_const<'e>(
                         return arith.left;
                     }
                 }
-            } else if arith.ty == ArithOpType::Or {
-                // (x | c) == 0 => 0
-                if arith.right.if_constant().is_some() {
-                    return ctx.const_0();
-                }
             } else if arith.ty == ArithOpType::Sub {
                 // Simplify x - y == 0 as x == y
                 return simplify_eq(arith.left, arith.right, ctx);
@@ -2076,6 +2071,12 @@ pub fn simplify_eq_const<'e>(
                     return result;
                 }
             }
+        }
+    }
+    if let Some((_, or_const)) = Operand::and_masked(left).0.if_or_with_const() {
+        // If the or forces too many bits to one, it can't be equal
+        if or_const | right != right {
+            return ctx.const_0();
         }
     }
     if right == 1 {

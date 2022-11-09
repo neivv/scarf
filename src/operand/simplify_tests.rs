@@ -6939,6 +6939,32 @@ fn or_const_eq_zero() {
 }
 
 #[test]
+fn or_const_eq_const() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.eq_const(
+        ctx.or(
+            ctx.register(0),
+            ctx.constant(0x6560),
+        ),
+        0x1200,
+    );
+    let eq1 = ctx.constant(0);
+    let op2 = ctx.eq_const(
+        ctx.and_const(
+            ctx.or(
+                ctx.register(0),
+                ctx.constant(0x6560),
+            ),
+            0xffff_ffff,
+        ),
+        0x1200,
+    );
+    let eq2 = ctx.constant(0);
+    assert_eq!(op1, eq1);
+    assert_eq!(op2, eq2);
+}
+
+#[test]
 fn simplify_mul_high() {
     let ctx = &OperandContext::new();
     let op1 = ctx.mul_high(
