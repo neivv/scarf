@@ -25,12 +25,14 @@ pub struct SimplifyWithZeroBits {
     /// simplification with has functions, stop simplifying if a limit
     /// is hit.
     xor_recurse: u8,
+    xor_and_merge_count: u8
 }
 
 impl SimplifyWithZeroBits {
     fn has_reached_limit(&self) -> bool {
         self.zero_bits_simplify_count_at_limit() ||
-            self.with_and_mask_count_at_limit()
+            self.with_and_mask_count_at_limit() ||
+            self.xor_and_merge_count_at_limit()
     }
 
     #[inline]
@@ -41,6 +43,20 @@ impl SimplifyWithZeroBits {
     #[inline]
     fn with_and_mask_count_at_limit(&self) -> bool {
         self.with_and_mask_count > 120
+    }
+
+    #[inline]
+    fn xor_and_merge_count_at_limit(&self) -> bool {
+        self.xor_and_merge_count > 50
+    }
+
+    #[inline]
+    fn xor_and_merge_count_add(&mut self, amount: usize) {
+        self.xor_and_merge_count = self.xor_and_merge_count.saturating_add(amount as u8);
+        #[cfg(feature = "fuzz")]
+        if self.xor_and_merge_count_at_limit() {
+            tls_simplification_incomplete();
+        }
     }
 }
 
@@ -594,47 +610,48 @@ fn simplify_xor_merge_ands_with_same_mask<'e>(
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) {
     let mut i = 0;
-    while i < ops.len() {
-        if let Some((_, r)) = ops[i].if_arithmetic_and() {
-            if let Some(mask) = r.if_constant() {
-                let any_matching = (ops[(i + 1)..]).iter().any(|x| {
-                    x.if_arithmetic_and()
-                        .and_then(|x| x.1.if_constant())
-                        .filter(|&c| c == mask)
-                        .is_some()
-                });
-                if any_matching {
-                    let result = ctx.simplify_temp_stack
-                        .alloc(|slice| {
-                            for op in &ops[i..] {
-                                if let Some((l, r)) = op.if_arithmetic_and() {
-                                    if r.if_constant() == Some(mask) {
-                                        slice.push(l)?;
+    while i < ops.len() && !swzb_ctx.xor_and_merge_count_at_limit() {
+        if let Some((_, mask)) = ops[i].if_and_with_const() {
+            let any_matching = (ops[(i + 1)..]).iter().any(|x| {
+                x.if_and_with_const()
+                    .filter(|&(_, c)| c == mask)
+                    .is_some()
+            });
+            if any_matching {
+                let result = ctx.simplify_temp_stack
+                    .alloc(|slice| {
+                        for op in &ops[i..] {
+                            if let Some((l, r)) = op.if_and_with_const() {
+                                if r == mask {
+                                    if is_or {
+                                        collect_arith_ops(l, slice, ArithOpType::Or, 12)?;
+                                    } else {
+                                        collect_arith_ops(l, slice, ArithOpType::Xor, 12)?;
                                     }
                                 }
                             }
-                            if is_or {
-                                simplify_or_ops(slice, ctx, swzb_ctx)
-                            } else {
-                                simplify_xor_ops(slice, ctx, swzb_ctx)
-                            }
-                        });
-                    if let Ok(result) = result {
-                        for j in ((i + 1)..ops.len()).rev() {
-                            let matched = ops[j].if_arithmetic_and()
-                                .and_then(|x| x.1.if_constant())
-                                .filter(|&c| c == mask)
-                                .is_some();
-                            if matched {
-                                ops.swap_remove(j);
-                            }
                         }
-                        if result == ctx.const_0() {
-                            ops.swap_remove(i);
+                        swzb_ctx.xor_and_merge_count_add(slice.len());
+                        if is_or {
+                            simplify_or_ops(slice, ctx, swzb_ctx)
                         } else {
-                            let masked = ctx.and_const(result, mask);
-                            ops[i] = masked;
+                            simplify_xor_ops(slice, ctx, swzb_ctx)
                         }
+                    });
+                if let Ok(result) = result {
+                    for j in ((i + 1)..ops.len()).rev() {
+                        let matched = ops[j].if_and_with_const()
+                            .filter(|&(_, c)| c == mask)
+                            .is_some();
+                        if matched {
+                            ops.swap_remove(j);
+                        }
+                    }
+                    if result == ctx.const_0() {
+                        ops.swap_remove(i);
+                    } else {
+                        let masked = simplify_and_const(result, mask, ctx, swzb_ctx);
+                        ops[i] = masked;
                     }
                 }
             }

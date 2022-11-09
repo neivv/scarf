@@ -1,4 +1,4 @@
-; nasm -f bin slow.asm -o slow.bin
+; nasm -f bin test_inputs/slow.asm -o test_inputs/slow.bin
 bits 32
 
 dd hash 
@@ -10,6 +10,7 @@ dd slow6
 dd many_adc
 dd slow7
 dd slow8
+dd slow9
 
 ; Interestingly this was slow since it analyzed the loop twice, creating two distinct Operand
 ; trees which it then compared.
@@ -11659,4 +11660,193 @@ or eax, dword [eax]
 add byte [eax], al
 and byte [ecx], ah
 and byte [eax], ah
+ret
+
+slow9:
+xor al, 0x37
+div dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],ebp
+xor esi,dword [eax+ebx]
+xor esi,dword [edx]
+xor dh,byte [edx]
+xor esi,dword [ebx]
+xor eax,dword [eax]
+xor esi,dword [esi+ebx]
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [edi],esp
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [0x37323736],esi
+xor dword [ecx - 0x1],eax
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [edi + 0x31],esp
+xor dword [ecx],esi
+xor dword [ecx],esi
+inc ecx
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [bx+di],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+cmp dword [eax],edx
+inc eax
+add byte [ecx],dh
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+test dword [ecx * 2 + esp + 0x4c],0x344df74c
+xor esi,dword [ebx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+add byte [edi],ah
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],eax
+add byte [eax],al
+add byte [eax],al
+add byte [eax],al
+add byte [ebx],dh
+xor al,33
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [edi],esp
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [0x37323736],esi
+xor dword [ecx-1],eax
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [edi+31],esp
+xor dword [ecx],esi
+xor dword [ecx],esi
+inc ecx
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ebx],esi
+xor esi,dword [ebx]
+add byte [ebx],dh
+xor al,33
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [edi],esp
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ebp + 0x31318585],eax
+xor dword [ecx],esi
+xor eax, 0x37323736
+xor dword [ecx-1],eax
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [edi+31],esp
+xor dword [ecx],esi
+xor dword [ecx],esi
+inc ecx
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [bx+di],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+cmp dword [eax],edx
+inc eax
+add byte [ecx],dh
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+test dword [ecx*2 + esp + 0x4c], 0x344df74c
+xor esi,dword [ebx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+add byte [eax],al
+adc byte [eax],al
+add byte [esi+edi],dh
+div dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],ebp
+xor esi,dword [eax+ebx]
+xor esi,dword [edx]
+xor dh,byte [edx]
+xor esi,dword [ebx]
+xor eax,dword [eax]
+xor esi,dword [esi+ebx]
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [edi],esp
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [0x37323736],esi
+xor dword [ecx-1],eax
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [edi+0x31],esp
+xor dword [ecx],esi
+xor dword [ecx],esi
+inc ecx
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [bx+di],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+cmp dword [eax],edx
+inc eax
+add byte [ecx],dh
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
 ret
