@@ -6553,44 +6553,14 @@ fn simplify_xor_try_extract_constant<'e>(
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Option<(Operand<'e>, u64)> {
-    fn recurse<'e>(op: Operand<'e>, ctx: OperandCtx<'e>) -> Option<(Operand<'e>, u64)> {
-        match op.ty() {
-            OperandType::Arithmetic(arith) => {
-                match arith.ty {
-                    ArithOpType::And => {
-                        let left = recurse(arith.left, ctx);
-                        let right = recurse(arith.right, ctx);
-                        return match (left, right) {
-                            (None, None) => None,
-                            (Some(a), None) => {
-                                Some((ctx.and(a.0, arith.right), a.1))
-                            }
-                            (None, Some(a)) => {
-                                Some((ctx.and(a.0, arith.left), a.1))
-                            }
-                            (Some(a), Some(b)) => {
-                                Some((ctx.and(a.0, b.0), a.1 ^ b.1))
-                            }
-                        };
-                    }
-                    ArithOpType::Xor => {
-                        if let Some(c) = arith.right.if_constant() {
-                            return Some((arith.left, c));
-                        }
-                    }
-                    _ => (),
-                }
-            }
-            _ => (),
-        }
-        None
-    }
-
     let (l, r) = op.if_arithmetic_and()?;
     let and_mask = r.if_constant()?;
-    let (new, c) = recurse(l, ctx)?;
-    let new = simplify_and(new, r, ctx, swzb);
-    Some((new, c & and_mask))
+    if let Some((l, or_const)) = l.if_or_with_const() {
+        let new = simplify_and_const(l, !or_const & and_mask, ctx, swzb);
+        Some((new, or_const & and_mask))
+    } else {
+        None
+    }
 }
 
 pub fn simplify_gt<'e>(

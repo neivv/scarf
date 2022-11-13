@@ -9456,3 +9456,33 @@ fn and_unnecesary_const_mask_2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn xor_const_inside_and_chain() {
+    let ctx = &OperandContext::new();
+    // Shouldn't simplify
+    let op1 = ctx.xor_const(
+        ctx.and_const(
+            ctx.and(
+                ctx.register(0),
+                ctx.xor_const(
+                    ctx.register(1),
+                    0xff,
+                ),
+            ),
+            0xffff_ffff,
+        ),
+        0xff,
+    );
+    (|| {
+        let x = match op1.if_and_with_const()? {
+            (x, 0xffff_ffff) => x,
+            _ => return None,
+        };
+        let x = match x.if_xor_with_const()? {
+            (x, 0xff) => x,
+            _ => return None,
+        };
+        x.if_arithmetic_and()
+    })().unwrap_or_else(|| panic!("Bad simplify {op1}"));
+}
