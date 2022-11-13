@@ -903,6 +903,7 @@ fn or_xor_simplify_bug() {
     ]);
 }
 
+#[ignore]
 #[test]
 fn or_xor_simplify_complex() {
     let ctx = &OperandContext::new();
@@ -1059,7 +1060,8 @@ impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
             panic!("Disassembly error {}", e);
         }
         if let Operation::Move(_, val, _) = *op {
-            println!("Resolved is {}", control.resolve(val));
+            let val = control.resolve(val);
+            println!("Resolved is {}", val);
         }
         if let Operation::Jump { condition, .. } = *op {
             println!("Resolved cond is {}", control.resolve(condition));

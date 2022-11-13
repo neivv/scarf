@@ -8583,11 +8583,6 @@ fn or_cmp_1bit_mask_consistency() {
     );
     assert_eq!(op1, eq1);
 
-    // And the canonical form is (rax > rcx) | (rdx & 1)
-    // If or operand does not need mask it will not be masked.
-    // This is different from xor. Maybe should change be same?
-    op1.if_arithmetic_or().expect("Did not canonicalize to or");
-
     // ((rax > rcx) | ((rdx | Custom(2)) & 1)) | (r8 == r9)
     // is same as
     // ((((rax > rcx) | rdx) | Custom(2)) | (r8 == r9)) & 1
@@ -9485,4 +9480,150 @@ fn xor_const_inside_and_chain() {
         };
         x.if_arithmetic_and()
     })().unwrap_or_else(|| panic!("Bad simplify {op1}"));
+}
+
+#[test]
+fn masked_or_consistency() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.lsh_const(
+                ctx.register(1),
+                0x20,
+            ),
+            ctx.or(
+                ctx.and_const(
+                    ctx.mem16(ctx.register(0), 0),
+                    0x3a32,
+                ),
+                ctx.and_const(
+                    ctx.mem16(ctx.register(1), 0),
+                    0x3aff,
+                ),
+            ),
+        ),
+        0xffff_ffff
+    );
+    let eq1 = ctx.or(
+        ctx.and_const(
+            ctx.mem16(ctx.register(0), 0),
+            0x3a32,
+        ),
+        ctx.and_const(
+            ctx.mem16(ctx.register(1), 0),
+            0x3aff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_xor_consistency() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.xor(
+            ctx.lsh_const(
+                ctx.register(1),
+                0x20,
+            ),
+            ctx.xor(
+                ctx.and_const(
+                    ctx.mem16(ctx.register(0), 0),
+                    0x3a32,
+                ),
+                ctx.and_const(
+                    ctx.mem16(ctx.register(1), 0),
+                    0x3aff,
+                ),
+            ),
+        ),
+        0xffff_ffff
+    );
+    let eq1 = ctx.xor(
+        ctx.and_const(
+            ctx.mem16(ctx.register(0), 0),
+            0x3a32,
+        ),
+        ctx.and_const(
+            ctx.mem16(ctx.register(1), 0),
+            0x3aff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn or_with_const_masked() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or_const(
+        ctx.and_const(
+            ctx.or(
+                ctx.lsh_const(
+                    ctx.register(1),
+                    0x20,
+                ),
+                ctx.or(
+                    ctx.register(2),
+                    ctx.register(3),
+                ),
+            ),
+            !0x12341234u64 & 0xffff_ffff,
+        ),
+        0x1234_1234,
+    );
+    let eq1 = ctx.and_const(
+        ctx.or_const(
+            ctx.or(
+                ctx.lsh_const(
+                    ctx.register(1),
+                    0x20,
+                ),
+                ctx.or(
+                    ctx.register(2),
+                    ctx.register(3),
+                ),
+            ),
+            0x12341234,
+        ),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_shifts() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.lsh_const(
+            ctx.and_const(
+                ctx.register(1),
+                0xffff,
+            ),
+            0x10,
+        ),
+        ctx.and_const(
+            ctx.rsh_const(
+                ctx.register(2),
+                0x10,
+            ),
+            0xffff,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.lsh_const(
+                ctx.register(1),
+                0x10,
+            ),
+            ctx.and_const(
+                ctx.rsh_const(
+                    ctx.register(2),
+                    0x10,
+                ),
+                0xffff,
+            ),
+        ),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
 }

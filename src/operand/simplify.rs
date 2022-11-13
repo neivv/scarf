@@ -577,7 +577,7 @@ fn simplify_xor_unpack_and_masks<'e>(
                                     };
                                     for &op in slice.iter().rev().skip(1) {
                                         let arith = ArithOperand {
-                                            ty: ArithOpType::Xor,
+                                            ty,
                                             left: tree,
                                             right: op,
                                         };
@@ -1207,60 +1207,13 @@ fn simplify_xor_ops<'e>(
         1 if const_val == 0 => return Ok(ops[0]),
         _ => (),
     };
-    // Canonicalize to (x ^ y) & ffff over x ^ (y & ffff)
-    // when the outermost mask doesn't modify x
-    // Keep op with the mask to avoid reinterning it.
-    let best_mask = ops.iter()
-        .fold(None, |prev: Option<(u64, Operand<'e>)>, &op| {
-            if let Some(new) = op.if_arithmetic_and()
-                .and_then(|x| x.1.if_constant().map(|c| (c, x.1)))
-            {
-                if let Some(prev) = prev {
-                    if prev.0 & new.0 == new.0 {
-                        Some(prev)
-                    } else if prev.0 & new.0 == prev.0 {
-                        Some(new)
-                    } else {
-                        None
-                    }
-                } else {
-                    Some(new)
-                }
-            } else {
-                prev
-            }
-        })
-        .filter(|&(mask, _op)| {
-            ops.iter().all(|x| {
-                let relbits = x.relevant_bits_mask();
-                relbits & mask == relbits
-            }) && mask & const_val == const_val
-        });
-    if let Some((mask, _op)) = best_mask {
-        for i in 0..ops.len() {
-            // Remove and mask when not needed and pass to simplify_with_and_mask
-            // (Technically simplify_with_and_mask does that too, but do this
-            // even if simplify_with_and_mask has reached recursion limit)
-            let op = match ops[i].if_and_with_const() {
-                Some((l, r)) if l.relevant_bits_mask() & mask == r => l,
-                _ => ops[i],
-            };
-            let op = simplify_with_and_mask(op, mask, ctx, swzb_ctx);
-            if let Some((l, r)) = op.if_arithmetic(ArithOpType::Xor) {
-                if let Some(c) = r.if_constant() {
-                    const_val ^= c;
-                    ops.swap_remove(i);
-                } else {
-                    ops[i] = r;
-                }
-                collect_xor_ops(l, ops, usize::MAX)?;
-            } else if let Some(c) = op.if_constant() {
-                const_val ^= c;
-            } else {
-                ops[i] = op;
-            }
-        }
-    }
+    let best_mask = simplify_or_xor_canonicalize_and_masks(
+        ops,
+        ArithOpType::Xor,
+        &mut const_val,
+        ctx,
+        swzb_ctx,
+    )?;
     heapsort::sort(ops);
     let mut tree = match ops.pop() {
         Some(s) => s,
@@ -1287,15 +1240,106 @@ fn simplify_xor_ops<'e>(
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
-    if let Some((_, op)) = best_mask {
+    if let Some(c) = best_mask {
         let arith = ArithOperand {
             ty: ArithOpType::And,
             left: tree,
-            right: op,
+            right: ctx.constant(c),
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
     Ok(tree)
+}
+
+fn simplify_or_xor_canonicalize_and_masks<'e>(
+    ops: &mut Slice<'e>,
+    arith_ty: ArithOpType,
+    const_val: &mut u64,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Result<Option<u64>, SizeLimitReached> {
+    // Canonicalize to (x ^ y) & ffff over x ^ (y & ffff)
+    // when the outermost mask doesn't modify x
+    let best_mask = ops.iter()
+        .fold(None, |prev: Option<u64>, &op| {
+            let new = match op.if_arithmetic_any() {
+                // In addition to (x & ffff) consider also (x & ff) << 8
+                // as ffff mask.
+                Some(arith) if matches!(arith.ty, ArithOpType::And | ArithOpType::Lsh) => {
+                    arith.right.if_constant()
+                        .and_then(|c| {
+                            if arith.ty == ArithOpType::And {
+                                Some(c)
+                            } else {
+                                let (_, mask) = arith.left.if_and_with_const()?;
+                                Some(mask.wrapping_shl(c as u32) |
+                                    1u64.wrapping_shl(c as u32).wrapping_sub(1))
+                            }
+                        })
+                }
+                _ => None,
+            };
+            if let Some(new) = new {
+                if let Some(prev) = prev {
+                    if prev & new == new {
+                        Some(prev)
+                    } else if prev & new == prev {
+                        Some(new)
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(new)
+                }
+            } else {
+                prev
+            }
+        })
+        .filter(|&mask| {
+            ops.iter().all(|x| {
+                let relbits = match x.if_and_with_const() {
+                    Some((_, c)) => c,
+                    _ => x.relevant_bits_mask(),
+                };
+                relbits & mask == relbits
+            }) && mask & *const_val == *const_val
+        });
+    if let Some(mask) = best_mask {
+        for i in 0..ops.len() {
+            // Remove and mask when not needed and pass to simplify_with_and_mask
+            // (Technically simplify_with_and_mask does that too, but do this
+            // even if simplify_with_and_mask has reached recursion limit)
+            let op = match ops[i].if_and_with_const() {
+                Some((l, r)) if l.relevant_bits_mask() & mask == r => l,
+                _ => ops[i],
+            };
+            let op = simplify_with_and_mask(op, mask, ctx, swzb_ctx);
+            if let Some((l, r)) = op.if_arithmetic(arith_ty) {
+                if let Some(c) = r.if_constant() {
+                    if arith_ty == ArithOpType::Xor {
+                        *const_val ^= c;
+                    } else {
+                        *const_val |= c;
+                    }
+                    ops.swap_remove(i);
+                } else {
+                    ops[i] = r;
+                }
+                collect_arith_ops(l, ops, arith_ty, usize::MAX)?;
+            } else if let Some(c) = op.if_constant() {
+                if arith_ty == ArithOpType::Xor {
+                    *const_val ^= c;
+                } else {
+                    *const_val |= c;
+                }
+            } else {
+                ops[i] = op;
+            }
+        }
+        Ok(Some(mask))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Assumes that `ops` is sorted.
@@ -3290,71 +3334,6 @@ pub fn simplify_and<'e>(
     })
 }
 
-/// If and ops contain or, and some of the parts of or
-/// don't need the mask, split or to half that needs the mask
-/// and mask it, and rejoin with rest. After that the and simplification
-/// won't need constant mask since anding with the or which was
-/// modified to include the mask will clear out the bits that the mask
-/// would have.
-fn simplify_and_insert_mask_to_or<'e>(
-    ctx: OperandCtx<'e>,
-    op: Operand<'e>,
-    const_remain: u64,
-    swzb_ctx: &mut SimplifyWithZeroBits,
-) -> Option<Operand<'e>> {
-    if let OperandType::Arithmetic(arith) = op.ty() {
-        if !matches!(arith.ty, ArithOpType::Or) {
-            return None;
-        }
-        let parts = IterArithOps {
-            ty: arith.ty,
-            next: Some(arith.right),
-            next_inner: Some(arith.left),
-        };
-        let mut mask_result = 0;
-        for op in parts {
-            let mask = match op.if_constant() {
-                Some(c) => c,
-                None => op.relevant_bits_mask(),
-            };
-            if mask & const_remain != mask {
-                // Needs mask
-                mask_result |= 1;
-            } else {
-                mask_result |= 2;
-            }
-            if mask_result == 3 {
-                break;
-            }
-        }
-        if mask_result != 3 {
-            return None;
-        }
-        let mut needing_mask = ctx.const_0();
-        let mut not_needing_mask = ctx.const_0();
-        let parts = IterArithOps {
-            ty: arith.ty,
-            next: Some(arith.right),
-            next_inner: Some(arith.left),
-        };
-        for op in parts {
-            let mask = match op.if_constant() {
-                Some(c) => c,
-                None => op.relevant_bits_mask(),
-            };
-            if mask & const_remain != mask {
-                needing_mask = ctx.arithmetic(arith.ty, op, needing_mask);
-            } else {
-                not_needing_mask = ctx.arithmetic(arith.ty, op, not_needing_mask);
-            }
-        }
-        let masked = simplify_and_const(needing_mask, const_remain, ctx, swzb_ctx);
-        let new = ctx.arithmetic(arith.ty, not_needing_mask, masked);
-        return Some(new);
-    }
-    None
-}
-
 fn relevant_bits_for_and_simplify<'e>(op: Operand<'e>) -> u64 {
     match *op.ty() {
         OperandType::Constant(c) => c,
@@ -3477,13 +3456,13 @@ fn simplify_and_main<'e>(
         }
 
         if const_remain != u64::MAX && ops.len() == 1 {
-            let new = simplify_and_insert_mask_to_or(ctx, ops[0], const_remain, swzb_ctx);
-            if let Some(new) = new {
-                if ops[0] != new {
-                    ops[0] = new;
-                    ops_changed = true;
+            // Canonicalize (x | const) & mask
+            // to (x & (!const mask)) | const
+            if let Some((l, r)) = ops[0].if_arithmetic_or() {
+                if let Some(or_val) = r.if_constant() {
+                    let inner = simplify_and_const(l, !or_val & const_remain, ctx, swzb_ctx);
+                    return Ok(simplify_or(inner, r, ctx, swzb_ctx));
                 }
-                const_remain = new.relevant_bits_mask();
             }
         }
 
@@ -5549,7 +5528,7 @@ pub fn simplify_or<'e>(
         }
     } else {
         if !bits_overlap(&left_bits, &right_bits) {
-            if let Some(result) = simplify_or_2op_no_overlap(left, right, ctx) {
+            if let Some(result) = simplify_or_2op_no_overlap(left, right, ctx, swzb) {
                 return result;
             }
         }
@@ -5597,6 +5576,7 @@ fn simplify_or_2op_no_overlap<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
     ctx: OperandCtx<'e>,
+    swzb: &mut SimplifyWithZeroBits,
 ) -> Option<Operand<'e>> {
     // This function doesn't try to handle everything that simplify_or_merge_child_ands
     // does; if there are child ors/xors then just go through the main simplification.
@@ -5625,17 +5605,20 @@ fn simplify_or_2op_no_overlap<'e>(
         }
     }
 
-    let (left, right) = match left > right {
-        true => (left, right),
-        false => (right, left),
-    };
-    let arith = ArithOperand {
-        ty: ArithOpType::Or,
-        left,
-        right,
-    };
+    ctx.simplify_temp_stack().alloc(|slice| {
+        slice.push(left).ok()?;
+        slice.push(right).ok()?;
+        let mut const_val = 0;
+        let best_mask = simplify_or_xor_canonicalize_and_masks(
+            slice,
+            ArithOpType::Or,
+            &mut const_val,
+            ctx,
+            swzb,
+        ).ok()?;
 
-    Some(ctx.intern(OperandType::Arithmetic(arith)))
+        Some(finish_or_simplify(slice, ctx, const_val, best_mask))
+    })
 }
 
 fn simplify_or_ops<'e>(
@@ -5649,6 +5632,15 @@ fn simplify_or_ops<'e>(
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum | x);
         ops.retain(|x| x.if_constant().is_none());
+        for i in 0..ops.len() {
+            let op = ops[i];
+            if let Some((l, mask)) = op.if_and_with_const() {
+                if let Some((l2, or_const)) = l.if_or_with_const() {
+                    ops[i] = simplify_and_const(l2, !or_const & mask, ctx, swzb_ctx);
+                    const_val |= or_const;
+                }
+            }
+        }
         if ops.is_empty() || const_val == u64::MAX {
             return Ok(ctx.constant(const_val));
         }
@@ -5713,6 +5705,23 @@ fn simplify_or_ops<'e>(
         1 if const_val == 0 => return Ok(ops[0]),
         _ => (),
     };
+    let best_mask = simplify_or_xor_canonicalize_and_masks(
+        ops,
+        ArithOpType::Or,
+        &mut const_val,
+        ctx,
+        swzb_ctx,
+    )?;
+    Ok(finish_or_simplify(ops, ctx, const_val, best_mask))
+}
+
+fn finish_or_simplify<'e>(
+    ops: &mut Slice<'e>,
+    ctx: OperandCtx<'e>,
+    const_val: u64,
+    best_mask: Option<u64>,
+) -> Operand<'e> {
+    heapsort::sort(ops);
     let mut tree = ops.pop()
         .unwrap_or_else(|| ctx.const_0());
     while let Some(op) = ops.pop() {
@@ -5720,6 +5729,14 @@ fn simplify_or_ops<'e>(
             ty: ArithOpType::Or,
             left: tree,
             right: op,
+        };
+        tree = ctx.intern(OperandType::Arithmetic(arith));
+    }
+    if let Some(c) = best_mask {
+        let arith = ArithOperand {
+            ty: ArithOpType::And,
+            left: tree,
+            right: ctx.constant(c & !const_val),
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
@@ -5731,7 +5748,7 @@ fn simplify_or_ops<'e>(
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
-    Ok(tree)
+    tree
 }
 
 /// Counts xor ops, descending into x & c masks, as
