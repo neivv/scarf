@@ -10,7 +10,7 @@ use super::{
     ArithOperand, ArithOpType, MemAccess, MemAccessSize, Operand, OperandType, OperandCtx,
 };
 use super::slice_stack::{self, SizeLimitReached};
-use super::util::{IterArithOps, IterAddSubArithOps};
+use super::util::{self, IterArithOps, IterAddSubArithOps};
 #[cfg(feature = "fuzz")] use super::tls_simplification_incomplete;
 
 type Slice<'e> = slice_stack::Slice<'e, Operand<'e>>;
@@ -3981,6 +3981,57 @@ fn simplify_and_merge_gt_const<'e>(
     new_const_remain
 }
 
+/// Does (x ^ y) | x => x | y simplification
+fn simplify_or_with_xor_of_op<'e>(
+    ops: &mut Slice<'e>,
+    ctx: OperandCtx<'e>,
+) {
+    let mut limit = 50u32;
+    let mut i = 0;
+    while i < ops.len() && limit != 0 {
+        let op = ops[i];
+        if let Some((l, r)) = op.if_arithmetic_xor() {
+            let result = util::arith_parts_to_new_slice(ctx, l, r, ArithOpType::Xor, |slice| {
+                for j in 0..ops.len() {
+                    if j == i {
+                        continue;
+                    }
+                    let op2 = ops[j];
+                    if let Some((l, r)) = op2.if_arithmetic_xor() {
+                        let result =
+                            util::remove_eq_arith_parts_sorted(ctx, slice, l, r, ArithOpType::Xor);
+                        if let Some(result) = result {
+                            return Some(result);
+                        }
+                    } else {
+                        if let Some(pos) = slice.iter().position(|&x| x == op2) {
+                            let result = util::sorted_arith_chain_remove_one_and_join(
+                                ctx,
+                                slice,
+                                pos,
+                                op,
+                                ArithOpType::Xor,
+                            );
+                            return Some(result);
+                        }
+                    }
+                    limit = match limit.checked_sub(slice.len() as u32) {
+                        Some(s) => s,
+                        None => return None,
+                    };
+                }
+                None
+            });
+            if let Some(result) = result {
+                // Replaces (x ^ y) with y,
+                // the operand and `j` index being x can be left as is.
+                ops[i] = result;
+            }
+        }
+        i += 1;
+    }
+}
+
 // "Simplify bitwise or: xor merge"
 // Converts [x, y] to [x ^ y] where x and y don't have overlapping
 // relevant bit ranges. Then ideally the xor can simplify further.
@@ -4182,35 +4233,17 @@ fn simplify_or_merge_ands_try_merge<'e>(
             // Assume that they can just be rebuilt without simplification
             if !out.is_empty() {
                 let iter = slice.iter().rev().copied();
-                if let Some(first) = intern_arith_ops_to_tree(ctx, iter, arith_ty) {
+                if let Some(first) = util::intern_arith_ops_to_tree(ctx, iter, arith_ty) {
                     out.push(ctx.and_const(first, first_c));
                 }
                 let iter = other_slice.iter().rev().copied();
-                if let Some(second) = intern_arith_ops_to_tree(ctx, iter, arith_ty) {
+                if let Some(second) = util::intern_arith_ops_to_tree(ctx, iter, arith_ty) {
                     out.push(ctx.and_const(second, second_c));
                 }
             }
             Result::<(), SizeLimitReached>::Ok(())
         })
     });
-}
-
-/// Use only if the iterator produces items in sorted order.
-fn intern_arith_ops_to_tree<'e, I: Iterator<Item = Operand<'e>>>(
-    ctx: OperandCtx<'e>,
-    mut iter: I,
-    ty: ArithOpType,
-) -> Option<Operand<'e>> {
-    let mut tree = iter.next()?;
-    for op in iter {
-        let arith = ArithOperand {
-            ty,
-            left: tree,
-            right: op,
-        };
-        tree = ctx.intern(OperandType::Arithmetic(arith));
-    }
-    Some(tree)
 }
 
 /// If a == (b >> c), return Some(c)
@@ -5664,6 +5697,7 @@ fn simplify_or_ops<'e>(
         if ops.len() > 1 {
             simplify_or_merge_child_ands(ops, ctx, swzb_ctx, !const_val, ArithOpType::Or)?;
             simplify_or_merge_xors(ops, ctx, swzb_ctx);
+            simplify_or_with_xor_of_op(ops, ctx);
             simplify_or_merge_comparisions(ops, ctx);
             simplify_xor_merge_ands_with_same_mask(ops, true, ctx, swzb_ctx);
             simplify_demorgan(ops, ctx, ArithOpType::And);

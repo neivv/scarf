@@ -9097,7 +9097,7 @@ fn simplify_xor_with_masks5() {
             ctx.register(6),
         ),
         ctx.xor(
-            ctx.mem32(ctx.register(2), 0),
+            ctx.mem32(ctx.register(9), 0),
             ctx.register(6),
         ),
     );
@@ -9117,7 +9117,7 @@ fn simplify_xor_with_masks5() {
         ),
         ctx.xor(
             ctx.lsh_const(
-                ctx.mem32(ctx.register(2), 3),
+                ctx.mem32(ctx.register(9), 3),
                 0x18,
             ),
             ctx.register(6),
@@ -9139,7 +9139,7 @@ fn simplify_xor_with_masks5() {
             ctx.register(6),
         ),
         ctx.xor(
-            ctx.mem32(ctx.register(2), 0),
+            ctx.mem32(ctx.register(9), 0),
             ctx.register(6),
         ),
     );
@@ -9157,7 +9157,7 @@ fn simplify_xor_with_masks5() {
             ctx.register(6),
         ),
         ctx.xor(
-            ctx.mem32(ctx.register(2), 0),
+            ctx.mem32(ctx.register(9), 0),
             ctx.register(6),
         ),
     );
@@ -9624,6 +9624,39 @@ fn masked_shifts() {
             ),
         ),
         0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn or_xor_subset() {
+    let ctx = &OperandContext::new();
+    // (x ^ y) | x => x | y
+    let op1 = ctx.or(
+        ctx.xor(
+            ctx.xor(
+                ctx.register(3),
+                ctx.mem32(ctx.register(1), 0),
+            ),
+            ctx.xor(
+                ctx.mem32(ctx.register(2), 0),
+                ctx.register(5),
+            ),
+        ),
+        ctx.xor(
+            ctx.mem32(ctx.register(2), 0),
+            ctx.register(5),
+        ),
+    );
+    let eq1 = ctx.or(
+        ctx.xor(
+            ctx.register(3),
+            ctx.mem32(ctx.register(1), 0),
+        ),
+        ctx.xor(
+            ctx.mem32(ctx.register(2), 0),
+            ctx.register(5),
+        ),
     );
     assert_eq!(op1, eq1);
 }
