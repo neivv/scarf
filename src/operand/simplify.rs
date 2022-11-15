@@ -660,6 +660,87 @@ fn simplify_xor_merge_ands_with_same_mask<'e>(
     }
 }
 
+/// Xor simplify with masks:
+/// Simplifies (x ^ y) ^ (x | y) to (x & y)
+fn simplify_masked_xor_or_to_and<'e>(
+    ops: &mut MaskedOpSlice<'e>,
+    ctx: OperandCtx<'e>,
+    swzb: &mut SimplifyWithZeroBits,
+) {
+    let mut limit = 20u32;
+    let mut i = 0;
+    let mut ops_sorted = false;
+    while limit != 0 && i < ops.len() {
+        let (op, orig_mask) = ops[i];
+        let mask = if orig_mask != u64::MAX {
+            orig_mask
+        } else {
+            op.relevant_bits_mask()
+        };
+        if let Some((l, r)) = op.if_arithmetic_or() {
+            let result = ctx.simplify_temp_stack().alloc(|slice| {
+                collect_xor_ops(l, slice, 8).ok()?;
+                collect_xor_ops(r, slice, 8).ok()?;
+                if slice.len() >= ops.len() {
+                    return None;
+                }
+                heapsort::sort(slice);
+                if !ops_sorted {
+                    heapsort::sort_by(ops, |a, b| a.0 < b.0);
+                    ops_sorted = true;
+                }
+                limit = limit.checked_sub(slice.len() as u32)?;
+
+                let mut ops_pos = &ops[..];
+                'outer: for &part in slice.iter() {
+                    loop {
+                        match ops_pos.split_first() {
+                            Some((&(next, next_mask), rest)) => {
+                                ops_pos = rest;
+                                if next == part && next_mask & mask == mask {
+                                    continue 'outer;
+                                }
+                            }
+                            None => return None,
+                        }
+                    }
+                }
+
+                // All parts of `slice` were in `ops`, loop again but now remove them
+                // Going to invalidate `i` and `ops_sorted`
+                ops[i].0 = simplify_and(l, r, ctx, swzb);
+                // Reverse so that swap_remove is fine
+                let mut ops_pos = ops.len() - 1;
+                'outer: for &part in slice.iter().rev() {
+                    loop {
+                        let &(next, next_mask) = ops.get(ops_pos)?;
+                        if next == part && next_mask & mask == mask {
+
+                            let remaining_mask = (next_mask ^ mask) & next.relevant_bits_mask();
+                            if remaining_mask == 0 {
+                                ops.swap_remove(ops_pos);
+                            } else {
+                                ops[ops_pos].1 = remaining_mask;
+                            }
+                            ops_pos = ops_pos.checked_sub(1)?;
+                            continue 'outer;
+                        } else {
+                            ops_pos = ops_pos.checked_sub(1)?;
+                        }
+                    }
+                }
+                Some(())
+            });
+            if result.is_some() {
+                ops_sorted = false;
+                i = 0;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
 /// Simplifies xor of ors where some terms are same:
 /// (x | y) ^ (x | z)
 /// to !x & (y ^ z)
@@ -6580,6 +6661,7 @@ fn simplify_masked_xor_ops<'e>(
         heapsort::sort_by(ops, |a, b| a.0 < b.0);
         simplify_masked_xor_merge_same_ops(ops, ctx);
         simplify_masked_xor_merge_or(ops, ctx, swzb);
+        simplify_masked_xor_or_to_and(ops, ctx, swzb);
     }
 }
 
