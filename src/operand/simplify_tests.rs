@@ -9714,3 +9714,57 @@ fn or_xor_to_and() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn or_xor_and_to_xor() {
+    let ctx = &OperandContext::new();
+    // (x & y) ^ (x | y) => x ^ y
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.or(
+                ctx.xor(
+                    ctx.register(3),
+                    ctx.mem32(ctx.register(1), 0),
+                ),
+                ctx.xor(
+                    ctx.mem32(ctx.register(2), 0),
+                    ctx.register(5),
+                ),
+            ),
+            0xffff_ffff,
+        ),
+        ctx.and(
+            ctx.xor(
+                ctx.register(3),
+                ctx.mem32(ctx.register(1), 0),
+            ),
+            ctx.xor(
+                ctx.mem32(ctx.register(2), 0),
+                ctx.register(5),
+            ),
+        ),
+    );
+    let eq1 = ctx.xor(
+        ctx.and_const(
+            ctx.xor(
+                ctx.xor(
+                    ctx.register(3),
+                    ctx.mem32(ctx.register(1), 0),
+                ),
+                ctx.xor(
+                    ctx.mem32(ctx.register(2), 0),
+                    ctx.register(5),
+                ),
+            ),
+            0xffff_ffff,
+        ),
+        ctx.and_const(
+            ctx.and(
+                ctx.register(3),
+                ctx.register(5),
+            ),
+            0xffff_ffff_0000_0000,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}

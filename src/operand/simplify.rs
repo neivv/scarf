@@ -741,6 +741,74 @@ fn simplify_masked_xor_or_to_and<'e>(
     }
 }
 
+/// Xor simplify with masks:
+/// Simplifies (x & y) ^ (x | y) to (x ^ y)
+fn simplify_masked_xor_or_and_to_xor<'e>(
+    ops: &mut MaskedOpSlice<'e>,
+) {
+    let mut i = 0;
+    while i < ops.len() {
+        let (op, mask) = ops[i];
+        if let Some(arith) = op.if_arithmetic_any() {
+            let other_type = match arith.ty {
+                ArithOpType::And => ArithOpType::Or,
+                ArithOpType::Or => ArithOpType::And,
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            let mut j = i + 1;
+            while j < ops.len() {
+                let (op2, mask2) = ops[j];
+                if let Some(arith2) = op2.if_arithmetic_any() {
+                    if arith2.left == arith.left &&
+                        arith2.right == arith.right &&
+                        arith2.ty == other_type &&
+                        mask & mask2 != 0
+                    {
+                        let mask = match mask == u64::MAX {
+                            true => op.relevant_bits_mask(),
+                            false => mask,
+                        };
+                        let mask2 = match mask2 == u64::MAX {
+                            true => op2.relevant_bits_mask(),
+                            false => mask2,
+                        };
+                        // Expanding to x ^ y adds 2 ops the very least,
+                        // and if the and/or ops have masks
+                        // that isn't included in the other,
+                        // they'll be kept as well.
+                        let shared_mask = mask & mask2;
+                        let orig_size = ops.len();
+                        let ok = collect_masked_xor_ops(arith.left, ops, usize::MAX, shared_mask)
+                            .and_then(|()| {
+                                collect_masked_xor_ops(arith.right, ops, usize::MAX, shared_mask)
+                            }).is_ok();
+                        if !ok {
+                            ops.shrink(orig_size);
+                            break;
+                        }
+                        if (mask2 ^ mask) & mask2 == 0 {
+                            ops.swap_remove(j);
+                        } else {
+                            ops[j].1 = (mask2 ^ mask) & mask2;
+                        }
+                        if (mask2 ^ mask) & mask == 0 {
+                            ops.swap_remove(i);
+                        } else {
+                            ops[i].1 = (mask2 ^ mask) & mask;
+                        }
+                        break;
+                    }
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
 /// Simplifies xor of ors where some terms are same:
 /// (x | y) ^ (x | z)
 /// to !x & (y ^ z)
@@ -6661,6 +6729,7 @@ fn simplify_masked_xor_ops<'e>(
         heapsort::sort_by(ops, |a, b| a.0 < b.0);
         simplify_masked_xor_merge_same_ops(ops, ctx);
         simplify_masked_xor_merge_or(ops, ctx, swzb);
+        simplify_masked_xor_or_and_to_xor(ops);
         simplify_masked_xor_or_to_and(ops, ctx, swzb);
     }
 }
