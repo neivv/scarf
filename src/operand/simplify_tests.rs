@@ -9768,3 +9768,55 @@ fn or_xor_and_to_xor() {
     );
     assert_eq!(op1, eq1);
 }
+
+
+#[test]
+fn or_merge_complex() {
+    let ctx = &OperandContext::new();
+    // (x & y) ^ (x | y) => x ^ y
+    let op1 = ctx.or(
+        ctx.and(
+            ctx.xor(
+                ctx.lsh_const(
+                    ctx.mem8(ctx.register(1), 3),
+                    0x18,
+                ),
+                ctx.lsh_const(
+                    ctx.mem8(ctx.register(2), 3),
+                    0x18,
+                ),
+            ),
+            ctx.xor(
+                ctx.lsh_const(
+                    ctx.mem8(ctx.register(3), 3),
+                    0x18,
+                ),
+                ctx.register(5),
+            ),
+        ),
+        ctx.and_const(
+            ctx.and(
+                ctx.xor(
+                    ctx.mem32(ctx.register(1), 0),
+                    ctx.mem32(ctx.register(2), 0),
+                ),
+                ctx.xor(
+                    ctx.mem32(ctx.register(3), 0),
+                    ctx.register(5),
+                ),
+            ),
+            0x00ff_ffff,
+        ),
+    );
+    let eq1 = ctx.and(
+        ctx.xor(
+            ctx.mem32(ctx.register(1), 0),
+            ctx.mem32(ctx.register(2), 0),
+        ),
+        ctx.xor(
+            ctx.mem32(ctx.register(3), 0),
+            ctx.register(5),
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
