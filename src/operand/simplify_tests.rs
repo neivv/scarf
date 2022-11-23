@@ -9769,7 +9769,6 @@ fn or_xor_and_to_xor() {
     assert_eq!(op1, eq1);
 }
 
-
 #[test]
 fn or_merge_complex() {
     let ctx = &OperandContext::new();
@@ -9814,6 +9813,94 @@ fn or_merge_complex() {
             ctx.mem32(ctx.register(2), 0),
         ),
         ctx.xor(
+            ctx.mem32(ctx.register(3), 0),
+            ctx.register(5),
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn and_or_const() {
+    let ctx = &OperandContext::new();
+    // (x | y | (c1 | c2)) & c2  => c2
+    let op1 = ctx.and_const(
+        ctx.or_const(
+            ctx.or(
+                ctx.register(5),
+                ctx.mem32(ctx.register(1), 0),
+            ),
+            0x5550,
+        ),
+        0x4400,
+    );
+    let eq1 = ctx.constant(0x4400);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn and_and_xor() {
+    let ctx = &OperandContext::new();
+    // (x & y) & (x ^ y) => 0
+    let op1 = ctx.and(
+        ctx.and(
+            ctx.xor(
+                ctx.mem32(ctx.register(1), 0),
+                ctx.mem32(ctx.register(2), 0),
+            ),
+            ctx.xor(
+                ctx.mem32(ctx.register(3), 0),
+                ctx.register(5),
+            ),
+        ),
+        ctx.xor(
+            ctx.xor(
+                ctx.mem32(ctx.register(1), 0),
+                ctx.mem32(ctx.register(2), 0),
+            ),
+            ctx.xor(
+                ctx.mem32(ctx.register(3), 0),
+                ctx.register(5),
+            ),
+        ),
+    );
+    let eq1 = ctx.constant(0);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn and_and_or() {
+    let ctx = &OperandContext::new();
+    // (x & y) & (x | y) => x & y
+    // In general x & (x | y) => x
+    let op1 = ctx.and(
+        ctx.and(
+            ctx.or(
+                ctx.mem32(ctx.register(1), 0),
+                ctx.mem32(ctx.register(2), 0),
+            ),
+            ctx.or(
+                ctx.mem32(ctx.register(3), 0),
+                ctx.register(5),
+            ),
+        ),
+        ctx.or(
+            ctx.or(
+                ctx.mem32(ctx.register(1), 0),
+                ctx.mem32(ctx.register(2), 0),
+            ),
+            ctx.or(
+                ctx.mem32(ctx.register(3), 0),
+                ctx.register(5),
+            ),
+        ),
+    );
+    let eq1 = ctx.and(
+        ctx.or(
+            ctx.mem32(ctx.register(1), 0),
+            ctx.mem32(ctx.register(2), 0),
+        ),
+        ctx.or(
             ctx.mem32(ctx.register(3), 0),
             ctx.register(5),
         ),

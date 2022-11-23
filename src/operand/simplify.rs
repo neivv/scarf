@@ -3562,7 +3562,10 @@ fn simplify_and_main<'e>(
         if ops.len() > 1 {
             heapsort::sort(ops);
             ops.dedup();
-            simplify_and_remove_unnecessary_ors(ops, const_remain);
+            let is_zero = simplify_and_remove_unnecessary_ors_xors(ops, ctx, const_remain);
+            if is_zero {
+                return Ok(ctx.const_0());
+            }
             simplify_demorgan(ops, ctx, ArithOpType::Or);
         }
 
@@ -3712,7 +3715,10 @@ fn simplify_and_main<'e>(
             ops.dedup();
         }
     };
-    simplify_and_remove_unnecessary_ors(ops, const_remain);
+    let is_zero = simplify_and_remove_unnecessary_ors_xors(ops, ctx, const_remain);
+    if is_zero {
+        return Ok(ctx.const_0());
+    }
     if ops.len() == 1 && final_const_remain != 0 {
         // Canonicalize mask to be inside left shift if there is only one operand.
         // Right shifts are canonicalized to mask outside in simplify_rsh_const
@@ -3791,60 +3797,108 @@ fn is_neq_compare<'e>(op: Operand<'e>, ctx: OperandCtx<'e>) -> bool {
 }
 
 /// Transform (x | y | ...) & x => x
-fn simplify_and_remove_unnecessary_ors<'e>(
+/// and (x ^ y ^ ...) & x => (u64::MAX ^ y ^ ..) & x.
+/// Simplifying (x | y | (c1 | c2)) & c2 => c2
+/// here would make sense, as it's based on the same transformation,
+/// but it is done at simplify_with_and_mask since that is called
+/// at more places.
+///
+/// If this returns true, and result should become 0
+fn simplify_and_remove_unnecessary_ors_xors<'e>(
     ops: &mut Slice<'e>,
+    ctx: OperandCtx<'e>,
     const_remain: u64,
-) {
-    fn contains_or<'e>(op: Operand<'e>, check: Operand<'e>) -> bool {
-        if let Some((l, r)) = op.if_arithmetic_or() {
-            if l == check || r == check {
-                true
-            } else {
-                contains_or(l, check) || contains_or(r, check)
-            }
-        } else {
-            false
-        }
+) -> bool {
+    enum RemoveResult<'e> {
+        // For or
+        RemoveOp,
+        // For xor
+        ReplaceOp(Operand<'e>),
     }
-
-    fn contains_or_const(op: Operand<'_>, check: u64) -> bool {
-        if let Some((_, r)) = op.if_arithmetic_or() {
-            if let Some(c) = r.if_constant() {
-                c & check == check
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    }
-
+    let mut limit = 50u32;
     let mut pos = 0;
-    while pos < ops.len() {
-        let mut j = 0;
-        while j < ops.len() {
-            if j == pos {
-                j += 1;
-                continue;
-            }
-            if contains_or(ops[j], ops[pos]) {
-                ops.remove(j);
-                // `j` can be before or after `pos`,
-                // depending on that `pos` may need to be decremented
-                if j < pos {
-                    pos -= 1;
+    while pos < ops.len() && limit != 0 {
+        let op = ops[pos];
+        if let Some(arith) = op.if_arithmetic_any() {
+            if matches!(arith.ty, ArithOpType::Or | ArithOpType::Xor) {
+                let remove_result =
+                    util::arith_parts_to_new_slice(ctx, arith.left, arith.right, arith.ty, |parts| {
+                        for j in 0..ops.len() {
+                            if j == pos {
+                                continue;
+                            }
+                            let op2 = ops[j];
+                            if let Some((l, r)) = op2.if_arithmetic(arith.ty) {
+                                // Since both are same type of arithmetic,
+                                // check if op2 is subset of op by expanding
+                                // it to arith parts and removing matches.
+                                // E.g. (x | y) is still subset of (x | z) | y
+                                // even if sort order makes z be in between.
+                                let result = util::remove_eq_arith_parts_sorted(
+                                    ctx,
+                                    parts,
+                                    (l, r, arith.ty),
+                                    |result| {
+                                        if arith.ty == ArithOpType::Or {
+                                            RemoveResult::RemoveOp
+                                        } else {
+                                            let rest = util::intern_arith_ops_to_tree(
+                                                ctx,
+                                                result.iter().rev().copied(),
+                                                arith.ty,
+                                            ).unwrap_or_else(|| ctx.const_0());
+                                            let rest_not = ctx.xor_const(rest, u64::MAX);
+                                            RemoveResult::ReplaceOp(rest_not)
+                                        }
+                                    },
+                                );
+                                if let Some(result) = result {
+                                    return Some(result);
+                                }
+                            } else {
+                                // Not same type of arithmetic, can just check if op2
+                                // is any of the op1 parts
+                                if let Some(pos) = parts.iter().position(|&part| part == op2) {
+                                    if arith.ty == ArithOpType::Or {
+                                        return Some(RemoveResult::RemoveOp);
+                                    } else {
+                                        let rest = util::sorted_arith_chain_remove_one_and_join(
+                                            ctx,
+                                            parts,
+                                            pos,
+                                            op,
+                                            arith.ty,
+                                        );
+                                        let rest_not = ctx.xor_const(rest, u64::MAX);
+                                        return Some(RemoveResult::ReplaceOp(rest_not));
+                                    }
+                                }
+                            }
+                            limit = limit.checked_sub(parts.len() as u32)?;
+                        }
+                        None
+                    });
+                match remove_result {
+                    Some(RemoveResult::RemoveOp) => {
+                        ops.swap_remove(pos);
+                        // Don't increment pos
+                        continue;
+                    }
+                    Some(RemoveResult::ReplaceOp(new)) => {
+                        if new.relevant_bits_mask() & const_remain == 0 {
+                            // Can just remove everything since new doesn't have shared
+                            // nonzero bits with const_remain
+                            return true;
+                        }
+                        ops[pos] = new;
+                    }
+                    None => (),
                 }
-            } else {
-                j += 1;
             }
         }
         pos += 1;
     }
-    for j in (0..ops.len()).rev() {
-        if contains_or_const(ops[j], const_remain) {
-            ops.swap_remove(j);
-        }
-    }
+    false
 }
 
 fn simplify_and_merge_child_ors<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
@@ -4160,8 +4214,11 @@ fn simplify_or_with_xor_of_op<'e>(
                     }
                     let op2 = ops[j];
                     if let Some((l, r)) = op2.if_arithmetic_xor() {
-                        let result =
-                            util::remove_eq_arith_parts_sorted(ctx, slice, l, r, ArithOpType::Xor);
+                        let result = util::remove_eq_arith_parts_sorted_and_rejoin(
+                            ctx,
+                            slice,
+                            (l, r, ArithOpType::Xor),
+                        );
                         if let Some(result) = result {
                             return Some(result);
                         }

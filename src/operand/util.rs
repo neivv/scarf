@@ -120,21 +120,19 @@ where F: FnOnce(&mut Slice<'e>) -> Option<T>
 }
 
 /// If `(l, r, ty)` operand chain is fully included in `slice`,
-/// returns rejoined `Operand` of the parts not in `(l, r, ty)`.
-/// If the two are equal, returns ctx.const_0()
-///     ! 0 may not be identity value for the operation (e.g. and, mul)
-///     caller should check for 0 and replace it with id.
+/// calls `callback` with parts not in `(l, r, ty)`, and returns
+/// `Some(callback_return_value)`.
+/// If `(l, r, ty)` is not included in `slice`, returns `None`.
 ///
 /// Assumes `slice` to be sorted and contains already simplified arith chain
 ///     (So that the operation is O(n)).
 /// `slice` is not modified.
-pub fn remove_eq_arith_parts_sorted<'e>(
+pub fn remove_eq_arith_parts_sorted<'e, F: FnOnce(&mut Slice<'e>) -> T, T>(
     ctx: OperandCtx<'e>,
     slice: &Slice<'e>,
-    l: Operand<'e>,
-    r: Operand<'e>,
-    ty: ArithOpType,
-) -> Option<Operand<'e>> {
+    (l, r, ty): (Operand<'e>, Operand<'e>, ArithOpType),
+    callback: F,
+) -> Option<T> {
     let mut iter = IterArithOps::new_pair(l, r, ty);
     let mut slice_pos = &slice[..];
     ctx.simplify_temp_stack().alloc(|result| {
@@ -157,11 +155,30 @@ pub fn remove_eq_arith_parts_sorted<'e>(
             result.push(op).ok()?;
         }
 
-        // All ops were in slice, join result
+        // All ops were in slice, call callback
+        Some(callback(result))
+    })
+}
+
+/// If `(l, r, ty)` operand chain is fully included in `slice`,
+/// returns rejoined `Operand` of the parts not in `(l, r, ty)`.
+/// If the two are equal, returns ctx.const_0()
+///     ! 0 may not be identity value for the operation (e.g. and, mul)
+///     caller should check for 0 and replace it with id.
+///
+/// Assumes `slice` to be sorted and contains already simplified arith chain
+///     (So that the operation is O(n)).
+/// `slice` is not modified.
+pub fn remove_eq_arith_parts_sorted_and_rejoin<'e>(
+    ctx: OperandCtx<'e>,
+    slice: &Slice<'e>,
+    arith: (Operand<'e>, Operand<'e>, ArithOpType),
+) -> Option<Operand<'e>> {
+    remove_eq_arith_parts_sorted(ctx, slice, arith, |result| {
         // assumes that the func input was sorted / simplified arith.
-        let result = intern_arith_ops_to_tree(ctx, result.iter().copied().rev(), ty)
+        let result = intern_arith_ops_to_tree(ctx, result.iter().copied().rev(), arith.2)
             .unwrap_or_else(|| ctx.const_0());
-        Some(result)
+        result
     })
 }
 

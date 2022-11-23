@@ -903,7 +903,6 @@ fn or_xor_simplify_bug() {
     ]);
 }
 
-#[ignore]
 #[test]
 fn or_xor_simplify_complex() {
     let ctx = &OperandContext::new();
