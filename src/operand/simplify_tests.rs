@@ -9907,3 +9907,24 @@ fn and_and_or() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn and_and_xor_2() {
+    let ctx = &OperandContext::new();
+    // x & !(x ^ y) => x & y
+    let op1 = ctx.and(
+        ctx.mem8(ctx.register(1), 0),
+        ctx.xor_const(
+            ctx.xor(
+                ctx.mem8(ctx.register(0), 0),
+                ctx.mem8(ctx.register(1), 0),
+            ),
+            0xff,
+        ),
+    );
+    let eq1 = ctx.and(
+        ctx.mem8(ctx.register(0), 0),
+        ctx.mem8(ctx.register(1), 0),
+    );
+    assert_eq!(op1, eq1);
+}

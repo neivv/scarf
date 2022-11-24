@@ -196,7 +196,7 @@ pub fn sorted_arith_chain_remove_one_and_join<'e>(
     orig: Operand<'e>,
     ty: ArithOpType,
 ) -> Operand<'e> {
-    assert!(idx < slice.len());
+    assert!(idx < slice.len() && slice.len() >= 2);
     if idx == 0 || (idx == 1 && slice.len() == 2) {
         if let Some(arith) = orig.if_arithmetic_any() {
             if idx == 0 {
@@ -211,20 +211,38 @@ pub fn sorted_arith_chain_remove_one_and_join<'e>(
     // idx 2, orig.left.left.left
     // etc
     // So (idx + 1) ends up also being how many times x.left has to be followed.
-    let mut pos = orig;
-    for _ in 0..(idx + 1) {
-        pos = match pos.if_arithmetic_any() {
-            Some(arith) => {
-                debug_assert_eq!(arith.ty, ty);
-                arith.left
-            }
-            None => {
-                debug_assert!(false);
-                continue;
+    // If removing last idx, keep nothing / set initial value to second last idx from slice
+    // If removing second last idx, set initial value to last idx from slice
+    let mut pos;
+    let last_index;
+    if idx < slice.len() - 2 {
+        pos = orig;
+        for _ in 0..(idx + 1) {
+            pos = match pos.if_arithmetic_any() {
+                Some(arith) => {
+                    debug_assert_eq!(arith.ty, ty);
+                    arith.left
+                }
+                None => {
+                    debug_assert!(false);
+                    continue;
+                }
             }
         }
+        last_index = idx;
+    } else {
+        if idx == slice.len() - 1 {
+            // Remove last idx
+            pos = slice[slice.len() - 2];
+            last_index = idx - 1;
+        } else {
+            // Remove second last idx
+            pos = slice[slice.len() - 1];
+            last_index = idx;
+        }
     }
-    for &part in slice[..idx].iter().rev() {
+
+    for &part in slice[..last_index].iter().rev() {
         let arith = ArithOperand {
             ty,
             left: pos,
@@ -252,4 +270,27 @@ pub fn intern_arith_ops_to_tree<'e, I: Iterator<Item = Operand<'e>>>(
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
     Some(tree)
+}
+
+#[test]
+fn test_sorted_arith_chain_remove_one_and_join() {
+    let ctx = &super::OperandContext::new();
+    let op = ctx.xor(
+        ctx.register(1),
+        ctx.xor(
+            ctx.register(2),
+            ctx.register(3),
+        )
+    );
+    let arith = op.if_arithmetic_any().unwrap();
+    arith_parts_to_new_slice(ctx, arith.left, arith.right, arith.ty, |slice| {
+        assert_eq!(slice.len(), 3);
+        let result = sorted_arith_chain_remove_one_and_join(ctx, slice, 0, op, ArithOpType::Xor);
+        assert_eq!(result, ctx.xor(slice[1], slice[2]));
+        let result = sorted_arith_chain_remove_one_and_join(ctx, slice, 1, op, ArithOpType::Xor);
+        assert_eq!(result, ctx.xor(slice[0], slice[2]));
+        let result = sorted_arith_chain_remove_one_and_join(ctx, slice, 2, op, ArithOpType::Xor);
+        assert_eq!(result, ctx.xor(slice[0], slice[1]));
+        Some(())
+    });
 }
