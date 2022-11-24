@@ -9928,3 +9928,32 @@ fn and_and_xor_2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn and_merge_masks() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.mul_const(
+                ctx.register(0),
+                2,
+            ),
+            ctx.register(1),
+        ),
+        0x019e_0130,
+    );
+    let eq1 = ctx.or(
+        ctx.and_const(
+            ctx.register(1),
+            0x019e_0130,
+        ),
+        ctx.mul_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x00cf_0098,
+            ),
+            2,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}

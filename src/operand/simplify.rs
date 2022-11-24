@@ -1409,51 +1409,82 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Result<Option<u64>, SizeLimitReached> {
+    fn mask_for_op<'e>(op: Operand<'e>, inner_zero: bool) -> Option<u64> {
+        // inner_zero means that include bits that are known to be zero even
+        // without mask in the result.
+        // E.g. In addition to (x & ffff),
+        // (x & ff) << 8 can be used as ffff mask.
+        match op.if_arithmetic_any() {
+            Some(arith) if
+                matches!(arith.ty, ArithOpType::And | ArithOpType::Lsh | ArithOpType::Mul) =>
+            {
+                let c = arith.right.if_constant()?;
+                if arith.ty == ArithOpType::And {
+                    Some(c)
+                } else {
+                    let (_, mask) = arith.left.if_and_with_const()?;
+                    let shift = if arith.ty == ArithOpType::Lsh {
+                        c as u32
+                    } else {
+                        if c & c.wrapping_sub(1) == 0 {
+                            c.trailing_zeros()
+                        } else {
+                            return None;
+                        }
+                    };
+                    let mut result = mask.wrapping_shl(shift);
+                    if inner_zero {
+                        result |= 1u64.wrapping_shl(shift).wrapping_sub(1);
+                    }
+                    Some(result)
+                }
+            }
+            _ => None,
+        }
+    }
+
     // Canonicalize to (x ^ y) & ffff over x ^ (y & ffff)
     // when the outermost mask doesn't modify x
     let best_mask = ops.iter()
-        .fold(None, |prev: Option<u64>, &op| {
-            let new = match op.if_arithmetic_any() {
-                // In addition to (x & ffff) consider also (x & ff) << 8
-                // as ffff mask.
-                Some(arith) if matches!(arith.ty, ArithOpType::And | ArithOpType::Lsh) => {
-                    arith.right.if_constant()
-                        .and_then(|c| {
-                            if arith.ty == ArithOpType::And {
-                                Some(c)
-                            } else {
-                                let (_, mask) = arith.left.if_and_with_const()?;
-                                Some(mask.wrapping_shl(c as u32) |
-                                    1u64.wrapping_shl(c as u32).wrapping_sub(1))
-                            }
-                        })
-                }
-                _ => None,
-            };
+        .fold(Some(0), |prev: Option<u64>, &op| {
+            let prev = prev?;
+            let new = mask_for_op(op, true);
             if let Some(new) = new {
-                if let Some(prev) = prev {
-                    if prev & new == new {
-                        Some(prev)
-                    } else if prev & new == prev {
-                        Some(new)
-                    } else {
-                        None
-                    }
-                } else {
+                if prev & new == new {
+                    Some(prev)
+                } else if prev & new == prev {
                     Some(new)
+                } else {
+                    None
                 }
             } else {
-                prev
+                Some(prev)
             }
         })
-        .filter(|&mask| {
-            ops.iter().all(|x| {
-                let relbits = match x.if_and_with_const() {
-                    Some((_, c)) => c,
-                    _ => x.relevant_bits_mask(),
+        .and_then(|mask| {
+            // Mask may now contain unneeded bits from mask_for_op(_, true),
+            // so collect result that uses bits from mask_for_op(_, false)
+            // And require that mask doesn't clear any bits from non-masked ops
+            // by including x.relevant_bits_mask() there.
+            if mask & *const_val != *const_val {
+                // Not too sure if const_val should be always checked here?
+                // xor places constant inside mask while or outside so maybe
+                // should only do for xor?
+                return None;
+            }
+            let mut result = 0;
+            for &op in ops.iter() {
+                let relbits = match mask_for_op(op, false) {
+                    Some(c) => c,
+                    _ => op.relevant_bits_mask(),
                 };
-                relbits & mask == relbits
-            }) && mask & *const_val == *const_val
+                result |= relbits;
+            }
+            if result & mask != result {
+                None
+            } else {
+                Some(result)
+            }
         });
     if let Some(mask) = best_mask {
         for i in 0..ops.len() {
@@ -6346,7 +6377,7 @@ fn simplify_with_and_mask_inner<'e>(
                                 // Is power of two, give left shift treatment.
                                 let left = simplify_with_and_mask(
                                     arith.left,
-                                    mask >> shift,
+                                    orig_mask >> shift,
                                     ctx,
                                     swzb_ctx,
                                 );
