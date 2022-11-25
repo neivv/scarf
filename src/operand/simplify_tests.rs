@@ -10012,3 +10012,54 @@ fn masked_or_consistency2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_or_consistency3() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(0), 1),
+                8,
+            ),
+            ctx.mem8(ctx.register(1), 0),
+        ),
+        0x9eff,
+    );
+    let eq1 = ctx.or(
+        ctx.and_const(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(0), 1),
+                8,
+            ),
+            0x9e00,
+        ),
+        ctx.mem8(ctx.register(1), 0),
+    );
+    let eq2 = ctx.or(
+        ctx.and_const(
+            ctx.mem16(ctx.register(0), 0),
+            0x9e00,
+        ),
+        ctx.mem8(ctx.register(1), 0),
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op1, eq2);
+}
+
+#[test]
+fn masked_shift_consistency() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.lsh_const(
+            ctx.mem8(ctx.register(0), 1),
+            8,
+        ),
+        0x9eff,
+    );
+    let eq1 = ctx.and_const(
+        ctx.mem16(ctx.register(0), 0),
+        0x9e00,
+    );
+    assert_eq!(op1, eq1);
+}

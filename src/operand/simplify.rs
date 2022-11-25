@@ -2299,22 +2299,17 @@ fn canonicalize_masked_eq_const<'e>(
 ) -> Option<Operand<'e>> {
     match inner.ty() {
         OperandType::Arithmetic(arith) => {
-            // If inner is (x << c) or (x >> c), remove the shift
+            // If inner is (x >> c), remove the shift
             // and shift constants to opposite direction.
             // so (x & mask_c_shifted) == eq_c_shifted
-            if matches!(arith.ty, ArithOpType::Lsh | ArithOpType::Rsh) {
+            if arith.ty == ArithOpType::Rsh {
                 if let Some(c) = arith.right.if_constant() {
                     let c = c as u32;
                     let left = arith.left;
                     let mask_c_shifted;
                     let eq_c_shifted;
-                    if arith.ty == ArithOpType::Lsh {
-                        mask_c_shifted = mask_c.wrapping_shr(c);
-                        eq_c_shifted = eq_c.wrapping_shr(c);
-                    } else {
-                        mask_c_shifted = mask_c.wrapping_shl(c);
-                        eq_c_shifted = eq_c.wrapping_shl(c);
-                    };
+                    mask_c_shifted = mask_c.wrapping_shl(c);
+                    eq_c_shifted = eq_c.wrapping_shl(c);
                     let result = ctx.eq_const(
                         ctx.and_const(
                             left,
@@ -2344,12 +2339,27 @@ fn simplify_eq_1op_const<'e>(
             return left;
         }
     }
-    if let Some((l, r)) = left.if_arithmetic_and() {
-        // Canonicalize ((a << C1) & C2) == C3
-        // to (a & (C2 >> C1)) == (C3 >> C1)
-        if let Some(r) = r.if_constant() {
-            if let Some(op) = canonicalize_masked_eq_const(ctx, l, r, right) {
-                return op;
+    if let Some(arith) = left.if_arithmetic_any() {
+        // Canonicalize shifts.
+        // Left shifts are outside the mask (a & C2) << C1
+        // Right shifts are inside the mask (a >> C1) & C2,
+        if let Some(r) = arith.right.if_constant() {
+            if arith.ty == ArithOpType::And {
+                if let Some(op) = canonicalize_masked_eq_const(ctx, arith.left, r, right) {
+                    return op;
+                }
+            } else if arith.ty == ArithOpType::Lsh {
+                // Adding assertion here, though rest of the function assumes this too.
+                // If this is being hit probably should do check at start of function.
+                // But in general impossible left for constant eq is checked
+                // elsewhere in more complex way, so should investigate why
+                // this is being hit.
+                debug_assert!(
+                    1u64.wrapping_shl(r as u32).wrapping_sub(1) & right == 0,
+                    "Simplify eq becomes always false, but should've been caught earlier {left} {right:x}",
+                );
+                let new_const = right.wrapping_shr(r as u32);
+                return ctx.eq_const(arith.left, new_const);
             }
         }
     } else if let Some((val, from, to)) = left.if_sign_extend() {
@@ -3407,21 +3417,28 @@ fn simplify_and_const_mem<'e>(
     ctx: OperandCtx<'e>,
 ) -> Option<Operand<'e>> {
     let mem = left.if_memory()?;
-    let new = simplify_with_and_mask_mem(left, mem, right, ctx);
-    let new_mask = new.relevant_bits_mask();
+    // If the new value has to be shifted, mask has to go inside shift.
+    let (new, shift) = simplify_with_and_mask_mem_dont_apply_shift(left, mem, right, ctx);
+    let new_mask = new.relevant_bits_mask() << shift;
     let new_common = new_mask & right;
-    if new_common != new_mask {
-        if new_common != right {
+    let masked = if new_common != new_mask {
+        let mask_const = new_common >> shift;
+        if mask_const != right {
             right_op = None;
         }
         let arith = ArithOperand {
             ty: ArithOpType::And,
             left: new,
-            right: right_op.unwrap_or_else(|| ctx.constant(new_common)),
+            right: right_op.unwrap_or_else(|| ctx.constant(mask_const)),
         };
-        Some(ctx.intern(OperandType::Arithmetic(arith)))
+        ctx.intern(OperandType::Arithmetic(arith))
     } else {
-        Some(new)
+        new
+    };
+    if shift != 0 {
+        Some(intern_lsh_const(masked, shift, ctx))
+    } else {
+        Some(masked)
     }
 }
 
@@ -6527,6 +6544,21 @@ fn simplify_with_and_mask_mem<'e>(
     mask: u64,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
+    let (base, shift) = simplify_with_and_mask_mem_dont_apply_shift(op, mem, mask, ctx);
+    if shift == 0 {
+        base
+    } else {
+        intern_lsh_const(base, shift, ctx)
+    }
+}
+
+/// Assumes: `mem` is part of `op`.
+fn simplify_with_and_mask_mem_dont_apply_shift<'e>(
+    op: Operand<'e>,
+    mem: &MemAccess<'e>,
+    mask: u64,
+    ctx: OperandCtx<'e>,
+) -> (Operand<'e>, u8) {
     let mask = mem.size.mask() & mask;
     // Try to do conversions such as Mem32[x] & 00ff_ff00 => Mem16[x + 1] << 8,
     // but also Mem32[x] & 003f_5900 => (Mem16[x + 1] & 3f59) << 8.
@@ -6536,7 +6568,7 @@ fn simplify_with_and_mask_mem<'e>(
     // Round up to 8 -> convert to bytes
     let mask_high = (64 - mask.leading_zeros() + 7) / 8;
     if mask_high <= mask_low {
-        return op;
+        return (op, 0);
     }
     let mask_size = mask_high - mask_low;
     let mem_size = mem.size.bits();
@@ -6548,16 +6580,11 @@ fn simplify_with_and_mask_mem<'e>(
     } else if mask_size <= 4 && mem_size > 32 {
         new_size = MemAccessSize::Mem32;
     } else {
-        return op;
+        return (op, 0);
     }
     let (address, offset) = mem.address();
     let mem = ctx.mem_any(new_size, address, offset.wrapping_add(mask_low as u64));
-    let shifted = if mask_low == 0 {
-        mem
-    } else {
-        ctx.lsh_const(mem, mask_low as u64 * 8)
-    };
-    shifted
+    (mem, (mask_low as u8) << 3)
 }
 
 /// If `a` is subset of or equal to `b`
