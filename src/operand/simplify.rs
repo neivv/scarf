@@ -1402,6 +1402,8 @@ fn simplify_xor_ops<'e>(
     Ok(tree)
 }
 
+/// Canonicalize to (x ^ y) & ffff over x ^ (y & ffff)
+/// when the outermost mask doesn't modify x
 fn simplify_or_xor_canonicalize_and_masks<'e>(
     ops: &mut Slice<'e>,
     arith_ty: ArithOpType,
@@ -1409,8 +1411,8 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Result<Option<u64>, SizeLimitReached> {
-    fn mask_for_op<'e>(op: Operand<'e>, inner_zero: bool) -> Option<u64> {
-        // inner_zero means that include bits that are known to be zero even
+    fn mask_for_op<'e>(op: Operand<'e>) -> Option<(u64, u64)> {
+        // Second return value is for bits that are known to be zero even
         // without mask in the result.
         // E.g. In addition to (x & ffff),
         // (x & ff) << 8 can be used as ffff mask.
@@ -1420,7 +1422,7 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
             {
                 let c = arith.right.if_constant()?;
                 if arith.ty == ArithOpType::And {
-                    Some(c)
+                    Some((c, 0))
                 } else {
                     let (_, mask) = arith.left.if_and_with_const()?;
                     let shift = if arith.ty == ArithOpType::Lsh {
@@ -1432,33 +1434,22 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
                             return None;
                         }
                     };
-                    let mut result = mask.wrapping_shl(shift);
-                    if inner_zero {
-                        result |= 1u64.wrapping_shl(shift).wrapping_sub(1);
-                    }
-                    Some(result)
+                    let result = mask.wrapping_shl(shift);
+                    let known_zero = 1u64.wrapping_shl(shift).wrapping_sub(1);
+                    Some((result, known_zero))
                 }
             }
             _ => None,
         }
     }
 
-    // Canonicalize to (x ^ y) & ffff over x ^ (y & ffff)
-    // when the outermost mask doesn't modify x
     let best_mask = ops.iter()
-        .fold(Some(0), |prev: Option<u64>, &op| {
-            let prev = prev?;
-            let new = mask_for_op(op, true);
+        .fold(None, |prev: Option<u64>, &op| {
+            let new = mask_for_op(op);
             if let Some(new) = new {
-                if prev & new == new {
-                    Some(prev)
-                } else if prev & new == prev {
-                    Some(new)
-                } else {
-                    None
-                }
+                Some(new.0 | new.1 | prev.unwrap_or(0))
             } else {
-                Some(prev)
+                prev
             }
         })
         .and_then(|mask| {
@@ -1466,21 +1457,38 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
             // so collect result that uses bits from mask_for_op(_, false)
             // And require that mask doesn't clear any bits from non-masked ops
             // by including x.relevant_bits_mask() there.
-            if mask & *const_val != *const_val {
+            if mask & *const_val != *const_val || mask == 0 {
                 // Not too sure if const_val should be always checked here?
                 // xor places constant inside mask while or outside so maybe
                 // should only do for xor?
                 return None;
             }
             let mut result = 0;
+            let mut had_non_masked_op = false;
             for &op in ops.iter() {
-                let relbits = match mask_for_op(op, false) {
-                    Some(c) => c,
-                    _ => op.relevant_bits_mask(),
+                let relbits = match mask_for_op(op) {
+                    Some((c, _)) => c,
+                    _ => {
+                        had_non_masked_op = true;
+                        op.relevant_bits_mask()
+                    }
                 };
                 result |= relbits;
             }
             if result & mask != result {
+                return None;
+            }
+
+            // Require at least one non-masked op or one op where mask
+            // can be removed if it is moved outside.
+            if !had_non_masked_op {
+                for &op in ops.iter() {
+                    if let Some((mask, known_zero)) = mask_for_op(op) {
+                        if mask == result & !known_zero {
+                            return Some(result);
+                        }
+                    }
+                }
                 None
             } else {
                 Some(result)

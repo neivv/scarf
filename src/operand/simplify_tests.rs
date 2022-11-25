@@ -9957,3 +9957,32 @@ fn and_merge_masks() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn or_with_mask() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(0), 0),
+                8,
+            ),
+            ctx.register(1),
+        ),
+        0x5_1100,
+    );
+    let eq1 = ctx.or(
+        ctx.lsh_const(
+            ctx.and_const(
+                ctx.mem8(ctx.register(0), 0),
+                0x11,
+            ),
+            8,
+        ),
+        ctx.and_const(
+            ctx.register(1),
+            0x5_1100,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
