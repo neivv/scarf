@@ -1532,6 +1532,64 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
     }
 }
 
+/// Canonicalize (x | y) & mask (Or xor) to (x | (y & mask)) when expected to.
+/// (Inverse of simplify_or_xor_canonicalize_and_masks)
+/// Usually and mask is kept outside, but a case such as
+/// `((x & 4000) | Mem8) & 400f` should be canonicalized
+/// to `(x & 4000) | (Mem8 & f)` instead.
+fn simplify_and_insert_mask_to_or_xor<'e>(
+    op: Operand<'e>,
+    mask: u64,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Option<Operand<'e>> {
+    let arith = op.if_arithmetic_any()?;
+    if matches!(arith.ty, ArithOpType::Or | ArithOpType::Xor) == false {
+        return None;
+    }
+    // If all but one of operands has an AND mask,
+    // and the remaining operand gets reduced by the argument mask
+    // (relevant_bits & mask != relevant_bits)
+    // insert the mask to the remaining operand
+    //
+    // May end up needing sharing code with simplify_or_xor_canonicalize_and_masks
+    // to correctly canonicalize all cases?
+    let mut iter = IterArithOps::new_arith(arith);
+    let not_masked = loop {
+        let part = iter.next()?;
+        if part.if_and_with_const().is_none() {
+            break part;
+        }
+    };
+    // Verify that `mask` is useful for `not_masked`
+    let relbits = not_masked.relevant_bits_mask();
+    if relbits & mask == relbits {
+        return None;
+    }
+    // Verify that rest of the iter chain has an AND mask
+    while let Some(part) = iter.next() {
+        if part.if_and_with_const().is_none() {
+            return None;
+        }
+    }
+    let masked = simplify_and_const(not_masked, mask, ctx, swzb_ctx);
+    ctx.simplify_temp_stack().alloc(|parts| {
+        for part in IterArithOps::new_arith(arith) {
+            if part != not_masked {
+                parts.push(part).ok()?;
+            }
+        }
+        parts.push(masked).ok()?;
+        // Maybe could just rejoin the chain without rechecking simplifications?
+        // This code path is probably not executed too often anyway though.
+        if arith.ty == ArithOpType::Or {
+            simplify_or_ops(parts, ctx, swzb_ctx).ok()
+        } else {
+            simplify_xor_ops(parts, ctx, swzb_ctx).ok()
+        }
+    })
+}
+
 /// Assumes that `ops` is sorted.
 fn simplify_xor_remove_reverting<'e>(ops: &mut Slice<'e>) {
     let mut first_same = ops.len() as isize - 1;
@@ -3667,6 +3725,11 @@ fn simplify_and_main<'e>(
                     let inner = simplify_and_const(l, !or_val & const_remain, ctx, swzb_ctx);
                     return Ok(simplify_or(inner, r, ctx, swzb_ctx));
                 }
+            }
+            if let Some(result) =
+                simplify_and_insert_mask_to_or_xor(ops[0], const_remain, ctx, swzb_ctx)
+            {
+                return Ok(result);
             }
         }
 

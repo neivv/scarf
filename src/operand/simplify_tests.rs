@@ -9986,3 +9986,29 @@ fn or_with_mask() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_or_consistency2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.and_const(
+                ctx.mem32(ctx.register(0), 0),
+                0x5_0130,
+            ),
+            ctx.mem16(ctx.register(1), 0),
+        ),
+        0x5_01ff,
+    );
+    let eq1 = ctx.or(
+        ctx.and_const(
+            ctx.mem32(ctx.register(0), 0),
+            0x5_0130,
+        ),
+        ctx.and_const(
+            ctx.mem16(ctx.register(1), 0),
+            0x1ff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
