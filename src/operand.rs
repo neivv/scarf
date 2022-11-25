@@ -2964,7 +2964,6 @@ impl<'e> Operand<'e> {
             Some(val)
         };
         let read_u64 = |bytes: &mut &[u8]| -> Option<u64> {
-            use std::convert::TryInto;
             let data: [u8; 8] = bytes.get(..8)?.try_into().unwrap();
             *bytes = &bytes[8..];
             Some(u64::from_le_bytes(data))
