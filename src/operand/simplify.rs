@@ -1415,9 +1415,9 @@ fn or_xor_canonicalize_mask_get_mask<'e>(op: Operand<'e>) -> Option<(u64, u64)> 
         {
             let c = arith.right.if_constant()?;
             if arith.ty == ArithOpType::And {
-                Some((c, 0))
+                Some((c, !arith.left.relevant_bits_mask()))
             } else {
-                let (_, mask) = arith.left.if_and_with_const()?;
+                let (inner, mask) = arith.left.if_and_with_const()?;
                 let shift = if arith.ty == ArithOpType::Lsh {
                     c as u32
                 } else {
@@ -1428,7 +1428,7 @@ fn or_xor_canonicalize_mask_get_mask<'e>(op: Operand<'e>) -> Option<(u64, u64)> 
                     }
                 };
                 let result = mask.wrapping_shl(shift);
-                let known_zero = 1u64.wrapping_shl(shift).wrapping_sub(1);
+                let known_zero = !inner.relevant_bits_mask().wrapping_shl(shift);
                 Some((result, known_zero))
             }
         }
@@ -1460,13 +1460,15 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
             // so collect result that uses bits from or_xor_canonicalize_mask_get_mask(_, false)
             // And require that mask doesn't clear any bits from non-masked ops
             // by including x.relevant_bits_mask() there.
-            if mask & *const_val != *const_val || mask == 0 {
-                // Not too sure if const_val should be always checked here?
-                // xor places constant inside mask while or outside so maybe
-                // should only do for xor?
+            if mask == 0 {
                 return None;
             }
-            let mut result = 0;
+            let mut result = if arith_ty == ArithOpType::Xor {
+                *const_val
+            } else {
+                // Or places constant outside mask, so it be checked for mask here
+                0
+            };
             let mut had_non_masked_op = false;
             for &op in ops.iter() {
                 let relbits = match or_xor_canonicalize_mask_get_mask(op) {
@@ -1498,7 +1500,9 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
             }
         });
     if let Some(mask) = best_mask {
-        for i in 0..ops.len() {
+        let mut i = 0;
+        let mut end = ops.len();
+        while i < end {
             // Remove and mask when not needed and pass to simplify_with_and_mask
             // (Technically simplify_with_and_mask does that too, but do this
             // even if simplify_with_and_mask has reached recursion limit)
@@ -1515,6 +1519,8 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
                         *const_val |= c;
                     }
                     ops.swap_remove(i);
+                    i -= 1;
+                    end -= 1;
                 } else {
                     ops[i] = r;
                 }
@@ -1528,6 +1534,7 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
             } else {
                 ops[i] = op;
             }
+            i += 1;
         }
         Ok(Some(mask))
     } else {

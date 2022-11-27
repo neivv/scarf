@@ -10101,3 +10101,96 @@ fn masked_or_consistency4() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_or_consistency5() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(0), 1),
+                8,
+            ),
+            ctx.and(
+                ctx.register(0),
+                ctx.mul_const(
+                    ctx.register(0),
+                    0x0800_04000,
+                ),
+            ),
+        ),
+        0xc701_9e00,
+    );
+    let eq1 = ctx.or(
+        ctx.and_const(
+            ctx.and(
+                ctx.register(0),
+                ctx.mul_const(
+                    ctx.register(0),
+                    0x0800_04000,
+                ),
+            ),
+            0xc701_9c00,
+        ),
+        ctx.lsh_const(
+            ctx.and_const(
+                ctx.mem8(ctx.register(0), 1),
+                0x9e,
+            ),
+            8,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_xor_with_const() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.and_const(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(2), 1),
+                1,
+            ),
+            0x77,
+        ),
+        ctx.constant(0x37),
+    );
+    let eq1 = ctx.and_const(
+        ctx.xor(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(2), 1),
+                1,
+            ),
+            ctx.constant(0x37),
+        ),
+        0x77,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_or_with_const() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(2), 1),
+                1,
+            ),
+            0x77,
+        ),
+        ctx.constant(0x37),
+    );
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.lsh_const(
+                ctx.mem8(ctx.register(2), 1),
+                1,
+            ),
+            ctx.constant(0x37),
+        ),
+        0x77,
+    );
+    assert_eq!(op1, eq1);
+}
