@@ -1402,6 +1402,40 @@ fn simplify_xor_ops<'e>(
     Ok(tree)
 }
 
+/// Helper for simplify_or_xor_canonicalize_and_masks and
+/// the reverse operation simplify_and_insert_mask_to_or_xor.
+fn or_xor_canonicalize_mask_get_mask<'e>(op: Operand<'e>) -> Option<(u64, u64)> {
+    // Second return value is for bits that are known to be zero even
+    // without mask in the result.
+    // E.g. In addition to (x & ffff),
+    // (x & ff) << 8 can be used as ffff mask.
+    match op.if_arithmetic_any() {
+        Some(arith) if
+            matches!(arith.ty, ArithOpType::And | ArithOpType::Lsh | ArithOpType::Mul) =>
+        {
+            let c = arith.right.if_constant()?;
+            if arith.ty == ArithOpType::And {
+                Some((c, 0))
+            } else {
+                let (_, mask) = arith.left.if_and_with_const()?;
+                let shift = if arith.ty == ArithOpType::Lsh {
+                    c as u32
+                } else {
+                    if c & c.wrapping_sub(1) == 0 {
+                        c.trailing_zeros()
+                    } else {
+                        return None;
+                    }
+                };
+                let result = mask.wrapping_shl(shift);
+                let known_zero = 1u64.wrapping_shl(shift).wrapping_sub(1);
+                Some((result, known_zero))
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Canonicalize to (x ^ y) & ffff over x ^ (y & ffff)
 /// when the outermost mask doesn't modify x
 fn simplify_or_xor_canonicalize_and_masks<'e>(
@@ -1411,41 +1445,10 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Result<Option<u64>, SizeLimitReached> {
-    fn mask_for_op<'e>(op: Operand<'e>) -> Option<(u64, u64)> {
-        // Second return value is for bits that are known to be zero even
-        // without mask in the result.
-        // E.g. In addition to (x & ffff),
-        // (x & ff) << 8 can be used as ffff mask.
-        match op.if_arithmetic_any() {
-            Some(arith) if
-                matches!(arith.ty, ArithOpType::And | ArithOpType::Lsh | ArithOpType::Mul) =>
-            {
-                let c = arith.right.if_constant()?;
-                if arith.ty == ArithOpType::And {
-                    Some((c, 0))
-                } else {
-                    let (_, mask) = arith.left.if_and_with_const()?;
-                    let shift = if arith.ty == ArithOpType::Lsh {
-                        c as u32
-                    } else {
-                        if c & c.wrapping_sub(1) == 0 {
-                            c.trailing_zeros()
-                        } else {
-                            return None;
-                        }
-                    };
-                    let result = mask.wrapping_shl(shift);
-                    let known_zero = 1u64.wrapping_shl(shift).wrapping_sub(1);
-                    Some((result, known_zero))
-                }
-            }
-            _ => None,
-        }
-    }
 
     let best_mask = ops.iter()
         .fold(None, |prev: Option<u64>, &op| {
-            let new = mask_for_op(op);
+            let new = or_xor_canonicalize_mask_get_mask(op);
             if let Some(new) = new {
                 Some(new.0 | new.1 | prev.unwrap_or(0))
             } else {
@@ -1453,8 +1456,8 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
             }
         })
         .and_then(|mask| {
-            // Mask may now contain unneeded bits from mask_for_op(_, true),
-            // so collect result that uses bits from mask_for_op(_, false)
+            // Mask may now contain unneeded bits from or_xor_canonicalize_mask_get_mask(_, true),
+            // so collect result that uses bits from or_xor_canonicalize_mask_get_mask(_, false)
             // And require that mask doesn't clear any bits from non-masked ops
             // by including x.relevant_bits_mask() there.
             if mask & *const_val != *const_val || mask == 0 {
@@ -1466,7 +1469,7 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
             let mut result = 0;
             let mut had_non_masked_op = false;
             for &op in ops.iter() {
-                let relbits = match mask_for_op(op) {
+                let relbits = match or_xor_canonicalize_mask_get_mask(op) {
                     Some((c, _)) => c,
                     _ => {
                         had_non_masked_op = true;
@@ -1483,7 +1486,7 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
             // can be removed if it is moved outside.
             if !had_non_masked_op {
                 for &op in ops.iter() {
-                    if let Some((mask, known_zero)) = mask_for_op(op) {
+                    if let Some((mask, known_zero)) = or_xor_canonicalize_mask_get_mask(op) {
                         if mask == result & !known_zero {
                             return Some(result);
                         }
@@ -1548,16 +1551,14 @@ fn simplify_and_insert_mask_to_or_xor<'e>(
         return None;
     }
     // If all but one of operands has an AND mask,
-    // and the remaining operand gets reduced by the argument mask
+    // (Or shifted mask. or_xor_canonicalize_mask_get_mask handles those too)
+    // and the remaining operand gets reduced by the argument mask,
     // (relevant_bits & mask != relevant_bits)
     // insert the mask to the remaining operand
-    //
-    // May end up needing sharing code with simplify_or_xor_canonicalize_and_masks
-    // to correctly canonicalize all cases?
     let mut iter = IterArithOps::new_arith(arith);
     let not_masked = loop {
         let part = iter.next()?;
-        if part.if_and_with_const().is_none() {
+        if or_xor_canonicalize_mask_get_mask(part).is_none() {
             break part;
         }
     };
@@ -1568,7 +1569,7 @@ fn simplify_and_insert_mask_to_or_xor<'e>(
     }
     // Verify that rest of the iter chain has an AND mask
     while let Some(part) = iter.next() {
-        if part.if_and_with_const().is_none() {
+        if or_xor_canonicalize_mask_get_mask(part).is_none() {
             return None;
         }
     }
