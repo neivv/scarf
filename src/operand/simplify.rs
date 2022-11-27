@@ -2347,6 +2347,12 @@ fn simplify_eq_1op_const<'e>(
             return left;
         }
     }
+    if right != 0 {
+        let relbits = left.relevant_bits_mask();
+        if relbits & right != right {
+            return ctx.const_0();
+        }
+    }
     if let Some(arith) = left.if_arithmetic_any() {
         // Canonicalize shifts.
         // Left shifts are outside the mask (a & C2) << C1
@@ -2357,14 +2363,9 @@ fn simplify_eq_1op_const<'e>(
                     return op;
                 }
             } else if arith.ty == ArithOpType::Lsh {
-                // Adding assertion here, though rest of the function assumes this too.
-                // If this is being hit probably should do check at start of function.
-                // But in general impossible left for constant eq is checked
-                // elsewhere in more complex way, so should investigate why
-                // this is being hit.
                 debug_assert!(
                     1u64.wrapping_shl(r as u32).wrapping_sub(1) & right == 0,
-                    "Simplify eq becomes always false, but should've been caught earlier {left} {right:x}",
+                    "Simplify eq becomes always false, but should've been caught above {left} {right:x}",
                 );
                 let new_const = right.wrapping_shr(r as u32);
                 return ctx.eq_const(arith.left, new_const);
@@ -3001,8 +3002,8 @@ fn sum_valid_range(ops: &[(Operand<'_>, bool)], mask: u64) -> (u64, u64) {
             Some(x) => x.wrapping_sub(1),
             None => return (0, mask),
         };
-        match sum.checked_add(max) {
-            Some(s) => sum = s,
+        sum = match sum.checked_add(max) {
+            Some(s) => s,
             None => return (0, mask),
         };
         if val.1 {

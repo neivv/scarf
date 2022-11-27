@@ -10194,3 +10194,23 @@ fn masked_or_with_const() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn eq_always_zero_with_sub() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.eq_const(
+        ctx.and_const(
+            ctx.sub(
+                ctx.const_0(),
+                ctx.lsh_const(
+                    ctx.register(5),
+                    0x18,
+                ),
+            ),
+            0xffff_ffff,
+        ),
+        0x1,
+    );
+    let eq1 = ctx.const_0();
+    assert_eq!(op1, eq1);
+}
