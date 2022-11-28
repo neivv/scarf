@@ -1519,12 +1519,14 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
                         *const_val |= c;
                     }
                     ops.swap_remove(i);
-                    i -= 1;
                     end -= 1;
                 } else {
                     ops[i] = r;
+                    i += 1;
                 }
                 collect_arith_ops(l, ops, arith_ty, usize::MAX)?;
+                // Skip the default i increment
+                continue;
             } else if let Some(c) = op.if_constant() {
                 if arith_ty == ArithOpType::Xor {
                     *const_val ^= c;
