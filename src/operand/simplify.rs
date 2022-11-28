@@ -4060,25 +4060,17 @@ fn simplify_and_remove_unnecessary_ors_xors<'e>(
     false
 }
 
+/// Merges (x | c1) & (x | c2) to (x | (c1 & c2))
 fn simplify_and_merge_child_ors<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
-    fn or_const<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
-        match op.ty() {
-            OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Or => {
-                arith.right.if_constant().map(|c| (c, arith.left))
-            }
-            _ => None,
-        }
-    }
-
     let mut i = 0;
     while i < ops.len() {
         let op = ops[i];
         let mut new = None;
         let mut changed = false;
-        if let Some((mut constant, val)) = or_const(op) {
+        if let Some((val, mut constant)) = op.if_or_with_const() {
             for j in ((i + 1)..ops.len()).rev() {
                 let second = ops[j];
-                if let Some((other_constant, other_val)) = or_const(second) {
+                if let Some((other_val, other_constant)) = second.if_or_with_const() {
                     if other_val == val {
                         ops.swap_remove(j);
                         constant &= other_constant;
