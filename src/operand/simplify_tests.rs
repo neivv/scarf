@@ -10350,3 +10350,35 @@ fn or_masked_or2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn multiple_or_and() {
+    let ctx = &OperandContext::new();
+    // (r0 & r1) | ((r0 & r9) | r8)
+    // => ((r0 & r1) | (r0 & r9)) | r8
+    // => (r0 & (r1 | r9)) | r8
+    let op1 = ctx.or(
+        ctx.and(
+            ctx.register(1),
+            ctx.register(0),
+        ),
+        ctx.or(
+            ctx.and(
+                ctx.register(9),
+                ctx.register(0),
+            ),
+            ctx.register(8),
+        ),
+    );
+    let eq1 = ctx.or(
+        ctx.and(
+            ctx.register(0),
+            ctx.or(
+                ctx.register(1),
+                ctx.register(9),
+            ),
+        ),
+        ctx.register(8),
+    );
+    assert_eq!(op1, eq1);
+}

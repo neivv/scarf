@@ -47,6 +47,11 @@ impl<'e> IterArithOps<'e> {
             next_inner: Some(arith.left),
         }
     }
+
+    #[inline]
+    pub fn peek_next(&self) -> Option<Operand<'e>> {
+        self.next
+    }
 }
 
 impl<'e> Iterator for IterArithOps<'e> {
@@ -261,6 +266,102 @@ pub fn remove_matching_arith_parts_sorted_and_rejoin<'e>(
     })
 }
 
+/// Assuming that (l, r, ty) and (l2, r2, ty)
+/// make up two arithmetic op chains, which contain at least one
+/// operand that is equal, moves the equal parts to a slice,
+/// while rejoining rest of the two chains back, and calling
+/// `callback(first_joined, second_joined, equal_parts)`.
+pub fn split_off_matching_ops_rejoin_rest<'e, F, R>(
+    ctx: OperandCtx<'e>,
+    (l, r): (Operand<'e>, Operand<'e>),
+    (l2, r2): (Operand<'e>, Operand<'e>),
+    ty: ArithOpType,
+    callback: F,
+) -> Option<R>
+where F: FnOnce(Option<Operand<'e>>, Option<Operand<'e>>, &mut Slice<'e>) -> Option<R>,
+{
+    let mut iter1 = IterArithOps::new_pair(l, r, ty);
+    let mut iter2 = IterArithOps::new_pair(l2, r2, ty);
+
+    let first_matching = 'outer: loop {
+        let part = iter1.next()?;
+        'inner: loop {
+            let part2 = iter2.peek_next()?;
+            if part2 < part {
+                iter2.next();
+                continue 'inner;
+            } else if part2 == part {
+                iter2.next();
+                break 'outer part;
+            } else {
+                continue 'outer;
+            }
+        }
+    };
+
+    ctx.simplify_temp_stack().alloc(|result| {
+        result.push(first_matching).ok()?;
+
+        'outer: loop {
+            let part = match iter1.next() {
+                Some(s) => s,
+                None => break 'outer,
+            };
+            'inner: loop {
+                let part2 = match iter2.peek_next() {
+                    Some(s) => s,
+                    None => break 'outer,
+                };
+                if part2 < part {
+                    iter2.next();
+                    continue 'inner;
+                } else if part2 == part {
+                    iter2.next();
+                    result.push(part).ok()?;
+                    continue 'outer;
+                } else {
+                    continue 'outer;
+                }
+            }
+        }
+        let first = rejoin_op_without_parts(ctx, (l, r, ty), result);
+        let second = rejoin_op_without_parts(ctx, (l2, r2, ty), result);
+        callback(first, second, result)
+    })
+}
+
+/// Assuming that `(l, r, ty)` contains all operands in `parts`,
+/// and that `parts` is sorted,
+/// rejoins remaining parts of `(l, r, ty)`.
+fn rejoin_op_without_parts<'e>(
+    ctx: OperandCtx<'e>,
+    (l, r, ty): (Operand<'e>, Operand<'e>, ArithOpType),
+    parts: &Slice<'e>,
+) -> Option<Operand<'e>> {
+    let mut iter = IterArithOps::new_pair(l, r, ty);
+
+    ctx.simplify_temp_stack().alloc(|result| {
+        let mut rest = iter.next_inner;
+        for &next in parts.iter() {
+            loop {
+                rest = iter.next_inner;
+                let part = iter.next()?;
+                if part == next {
+                    break;
+                }
+                result.push(part).ok()?;
+            }
+        }
+        let (first, parts) = if let Some(rest) = rest {
+            (rest, &result[..])
+        } else {
+            let (&last, rest) = result.split_last()?;
+            (last, rest)
+        };
+        Some(intern_arith_ops_to_tree_with_base(ctx, first, parts.iter().copied().rev(), ty))
+    })
+}
+
 /// Removes one operand from slice and joins it back.
 /// `orig` is the Operand which was read to `slice`;
 /// it will be used to avoid some reinterning as the
@@ -339,7 +440,19 @@ pub fn intern_arith_ops_to_tree<'e, I: Iterator<Item = Operand<'e>>>(
     mut iter: I,
     ty: ArithOpType,
 ) -> Option<Operand<'e>> {
-    let mut tree = iter.next()?;
+    let first = iter.next()?;
+    Some(intern_arith_ops_to_tree_with_base(ctx, first, iter, ty))
+}
+
+/// Use only if the iterator produces items in sorted order.
+/// (Meaning slice.rev() of a sorted slice)
+pub fn intern_arith_ops_to_tree_with_base<'e, I: Iterator<Item = Operand<'e>>>(
+    ctx: OperandCtx<'e>,
+    base: Operand<'e>,
+    iter: I,
+    ty: ArithOpType,
+) -> Operand<'e> {
+    let mut tree = base;
     for op in iter {
         let arith = ArithOperand {
             ty,
@@ -348,7 +461,7 @@ pub fn intern_arith_ops_to_tree<'e, I: Iterator<Item = Operand<'e>>>(
         };
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
-    Some(tree)
+    tree
 }
 
 #[test]
@@ -371,7 +484,7 @@ fn test_sorted_arith_chain_remove_one_and_join() {
         let result = sorted_arith_chain_remove_one_and_join(ctx, slice, 2, op, ArithOpType::Xor);
         assert_eq!(result, ctx.xor(slice[0], slice[1]));
         Some(())
-    });
+    }).unwrap();
 }
 
 #[test]
@@ -415,5 +528,73 @@ fn test_remove_matching_arith_parts_sorted_and_rejoin() {
         );
         assert_eq!(result, eq);
         Some(())
-    });
+    }).unwrap();
+}
+
+#[test]
+fn test_split_off_matching_ops_rejoin_rest() {
+    let ctx = &super::OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.register(1),
+        ctx.xor(
+            ctx.xor(
+                ctx.register(2),
+                ctx.xor(
+                    ctx.constant(0x5006),
+                    ctx.mem32(ctx.mem32(ctx.register(9), 0), 0x40),
+                ),
+            ),
+            ctx.xor(
+                ctx.register(3),
+                ctx.mem16(ctx.register(8), 0),
+            ),
+        ),
+    );
+    let op2 = ctx.xor(
+        ctx.register(6),
+        ctx.xor(
+            ctx.xor(
+                ctx.register(2),
+                ctx.xor(
+                    ctx.constant(0x5006),
+                    ctx.mem32(ctx.mem32(ctx.register(9), 0), 0x40),
+                ),
+            ),
+            ctx.xor(
+                ctx.register(9),
+                ctx.mem16(ctx.register(8), 0),
+            ),
+        ),
+    );
+    let a1 = op1.if_arithmetic_any().unwrap();
+    let a2 = op2.if_arithmetic_any().unwrap();
+    split_off_matching_ops_rejoin_rest(
+        ctx,
+        (a1.left, a1.right),
+        (a2.left, a2.right),
+        ArithOpType::Xor,
+        |a, b, slice| {
+            let a = a.unwrap();
+            let b = b.unwrap();
+            let eq1 = ctx.xor(
+                ctx.register(1),
+                ctx.register(3),
+            );
+            let eq2 = ctx.xor(
+                ctx.register(6),
+                ctx.register(9),
+            );
+            assert_eq!(a, eq1);
+            assert_eq!(b, eq2);
+            let mut eq_slice = [
+                ctx.constant(0x5006),
+                ctx.mem16(ctx.register(8), 0),
+                ctx.mem32(ctx.mem32(ctx.register(9), 0), 0x40),
+                ctx.register(2),
+            ];
+            eq_slice.sort_by_key(|&x| (x.if_constant().is_none(), x));
+            assert_eq!(&eq_slice[..], &slice[..]);
+            Some(())
+        }
+    ).unwrap();
 }

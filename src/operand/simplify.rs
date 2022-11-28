@@ -25,14 +25,12 @@ pub struct SimplifyWithZeroBits {
     /// simplification with has functions, stop simplifying if a limit
     /// is hit.
     xor_recurse: u8,
-    xor_and_merge_count: u8
 }
 
 impl SimplifyWithZeroBits {
     fn has_reached_limit(&self) -> bool {
         self.zero_bits_simplify_count_at_limit() ||
-            self.with_and_mask_count_at_limit() ||
-            self.xor_and_merge_count_at_limit()
+            self.with_and_mask_count_at_limit()
     }
 
     #[inline]
@@ -43,20 +41,6 @@ impl SimplifyWithZeroBits {
     #[inline]
     fn with_and_mask_count_at_limit(&self) -> bool {
         self.with_and_mask_count > 120
-    }
-
-    #[inline]
-    fn xor_and_merge_count_at_limit(&self) -> bool {
-        self.xor_and_merge_count > 50
-    }
-
-    #[inline]
-    fn xor_and_merge_count_add(&mut self, amount: usize) {
-        self.xor_and_merge_count = self.xor_and_merge_count.saturating_add(amount as u8);
-        #[cfg(feature = "fuzz")]
-        if self.xor_and_merge_count_at_limit() {
-            tls_simplification_incomplete();
-        }
     }
 }
 
@@ -601,7 +585,7 @@ fn simplify_xor_unpack_and_masks<'e>(
     Ok(())
 }
 
-/// Merges (x & ff), (y & ff) to (x ^ y) & ff
+/// Merges (x & m), (y & m) to (x ^ y) & m
 /// Also used for or
 fn simplify_xor_merge_ands_with_same_mask<'e>(
     ops: &mut Slice<'e>,
@@ -610,51 +594,47 @@ fn simplify_xor_merge_ands_with_same_mask<'e>(
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) {
     let mut i = 0;
-    while i < ops.len() && !swzb_ctx.xor_and_merge_count_at_limit() {
-        if let Some((_, mask)) = ops[i].if_and_with_const() {
-            let any_matching = (ops[(i + 1)..]).iter().any(|x| {
-                x.if_and_with_const()
-                    .filter(|&(_, c)| c == mask)
-                    .is_some()
-            });
-            if any_matching {
-                let result = ctx.simplify_temp_stack
-                    .alloc(|slice| {
-                        for op in &ops[i..] {
-                            if let Some((l, r)) = op.if_and_with_const() {
-                                if r == mask {
-                                    if is_or {
-                                        collect_arith_ops(l, slice, ArithOpType::Or, 12)?;
-                                    } else {
-                                        collect_arith_ops(l, slice, ArithOpType::Xor, 12)?;
-                                    }
-                                }
+    let mut limit = 50u32;
+    'outer: while i + 1 < ops.len() && limit != 0 {
+        let op = ops[i];
+        if let Some((l, r)) = op.if_arithmetic_and() {
+            let mut j = i + 1;
+            while j < ops.len() && limit != 0 {
+                let op2 = ops[j];
+                if let Some((l2, r2)) = op2.if_arithmetic_and() {
+                    let result = util::split_off_matching_ops_rejoin_rest(
+                        ctx,
+                        (l, r),
+                        (l2, r2),
+                        ArithOpType::And,
+                        |x, y, mask_parts| {
+                            if (x.is_none() || y.is_none()) && is_or {
+                                // (u64::MAX | x) simplifies to just u64::MAX,
+                                // so u64::MAX & mask_parts => mask_parts
+                                // So do nothing.
+                            } else {
+                                let x = x.unwrap_or_else(|| ctx.constant(u64::MAX));
+                                let y = y.unwrap_or_else(|| ctx.constant(u64::MAX));
+                                let inner = if is_or {
+                                    simplify_or(x, y, ctx, swzb_ctx)
+                                } else {
+                                    simplify_xor(x, y, ctx, swzb_ctx)
+                                };
+                                mask_parts.push(inner).ok()?;
                             }
-                        }
-                        swzb_ctx.xor_and_merge_count_add(slice.len());
-                        if is_or {
-                            simplify_or_ops(slice, ctx, swzb_ctx)
-                        } else {
-                            simplify_xor_ops(slice, ctx, swzb_ctx)
-                        }
-                    });
-                if let Ok(result) = result {
-                    for j in ((i + 1)..ops.len()).rev() {
-                        let matched = ops[j].if_and_with_const()
-                            .filter(|&(_, c)| c == mask)
-                            .is_some();
-                        if matched {
-                            ops.swap_remove(j);
-                        }
+                            limit = limit.saturating_sub(mask_parts.len() as u32);
+                            simplify_and_ops(mask_parts, ctx, swzb_ctx).ok()
+                        });
+                    if let Some(result) = result {
+                        ops[i] = result;
+                        ops.swap_remove(j);
+                        continue 'outer;
                     }
-                    if result == ctx.const_0() {
-                        ops.swap_remove(i);
-                    } else {
-                        let masked = simplify_and_const(result, mask, ctx, swzb_ctx);
-                        ops[i] = masked;
-                    }
+                    limit = limit.saturating_sub(2u32);
                 }
+                j += 1;
             }
+            limit = limit.saturating_sub(2u32);
         }
         i += 1;
     }
