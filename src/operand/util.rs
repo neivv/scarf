@@ -182,6 +182,85 @@ pub fn remove_eq_arith_parts_sorted_and_rejoin<'e>(
     })
 }
 
+/// If `(l, r, ty)` operand chain has any parts in `slice`,
+/// returns rejoined `Operand` of the parts not in `slice`.
+/// If all parts of `(l, r, ty)` are in `slice` returns `ctx.const_0()`.
+///     ! 0 may not be identity value for the operation (e.g. and, mul)
+///     caller should check for 0 and replace it with id.
+///
+/// That is, differs from remove_eq_arith_parts_sorted which requires entirety or `(l, r, ty)`
+/// be in `slice`, and rejoins rest of `slice` instead of `(l, r, ty)`.
+///
+/// Assumes `slice` to be sorted and contains already simplified arith chain,
+/// though the first operand of slice may be a constant. Constants are also
+/// not removed by this function.
+///     (So that the operation is O(n)).
+pub fn remove_matching_arith_parts_sorted_and_rejoin<'e>(
+    ctx: OperandCtx<'e>,
+    slice: &Slice<'e>,
+    (l, r, ty): (Operand<'e>, Operand<'e>, ArithOpType),
+) -> Option<Operand<'e>> {
+    let mut iter = IterArithOps::new_pair(l, r, ty);
+    let mut slice_pos = &slice[..];
+    // Skip constant if any
+    if slice_pos.get(0).and_then(|x| x.if_constant()).is_some() {
+        slice_pos = &slice_pos[1..];
+    }
+    if iter.next.and_then(|x| x.if_constant()).is_some() {
+        iter.next();
+    }
+    let first_matching = 'outer: loop {
+        let part = iter.next()?;
+        'inner: loop {
+            let (&slice_part, rest) = slice_pos.split_first()?;
+            if slice_part < part {
+                slice_pos = rest;
+                continue 'inner;
+            } else if slice_part == part {
+                slice_pos = rest;
+                break 'outer part;
+            } else {
+                continue 'outer;
+            }
+        }
+    };
+
+    ctx.simplify_temp_stack().alloc(|result| {
+        let mut iter = IterArithOps::new_pair(l, r, ty);
+        while let Some(part) = iter.next() {
+            if part == first_matching {
+                break;
+            }
+            result.push(part).ok()?;
+        }
+        'outer: loop {
+            let part = match iter.next() {
+                Some(s) => s,
+                None => break 'outer,
+            };
+            'inner: loop {
+                let (&slice_part, rest) = match slice_pos.split_first() {
+                    Some(s) => s,
+                    None => break 'outer,
+                };
+                if slice_part < part {
+                    slice_pos = rest;
+                    continue 'inner;
+                } else if slice_part == part {
+                    slice_pos = rest;
+                    continue 'outer;
+                } else {
+                    result.push(part).ok()?;
+                    continue 'outer;
+                }
+            }
+        }
+        let result = intern_arith_ops_to_tree(ctx, result.iter().copied().rev(), ty)
+            .unwrap_or_else(|| ctx.const_0());
+        Some(result)
+    })
+}
+
 /// Removes one operand from slice and joins it back.
 /// `orig` is the Operand which was read to `slice`;
 /// it will be used to avoid some reinterning as the
@@ -291,6 +370,50 @@ fn test_sorted_arith_chain_remove_one_and_join() {
         assert_eq!(result, ctx.xor(slice[0], slice[2]));
         let result = sorted_arith_chain_remove_one_and_join(ctx, slice, 2, op, ArithOpType::Xor);
         assert_eq!(result, ctx.xor(slice[0], slice[1]));
+        Some(())
+    });
+}
+
+#[test]
+fn test_remove_matching_arith_parts_sorted_and_rejoin() {
+    let ctx = &super::OperandContext::new();
+    let op = ctx.xor(
+        ctx.register(1),
+        ctx.xor(
+            ctx.xor(
+                ctx.register(2),
+                ctx.xor(
+                    ctx.constant(0x5006),
+                    ctx.mem32(ctx.mem32(ctx.register(9), 0), 0x40),
+                ),
+            ),
+            ctx.xor(
+                ctx.register(3),
+                ctx.mem16(ctx.register(8), 0),
+            ),
+        ),
+    );
+    let arith = op.if_arithmetic_any().unwrap();
+    arith_parts_to_new_slice(ctx, arith.left, arith.right, arith.ty, |slice| {
+        let op = ctx.xor(
+            ctx.register(8),
+            ctx.xor(
+                ctx.register(3),
+                ctx.xor(
+                    ctx.register(5),
+                    ctx.mem16(ctx.register(8), 0),
+                ),
+            ),
+        );
+        let a = op.if_arithmetic_any().unwrap();
+        let result =
+            remove_matching_arith_parts_sorted_and_rejoin(ctx, slice, (a.left, a.right, a.ty))
+                .unwrap();
+        let eq = ctx.xor(
+            ctx.register(8),
+            ctx.register(5),
+        );
+        assert_eq!(result, eq);
         Some(())
     });
 }

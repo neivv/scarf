@@ -10214,3 +10214,139 @@ fn eq_always_zero_with_sub() {
     let eq1 = ctx.const_0();
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn or_xor_same_with_mask() {
+    let ctx = &OperandContext::new();
+    // (x ^ y) | x => x | y,
+    // the mask won't affect Mem8 here
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.xor(
+                ctx.mem8(ctx.register(1), 0),
+                ctx.register(0),
+            ),
+            0x00ff_33ff_00ff_33ff,
+        ),
+        ctx.mem8(ctx.register(1), 0),
+    );
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.mem8(ctx.register(1), 0),
+            ctx.register(0),
+        ),
+        0x00ff_33ff_00ff_33ff,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn or_xor_same_with_mask2() {
+    let ctx = &OperandContext::new();
+    // ((x ^ y) & z) | x => x | (y & z),
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.xor(
+                ctx.register(2),
+                ctx.register(0),
+            ),
+            0x00ff_33ff_00ff_33ff,
+        ),
+        ctx.register(2),
+    );
+    let eq1 = ctx.or(
+        ctx.and_const(
+            ctx.register(0),
+            0x00ff_33ff_00ff_33ff,
+        ),
+        ctx.register(2),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn or_xor_same_with_mask3() {
+    let ctx = &OperandContext::new();
+    // ((x ^ y) & z) | x => x | (y & z),
+    // (Even if the and isn't with a constant mask)
+    let op1 = ctx.or(
+        ctx.and(
+            ctx.and(
+                ctx.xor(
+                    ctx.register(2),
+                    ctx.register(0),
+                ),
+                ctx.constant(0x00ff_33ff_00ff_33ff),
+            ),
+            ctx.register(5),
+        ),
+        ctx.register(2),
+    );
+    let eq1 = ctx.or(
+        ctx.and(
+            ctx.and(
+                ctx.register(0),
+                ctx.constant(0x00ff_33ff_00ff_33ff),
+            ),
+            ctx.register(5),
+        ),
+        ctx.register(2),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn or_masked_or1() {
+    let ctx = &OperandContext::new();
+    // ((x | y) & z) | x => x | (y & z),
+    // (Even if the and isn't with a constant mask)
+    let op1 = ctx.or(
+        ctx.and(
+            ctx.or(
+                ctx.register(2),
+                ctx.register(0),
+            ),
+            ctx.constant(0x00ff_33ff_00ff_33ff),
+        ),
+        ctx.register(2),
+    );
+    let eq1 = ctx.or(
+        ctx.and(
+            ctx.register(0),
+            ctx.constant(0x00ff_33ff_00ff_33ff),
+        ),
+        ctx.register(2),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn or_masked_or2() {
+    let ctx = &OperandContext::new();
+    // ((x | y) & z) | x => x | (y & z),
+    // (Even if the and isn't with a constant mask)
+    let op1 = ctx.or(
+        ctx.and(
+            ctx.and(
+                ctx.or(
+                    ctx.register(2),
+                    ctx.register(0),
+                ),
+                ctx.constant(0x00ff_33ff_00ff_33ff),
+            ),
+            ctx.register(5),
+        ),
+        ctx.register(2),
+    );
+    let eq1 = ctx.or(
+        ctx.and(
+            ctx.and(
+                ctx.register(0),
+                ctx.constant(0x00ff_33ff_00ff_33ff),
+            ),
+            ctx.register(5),
+        ),
+        ctx.register(2),
+    );
+    assert_eq!(op1, eq1);
+}

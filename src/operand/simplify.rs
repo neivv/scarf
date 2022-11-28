@@ -3586,22 +3586,8 @@ pub fn simplify_and<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
-    if !bits_overlap(&left.relevant_bits(), &right.relevant_bits()) {
-        return ctx.const_0();
-    }
-    if left == right {
-        // Early exit for left == right, can end up here with code like `test rax, rax`
-        return left;
-    }
-    let const_other = match left.if_constant() {
-        Some(c) => Some((c, left, right)),
-        None => match right.if_constant() {
-            Some(c) => Some((c, right, left)),
-            None => None,
-        },
-    };
-    if let Some((c, c_op, other)) = const_other {
-        return simplify_and_const_op(other, c, Some(c_op), ctx, swzb_ctx);
+    if let Some(result) = simplify_and_before_ops_collect_checks(left, right, ctx, swzb_ctx) {
+        return result;
     }
 
     ctx.simplify_temp_stack().alloc(|slice| {
@@ -3617,6 +3603,51 @@ pub fn simplify_and<'e>(
                 return ctx.intern(OperandType::Arithmetic(arith));
             })
     })
+}
+
+fn simplify_and_before_ops_collect_checks<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Option<Operand<'e>> {
+    if !bits_overlap(&left.relevant_bits(), &right.relevant_bits()) {
+        return Some(ctx.const_0());
+    }
+    if left == right {
+        // Early exit for left == right, can end up here with code like `test rax, rax`
+        return Some(left);
+    }
+    let const_other = match left.if_constant() {
+        Some(c) => Some((c, left, right)),
+        None => match right.if_constant() {
+            Some(c) => Some((c, right, left)),
+            None => None,
+        },
+    };
+    if let Some((c, c_op, other)) = const_other {
+        return Some(simplify_and_const_op(other, c, Some(c_op), ctx, swzb_ctx));
+    }
+    None
+}
+
+/// Builds operand of bitwise AND of operands in `ops`.
+/// (Currently effectively just simplify_and_main but having this as more
+/// explicit (stableish?) interface that other code can use)
+fn simplify_and_ops<'e>(
+    ops: &mut Slice<'e>,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Result<Operand<'e>, SizeLimitReached> {
+    if ops.len() == 2 {
+        // simplify_and can have some early-exit checks,
+        // so do it when there are just 2 ops
+        if let Some(result) = simplify_and_before_ops_collect_checks(ops[0], ops[1], ctx, swzb_ctx)
+        {
+            return Ok(result);
+        }
+    }
+    simplify_and_main(ops, u64::MAX, ctx, swzb_ctx)
 }
 
 fn relevant_bits_for_and_simplify<'e>(op: Operand<'e>) -> u64 {
@@ -3671,8 +3702,6 @@ fn simplify_and_main<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Result<Operand<'e>, SizeLimitReached> {
-    // Keep second mask in form 00000011111 (All High bits 0, all low bits 1),
-    // as that allows simplifying add/sub/mul a bit more
     loop {
         const_remain = ops.iter()
             .map(|&op| relevant_bits_for_and_simplify(op))
@@ -6089,6 +6118,7 @@ fn simplify_or_ops<'e>(
             });
         }
         if ops.len() > 1 {
+            simplify_or_remove_equivalent_inside_mask(ops, ctx, swzb_ctx);
             simplify_or_merge_child_ands(ops, ctx, swzb_ctx, !const_val, ArithOpType::Or)?;
             simplify_or_merge_xors(ops, ctx, swzb_ctx);
             simplify_or_with_xor_of_op(ops, ctx);
@@ -6177,6 +6207,58 @@ fn finish_or_simplify<'e>(
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
     tree
+}
+
+/// Converts ((x | y) & m) | x => (y & m) | x
+/// and ((x ^ y) & m) | x => (y & m) | x
+/// (Even if mask is not constant)
+fn simplify_or_remove_equivalent_inside_mask<'e>(
+    ops: &mut Slice<'e>,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) {
+    let mut limit = 50u32;
+    let mut i = 0;
+    while i < ops.len() && limit != 0 {
+        let op = ops[i];
+        if let Some((l, r)) = op.if_arithmetic_and() {
+            let result = util::arith_parts_to_new_slice(ctx, l, r, ArithOpType::And, |parts| {
+                let mut part_pos = 0;
+                let mut changed = false;
+                while part_pos < parts.len() {
+                    let part = parts[part_pos];
+                    if let Some(part_arith) = part.if_arithmetic_any() {
+                        if matches!(part_arith.ty, ArithOpType::Or | ArithOpType::Xor) {
+                            // ops[i] technically should not be considered here,
+                            // but it is not possible ops[i] be in part_arith
+                            // since part_arith is in ops[i]
+                            let result = util::remove_matching_arith_parts_sorted_and_rejoin(
+                                ctx,
+                                ops,
+                                (part_arith.left, part_arith.right, part_arith.ty),
+                            );
+                            limit = limit.saturating_sub(parts.len() as u32);
+                            if let Some(result) = result {
+                                parts[part_pos] = result;
+                                changed = true;
+                            }
+                        }
+                    }
+                    part_pos += 1;
+                }
+                limit = limit.saturating_sub(parts.len() as u32);
+                if changed {
+                    simplify_and_ops(parts, ctx, swzb_ctx).ok()
+                } else {
+                    None
+                }
+            });
+            if let Some(result) = result {
+                ops[i] = result;
+            }
+        }
+        i += 1;
+    }
 }
 
 /// Counts xor ops, descending into x & c masks, as
