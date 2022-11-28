@@ -10382,3 +10382,61 @@ fn multiple_or_and() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_or_consistency6() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.mem16(ctx.register(0), 0),
+            0x9e00,
+        ),
+        ctx.and_const(
+            ctx.register(2),
+            0xc79e_0100,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.and_const(
+                ctx.mem16(ctx.register(0), 0),
+                0x9e00,
+            ),
+            ctx.and_const(
+                ctx.register(2),
+                0xc79e_0100,
+            ),
+        ),
+        0xc79e_9f00,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn multiple_or_and2() {
+    let ctx = &OperandContext::new();
+    // (r15 & r0) | (r0 & r1) | r15
+    // => ((r15 | r1) & r0) | r15
+    // => (r1 & r0) | r15
+    let op1 = ctx.or(
+        ctx.and(
+            ctx.register(15),
+            ctx.register(0),
+        ),
+        ctx.or(
+            ctx.and(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.register(15),
+        ),
+    );
+    let eq1 = ctx.or(
+        ctx.and(
+            ctx.register(1),
+            ctx.register(0),
+        ),
+        ctx.register(15),
+    );
+    assert_eq!(op1, eq1);
+}

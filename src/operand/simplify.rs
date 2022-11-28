@@ -1545,10 +1545,27 @@ fn simplify_and_insert_mask_to_or_xor<'e>(
     // (relevant_bits & mask != relevant_bits)
     // insert the mask to the remaining operand
     let mut iter = IterArithOps::new_arith(arith);
+    let mut parts_mask = 0u64;
     let not_masked = loop {
-        let part = iter.next()?;
-        if or_xor_canonicalize_mask_get_mask(part).is_none() {
-            break part;
+        let part = match iter.next() {
+            Some(s) => s,
+            None => {
+                if parts_mask & mask == parts_mask {
+                    // The mask isn't useful, just return op without changes
+                    return Some(op);
+                } else {
+                    // No insertion, but mask is needed.
+                    return None;
+                }
+            }
+        };
+        match or_xor_canonicalize_mask_get_mask(part) {
+            Some((mask, _known_zero)) => {
+                parts_mask |= mask;
+            }
+            None => {
+                break part;
+            }
         }
     };
     // Verify that `mask` is useful for `not_masked`
@@ -6201,22 +6218,28 @@ fn simplify_or_remove_equivalent_inside_mask<'e>(
                 let mut changed = false;
                 while part_pos < parts.len() {
                     let part = parts[part_pos];
-                    if let Some(part_arith) = part.if_arithmetic_any() {
-                        if matches!(part_arith.ty, ArithOpType::Or | ArithOpType::Xor) {
-                            // ops[i] technically should not be considered here,
-                            // but it is not possible ops[i] be in part_arith
-                            // since part_arith is in ops[i]
-                            let result = util::remove_matching_arith_parts_sorted_and_rejoin(
-                                ctx,
-                                ops,
-                                (part_arith.left, part_arith.right, part_arith.ty),
-                            );
-                            limit = limit.saturating_sub(parts.len() as u32);
-                            if let Some(result) = result {
-                                parts[part_pos] = result;
-                                changed = true;
-                            }
+                    if let Some(part_arith) = part.if_arithmetic_any()
+                        .filter(|a| matches!(a.ty, ArithOpType::Or | ArithOpType::Xor))
+                    {
+                        // ops[i] technically should not be considered here,
+                        // but it is not possible ops[i] be in part_arith
+                        // since part_arith is in ops[i]
+                        let result = util::remove_matching_arith_parts_sorted_and_rejoin(
+                            ctx,
+                            ops,
+                            (part_arith.left, part_arith.right, part_arith.ty),
+                        );
+                        limit = limit.saturating_sub(parts.len() as u32);
+                        if let Some(result) = result {
+                            parts[part_pos] = result;
+                            changed = true;
                         }
+                    } else {
+                        if ops.iter().any(|&op| op == part) {
+                            // (x & m) | x => x (Remove entire and)
+                            return Some(ctx.const_0());
+                        }
+                        limit = limit.saturating_sub(parts.len() as u32);
                     }
                     part_pos += 1;
                 }
@@ -6228,7 +6251,13 @@ fn simplify_or_remove_equivalent_inside_mask<'e>(
                 }
             });
             if let Some(result) = result {
-                ops[i] = result;
+                if result == ctx.const_0() {
+                    ops.swap_remove(i);
+                    // Skip i increment
+                    continue;
+                } else {
+                    ops[i] = result;
+                }
             }
         }
         i += 1;
