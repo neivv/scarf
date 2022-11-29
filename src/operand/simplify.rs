@@ -6528,6 +6528,15 @@ fn simplify_with_and_mask_inner<'e>(
                     let orig_mask = mask;
                     let mut mask = mask;
                     if arith.ty != ArithOpType::Xor {
+                        // Is this fine?
+                        // This allows better simplification when high bits of mask
+                        // don't affect result.
+                        // Doing this for xor would be incorrect, e.g. for
+                        //      op = (x & ff) ^ (y & 1ff) (relbits = 1ff)
+                        //      mask = ffff
+                        // would lead to & 1ff mask being removed.
+                        // (Though above example is actually canonicalized to ((x & ff) ^ y) & 1ff)
+                        mask &= op.relevant_bits_mask();
                         // The mask can be applied separately to left and right if
                         // any of the unmasked bits input don't affect masked bits in result.
                         // For add/sub/mul, a bit can only affect itself and more

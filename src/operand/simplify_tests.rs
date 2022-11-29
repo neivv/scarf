@@ -10497,3 +10497,67 @@ fn masked_mem_high_byte() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn or_add_masked() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.add_const(
+                ctx.mem16(ctx.register(3), 0),
+                0x0016_0005_0200,
+            ),
+            ctx.register(4),
+        ),
+        0x0701_0763_c700,
+    );
+    let eq1 = ctx.or(
+        ctx.and_const(
+            ctx.add_const(
+                ctx.mem16(ctx.register(3), 0),
+                0x0016_0005_0200,
+            ),
+            0x0701_0763_c700,
+        ),
+        ctx.and_const(
+            ctx.register(4),
+            0x0701_0763_c700,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn xor_verify_no_mask_remove() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.xor(
+            ctx.xor(
+                ctx.and_const(
+                    ctx.register(0),
+                    0x1ff,
+                ),
+                ctx.and_const(
+                    ctx.register(1),
+                    0xff,
+                ),
+            ),
+            ctx.register(9),
+        ),
+        0xffff,
+    );
+    let ne1 = ctx.and_const(
+        ctx.xor(
+            ctx.xor(
+                ctx.register(0),
+                ctx.and_const(
+                    ctx.register(1),
+                    0xff,
+                ),
+            ),
+            ctx.register(9),
+        ),
+        0xffff,
+    );
+    assert_ne!(op1, ne1);
+}
