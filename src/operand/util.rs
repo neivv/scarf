@@ -283,18 +283,40 @@ where F: FnOnce(Option<Operand<'e>>, Option<Operand<'e>>, &mut Slice<'e>) -> Opt
     let mut iter1 = IterArithOps::new_pair(l, r, ty);
     let mut iter2 = IterArithOps::new_pair(l2, r2, ty);
 
-    let first_matching = 'outer: loop {
-        let part = iter1.next()?;
-        'inner: loop {
-            let part2 = iter2.peek_next()?;
-            if part2 < part {
-                iter2.next();
-                continue 'inner;
-            } else if part2 == part {
-                iter2.next();
-                break 'outer part;
-            } else {
-                continue 'outer;
+    let mut first_matching = None;
+    // Handle possibility of one constant being first before rest
+    // are correctly sorted.
+    if let Some(next) = iter1.peek_next() {
+        if next.if_constant().is_some() {
+            iter1.next();
+            if iter2.peek_next() == Some(next) {
+                first_matching = Some(next);
+            }
+        }
+    }
+    // Skip iter2 const too
+    if let Some(next) = iter2.peek_next() {
+        if next.if_constant().is_some() {
+            iter2.next();
+        }
+    }
+    let first_matching = match first_matching {
+        Some(s) => s,
+        None => {
+            'outer: loop {
+                let part = iter1.next()?;
+                'inner: loop {
+                    let part2 = iter2.peek_next()?;
+                    if part2 < part {
+                        iter2.next();
+                        continue 'inner;
+                    } else if part2 == part {
+                        iter2.next();
+                        break 'outer part;
+                    } else {
+                        continue 'outer;
+                    }
+                }
             }
         }
     };
@@ -588,6 +610,73 @@ fn test_split_off_matching_ops_rejoin_rest() {
             assert_eq!(b, eq2);
             let mut eq_slice = [
                 ctx.constant(0x5006),
+                ctx.mem16(ctx.register(8), 0),
+                ctx.mem32(ctx.mem32(ctx.register(9), 0), 0x40),
+                ctx.register(2),
+            ];
+            eq_slice.sort_by_key(|&x| (x.if_constant().is_none(), x));
+            assert_eq!(&eq_slice[..], &slice[..]);
+            Some(())
+        }
+    ).unwrap();
+}
+
+#[test]
+fn test_split_off_matching_ops_rejoin_rest_const() {
+    let ctx = &super::OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.register(1),
+        ctx.xor(
+            ctx.xor(
+                ctx.register(2),
+                ctx.xor(
+                    ctx.constant(0x5006),
+                    ctx.mem32(ctx.mem32(ctx.register(9), 0), 0x40),
+                ),
+            ),
+            ctx.xor(
+                ctx.register(3),
+                ctx.mem16(ctx.register(8), 0),
+            ),
+        ),
+    );
+    let op2 = ctx.xor(
+        ctx.register(6),
+        ctx.xor(
+            ctx.xor(
+                ctx.register(2),
+                ctx.mem32(ctx.mem32(ctx.register(9), 0), 0x40),
+            ),
+            ctx.xor(
+                ctx.register(9),
+                ctx.mem16(ctx.register(8), 0),
+            ),
+        ),
+    );
+    let a1 = op1.if_arithmetic_any().unwrap();
+    let a2 = op2.if_arithmetic_any().unwrap();
+    split_off_matching_ops_rejoin_rest(
+        ctx,
+        (a1.left, a1.right),
+        (a2.left, a2.right),
+        ArithOpType::Xor,
+        |a, b, slice| {
+            let a = a.unwrap();
+            let b = b.unwrap();
+            let eq1 = ctx.xor(
+                ctx.register(1),
+                ctx.xor(
+                    ctx.register(3),
+                    ctx.constant(0x5006),
+                ),
+            );
+            let eq2 = ctx.xor(
+                ctx.register(6),
+                ctx.register(9),
+            );
+            assert_eq!(a, eq1);
+            assert_eq!(b, eq2);
+            let mut eq_slice = [
                 ctx.mem16(ctx.register(8), 0),
                 ctx.mem32(ctx.mem32(ctx.register(9), 0), 0x40),
                 ctx.register(2),

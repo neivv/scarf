@@ -10440,3 +10440,34 @@ fn multiple_or_and2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn multiple_or_and3() {
+    let ctx = &OperandContext::new();
+    // (r0 & 53) | (r0 & r1) | r15
+    // => ((r1 | 53) & r0) | r15
+    let op1 = ctx.or(
+        ctx.and(
+            ctx.register(0),
+            ctx.constant(0x53),
+        ),
+        ctx.or(
+            ctx.and(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.register(15),
+        ),
+    );
+    let eq1 = ctx.or(
+        ctx.and(
+            ctx.or(
+                ctx.register(1),
+                ctx.constant(0x53),
+            ),
+            ctx.register(0),
+        ),
+        ctx.register(15),
+    );
+    assert_eq!(op1, eq1);
+}
