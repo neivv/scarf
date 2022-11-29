@@ -10471,3 +10471,29 @@ fn multiple_or_and3() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_mem_high_byte() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or_const(
+            ctx.mem32(ctx.register(0), 0),
+            0x0000_00c7_01ea_2000,
+        ),
+        0x0006_0000_0600_0000,
+    );
+    let eq1 = ctx.and_const(
+        ctx.or_const(
+            ctx.lsh_const(
+                ctx.and_const(
+                    ctx.mem8(ctx.register(0), 3),
+                    0x6,
+                ),
+                0x18,
+            ),
+            0x0000_0001_0000_0000,
+        ),
+        0xffff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}

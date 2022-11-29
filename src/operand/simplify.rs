@@ -1372,12 +1372,7 @@ fn simplify_xor_ops<'e>(
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
     if let Some(c) = best_mask {
-        let arith = ArithOperand {
-            ty: ArithOpType::And,
-            left: tree,
-            right: ctx.constant(c),
-        };
-        tree = ctx.intern(OperandType::Arithmetic(arith));
+        tree = intern_and_const(tree, c, ctx);
     }
     Ok(tree)
 }
@@ -1689,6 +1684,49 @@ pub fn simplify_lsh<'e>(
         return ctx.const_0();
     }
     simplify_lsh_const(left, constant as u8, ctx, swzb_ctx)
+}
+
+fn intern_and_const<'e>(
+    left: Operand<'e>,
+    constant: u64,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    // Insert mask inside lsh / mul-by-power-of-two
+    if let Some(arith) = left.if_arithmetic_any() {
+        if matches!(arith.ty, ArithOpType::Lsh | ArithOpType::Mul) {
+            if let Some(c) = arith.right.if_constant() {
+                let shift = if arith.ty == ArithOpType::Lsh {
+                    Some(c as u8)
+                } else {
+                    if c & c.wrapping_sub(1) == 0 {
+                        Some(c.trailing_zeros() as u8)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(shift) = shift {
+                    let a = ArithOperand {
+                        ty: ArithOpType::And,
+                        left: arith.left,
+                        right: ctx.constant(constant >> shift),
+                    };
+                    let masked = ctx.intern(OperandType::Arithmetic(a));
+                    let a = ArithOperand {
+                        ty: arith.ty,
+                        left: masked,
+                        right: arith.right,
+                    };
+                    return ctx.intern(OperandType::Arithmetic(a));
+                }
+            }
+        }
+    }
+    let arith = ArithOperand {
+        ty: ArithOpType::And,
+        left,
+        right: ctx.constant(constant),
+    };
+    ctx.intern(OperandType::Arithmetic(arith))
 }
 
 fn intern_lsh_const<'e>(
@@ -6182,12 +6220,7 @@ fn finish_or_simplify<'e>(
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
     if let Some(c) = best_mask {
-        let arith = ArithOperand {
-            ty: ArithOpType::And,
-            left: tree,
-            right: ctx.constant(c & !const_val),
-        };
-        tree = ctx.intern(OperandType::Arithmetic(arith));
+        tree = intern_and_const(tree, c & !const_val, ctx);
     }
     if const_val != 0 {
         let arith = ArithOperand {
