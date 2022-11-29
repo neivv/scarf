@@ -10561,3 +10561,32 @@ fn xor_verify_no_mask_remove() {
     );
     assert_ne!(op1, ne1);
 }
+
+#[test]
+fn and_or_consistency() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and(
+            ctx.or(
+                ctx.register(15),
+                ctx.and(
+                    ctx.register(0),
+                    ctx.register(1),
+                ),
+            ),
+            ctx.register(6),
+        ),
+        ctx.register(15),
+    );
+    let eq1 = ctx.or(
+        ctx.and(
+            ctx.and(
+                ctx.register(0),
+                ctx.register(1),
+            ),
+            ctx.register(6),
+        ),
+        ctx.register(15),
+    );
+    assert_eq!(op1, eq1);
+}

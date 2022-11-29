@@ -6264,8 +6264,17 @@ fn simplify_or_remove_equivalent_inside_mask<'e>(
                         );
                         limit = limit.saturating_sub(parts.len() as u32);
                         if let Some(result) = result {
-                            parts[part_pos] = result;
+                            if let Some((l, r)) = result.if_arithmetic_and() {
+                                // Don't increment part_pos, check `r` too for possible
+                                // extra simplification.
+                                parts[part_pos] = r;
+                                collect_and_ops(l, parts, usize::MAX).ok()?;
+                            } else {
+                                parts[part_pos] = result;
+                                part_pos += 1;
+                            }
                             changed = true;
+                            continue;
                         }
                     } else {
                         if ops.iter().any(|&op| op == part) {
