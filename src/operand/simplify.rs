@@ -6624,7 +6624,7 @@ fn simplify_with_and_mask_inner<'e>(
                                     ctx,
                                     swzb_ctx,
                                 );
-                                if left == arith.left {
+                                if left == arith.left && c == orig_c {
                                     return op;
                                 } else {
                                     return simplify_lsh_const(left, shift as u8, ctx, swzb_ctx);

@@ -10618,3 +10618,23 @@ fn unnecessary_and_mask() {
     let y = ctx.and_const(op1, 0xffff_ffff);
     assert_eq!(x, y);
 }
+
+#[test]
+fn simplify_mul_const_masked() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.register(1),
+            0x8000_0000_0000_0200,
+        ),
+        0x0010_0000,
+    );
+    let eq1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.register(1),
+            0x0200,
+        ),
+        0x0010_0000,
+    );
+    assert_eq!(op1, eq1);
+}
