@@ -10590,3 +10590,31 @@ fn and_or_consistency() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn unnecessary_and_mask() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.and(
+                ctx.or_const(
+                    ctx.mem16(ctx.register(3), 0),
+                    0x0600_0000,
+                ),
+                ctx.xmm(0, 0),
+            ),
+            ctx.register(0),
+        ),
+        0x1000_c79e_0100,
+    );
+    let high = ctx.or(
+        op1,
+        ctx.lsh_const(
+            ctx.register(0),
+            0x20,
+        ),
+    );
+    let x = ctx.and_const(high, 0xffff_ffff);
+    let y = ctx.and_const(op1, 0xffff_ffff);
+    assert_eq!(x, y);
+}

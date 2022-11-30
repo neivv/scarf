@@ -3687,6 +3687,13 @@ fn simplify_and_ops<'e>(
     simplify_and_main(ops, u64::MAX, ctx, swzb_ctx)
 }
 
+/// Gives same result as relevant_bits_for_and_simplify, but
+/// allows the operand to be chain of ands.
+fn relevant_bits_for_and_simplify_of_and_chain<'e>(op: Operand<'e>) -> u64 {
+    util::IterArithOps::new(op, ArithOpType::And)
+        .fold(u64::MAX, |old, op| old & relevant_bits_for_and_simplify(op))
+}
+
 fn relevant_bits_for_and_simplify<'e>(op: Operand<'e>) -> u64 {
     match *op.ty() {
         OperandType::Constant(c) => c,
@@ -6421,7 +6428,10 @@ fn simplify_with_and_mask_inner<'e>(
                 ArithOpType::And => {
                     let simplified_left;
                     let simplified_right;
-                    let self_mask = mask & arith.left.relevant_bits_mask();
+                    // Use relevant_bits_for_and_simplify so that
+                    // this will properly cancel out masks that and simplify
+                    // considers most accurate.
+                    let self_mask = mask & relevant_bits_for_and_simplify_of_and_chain(arith.left);
                     if let Some(c) = arith.right.if_constant() {
                         if c == self_mask {
                             // This constant mask was already applied to arith.left
