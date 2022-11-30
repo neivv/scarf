@@ -2442,7 +2442,36 @@ impl<'e> Operand<'e> {
         self.0.relevant_bits.clone()
     }
 
-    pub fn relevant_bits_mask(self) -> u64 {
+    // u64 shifts on 32bit generate really iffy code,
+    // use lookup tables instead.
+    #[cfg(any(not(target_pointer_width = "64"), test))]
+    fn relevant_bits_mask_32(self) -> u64 {
+        const fn gen_masks() -> [u64; 65] {
+            let mut result = [0u64; 65];
+            let mut i = 1;
+            let mut state = 1;
+            while i < 65 {
+                // (0,) 1, 3, 7, f, ...
+                result[i] = state;
+                state = (state.wrapping_add(1) << 1).wrapping_sub(1);
+                i += 1;
+            }
+            result
+        }
+        static MASKS: [u64; 65] = gen_masks();
+        let start = self.0.relevant_bits.start;
+        let end = self.0.relevant_bits.end;
+        if end == 0 {
+            0
+        } else {
+            let mask1 = MASKS[1 + ((end as usize - 1) & 0x3f)];
+            let mask2 = MASKS[start as usize & 0x3f];
+            mask1 & !mask2
+        }
+    }
+
+    #[cfg(any(target_pointer_width = "64", test))]
+    fn relevant_bits_mask_64(self) -> u64 {
         let start = self.0.relevant_bits.start as u32;
         let end = self.0.relevant_bits.end as u32;
         if end >= 64 {
@@ -2454,6 +2483,18 @@ impl<'e> Operand<'e> {
                 .wrapping_shr(start)
                 .wrapping_shl(start)
         }
+    }
+
+    #[cfg(not(target_pointer_width = "64"))]
+    #[inline]
+    pub fn relevant_bits_mask(self) -> u64 {
+        self.relevant_bits_mask_32()
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[inline]
+    pub fn relevant_bits_mask(self) -> u64 {
+        self.relevant_bits_mask_64()
     }
 
     /// Returns `Some(c)` if `self.ty` is `OperandType::Constant(c)`
@@ -3357,6 +3398,29 @@ mod test {
             assert!(seen.contains(&OperandHashByAddress(o)), "Didn't find {}", o);
         }
         assert_eq!(seen.len(), opers.len());
+    }
+
+    #[test]
+    fn relevant_bits_mask() {
+        fn check<'e>(op: Operand<'e>, expected: u64) {
+            assert_eq!(
+                op.relevant_bits_mask_32(), expected,
+                "32bit impl fail {op} {:x}", op.relevant_bits_mask_32()
+            );
+            assert_eq!(
+                op.relevant_bits_mask_64(), expected,
+                "64bit impl fail {op} {:x}", op.relevant_bits_mask_64()
+            );
+        }
+
+        let ctx = OperandContext::new();
+        check(ctx.const_0(), 0u64);
+        check(ctx.constant(u64::MAX), u64::MAX);
+        let op = ctx.or(
+            ctx.lsh_const(ctx.mem8(ctx.register(0), 0), 8),
+            ctx.lsh_const(ctx.mem8(ctx.register(0), 0), 0x18),
+        );
+        check(op, 0xffffff00);
     }
 
     #[test]
