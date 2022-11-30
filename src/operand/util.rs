@@ -14,19 +14,18 @@ pub struct IterArithOps<'e> {
     pub next_inner: Option<Operand<'e>>,
 }
 
+#[derive(Copy, Clone)]
+pub struct IterArithOps1<'e> {
+    pub ty: ArithOpType,
+    pub rest: Option<Operand<'e>>,
+}
+
 impl<'e> IterArithOps<'e> {
-    pub fn new(op: Operand<'e>, ty: ArithOpType) -> IterArithOps<'e> {
-        match op.if_arithmetic(ty) {
-            Some((l, r)) => IterArithOps {
-                ty,
-                next: Some(r),
-                next_inner: Some(l),
-            },
-            None => IterArithOps {
-                ty,
-                next: Some(op),
-                next_inner: None,
-            },
+    #[inline]
+    pub fn new(op: Operand<'e>, ty: ArithOpType) -> IterArithOps1<'e> {
+        IterArithOps1 {
+            ty,
+            rest: Some(op),
         }
     }
 
@@ -70,6 +69,20 @@ impl<'e> Iterator for IterArithOps<'e> {
             self.next = None;
         }
         Some(next)
+    }
+}
+
+impl<'e> Iterator for IterArithOps1<'e> {
+    type Item = Operand<'e>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let rest = self.rest?;
+        if let Some((inner_a, inner_b)) = rest.if_arithmetic(self.ty) {
+            self.rest = Some(inner_a);
+            Some(inner_b)
+        } else {
+            self.rest = None;
+            Some(rest)
+        }
     }
 }
 
