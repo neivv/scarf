@@ -6546,16 +6546,10 @@ fn simplify_with_and_mask_inner<'e>(
                 ArithOpType::Xor | ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
                     let orig_mask = mask;
                     let mut mask = mask;
+                    let mut left_mask;
+                    let right_mask;
+                    let add_sub_max;
                     if arith.ty != ArithOpType::Xor {
-                        // Is this fine?
-                        // This allows better simplification when high bits of mask
-                        // don't affect result.
-                        // Doing this for xor would be incorrect, e.g. for
-                        //      op = (x & ff) ^ (y & 1ff) (relbits = 1ff)
-                        //      mask = ffff
-                        // would lead to & 1ff mask being removed.
-                        // (Though above example is actually canonicalized to ((x & ff) ^ y) & 1ff)
-                        mask &= op.relevant_bits_mask();
                         // The mask can be applied separately to left and right if
                         // any of the unmasked bits input don't affect masked bits in result.
                         // For add/sub/mul, a bit can only affect itself and more
@@ -6578,42 +6572,97 @@ fn simplify_with_and_mask_inner<'e>(
                         if let Some(other) = other {
                             return simplify_with_and_mask(other, mask, ctx, swzb_ctx);
                         }
-                        // Otherwise fill the mask to 000..111 having any bit after
-                        // mask_end_bit set, so that something can possibly be done.
-                        mask = if mask_end_bit >= 64 {
-                            // Mask would be u64::MAX, which is pointless
-                            return op;
+                        if arith.ty == ArithOpType::Add {
+                            // With add, carry will propagate left until a bit in both
+                            // operands is 0. Everything bit starting from 1,1 match
+                            // generating the carry until 0,0 match in inputs can
+                            // affect more significant bits until the 0,0 end.
+                            // E.g. (In binary)
+                            // l = 0011111100011111000111111100
+                            // r = 0000010011011110111001000000
+                            //       |A ||B | |C        ||D |
+                            //       \--/\--/ \---------/\--/
+                            // A and C ranges must have continuous mask up to their
+                            // lowest byte, but B and D which don't have any 1,1 pairs
+                            // don't need the mask be extended.
+                            // Conveniently, addition of `l + r` sets
+                            // 1,0/0,1 pairs that have 1,1 on right of them (A, C), and
+                            // 1,0/0,1 pairs that have 0,0 on right of them (B, D)
+                            // to a different value. A,C become 0 and B,D become (stay) 1.
+                            // Then, invert the result and add in 1,1 (l & r) to get A,C to 1,
+                            // and clear any bits that were 0,0 originally (As the ones left
+                            // of A and C ranges become 1 when carry propagation stops there.
+                            let l = arith.left.relevant_bits_mask();
+                            let r = arith.right.relevant_bits_mask();
+                            let z = (!(l.wrapping_add(r)) | (l & r)) & (l | r);
+                            // So now z is marking the A,C ranges, e.g.
+                            // z = 0011110000011111111111000000
+                            // Though the 1111 chunks can be cut from left if
+                            // any mask bits there aren't set, calculating those won't
+                            // be useful.
+                            // z = 0011110000011111111111000000
+                            // m = 0001000000000110110111110000 (mask)
+                            // r = 0001110000000111111111000000 (result)
+                            //                    E
+                            // This can be achieved by keeping 1,0 pairs that have 1,1
+                            // *left* of them, and clearing 1,0 pairs with 0,0 *left* of them.
+                            // Which can be done by reversing bits of z/m, using addition
+                            // like above, and inverting bits back.
+                            // Note that this is not same as clearing 1,0 pairs with 1,1
+                            // right of them, the bit E would get cleared as well
+                            // Unlike when calculating z, we don't care about set mask bits
+                            // when corresponding z bit is 0, so clear them to not affect
+                            // the addition.
+                            let add_result = z.reverse_bits()
+                                .wrapping_add((z & mask).reverse_bits())
+                                .reverse_bits();
+                            let result = (!add_result | mask) & z;
+                            left_mask = (result & l) | mask;
+                            right_mask = (result & r) | mask;
+                            if left_mask == u64::MAX && right_mask == u64::MAX {
+                                return op;
+                            }
+                            add_sub_max = 1u64.checked_shl(mask_end_bit as u32)
+                                .unwrap_or(0u64)
+                                .wrapping_sub(1);
                         } else {
-                            (1u64 << mask_end_bit).wrapping_sub(1)
-                        };
+                            // Otherwise fill the mask to 000..111 having any bit after
+                            // mask_end_bit set, so that something can possibly be done.
+                            mask = if mask_end_bit >= 64 {
+                                // Mask would be u64::MAX, which is pointless
+                                return op;
+                            } else {
+                                (1u64 << mask_end_bit).wrapping_sub(1)
+                            };
+                            left_mask = mask;
+                            right_mask = mask;
+                            add_sub_max = mask;
+                        }
+                    } else {
+                        left_mask = mask;
+                        right_mask = mask;
+                        add_sub_max = mask;
                     }
                     // Normalize (x + c000) & ffff to (x - 4000) & ffff and similar.
-                    if let Some(c) = arith.right.if_constant() {
-                        let c = c & mask;
-                        let max = mask.wrapping_add(1);
-                        debug_assert!(max != 0);
+                    let mut simplified_right = None;
+                    if let Some(orig_c) = arith.right.if_constant() {
+                        let c = orig_c & right_mask;
+                        let max = add_sub_max.wrapping_add(1);
                         let limit = max >> 1;
-                        if arith.ty == ArithOpType::Add {
+                        if arith.ty == ArithOpType::Add && max != 0 {
                             if c > limit {
                                 let new = ctx.sub_const(arith.left, max.wrapping_sub(c));
                                 return simplify_with_and_mask(new, orig_mask, ctx, swzb_ctx);
                             }
-                        } else if arith.ty == ArithOpType::Sub {
+                        } else if arith.ty == ArithOpType::Sub && max != 0 {
                             if c >= limit {
                                 let new = ctx.add_const(arith.left, max.wrapping_sub(c));
                                 return simplify_with_and_mask(new, orig_mask, ctx, swzb_ctx);
                             }
-                        }
-                    }
-
-                    let mut simplified_right = None;
-                    let mut left_mask = mask;
-                    // Simplify mul with power-of-two as left shift.
-                    // or even when not power-of-two, reduce mask
-                    // by what will be always shifted out
-                    if arith.ty == ArithOpType::Mul {
-                        if let Some(orig_c) = arith.right.if_constant() {
-                            let c = orig_c & mask;
+                        } else if arith.ty == ArithOpType::Mul {
+                            // Simplify mul with power-of-two as left shift.
+                            // or even when not power-of-two, reduce mask
+                            // by what will be always shifted out
                             let shift = c.trailing_zeros();
                             if c & c.wrapping_sub(1) == 0 {
                                 let shift = c.trailing_zeros();
@@ -6633,17 +6682,17 @@ fn simplify_with_and_mask_inner<'e>(
                                 // High bits of left mask can be known to be useless
                                 // shift them out
                                 left_mask = mask >> shift;
-                                if orig_c == c {
-                                    // No need to reintern
-                                    simplified_right = Some(arith.right);
-                                } else {
-                                    simplified_right = Some(ctx.constant(c));
-                                }
                             }
                         }
+                        if c != orig_c {
+                            simplified_right = Some(ctx.constant(c));
+                        } else {
+                            simplified_right = Some(arith.right);
+                        }
                     }
+
                     let simplified_right = simplified_right.unwrap_or_else(|| {
-                        simplify_with_and_mask(arith.right, mask, ctx, swzb_ctx)
+                        simplify_with_and_mask(arith.right, right_mask, ctx, swzb_ctx)
                     });
 
                     if should_stop_with_and_mask(swzb_ctx) {

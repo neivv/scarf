@@ -10638,3 +10638,43 @@ fn simplify_mul_const_masked() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn sub_incorrect_mask() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x5_0600_0000,
+            ),
+            0x2_fa00_0000,
+        ),
+        0x0107_c79e_0100,
+    );
+    let op1 = ctx.and_const(op1, 0xffff_ffff);
+    let eq1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x0600_0000,
+            ),
+            0xfa00_0000,
+        ),
+        0xc79e_0100,
+    );
+    // Somewhat unexpectedly this ends up being equal too
+    // (Can be verified by hand since (rax & 0x0600_0000) has only 4 different values it can have
+    let eq2 = ctx.and_const(
+        ctx.sub_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x0600_0000,
+            ),
+            0x0200_0000,
+        ),
+        0x0600_0000,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op1, eq2);
+}
