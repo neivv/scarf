@@ -10678,3 +10678,62 @@ fn sub_incorrect_mask() {
     assert_eq!(op1, eq1);
     assert_eq!(op1, eq2);
 }
+
+#[test]
+fn complex_or_consistency() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.and_const(
+            ctx.or(
+                ctx.and_const(
+                    ctx.lsh_const(
+                        ctx.add_const(
+                            ctx.register(0),
+                            1,
+                        ),
+                        9,
+                    ),
+                    0x0600_0000,
+                ),
+                ctx.mem16(ctx.register(0), 0),
+            ),
+            0x0400_0100,
+        ),
+        ctx.and_const(
+            ctx.or(
+                ctx.and_const(
+                    ctx.register(0),
+                    0x0600_0000,
+                ),
+                ctx.mem16(ctx.register(15), 0),
+            ),
+            0x0400_0100,
+        ),
+    );
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.or(
+                ctx.and_const(
+                    ctx.lsh_const(
+                        ctx.add_const(
+                            ctx.register(0),
+                            1,
+                        ),
+                        9,
+                    ),
+                    0x0600_0000,
+                ),
+                ctx.mem16(ctx.register(0), 0),
+            ),
+            ctx.or(
+                ctx.and_const(
+                    ctx.register(0),
+                    0x0600_0000,
+                ),
+                ctx.mem16(ctx.register(15), 0),
+            ),
+        ),
+        0x0400_0100,
+    );
+    assert_eq!(op1, eq1);
+}

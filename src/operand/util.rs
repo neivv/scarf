@@ -365,6 +365,47 @@ where F: FnOnce(Option<Operand<'e>>, Option<Operand<'e>>, &mut Slice<'e>) -> Opt
     })
 }
 
+/// Moves operands for which `check` returns true from `(l, r, ty)` chain
+/// to a slice, and rejoins remaining operands back, after which
+/// `callback(rejoined, removed_ops)` is called.
+///
+/// If no operands return true for `check`, returns `None` without
+/// calling callback.
+pub fn split_off_by_condition_rejoin_rest<'e, C, F, R>(
+    ctx: OperandCtx<'e>,
+    (l, r, ty): (Operand<'e>, Operand<'e>, ArithOpType),
+    mut check: C,
+    callback: F,
+) -> Option<R>
+where F: FnOnce(Option<Operand<'e>>, &mut Slice<'e>) -> Option<R>,
+    C: FnMut(Operand<'e>) -> bool,
+{
+    let mut iter = IterArithOps::new_pair(l, r, ty);
+
+    let first_matching = loop {
+        let part = iter.next()?;
+        if check(part) {
+            break part;
+        }
+    };
+
+    ctx.simplify_temp_stack().alloc(|result| {
+        result.push(first_matching).ok()?;
+
+        'outer: loop {
+            let part = match iter.next() {
+                Some(s) => s,
+                None => break 'outer,
+            };
+            if check(part) {
+                result.push(part).ok()?;
+            }
+        }
+        let rejoined = rejoin_op_without_parts(ctx, (l, r, ty), result);
+        callback(rejoined, result)
+    })
+}
+
 /// Assuming that `(l, r, ty)` contains all operands in `parts`,
 /// and that `parts` is sorted,
 /// rejoins remaining parts of `(l, r, ty)`.
