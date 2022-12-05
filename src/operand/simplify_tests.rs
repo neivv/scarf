@@ -10737,3 +10737,28 @@ fn complex_or_consistency() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn add_cant_remove_inner_mask() {
+    let ctx = &OperandContext::new();
+    // E.g. 0f0f + 0ff0 = 1eff,
+    // but 0f0f + 0fff = 1f0e
+    let op1 = ctx.and_const(
+        ctx.add(
+            ctx.mem16(ctx.register(0), 0),
+            ctx.and_const(
+                ctx.mem16(ctx.register(2), 0),
+                0xfff0,
+            ),
+        ),
+        0xff00,
+    );
+    let ne1 = ctx.and_const(
+        ctx.add(
+            ctx.mem16(ctx.register(0), 0),
+            ctx.mem16(ctx.register(2), 0),
+        ),
+        0xff00,
+    );
+    assert_ne!(op1, ne1);
+}

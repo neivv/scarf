@@ -6563,7 +6563,40 @@ fn simplify_with_and_mask_inner<'e>(
                         let z = (!(l.wrapping_add(r)) | (l & r)) & (l | r);
                         // So now z is marking the A,C ranges, e.g.
                         // z = 0011110000011111111111000000
-                        // Though the 1111 chunks can be cut from left if
+                        // However, the fact that range such as D doesn't
+                        // propagate left will rely on bits of r being 0 there.
+                        // Therefore r may only be simplified with mask that doesn't
+                        // guarantee zeroing of the following ranges marked with *,
+                        // that is, right_mask must have 1 for * bits too.
+                        // Similarly left_mask would need to include set-to-one bit chunk
+                        // on r that are right of a z chunk.
+                        // l = 0011111100011111000111111100
+                        // r = 0000010011011110111001000000
+                        // z = 0011110000011111111111000000
+                        //           **              ****
+                        // This can be achieved by keeping 1,0 (l,z) pairs that have 1,1
+                        // *left* of them, and clearing 1,0 pairs with 0,0 *left* of them.
+                        // (Due to how z was built there is never 1,0 with 0,1 left of the pair
+                        // before 1,1 or 0,0; so that case doesn't have to be considered)
+                        //
+                        // This can be done by reversing bits of z/l, using addition
+                        // like above, and inverting bits back (Though inverting back is not
+                        // done now since the following reduce-by-mask step will also want
+                        // inputs be inversed).
+                        // Note that this is not same as keeping 1,0 pairs with 0,0
+                        // right of them, as it would include bits that are not part of z
+                        // at all: The ~~~ bits would get included unnecessarily with this example
+                        // l2 = 0011111100011111000000011100
+                        // r2 = 0000010011011110111000000000
+                        // z2 = 0011110000011110000000000000
+                        //            **       *       ~~~
+                        let z_rev = z.reverse_bits();
+                        let l_rev = l.reverse_bits();
+                        let r_rev = r.reverse_bits();
+                        // lz is going to be used with l; it uses r as input and vice versa.
+                        let lz = (!(z_rev.wrapping_add(r_rev)) & r_rev) | z_rev;
+                        let rz = (!(z_rev.wrapping_add(l_rev)) & l_rev) | z_rev;
+                        // Now the 1111 chunks can be cut from left if
                         // any mask bits there aren't set, calculating those won't
                         // be useful.
                         // z = 0011110000011111111111000000
@@ -6572,19 +6605,13 @@ fn simplify_with_and_mask_inner<'e>(
                         //                    E
                         // This can be achieved by keeping 1,0 pairs that have 1,1
                         // *left* of them, and clearing 1,0 pairs with 0,0 *left* of them.
-                        // Which can be done by reversing bits of z/m, using addition
-                        // like above, and inverting bits back.
-                        // Note that this is not same as clearing 1,0 pairs with 1,1
-                        // right of them, the bit E would get cleared as well
-                        // Unlike when calculating z, we don't care about set mask bits
-                        // when corresponding z bit is 0, so clear them to not affect
-                        // the addition.
-                        let add_result = z.reverse_bits()
-                            .wrapping_add((z & mask).reverse_bits())
+                        let mask_rev = mask.reverse_bits();
+                        let l_result = ((!(lz.wrapping_add(lz & mask_rev)) | mask_rev) & lz)
                             .reverse_bits();
-                        let result = (!add_result | mask) & z;
-                        left_mask = (result & l) | mask;
-                        right_mask = (result & r) | mask;
+                        let r_result = ((!(rz.wrapping_add(rz & mask_rev)) | mask_rev) & rz)
+                            .reverse_bits();
+                        left_mask = l_result | mask;
+                        right_mask = r_result | mask;
                         if left_mask == u64::MAX && right_mask == u64::MAX {
                             return op;
                         }
