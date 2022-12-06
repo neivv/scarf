@@ -10932,3 +10932,75 @@ fn add_no_overlapping_bits_useless_mask() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_add_const_unnecessary_mask() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.add_const(
+            ctx.and_const(
+                ctx.register(0),
+                0xff_ffff,
+            ),
+            0xfc00_0000,
+        ),
+        0xffff_ffff,
+    );
+    let eq1 = ctx.add_const(
+        ctx.and_const(
+            ctx.register(0),
+            0xff_ffff,
+        ),
+        0xfc00_0000,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_add_sub_const_consistency2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.add(
+        ctx.register(1),
+        ctx.and(
+            ctx.xmm(0, 0),
+            ctx.add_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xff_ffff,
+                ),
+                0x7c00_0000,
+            ),
+        ),
+    );
+    let eq1 = ctx.add(
+        ctx.register(1),
+        ctx.and_const(
+            ctx.and(
+                ctx.xmm(0, 0),
+                ctx.sub_const(
+                    ctx.and_const(
+                        ctx.register(0),
+                        0xff_ffff,
+                    ),
+                    0x0400_0000,
+                ),
+            ),
+            0x7fff_ffff,
+        ),
+    );
+    let ne1 = ctx.add(
+        ctx.register(1),
+        ctx.and(
+            ctx.xmm(0, 0),
+            ctx.sub_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xff_ffff,
+                ),
+                0x0400_0000,
+            ),
+        ),
+    );
+    assert_eq!(op1, eq1);
+    assert_ne!(op1, ne1);
+}

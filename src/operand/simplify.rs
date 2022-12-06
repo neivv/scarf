@@ -6643,7 +6643,8 @@ fn simplify_with_and_mask_inner<'e>(
                         if left_mask == u64::MAX && right_mask == u64::MAX {
                             return op;
                         }
-                        let add_max_bit = 64 - (l_result | r_result).leading_zeros();
+                        let add_max_bit =
+                            64 - (mask & (l | r | l_result | r_result)).leading_zeros();
                         add_sub_max = 1u64.checked_shl(add_max_bit)
                             .unwrap_or(0u64)
                             .wrapping_sub(1);
@@ -6695,10 +6696,12 @@ fn simplify_with_and_mask_inner<'e>(
                     if let Some(orig_c) = arith.right.if_constant() {
                         let c = orig_c & right_mask;
                         let max = add_sub_max.wrapping_add(1);
-                        let limit = max >> 1;
+                        debug_assert!(max & add_sub_max == 0 && (max == 0 || max > c));
                         if arith.ty == ArithOpType::Add && max != 0 {
-                            if c > limit {
-                                let new = ctx.sub_const(arith.left, max.wrapping_sub(c));
+                            let swapped = max.wrapping_sub(c);
+                            let swap = !check_sub_const_swap_to_add(arith.left, swapped, max);
+                            if swap {
+                                let new = ctx.sub_const(arith.left, swapped);
                                 let new = if max < mask &&
                                     new.relevant_bits_mask() & !add_sub_max & mask != 0
                                 {
@@ -6709,7 +6712,8 @@ fn simplify_with_and_mask_inner<'e>(
                                 return simplify_with_and_mask(new, orig_mask, ctx, swzb_ctx);
                             }
                         } else if arith.ty == ArithOpType::Sub && max != 0 {
-                            if c >= limit {
+                            let swap = check_sub_const_swap_to_add(arith.left, c, max);
+                            if swap {
                                 let new = ctx.add_const(arith.left, max.wrapping_sub(c));
                                 return simplify_with_and_mask(new, orig_mask, ctx, swzb_ctx);
                             }
@@ -6796,6 +6800,28 @@ fn simplify_with_and_mask_inner<'e>(
         }
         _ => op,
     }
+}
+
+/// max is (and_mask + 1), this function should not be called if and_mask == u64::MAX
+fn check_sub_const_swap_to_add<'e>(
+    left: Operand<'e>,
+    right: u64,
+    max: u64,
+) -> bool {
+    let limit = max >> 1;
+    if right >= limit {
+        return true;
+    }
+    // In addition to just swapping `x - c` to `x + c2` when
+    // `c2` is smaller than `c`, swap `x - c` to `x + c2` if
+    // it is known to not overflow, which can then allow removing
+    // mask completely.
+    // May need updating add swap rules to prevent this from causing swap
+    // loop where it swaps constant around add/sub until hitting recursion
+    // limits though?
+    let swapped = max.wrapping_sub(right);
+    let (max_possible, overflow) = left.relevant_bits_mask().overflowing_add(swapped);
+    !overflow && max_possible <= max
 }
 
 /// simplify_with_and_mask helper for add/sub.
