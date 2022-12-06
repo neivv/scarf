@@ -6450,7 +6450,7 @@ fn simplify_with_and_mask_inner<'e>(
                             return ctx.const_0();
                         } else if c & mask == c {
                             // Mask is superset of the already existing mask,
-                            // so it won't simplify anything further
+                            // so it won't simplify anything further.
                             return op;
                         } else {
                             let left_simplify_mask = c & mask;
@@ -6643,7 +6643,8 @@ fn simplify_with_and_mask_inner<'e>(
                         if left_mask == u64::MAX && right_mask == u64::MAX {
                             return op;
                         }
-                        add_sub_max = 1u64.checked_shl(mask_end_bit as u32)
+                        let add_max_bit = 64 - (l_result | r_result).leading_zeros();
+                        add_sub_max = 1u64.checked_shl(add_max_bit)
                             .unwrap_or(0u64)
                             .wrapping_sub(1);
                     } else if arith.ty == ArithOpType::Sub {
@@ -6698,6 +6699,13 @@ fn simplify_with_and_mask_inner<'e>(
                         if arith.ty == ArithOpType::Add && max != 0 {
                             if c > limit {
                                 let new = ctx.sub_const(arith.left, max.wrapping_sub(c));
+                                let new = if max < mask &&
+                                    new.relevant_bits_mask() & !add_sub_max & mask != 0
+                                {
+                                    simplify_and_const(new, add_sub_max, ctx, swzb_ctx)
+                                } else {
+                                    new
+                                };
                                 return simplify_with_and_mask(new, orig_mask, ctx, swzb_ctx);
                             }
                         } else if arith.ty == ArithOpType::Sub && max != 0 {

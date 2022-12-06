@@ -10873,3 +10873,38 @@ fn masked_xor_consistency2() {
     assert_eq!(op1, op2);
     assert_eq!(op1, op3);
 }
+
+#[test]
+fn masked_add_sub_const_consistency() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.add_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0x0600_0000,
+                ),
+                0x0600_0000,
+            ),
+            ctx.register(1),
+        ),
+        0x8700_0100,
+    );
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.and_const(
+                ctx.sub_const(
+                    ctx.and_const(
+                        ctx.register(0),
+                        0x0600_0000,
+                    ),
+                    0x0200_0000,
+                ),
+                0x0600_0000,
+            ),
+            ctx.register(1),
+        ),
+        0x8700_0100,
+    );
+    assert_eq!(op1, eq1);
+}
