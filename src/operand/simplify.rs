@@ -1437,9 +1437,13 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
                 0
             };
             let mut had_non_masked_op = false;
+            let mut masked_op_count = 0u32;
             for &op in ops.iter() {
                 let relbits = match or_xor_canonicalize_mask_get_mask(op) {
-                    Some((c, _)) => c,
+                    Some((c, _)) => {
+                        masked_op_count = masked_op_count.wrapping_add(1);
+                        c
+                    }
                     _ => {
                         had_non_masked_op = true;
                         op.relevant_bits_mask()
@@ -1451,9 +1455,9 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
                 return None;
             }
 
-            // Require at least one non-masked op or one op where mask
-            // can be removed if it is moved outside.
-            if !had_non_masked_op {
+            // Require {at least one non-masked op and exactly one masked op},
+            // or {one op where mask can be removed if it is moved outside}.
+            if !had_non_masked_op || masked_op_count != 1 {
                 for &op in ops.iter() {
                     if let Some((mask, known_zero)) = or_xor_canonicalize_mask_get_mask(op) {
                         if mask == result & !known_zero {

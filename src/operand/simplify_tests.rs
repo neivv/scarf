@@ -11004,3 +11004,28 @@ fn masked_add_sub_const_consistency2() {
     assert_eq!(op1, eq1);
     assert_ne!(op1, ne1);
 }
+
+#[test]
+fn masked_ors_useless_outer_mask() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or(
+        ctx.or(
+            ctx.and_const(
+                ctx.register(0),
+                0x0100_00ff,
+            ),
+            ctx.and_const(
+                ctx.register(1),
+                0x1201_9e00,
+            ),
+        ),
+        ctx.mem8(ctx.register(8), 0),
+    );
+    let eq1 = ctx.and_const(
+        op1,
+        0x1301_9eff,
+    );
+    assert_eq!(op1, eq1);
+    // Check that op1 doesn't get masked since it doesn't need one
+    assert!(op1.if_arithmetic_or().is_some(), "Should be or, was {op1}");
+}
