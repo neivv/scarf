@@ -1014,6 +1014,8 @@ fn simplify_masked_xor_merge_or<'e>(
     }
 }
 
+/// Separates m and s from (x & m) << s
+/// Returning updated input shift/mask
 fn simplify_xor_shifted_unwrap_shifts<'e>(
     op: Operand<'e>,
     shift: u8,
@@ -1054,7 +1056,7 @@ fn simplify_xor_shifted_unwrap_shifts<'e>(
 }
 
 /// If there is an operand for which the
-/// operation, `(op >> shift) & mask` for (shift1, mask1) results `op1`,
+/// operation, `(op & mask) >> shift` for (shift1, mask1) results `op1`,
 /// and same for op2, return `Some(op)`
 ///
 /// Example:
@@ -1113,10 +1115,7 @@ fn simplify_xor_base_for_shifted_rec<'e>(
             if a1.ty == a2.ty &&
                 matches!(a1.ty, ArithOpType::Xor | ArithOpType::Or | ArithOpType::And)
             {
-                *limit = match limit.checked_sub(1) {
-                    Some(s) => s,
-                    None => return None,
-                };
+                *limit = limit.checked_sub(1)?;
                 let s1 = (shift1, mask1);
                 let s2 = (shift2, mask2);
                 result = simplify_xor_base_for_shifted_arith_chain(a1, s1, a2, s2, ctx, limit);
@@ -1163,14 +1162,8 @@ fn simplify_xor_base_for_shifted_arith_chain<'e>(
     ctx: OperandCtx<'e>,
     limit: &mut u32,
 ) -> Option<(Operand<'e>, u8)> {
-    ctx.simplify_temp_stack().alloc(|parts1| {
-        for op in IterArithOps::new_arith(arith1) {
-            parts1.push(op).ok()?;
-        }
-        ctx.simplify_temp_stack().alloc(|parts2| {
-            for op in IterArithOps::new_arith(arith2) {
-                parts2.push(op).ok()?;
-            }
+    util::arith_parts_to_new_slice(ctx, arith1.left, arith1.right, arith1.ty, |parts1| {
+        util::arith_parts_to_new_slice(ctx, arith2.left, arith2.right, arith2.ty, |parts2| {
             if parts1.len() != parts2.len() {
                 return None;
             }
@@ -1420,7 +1413,6 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Result<Option<u64>, SizeLimitReached> {
-
     let best_mask = ops.iter()
         .fold(None, |prev: Option<u64>, &op| {
             let new = or_xor_canonicalize_mask_get_mask(op);
@@ -1485,6 +1477,10 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
                 Some((l, r)) if l.relevant_bits_mask() & mask == r => l,
                 _ => ops[i],
             };
+            // Have to call this since we want the result from this function not
+            // require additional simplification, and just be able to intern the mask.
+            let op = masked_or_xor_split_parts_not_needing_mask(op, mask, arith_ty, ctx, swzb_ctx)
+                .unwrap_or(op);
             let op = simplify_with_and_mask(op, mask, ctx, swzb_ctx);
             if let Some((l, r)) = op.if_arithmetic(arith_ty) {
                 if let Some(c) = r.if_constant() {
@@ -3052,7 +3048,7 @@ fn sum_valid_range(ops: &[(Operand<'_>, bool)], mask: u64) -> (u64, u64) {
     (low & mask, high)
 }
 
-/// Return Some(smaller) if the the operand with smaller mask is same as the
+/// Return Some(larger) if the the operand with smaller mask is same as the
 /// larger operand if it were masked with that small mask.
 ///
 /// Aims to be cheaper subset of `smaller == ctx.and_const(larger, small_mask)` check,
@@ -6385,6 +6381,19 @@ fn should_stop_with_and_mask(swzb_ctx: &mut SimplifyWithZeroBits) -> bool {
     }
 }
 
+/// Simplifies with assumption that `op` is going to be masked by `mask` afterwards.
+///
+/// This does mean that (x & 8000) with mask 8000 can return just x.
+///
+/// Implementation must take care to not reduce the mask by relevant_bits of the operand
+/// that will then be simplified, as that will lead to incorrect results, especially with
+/// the and mask removing mentioned above. However, in arithmetic like (x & y) reducing the
+/// mask passed to x by relevant bits of y is (?) valid.
+///
+/// Similarly addition and subtraction can simplify their operands if the mask is grown
+/// in a way that preserves less significant bits affecting more significant bits, as well
+/// as preserving certain bits that have to be *zero* in order for the bit propagation
+/// possibilities to not change.
 fn simplify_with_and_mask<'e>(
     op: Operand<'e>,
     mask: u64,
@@ -6412,8 +6421,8 @@ fn simplify_with_and_mask<'e>(
         return op;
     }
     swzb_ctx.with_and_mask_count += 1;
-    let op = simplify_with_and_mask_inner(op, mask, ctx, swzb_ctx);
-    op
+    let new = simplify_with_and_mask_inner(op, mask, ctx, swzb_ctx);
+    new
 }
 
 fn simplify_with_and_mask_inner<'e>(
@@ -6510,8 +6519,15 @@ fn simplify_with_and_mask_inner<'e>(
                     }
                 }
                 ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul => {
+                    if let Some(result) = simplify_with_and_mask_add_sub_try_extract_inner_mask(
+                        arith,
+                        mask,
+                        ctx,
+                        swzb_ctx,
+                    ) {
+                        return result;
+                    }
                     let orig_mask = mask;
-                    let mut mask = mask;
                     let mut left_mask;
                     let right_mask;
                     let add_sub_max;
@@ -6543,6 +6559,18 @@ fn simplify_with_and_mask_inner<'e>(
                         // operands is 0. Everything bit starting from 1,1 match
                         // generating the carry until 0,0 match in inputs can
                         // affect more significant bits until the 0,0 end.
+                        // Effectively with state machine of two states: no carry and carry
+                        // no carry:
+                        // 0,0 => 0
+                        // 0,1 => 1
+                        // 1,0 => 1
+                        // 1,1 => 0 -> to carry
+                        // carry:
+                        // 0,0 => 1 -> to no carry state
+                        // 0,1 => 0
+                        // 1,0 => 0
+                        // 1,1 => 1
+                        //
                         // E.g. (In binary)
                         // l = 0011111100011111000111111100
                         // r = 0000010011011110111001000000
@@ -6618,10 +6646,40 @@ fn simplify_with_and_mask_inner<'e>(
                         add_sub_max = 1u64.checked_shl(mask_end_bit as u32)
                             .unwrap_or(0u64)
                             .wrapping_sub(1);
+                    } else if arith.ty == ArithOpType::Sub {
+                        // For sub the bits propagating left can be figured out similarly,
+                        // with the state machine
+                        // no borrow:
+                        // 1,0 => 1
+                        // 1,1 => 0
+                        // 0,0 => 0
+                        // 0,1 => 1 -> borrow
+                        // borrow:
+                        // 1,0 => 0 -> no borrow
+                        // 1,1 => 1
+                        // 0,0 => 1
+                        // 0,1 => 0
+                        // So left bits don't matter (unless known-to-be-one are considered),
+                        // starting first nonzero bit of right any bits can be changed.
+                        let right_relbits = arith.right.relevant_bits();
+                        let r_low_zero_mask = match 1u64.checked_shl(right_relbits.start as u32) {
+                            Some(s) => s.wrapping_sub(1),
+                            None => u64::MAX,
+                        };
+                        let mask_filled_to_lowest = match 1u64.checked_shl(mask_end_bit as u32) {
+                            Some(s) => s.wrapping_sub(1),
+                            None => u64::MAX,
+                        };
+                        // Right sipmlify mask needs to be 000..111 so that any low bits that
+                        // are currently 0 in there won't be allowed to become 1,
+                        // but left can be simplified without filling with r_low_zero_mask
+                        left_mask = (mask_filled_to_lowest & !r_low_zero_mask) | mask;
+                        right_mask = mask_filled_to_lowest;
+                        add_sub_max = mask_filled_to_lowest;
                     } else {
                         // Otherwise fill the mask to 000..111 having any bit after
                         // mask_end_bit set, so that something can possibly be done.
-                        mask = if mask_end_bit >= 64 {
+                        let mask = if mask_end_bit >= 64 {
                             // Mask would be u64::MAX, which is pointless
                             return op;
                         } else {
@@ -6672,7 +6730,7 @@ fn simplify_with_and_mask_inner<'e>(
                             } else {
                                 // High bits of left mask can be known to be useless
                                 // shift them out
-                                left_mask = mask >> shift;
+                                left_mask = left_mask >> shift;
                             }
                         }
                         if c != orig_c {
@@ -6732,6 +6790,48 @@ fn simplify_with_and_mask_inner<'e>(
     }
 }
 
+/// simplify_with_and_mask helper for add/sub.
+/// If `((x & C) - y) & mask` is equal to
+/// `(x - y) & (C & mask)`, canonicalizes to that
+/// as that can help moving the mask more out.
+fn simplify_with_and_mask_add_sub_try_extract_inner_mask<'e>(
+    arith: &ArithOperand<'e>,
+    mask: u64,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Option<Operand<'e>> {
+    if !matches!(arith.ty, ArithOpType::Add | ArithOpType::Sub) {
+        return None;
+    }
+    if let Some((inner, c)) = arith.left.if_and_with_const() {
+        // !c & mask < c to make sure to not simplify in case such as
+        // ((x & fff0) - y) & ffff_ffff
+        if is_continuous_mask(c) && c & mask == c && !c & mask < c {
+            if arith.right.relevant_bits().start >= arith.left.relevant_bits().start {
+                let new = ctx.arithmetic(arith.ty, inner, arith.right);
+                let masked = simplify_and_const(new, c, ctx, swzb_ctx);
+                // Should this do simplify_with_and_mask again?
+                // Feels like it's not possible for it to do anything
+                // but I could be wrong there.
+                return Some(masked);
+            }
+        }
+    }
+    if arith.ty == ArithOpType::Add {
+        // Addition can (obviously) be done with left/right swapped
+        if let Some((inner, c)) = arith.right.if_and_with_const() {
+            if is_continuous_mask(c) && c & mask == c && !c & mask < c {
+                if arith.left.relevant_bits().start >= arith.right.relevant_bits().start {
+                    let new = ctx.arithmetic(ArithOpType::Add, inner, arith.left);
+                    let masked = simplify_and_const(new, c, ctx, swzb_ctx);
+                    return Some(masked);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// simplify_with_and_mask for or/xor.
 /// If there are masked or/xor that can now be moved out of the
 /// mask, moves them out.
@@ -6767,47 +6867,9 @@ fn simplify_with_and_mask_or_xor<'e>(
         let zero = ctx.const_0();
         for i in 0..end {
             let op = slice[i];
-            let extracted_out_of_and = op.if_and_with_const()
-                .and_then(|(inner_orig, inner_mask)| {
-                    let (l, r) = inner_orig.if_arithmetic(arith_ty)?;
-                    // Bits that, if not cleared by inner mask
-                    // would affect the result after being masked
-                    // E.g. inner = ff00, mask = fff0, cleared_bits = 00f0
-                    let cleared_bits = !inner_mask & mask;
-                    if cleared_bits == 0 {
-                        return None;
-                    }
-                    util::split_off_by_condition_rejoin_rest(
-                        ctx,
-                        (l, r, arith_ty),
-                        // May have to use relevant_bits_for_and_simplify_of_and_chain
-                        // or something for consistency, but this works for now.
-                        |x| x.relevant_bits_mask() & cleared_bits == 0,
-                        |inner, outside_ops| {
-                            let inner = match inner {
-                                Some(s) => s,
-                                None => {
-                                    // All ops were moved out of the mask..
-                                    // So just return inner_orig
-                                    // Maybe this case could allow skipping
-                                    // simplify_with_and_mask too but not thinking
-                                    // about that right now.
-                                    return Some(inner_orig);
-                                }
-                            };
-                            // TODO: Should just do and mask simplify here
-                            // to save some work
-                            let inner = ctx.and_const(inner, inner_mask);
-                            outside_ops.push(inner).ok()?;
-                            if arith.ty == ArithOpType::Or {
-                                simplify_or_ops(outside_ops, ctx, swzb_ctx).ok()
-                            } else {
-                                simplify_xor_ops(outside_ops, ctx, swzb_ctx).ok()
-                            }
-                        },
-                    )
-                })
-                .unwrap_or(op);
+            let extracted_out_of_and =
+                masked_or_xor_split_parts_not_needing_mask(op, mask, arith_ty, ctx, swzb_ctx)
+                    .unwrap_or(op);
             if should_stop_with_and_mask(swzb_ctx) {
                 return None;
             }
@@ -6853,6 +6915,57 @@ fn simplify_with_and_mask_or_xor<'e>(
             simplify_xor_ops(slice, ctx, swzb_ctx).ok()
         }
     }).unwrap_or(op)
+}
+
+/// For simplify_with_and_mask; if `op` is `(x ^ y) & inner_mask` (Or or),
+/// and parts of the or/xor don't need inner_mask if masked by `mask`, moves
+/// those parts out of the or/xor.
+fn masked_or_xor_split_parts_not_needing_mask<'e>(
+    op: Operand<'e>,
+    mask: u64,
+    arith_ty: ArithOpType,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Option<Operand<'e>> {
+    let (inner_orig, inner_mask) = op.if_and_with_const()?;
+
+    let (l, r) = inner_orig.if_arithmetic(arith_ty)?;
+    // Bits that, if not cleared by inner mask
+    // would affect the result after being masked
+    // E.g. inner = ff00, mask = fff0, cleared_bits = 00f0
+    let cleared_bits = !inner_mask & mask;
+    if cleared_bits == 0 {
+        return None;
+    }
+    util::split_off_by_condition_rejoin_rest(
+        ctx,
+        (l, r, arith_ty),
+        // May have to use relevant_bits_for_and_simplify_of_and_chain
+        // or something for consistency, but this works for now.
+        |x| x.relevant_bits_mask() & cleared_bits == 0,
+        |inner, outside_ops| {
+            let inner = match inner {
+                Some(s) => s,
+                None => {
+                    // All ops were moved out of the mask..
+                    // So just return inner_orig
+                    // Maybe this case could allow skipping
+                    // simplify_with_and_mask too but not thinking
+                    // about that right now.
+                    return Some(inner_orig);
+                }
+            };
+            // TODO: Should just do and mask simplify here
+            // to save some work
+            let inner = ctx.and_const(inner, inner_mask);
+            outside_ops.push(inner).ok()?;
+            if arith_ty == ArithOpType::Or {
+                simplify_or_ops(outside_ops, ctx, swzb_ctx).ok()
+            } else {
+                simplify_xor_ops(outside_ops, ctx, swzb_ctx).ok()
+            }
+        },
+    )
 }
 
 /// Assumes: `mem` is part of `op`.
@@ -7667,10 +7780,14 @@ fn test_simplify_xor_base_for_shifted() {
 fn simplify_with_and_mask_reduce_inner_and_mask() {
     let ctx = &super::OperandContext::new();
 
-    // Check that outer mask gets removed, and that inner mask gets reduced to 0xfffe
+    // Check that outer mask gets reduced, and that inner mask gets removed
     // in single simplify_with_and_mask call
     // ctx.and_const(op1, 0xffff) has enough redundancy that it will still simplify
     // things correctly.
+    // Note: Previously checked that result would be
+    // `(rax & fffe) - 6b3e` instead, which would also be valid.
+    // Not going to take stance which is more correct, though having and
+    // mask moved outside looks nice.
     let op1 = ctx.and_const(
         ctx.sub_const(
             ctx.and_const(
@@ -7682,12 +7799,12 @@ fn simplify_with_and_mask_reduce_inner_and_mask() {
         0x1_fffe,
     );
     let op1 = simplify_with_and_mask(op1, 0xffff, ctx, &mut SimplifyWithZeroBits::default());
-    let eq1 = ctx.sub_const(
-        ctx.and_const(
+    let eq1 = ctx.and_const(
+        ctx.sub_const(
             ctx.register(0),
-            0xfffe,
+            0x6b3e,
         ),
-        0x6b3e,
+        0xfffe,
     );
     assert_eq!(op1, eq1);
 }

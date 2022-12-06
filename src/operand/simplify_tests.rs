@@ -10762,3 +10762,114 @@ fn add_cant_remove_inner_mask() {
     );
     assert_ne!(op1, ne1);
 }
+
+#[test]
+fn masked_sub_remove_inner_mask() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x0600_0000,
+            ),
+            0x0200_0000,
+        ),
+        0x0600_0000,
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.register(0),
+            0x0200_0000,
+        ),
+        0x0600_0000,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_sub_consistency() {
+    let ctx = &OperandContext::new();
+    // rhs of the subtraction has bit 0x1 known be 0, so it won't propagate up
+    // and mask can be moved out.
+    let op1 = ctx.and_const(
+        ctx.xor(
+            ctx.sub(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xfffe,
+                ),
+                ctx.lsh_const(
+                    ctx.register(8),
+                    9,
+                ),
+            ),
+            ctx.register(5),
+        ),
+        0xffff,
+    );
+    let eq1 = ctx.xor(
+        ctx.and_const(
+            ctx.sub(
+                ctx.register(0),
+                ctx.lsh_const(
+                    ctx.register(8),
+                    9,
+                ),
+            ),
+            0xfffe,
+        ),
+        ctx.and_const(
+            ctx.register(5),
+            0xffff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_xor_consistency2() {
+    let ctx = &OperandContext::new();
+    // c will have mask fff0, but it can just use mask ffff
+    // and mask can be moved out.
+    let a = ctx.register(1);
+    let b = ctx.and_const(
+        ctx.register(0),
+        0xfff0,
+    );
+    let c = ctx.sub(
+        ctx.lsh_const(
+            ctx.register(8),
+            8,
+        ),
+        ctx.lsh_const(
+            ctx.register(4),
+            4,
+        ),
+    );
+    let op1 = ctx.and_const(
+        ctx.xor(
+            a,
+            ctx.xor(b, c),
+        ),
+        0xffff,
+    );
+    let op2 = ctx.xor(
+        b,
+        ctx.and_const(
+            ctx.xor(a, c),
+            0xffff,
+        ),
+    );
+    let op3 = ctx.xor(
+        ctx.and_const(
+            c,
+            0xffff,
+        ),
+        ctx.and_const(
+            ctx.xor(a, b),
+            0xffff,
+        ),
+    );
+    assert_eq!(op1, op2);
+    assert_eq!(op1, op3);
+}
