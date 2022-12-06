@@ -31,6 +31,7 @@ use fxhash::FxHashMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::bit_misc::bits_overlap;
 use crate::exec_state;
 
 use self::slice_stack::SliceStack;
@@ -1967,11 +1968,17 @@ impl<'e> OperandType<'e> {
                     min(rel_left.start, rel_right.start)..max(rel_left.end, rel_right.end)
                 }
                 ArithOpType::Add => {
-                    // Add will only increase nonzero bits by one at most
+                    // Add will only increase nonzero bits by one at most.
+                    // And if the bits don't overlap they won't increase even by one.
                     let rel_left = arith.left.relevant_bits();
                     let rel_right = arith.right.relevant_bits();
                     let higher_end = max(rel_left.end, rel_right.end);
-                    min(rel_left.start, rel_right.start)..min(higher_end + 1, 64)
+                    let lower_start = min(rel_left.start, rel_right.start);
+                    if bits_overlap(&rel_left, &rel_right) {
+                        lower_start..min(higher_end + 1, 64)
+                    } else {
+                        lower_start..higher_end
+                    }
                 }
                 ArithOpType::Sub => {
                     // Sub will not add any nonzero bits to lower end, but higher end

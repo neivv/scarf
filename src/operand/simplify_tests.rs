@@ -10908,3 +10908,27 @@ fn masked_add_sub_const_consistency() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn add_no_overlapping_bits_useless_mask() {
+    let ctx = &OperandContext::new();
+    // Can't overflow past ffff_ffff since no bits overlap
+    let op1 = ctx.and_const(
+        ctx.add(
+            ctx.and_const(
+                ctx.register(0),
+                0xffff_0000,
+            ),
+            ctx.mem16(ctx.register(0), 0),
+        ),
+        0xffff_ffff,
+    );
+    let eq1 = ctx.add(
+        ctx.and_const(
+            ctx.register(0),
+            0xffff_0000,
+        ),
+        ctx.mem16(ctx.register(0), 0),
+    );
+    assert_eq!(op1, eq1);
+}
