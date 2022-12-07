@@ -11029,3 +11029,87 @@ fn masked_ors_useless_outer_mask() {
     // Check that op1 doesn't get masked since it doesn't need one
     assert!(op1.if_arithmetic_or().is_some(), "Should be or, was {op1}");
 }
+
+#[test]
+fn shifts_causing_unnecessary_mask() {
+    let ctx = &OperandContext::new();
+    let base = ctx.xor(
+        ctx.rsh_const(
+            ctx.register(14),
+            0x10,
+        ),
+        ctx.rsh_const(
+            ctx.sub_const(
+                ctx.mem32(ctx.register(4), 0),
+                0x2e3913bd,
+            ),
+            0x10,
+        ),
+    );
+    let op1 = ctx.or(
+        ctx.lsh_const(
+            ctx.and_const(
+                base,
+                0xffff,
+            ),
+            0x10,
+        ),
+        ctx.and_const(
+            ctx.register(11),
+            0xffff,
+        ),
+    );
+    let eq1 = ctx.or(
+        ctx.and_const(
+            ctx.xor(
+                ctx.register(14),
+                ctx.sub_const(
+                    ctx.mem32(ctx.register(4), 0),
+                    0x2e3913bd,
+                ),
+            ),
+            0xffff_0000,
+        ),
+        ctx.and_const(
+            ctx.register(11),
+            0xffff,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn masked_xor_shifts_simplify() {
+    let ctx = &OperandContext::new();
+    let base = ctx.xor(
+        ctx.rsh_const(
+            ctx.register(14),
+            0x10,
+        ),
+        ctx.rsh_const(
+            ctx.sub_const(
+                ctx.mem32(ctx.register(4), 0),
+                0x2e3913bd,
+            ),
+            0x10,
+        ),
+    );
+    let op1 = ctx.lsh_const(
+        ctx.and_const(
+            base,
+            0xffff,
+        ),
+        0x10,
+    );
+    let eq1 = ctx.and_const(
+        ctx.xor(
+            ctx.register(14),
+            ctx.sub_const(
+                ctx.mem32(ctx.register(4), 0),
+                0x2e3913bd,
+            ),
+        ),
+        0xffff_0000,
+    );
+    assert_eq!(op1, eq1);
+}

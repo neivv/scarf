@@ -1752,6 +1752,33 @@ fn intern_lsh_const<'e>(
     }
 }
 
+/// Determines if `(op & C) << S` can have value from being simplified as
+/// `(op << S) & (C << S)`.
+fn should_simplify_and_inside_lsh<'e>(op: Operand<'e>) -> bool {
+    if let Some(arith) = op.if_arithmetic_any() {
+        match arith.ty {
+            ArithOpType::Rsh | ArithOpType::Mul | ArithOpType::Add | ArithOpType::Sub => true,
+            ArithOpType::Xor | ArithOpType::Or => {
+                // Not trying to handle ors inside xors and such for now,
+                // to keep this from having possiblility of being really slow
+                IterArithOps::new_arith(arith)
+                    .find_map(|x| {
+                        let inner_arith = x.if_arithmetic_any()?;
+                        match inner_arith.ty {
+                            ArithOpType::Rsh | ArithOpType::Mul | ArithOpType::Add |
+                                ArithOpType::Sub => Some(()),
+                            _ => None,
+                        }
+                    })
+                    .is_some()
+            }
+            _ => false,
+        }
+    } else {
+        false
+    }
+}
+
 pub fn simplify_lsh_const<'e>(
     left: Operand<'e>,
     constant: u8,
@@ -1789,16 +1816,7 @@ pub fn simplify_lsh_const<'e>(
                         let high = 64 - zero_bits.start;
                         let low = left.relevant_bits().start;
                         let no_op_mask = !0u64 >> low << low << high >> high;
-                        let is_useful = match arith.left.ty() {
-                            OperandType::Arithmetic(arith) => {
-                                matches!(
-                                    arith.ty,
-                                    ArithOpType::Rsh | ArithOpType::Mul |
-                                        ArithOpType::Add | ArithOpType::Sub
-                                )
-                            }
-                            _ => false,
-                        };
+                        let is_useful = should_simplify_and_inside_lsh(arith.left);
                         if is_useful {
                             let new = simplify_lsh_const(arith.left, constant, ctx, swzb_ctx);
                             if c == no_op_mask {
@@ -6503,7 +6521,13 @@ fn simplify_with_and_mask_inner<'e>(
                         if left == arith.left {
                             op
                         } else {
-                            simplify_lsh_const(left, c, ctx, swzb_ctx)
+                            let result = simplify_lsh_const(left, c, ctx, swzb_ctx);
+                            // May need to simplify_with_and_mask again?
+                            // Though for now just improving simplification
+                            // so that the input to this function is reasonably simple
+                            // seems to have been enough to fix issues which could've
+                            // been fixed by a second simplify_with_and_mask call
+                            result
                         }
                     } else {
                         op
@@ -7845,4 +7869,42 @@ fn simplify_with_and_mask_reduce_inner_and_mask() {
         0xfffe,
     );
     assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_with_and_mask_can_remove_shifts() {
+    let ctx = &super::OperandContext::new();
+
+    let op1 = ctx.lsh_const(
+        ctx.and_const(
+            ctx.xor(
+                ctx.rsh_const(
+                    ctx.register(14),
+                    0x10,
+                ),
+                ctx.rsh_const(
+                    ctx.sub_const(
+                        ctx.mem32(ctx.register(0), 0),
+                        0x2e39_13bd,
+                    ),
+                    0x10,
+                ),
+            ),
+            0xffff,
+        ),
+        0x10,
+    );
+    let simplified =
+        simplify_with_and_mask(op1, 0xffff_ffff, ctx, &mut SimplifyWithZeroBits::default());
+    let eq1 = ctx.and_const(
+        ctx.xor(
+            ctx.register(14),
+            ctx.sub_const(
+                ctx.mem32(ctx.register(0), 0),
+                0x2e39_13bd,
+            ),
+        ),
+        0xffff_0000,
+    );
+    assert_eq!(eq1, simplified);
 }
