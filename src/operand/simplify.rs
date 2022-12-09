@@ -1,9 +1,8 @@
 use std::cmp::{min, max};
-use std::ops::Range;
 
 use smallvec::SmallVec;
 
-use crate::bit_misc::{bits_overlap, zero_bit_ranges};
+use crate::bit_misc::{bits_overlap};
 use crate::heapsort;
 
 use super::{
@@ -17,25 +16,18 @@ type Slice<'e> = slice_stack::Slice<'e, Operand<'e>>;
 type AddSlice<'e> = slice_stack::Slice<'e, (Operand<'e>, bool)>;
 type MaskedOpSlice<'e> = slice_stack::Slice<'e, (Operand<'e>, u64)>;
 
+/// Execution limits for simplification.
+/// Currently just contains recursion limit for simplify_with_and_mask;
+/// previously used to also have recursion limit for now-removed
+/// simplify_with_zero_bits, hence the name.
 #[derive(Default)]
 pub struct SimplifyWithZeroBits {
-    simplify_count: u8,
     with_and_mask_count: u8,
-    /// simplify_with_zero_bits can cause a lot of recursing in xor
-    /// simplification with has functions, stop simplifying if a limit
-    /// is hit.
-    xor_recurse: u8,
 }
 
 impl SimplifyWithZeroBits {
     fn has_reached_limit(&self) -> bool {
-        self.zero_bits_simplify_count_at_limit() ||
-            self.with_and_mask_count_at_limit()
-    }
-
-    #[inline]
-    fn zero_bits_simplify_count_at_limit(&self) -> bool {
-        self.simplify_count > 40
+        self.with_and_mask_count_at_limit()
     }
 
     #[inline]
@@ -1793,11 +1785,6 @@ pub fn simplify_lsh_const<'e>(
     }
 
     let new_left = simplify_with_and_mask(left, u64::MAX >> constant, ctx, swzb_ctx);
-    let zero_bits = (64 - constant)..64;
-    let new_left = match simplify_with_zero_bits(new_left, &zero_bits, ctx, swzb_ctx) {
-        None => return ctx.const_0(),
-        Some(s) => s,
-    };
     if new_left != left {
         return simplify_lsh_const(new_left, constant, ctx, swzb_ctx);
     }
@@ -1813,6 +1800,7 @@ pub fn simplify_lsh_const<'e>(
                     // but some simplifications benefit from shifting
                     // the inner value.
                     if let Some(c) = arith.right.if_constant() {
+                        let zero_bits = (64 - constant)..64;
                         let high = 64 - zero_bits.start;
                         let low = left.relevant_bits().start;
                         let no_op_mask = !0u64 >> low << low << high >> high;
@@ -1999,11 +1987,6 @@ pub fn simplify_rsh_const<'e>(
     }
 
     let new_left = simplify_with_and_mask(left, u64::MAX << constant, ctx, swzb_ctx);
-    let zero_bits = 0..constant;
-    let new_left = match simplify_with_zero_bits(new_left, &zero_bits, ctx, swzb_ctx) {
-        None => return ctx.const_0(),
-        Some(s) => s,
-    };
     if new_left != left {
         return simplify_rsh_const(new_left, constant, ctx, swzb_ctx);
     }
@@ -2014,6 +1997,7 @@ pub fn simplify_rsh_const<'e>(
             match arith.ty {
                 ArithOpType::And => {
                     if let Some(c) = arith.right.if_constant() {
+                        let zero_bits = 0..constant;
                         let other = arith.left;
                         let low = zero_bits.end;
                         let high = 64 - other.relevant_bits().end;
@@ -3815,23 +3799,6 @@ fn simplify_and_main<'e>(
         }
         if ops.is_empty() {
             break;
-        }
-        let zero = ctx.const_0();
-        for bits in zero_bit_ranges(const_remain) {
-            slice_filter_map(ops, |op| {
-                simplify_with_zero_bits(op, &bits, ctx, swzb_ctx)
-                    .and_then(|x| match x == zero {
-                        true => None,
-                        false => Some(x),
-                    })
-            });
-            // Unlike the other is_empty check above this returns 0, since if zero bit filter
-            // removes all remaining ops, the result is 0 even with const_remain != 0
-            // (simplify_with_zero_bits is defined to return None instead of Some(const(0)),
-            // and obviously constant & 0 == 0)
-            if ops.is_empty() {
-                return Ok(zero);
-            }
         }
 
         if const_remain != u64::MAX && ops.len() == 1 {
@@ -7080,233 +7047,6 @@ fn simplify_with_and_mask_mem_dont_apply_shift<'e>(
     (mem, (mask_low as u8) << 3)
 }
 
-/// If `a` is subset of or equal to `b`
-fn range_is_subset(a: &Range<u8>, b: &Range<u8>) -> bool {
-    a.start >= b.start && a.end <= b.end
-}
-
-fn ranges_overlap(a: &Range<u8>, b: &Range<u8>) -> bool {
-    a.start < b.end && a.end > b.start
-}
-
-/// Simplifies `op` when the bits in the range `bits` are guaranteed to be zero.
-/// Returning `None` is considered same as `Some(constval(0))` (The value gets optimized out in
-/// bitwise and).
-///
-/// Bits are assumed to be in 0..64 range
-fn simplify_with_zero_bits<'e>(
-    op: Operand<'e>,
-    bits: &Range<u8>,
-    ctx: OperandCtx<'e>,
-    swzb: &mut SimplifyWithZeroBits,
-) -> Option<Operand<'e>> {
-    if op.0.min_zero_bit_simplify_size > bits.end - bits.start || bits.start >= bits.end {
-        return Some(op);
-    }
-    let relevant_bits = op.relevant_bits();
-    // Check if we're setting all nonzero bits to zero
-    if range_is_subset(&relevant_bits, bits) {
-        return None;
-    }
-    // Check if we're zeroing bits that were already zero
-    if !ranges_overlap(&relevant_bits, bits) {
-        return Some(op);
-    }
-
-    let recurse_check = match op.ty() {
-        OperandType::Arithmetic(arith) => {
-            match arith.ty {
-                ArithOpType::And | ArithOpType::Or | ArithOpType::Xor |
-                    ArithOpType::Lsh | ArithOpType::Rsh => true,
-                _ => false,
-            }
-        }
-        _ => false,
-    };
-
-    fn should_stop(swzb: &mut SimplifyWithZeroBits) -> bool {
-        if swzb.zero_bits_simplify_count_at_limit() {
-            #[cfg(feature = "fuzz")]
-            tls_simplification_incomplete();
-            true
-        } else {
-            false
-        }
-    }
-
-    if recurse_check {
-        if swzb.xor_recurse > 4 {
-            swzb.simplify_count = u8::MAX;
-        }
-        if should_stop(swzb) {
-            return Some(op);
-        } else {
-            swzb.simplify_count += 1;
-        }
-    }
-
-    match op.ty() {
-        OperandType::Arithmetic(arith) => {
-            let left = arith.left;
-            let right = arith.right;
-            match arith.ty {
-                ArithOpType::And => {
-                    // If zeroing bits that either of the operands has already zeroed,
-                    // the other operand has to have also been simplified to take those
-                    // zero bits into account => can't simplify further.
-                    if !ranges_overlap(bits, &left.relevant_bits()) {
-                        return Some(op);
-                    }
-                    if !ranges_overlap(bits, &right.relevant_bits()) {
-                        return Some(op);
-                    }
-
-                    let simplified_left = simplify_with_zero_bits(left, bits, ctx, swzb);
-                    if should_stop(swzb) {
-                        return Some(op);
-                    }
-                    return match simplified_left {
-                        Some(l) => {
-                            let simplified_right =
-                                simplify_with_zero_bits(right, bits, ctx, swzb);
-                            if should_stop(swzb) {
-                                return Some(op);
-                            }
-                            match simplified_right {
-                                Some(r) => {
-                                    if l == left && r == right {
-                                        Some(op)
-                                    } else {
-                                        Some(simplify_and(l, r, ctx, swzb))
-                                    }
-                                }
-                                None => None,
-                            }
-                        }
-                        None => None,
-                    };
-                }
-                ArithOpType::Or => {
-                    let simplified_left = simplify_with_zero_bits(left, bits, ctx, swzb);
-                    let simplified_right = simplify_with_zero_bits(right, bits, ctx, swzb);
-                    if should_stop(swzb) {
-                        return Some(op);
-                    }
-                    return match (simplified_left, simplified_right) {
-                        (None, None) => None,
-                        (None, Some(s)) | (Some(s), None) => Some(s),
-                        (Some(l), Some(r)) => {
-                            if l == left && r == right {
-                                Some(op)
-                            } else {
-                                Some(simplify_or(l, r, ctx, swzb))
-                            }
-                        }
-                    };
-                }
-                ArithOpType::Xor => {
-                    let simplified_left = simplify_with_zero_bits(left, bits, ctx, swzb);
-                    let simplified_right = simplify_with_zero_bits(right, bits, ctx, swzb);
-                    if should_stop(swzb) {
-                        return Some(op);
-                    }
-                    return match (simplified_left, simplified_right) {
-                        (None, None) => None,
-                        (None, Some(s)) | (Some(s), None) => Some(s),
-                        (Some(l), Some(r)) => {
-                            if l == left && r == right {
-                                Some(op)
-                            } else {
-                                swzb.xor_recurse += 1;
-                                let result = simplify_xor(l, r, ctx, swzb);
-                                swzb.xor_recurse -= 1;
-                                Some(result)
-                            }
-                        }
-                    };
-                }
-                ArithOpType::Lsh => {
-                    if let Some(c) = right.if_constant() {
-                        if bits.end >= 64 && bits.start <= c as u8 {
-                            return None;
-                        } else {
-                            let low = bits.start.saturating_sub(c as u8);
-                            let high = bits.end.saturating_sub(c as u8);
-                            if low >= high {
-                                return Some(op);
-                            }
-                            let result = simplify_with_zero_bits(left, &(low..high), ctx, swzb);
-                            if let Some(result) =  result {
-                                if result != left {
-                                    return Some(simplify_lsh(result, right, ctx, swzb));
-                                }
-                            }
-                        }
-                    }
-                }
-                ArithOpType::Rsh => {
-                    if let Some(c) = right.if_constant() {
-                        if bits.start == 0 && c as u8 >= (64 - bits.end) {
-                            return None;
-                        } else {
-                            let low = bits.start.saturating_add(c as u8).min(64);
-                            let high = bits.end.saturating_add(c as u8).min(64);
-                            if low >= high {
-                                return Some(op);
-                            }
-                            let result1 = if bits.end == 64 {
-                                let mask_high = 64 - low;
-                                let mask = !0u64 >> c << c << mask_high >> mask_high;
-                                simplify_with_and_mask(left, mask, ctx, swzb)
-                            } else {
-                                left.clone()
-                            };
-                            let result2 =
-                                simplify_with_zero_bits(result1, &(low..high), ctx, swzb);
-                            if let Some(result2) =  result2 {
-                                if result2 != left {
-                                    return Some(
-                                        simplify_rsh(result2, right, ctx, swzb)
-                                    );
-                                }
-                            } else if result1 != left {
-                                return Some(simplify_rsh(result1, right, ctx, swzb));
-                            }
-                        }
-                    }
-                }
-                _ => (),
-            }
-        }
-        OperandType::Constant(c) => {
-            let low = bits.start;
-            let high = 64 - bits.end;
-            let mask = !(!0u64 >> low << low << high >> high);
-            let new_val = c & mask;
-            return match new_val {
-                0 => None,
-                c => Some(ctx.constant(c)),
-            };
-        }
-        OperandType::Memory(ref mem) => {
-            if bits.start == 0 && bits.end >= relevant_bits.end {
-                return None;
-            } else if bits.end == 64 {
-                let (address, offset) = mem.address();
-                if bits.start <= 8 && relevant_bits.end > 8 {
-                    return Some(ctx.mem8(address, offset));
-                } else if bits.start <= 16 && relevant_bits.end > 16 {
-                    return Some(ctx.mem16(address, offset));
-                } else if bits.start <= 32 && relevant_bits.end > 32 {
-                    return Some(ctx.mem32(address, offset));
-                }
-            }
-        }
-        _ => (),
-    }
-    Some(op)
-}
-
 /// Merges things like [2 * b, a, c, b, c] to [a, 3 * b, 2 * c]
 fn simplify_add_merge_muls<'e>(
     ops: &mut AddSlice<'e>,
@@ -7448,7 +7188,6 @@ pub fn simplify_xor<'e>(
         .unwrap_or_else(|_| {
             // This is likely some hash function being unrolled, give up
             // Also set swzb to stop everything
-            swzb.simplify_count = u8::MAX;
             swzb.with_and_mask_count = u8::MAX;
             let arith = ArithOperand {
                 ty: ArithOpType::Xor,
