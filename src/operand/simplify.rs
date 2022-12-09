@@ -2477,6 +2477,19 @@ pub fn simplify_eq_const<'e>(
                     if arith.left.relevant_bits().end == 1 {
                         return arith.left;
                     }
+                    // (x & highest_bit != 0) => x >> (highest_bit - 1)
+                    if let Some((inner, c)) = arith.left.if_and_with_const() {
+                        let high_bit_minus1 = (inner.relevant_bits().end).wrapping_sub(1);
+                        let inner_highest_bit = 1u64.wrapping_shl(high_bit_minus1 as u32);
+                        if inner_highest_bit == c {
+                            return simplify_rsh_const(
+                                inner,
+                                high_bit_minus1,
+                                ctx,
+                                &mut SimplifyWithZeroBits::default(),
+                            );
+                        }
+                    }
                 }
             } else if arith.ty == ArithOpType::Sub {
                 // Simplify x - y == 0 as x == y

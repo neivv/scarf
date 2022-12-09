@@ -11113,3 +11113,68 @@ fn masked_xor_shifts_simplify() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn neq_0_rsh_and_eq() {
+    let ctx = &OperandContext::new();
+    // ((o == s) & ((rax >> 3f) == 0)) == 0
+    // is same as
+    // (((o == s) == 0) | (rax >> 3f)
+    let op1 = ctx.eq_const(
+        ctx.and(
+            ctx.eq(
+                ctx.flag_o(),
+                ctx.flag_s(),
+            ),
+            ctx.eq_const(
+                ctx.rsh_const(
+                    ctx.register(0),
+                    0x3f,
+                ),
+                0,
+            ),
+        ),
+        0,
+    );
+    let eq1 = ctx.or(
+        ctx.neq(
+            ctx.flag_o(),
+            ctx.flag_s(),
+        ),
+        ctx.rsh_const(
+            ctx.register(0),
+            0x3f,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn rsh_3f_is_high_bit_eq_zero() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.rsh_const(
+        ctx.register(0),
+        0x3f,
+    );
+    let eq1 = ctx.neq_const(
+        ctx.and_const(
+            ctx.register(0),
+            0x8000_0000_0000_0000,
+        ),
+        0,
+    );
+    assert_eq!(op1, eq1);
+
+    let op1 = ctx.rsh_const(
+        ctx.mem32(ctx.register(0), 0),
+        0x1f,
+    );
+    let eq1 = ctx.neq_const(
+        ctx.and_const(
+            ctx.mem32(ctx.register(0), 0),
+            0x8000_0000,
+        ),
+        0,
+    );
+    assert_eq!(op1, eq1);
+}
