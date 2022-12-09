@@ -2036,10 +2036,33 @@ pub fn simplify_rsh_const<'e>(
                     ctx.intern(OperandType::Arithmetic(arith))
                 }
                 ArithOpType::Or => {
-                    // Try to simplify any parts of the or separately
+                    // Try to simplify any parts of the or separately.
+                    // Though commonly this is (x | C) without x being another or,
+                    // in which case have a faster path that takes advantage of
+                    // simplify_or having early exits
+                    let mut or_const = 0u64;
+                    if let Some(c) = arith.right.if_constant() {
+                        or_const = c >> constant;
+                        if arith.left.if_arithmetic_or().is_none() {
+                            let left_simplified =
+                                simplify_rsh_const(arith.left, constant, ctx, swzb_ctx);
+                            return simplify_or(
+                                left_simplified,
+                                ctx.constant(or_const),
+                                ctx,
+                                swzb_ctx,
+                            );
+                        }
+                    }
+
                     ctx.simplify_temp_stack()
                         .alloc(|slice| {
-                            collect_arith_ops(left, slice, ArithOpType::Or, 8).ok()?;
+                            if or_const != 0 {
+                                slice.push(ctx.constant(or_const)).ok()?;
+                            } else {
+                                slice.push(arith.right).ok()?;
+                            }
+                            collect_arith_ops(arith.left, slice, ArithOpType::Or, 8).ok()?;
                             if simplify_shift_is_too_long_xor(slice) {
                                 // Give up on dumb long ors
                                 None
@@ -6087,18 +6110,24 @@ pub fn simplify_or<'e>(
         return left;
     }
     let const_other = if let Some(c) = left.if_constant() {
-        Some((c, Some(left), right))
+        Some((c, left, right))
     } else if let Some(c) = right.if_constant() {
-        Some((c, Some(right), left))
+        Some((c, right, left))
     } else {
         None
     };
-    if let Some((mut c, mut c_op, mut other)) = const_other {
+    if let Some((mut c, c_op, mut other)) = const_other {
         // Both operands being constant seems to happen often enough
         // for this to be worth it.
         if let Some(c2) = other.if_constant() {
             return ctx.constant(c | c2);
         }
+        if c == other.relevant_bits_mask() {
+            // `(x == y) | 1` or `(x > y) | 1`
+            // happens somewhat often due to how cpu flag calculations are done.
+            return c_op;
+        }
+        let mut c_op = Some(c_op);
         if let Some((l, r)) = other.if_arithmetic_or() {
             if let Some(c2) = r.if_constant() {
                 if c | c2 == c2 {
@@ -6109,7 +6138,16 @@ pub fn simplify_or<'e>(
                 other = l;
             }
         }
-        if can_quick_simplify_type(other.ty()) {
+        let mut quick_simplify = can_quick_simplify_type(other.ty()) ||
+            other.relevant_bits_mask() & c == 0;
+        if !quick_simplify && other.if_memory().is_some() {
+            // Setting only one bit of memory is not going to simplify to
+            // anything, and is somewhat common case, with assmebly code setting a bit.
+            if c & c.wrapping_sub(1) == 0 {
+                quick_simplify = true;
+            }
+        }
+        if quick_simplify {
             let left_bits = other.relevant_bits_mask();
             let c_op = c_op.unwrap_or_else(|| ctx.constant(c));
             if left_bits & c == left_bits {
@@ -7036,6 +7074,34 @@ fn simplify_with_and_mask_or_xor<'e>(
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
     let arith_ty = arith.ty;
+    // It can be pretty common to get (x | C) without x being another or
+    // that'll simplify faster when going through simplify_or, which checks
+    // for some trivial cases before going to simplify_or_ops.
+    if let Some(c) = arith.right.if_constant() {
+        if arith.left.if_arithmetic(arith_ty).is_none() {
+            let left_mask = if arith_ty == ArithOpType::Or {
+                mask & !c
+            } else {
+                mask
+            };
+            let left = simplify_with_and_mask(arith.left, left_mask, ctx, swzb_ctx);
+            let right = if mask & c == c {
+                arith.right
+            } else {
+                ctx.constant(mask & c)
+            };
+            if (left == arith.left && right == arith.right) ||
+                should_stop_with_and_mask(swzb_ctx)
+            {
+                return op;
+            }
+            if arith_ty == ArithOpType::Or {
+                return simplify_or(left, right, ctx, swzb_ctx);
+            } else {
+                return simplify_xor(left, right, ctx, swzb_ctx);
+            }
+        }
+    }
     util::arith_parts_to_new_slice(ctx, arith.left, arith.right, arith_ty, |slice| {
         let mut changed = false;
         let mut any_zero = false;
