@@ -1,4 +1,4 @@
-use std::cmp::{min, max};
+use std::cmp::{min, max, Ordering};
 
 use smallvec::SmallVec;
 
@@ -717,6 +717,7 @@ fn simplify_masked_xor_or_to_and<'e>(
 /// Simplifies (x & y) ^ (x | y) to (x ^ y)
 fn simplify_masked_xor_or_and_to_xor<'e>(
     ops: &mut MaskedOpSlice<'e>,
+    ctx: OperandCtx<'e>,
 ) {
     let mut i = 0;
     while i < ops.len() {
@@ -753,10 +754,23 @@ fn simplify_masked_xor_or_and_to_xor<'e>(
                         // they'll be kept as well.
                         let shared_mask = mask & mask2;
                         let orig_size = ops.len();
-                        let ok = collect_masked_xor_ops(arith.left, ops, usize::MAX, shared_mask)
-                            .and_then(|()| {
-                                collect_masked_xor_ops(arith.right, ops, usize::MAX, shared_mask)
-                            }).is_ok();
+                        let ok = collect_masked_xor_ops(
+                            ctx,
+                            arith.left,
+                            ops,
+                            orig_size,
+                            usize::MAX,
+                            shared_mask,
+                        ).and_then(|()| {
+                            collect_masked_xor_ops(
+                                ctx,
+                                arith.right,
+                                ops,
+                                orig_size,
+                                usize::MAX,
+                                shared_mask,
+                            )
+                        }).is_ok();
                         if !ok {
                             ops.shrink(orig_size);
                             break;
@@ -5140,44 +5154,69 @@ fn collect_xor_ops<'e>(
 }
 
 fn collect_masked_or_ops<'e>(
+    ctx: OperandCtx<'e>,
     s: Operand<'e>,
     ops: &mut MaskedOpSlice<'e>,
     limit: usize,
     mask: u64,
 ) -> Result<(), SizeLimitReached> {
-    collect_masked_ops(s, ops, limit, mask, ArithOpType::Or)
+    collect_masked_ops(ctx, s, ops, 0, limit, mask, ArithOpType::Or)
 }
 
 fn collect_masked_xor_ops<'e>(
+    ctx: OperandCtx<'e>,
     s: Operand<'e>,
     ops: &mut MaskedOpSlice<'e>,
+    sorted_start: usize,
     limit: usize,
     mask: u64,
 ) -> Result<(), SizeLimitReached> {
-    collect_masked_ops(s, ops, limit, mask, ArithOpType::Xor)
+    collect_masked_ops(ctx, s, ops, sorted_start, limit, mask, ArithOpType::Xor)
 }
 
+/// If `&ops[sorted_start..]` is sorted by Operand, keeps it sorted by Operand.
+/// (Order of equal operands with different masks is not guaranteed)
+/// Order of operands before sorted_start won't be modified.
 fn collect_masked_ops<'e>(
+    ctx: OperandCtx<'e>,
     s: Operand<'e>,
     ops: &mut MaskedOpSlice<'e>,
+    sorted_start: usize,
     limit: usize,
     mut mask: u64,
     arith_type: ArithOpType,
 ) -> Result<(), SizeLimitReached> {
     let mut s = s;
-    for _ in ops.len()..limit {
+    let mut subslice_start = ops.len();
+    loop {
         match s.ty() {
             OperandType::Arithmetic(arith) => {
                 if arith.ty == arith_type {
                     s = arith.left;
                     if let Some((l, r)) = arith.right.if_and_with_const() {
-                        collect_masked_ops(l, ops, limit, mask & r, arith_type)?;
+                        merge_sorted_subslices_for_collect(
+                            ctx,
+                            ops,
+                            sorted_start,
+                            subslice_start,
+                            |a, b| a.0 < b.0,
+                        );
+                        subslice_start = ops.len();
+                        collect_masked_ops(ctx, l, ops, sorted_start, limit, mask & r, arith_type)?;
                     } else {
                         ops.push((arith.right, mask))?;
                     }
                     continue;
                 } else if arith.ty == ArithOpType::And {
                     if let Some(r) = arith.right.if_constant() {
+                        merge_sorted_subslices_for_collect(
+                            ctx,
+                            ops,
+                            sorted_start,
+                            subslice_start,
+                            |a, b| a.0 < b.0,
+                        );
+                        subslice_start = ops.len();
                         mask &= r;
                         s = arith.left;
                         continue;
@@ -5187,7 +5226,7 @@ fn collect_masked_ops<'e>(
             _ => (),
         }
         ops.push((s, mask))?;
-        return Ok(());
+        break;
     }
     if ops.len() >= limit {
         if ops.len() == limit {
@@ -5196,7 +5235,116 @@ fn collect_masked_ops<'e>(
         }
         return Err(SizeLimitReached);
     }
+    merge_sorted_subslices_for_collect(ctx, ops, sorted_start, subslice_start, |a, b| a.0 < b.0);
     Ok(())
+}
+
+fn merge_sorted_subslices_for_collect<'e, T, O>(
+    ctx: OperandCtx<'e>,
+    slice: &mut [T],
+    start: usize,
+    split_point: usize,
+    mut cmp: O,
+)
+where O: FnMut(&T, &T) -> bool,
+      T: Copy + std::fmt::Debug,
+{
+    let slice = &mut slice[start..];
+    let split_point = split_point - start;
+    if split_point == 0 || split_point == slice.len() {
+        return;
+    }
+    if slice.len() == 2 {
+        // Likely most of the time this is just called with 2 operands
+        if !cmp(&slice[0], &slice[1]) {
+            slice.swap(0, 1);
+        }
+        return;
+    }
+    // Allow the first operand at split_point not be sorted
+    // (Constants aren't placed in sort order)
+    if let Some(first_2) = slice.get(split_point..split_point.wrapping_add(2)) {
+        if !cmp(&first_2[0], &first_2[1]) {
+            // Move the first operand to correct place
+            let first = first_2[0];
+            let subslice = &mut slice[(split_point + 1)..];
+            let insert_pos = match subslice.binary_search_by(|x| {
+                match cmp(x, &first) {
+                    true => Ordering::Less,
+                    false => Ordering::Greater,
+                }
+            }) {
+                Ok(o) | Err(o) => o,
+            };
+            if insert_pos <= subslice.len() {
+                let subslice = &mut slice[split_point..];
+                unsafe {
+                    // Safe only because T: Copy and `insert_pos <=` check above
+                    let start = subslice.as_mut_ptr();
+                    std::ptr::copy(start.add(1) as *const T, start, insert_pos);
+                    subslice[insert_pos] = first;
+                }
+            }
+        }
+    }
+    merge_sorted_subslices(ctx, slice, split_point, cmp);
+}
+
+fn merge_sorted_subslices<'e, T, O>(
+    ctx: OperandCtx<'e>,
+    slice: &mut [T],
+    split_point: usize,
+    mut cmp: O,
+)
+where O: FnMut(&T, &T) -> bool,
+      T: Copy + std::fmt::Debug,
+{
+    ctx.simplify_temp_stack().alloc(|buf| {
+        let (mut a, mut b) = slice.split_at(split_point);
+        let mut next_a;
+        let mut next_b;
+        match a.split_first() {
+            Some((x, rest)) => {
+                next_a = x;
+                a = rest;
+            }
+            None => return Ok(()),
+        }
+        match b.split_first() {
+            Some((x, rest)) => {
+                next_b = x;
+                b = rest;
+            }
+            None => return Ok(()),
+        }
+        let (next, rest) = loop {
+            if cmp(next_a, next_b) {
+                buf.push(*next_a)?;
+                match a.split_first() {
+                    Some((x, rest)) => {
+                        next_a = x;
+                        a = rest;
+                    }
+                    None => break (next_b, b),
+                };
+            } else {
+                buf.push(*next_b)?;
+                match b.split_first() {
+                    Some((x, rest)) => {
+                        next_b = x;
+                        b = rest;
+                    }
+                    None => break (next_a, a),
+                };
+            }
+        };
+        buf.push(*next)?;
+        for next in rest.iter() {
+            buf.push(*next)?;
+        }
+        slice.copy_from_slice(buf);
+        Result::<(), SizeLimitReached>::Ok(())
+    }).expect("Too big input slice");
 }
 
 /// Return (base, (offset, len, value_offset, mask))
@@ -6007,8 +6155,8 @@ pub fn simplify_or<'e>(
 
     ctx.simplify_temp_stack()
         .alloc(|masked_ops| {
-            collect_masked_or_ops(left, masked_ops, 30, u64::MAX)?;
-            collect_masked_or_ops(right, masked_ops, 30, u64::MAX)?;
+            collect_masked_or_ops(ctx, left, masked_ops, 30, u64::MAX)?;
+            collect_masked_or_ops(ctx, right, masked_ops, 30, u64::MAX)?;
             simplify_masked_or_ops(masked_ops, ctx);
             match masked_ops.len() {
                 0 => return Ok(ctx.const_0()),
@@ -7168,8 +7316,8 @@ pub fn simplify_xor<'e>(
     let temp_stack = ctx.simplify_temp_stack();
     temp_stack
         .alloc(|masked_ops| {
-            collect_masked_xor_ops(left, masked_ops, 30, u64::MAX)?;
-            collect_masked_xor_ops(right, masked_ops, 30, u64::MAX)?;
+            collect_masked_xor_ops(ctx, left, masked_ops, 0, 30, u64::MAX)?;
+            collect_masked_xor_ops(ctx, right, masked_ops, 0, 30, u64::MAX)?;
             simplify_masked_xor_ops(masked_ops, ctx, swzb);
             match masked_ops.len() {
                 0 => return Ok(ctx.const_0()),
@@ -7198,26 +7346,30 @@ pub fn simplify_xor<'e>(
         })
 }
 
+/// Assumes that slice is sorted by Operand (not mask),
+/// which is guaranteed by collect_masked_ops as long as input
+/// to it is sorted.
 fn simplify_masked_xor_ops<'e>(
     ops: &mut MaskedOpSlice<'e>,
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) {
     if ops.len() > 1 {
-        heapsort::sort_by(ops, |a, b| a.0 < b.0);
         simplify_masked_xor_or_merge_same_ops(ops, ctx, ArithOpType::Xor);
         simplify_masked_xor_merge_or(ops, ctx, swzb);
-        simplify_masked_xor_or_and_to_xor(ops);
+        simplify_masked_xor_or_and_to_xor(ops, ctx);
         simplify_masked_xor_or_to_and(ops, ctx, swzb);
     }
 }
 
+/// Assumes that slice is sorted by Operand (not mask),
+/// which is guaranteed by collect_masked_ops as long as input
+/// to it is sorted.
 fn simplify_masked_or_ops<'e>(
     ops: &mut MaskedOpSlice<'e>,
     ctx: OperandCtx<'e>,
 ) {
     if ops.len() > 1 {
-        heapsort::sort_by(ops, |a, b| a.0 < b.0);
         simplify_masked_xor_or_merge_same_ops(ops, ctx, ArithOpType::Or);
     }
 }
