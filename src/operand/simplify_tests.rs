@@ -11115,6 +11115,37 @@ fn masked_xor_shifts_simplify() {
 }
 
 #[test]
+fn neq_0_reg_and_eq() {
+    let ctx = &OperandContext::new();
+    // ((o == s) & (r0 == 0)) == 0
+    // should not change
+    let op1 = ctx.eq_const(
+        ctx.and(
+            ctx.eq(
+                ctx.flag_o(),
+                ctx.flag_s(),
+            ),
+            ctx.eq_const(
+                ctx.register(0),
+                0,
+            ),
+        ),
+        0,
+    );
+    let eq1 = ctx.or(
+        ctx.neq(
+            ctx.flag_o(),
+            ctx.flag_s(),
+        ),
+        ctx.neq_const(
+            ctx.register(0),
+            0,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
 fn neq_0_rsh_and_eq() {
     let ctx = &OperandContext::new();
     // ((o == s) & ((rax >> 3f) == 0)) == 0
@@ -11175,6 +11206,47 @@ fn rsh_3f_is_high_bit_eq_zero() {
             0x8000_0000,
         ),
         0,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn or_with_mem8_high_bit_add_eq_zero() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.eq_const(
+        ctx.or(
+            ctx.eq_const(
+                ctx.and_const(
+                    ctx.add(
+                        ctx.mem8(ctx.register(0), 0),
+                        ctx.mem8(ctx.register(1), 0),
+                    ),
+                    0x80,
+                ),
+                0,
+            ),
+            ctx.eq(
+                ctx.mem8(ctx.register(8), 0),
+                ctx.mem8(ctx.register(9), 0),
+            ),
+        ),
+        0,
+    );
+    let eq1 = ctx.and(
+        ctx.neq_const(
+            ctx.and_const(
+                ctx.add(
+                    ctx.mem8(ctx.register(0), 0),
+                    ctx.mem8(ctx.register(1), 0),
+                ),
+                0x80,
+            ),
+            0,
+        ),
+        ctx.neq(
+            ctx.mem8(ctx.register(8), 0),
+            ctx.mem8(ctx.register(9), 0),
+        ),
     );
     assert_eq!(op1, eq1);
 }

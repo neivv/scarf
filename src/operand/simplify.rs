@@ -2464,12 +2464,27 @@ fn simplify_eq_1op_const<'e>(
     ctx.intern(OperandType::Arithmetic(arith))
 }
 
+fn and_mask_to_shift_in_eq_zero<'e>(op: Operand<'e>) -> Option<(Operand<'e>, u8)> {
+    // (x & highest_bit != 0) => x >> (highest_bit - 1)
+    let (inner, c) = op.if_and_with_const()?;
+    let high_bit_minus1 = (inner.relevant_bits().end).wrapping_sub(1);
+    let inner_highest_bit = 1u64.wrapping_shl(high_bit_minus1 as u32);
+    if inner_highest_bit == c {
+        Some((inner, high_bit_minus1))
+    } else {
+        None
+    }
+}
+
 pub fn simplify_eq_const<'e>(
     left: Operand<'e>,
     right: u64,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     if right == 0 {
+        if let Some(result) = simplify_demorgan_eq_zero(left, ctx) {
+            return result;
+        }
         if let OperandType::Arithmetic(ref arith) = left.ty() {
             if arith.ty == ArithOpType::Equal {
                 // Check for (x == 0) == 0 => x
@@ -2477,18 +2492,13 @@ pub fn simplify_eq_const<'e>(
                     if arith.left.relevant_bits().end == 1 {
                         return arith.left;
                     }
-                    // (x & highest_bit != 0) => x >> (highest_bit - 1)
-                    if let Some((inner, c)) = arith.left.if_and_with_const() {
-                        let high_bit_minus1 = (inner.relevant_bits().end).wrapping_sub(1);
-                        let inner_highest_bit = 1u64.wrapping_shl(high_bit_minus1 as u32);
-                        if inner_highest_bit == c {
-                            return simplify_rsh_const(
-                                inner,
-                                high_bit_minus1,
-                                ctx,
-                                &mut SimplifyWithZeroBits::default(),
-                            );
-                        }
+                    if let Some((inner, shift)) = and_mask_to_shift_in_eq_zero(arith.left) {
+                        return simplify_rsh_const(
+                            inner,
+                            shift,
+                            ctx,
+                            &mut SimplifyWithZeroBits::default(),
+                        );
                     }
                 }
             } else if arith.ty == ArithOpType::Sub {
@@ -4521,6 +4531,51 @@ fn simplify_or_merge_xors<'e>(
     }
 }
 
+/// For simplify eq with zero cases such as:
+/// `((x == 0) | (y == z)) == 0` (`op` = `(x == 0) | (y == z))`)
+/// `((x == y) & (1bit_op == 0)) == 0`
+/// That is, and/or chain with only 1bit parts, and at least one == 0
+/// that can be removed, switches or/and and applies == 0 to each part.
+fn simplify_demorgan_eq_zero<'e>(op: Operand<'e>, ctx: OperandCtx<'e>) -> Option<Operand<'e>> {
+    let arith = op.if_arithmetic_any()?;
+    if matches!(arith.ty, ArithOpType::And | ArithOpType::Or) == false {
+        return None;
+    }
+    util::arith_parts_to_new_slice(ctx, arith.left, arith.right, arith.ty, |slice| {
+        let zero = ctx.const_0();
+        let mut removable_eq_zero_seen = false;
+        for &part in slice.iter() {
+            if part.relevant_bits().end != 1 {
+                return None;
+            }
+            if !removable_eq_zero_seen {
+                if let Some((l, r)) = part.if_arithmetic_eq() {
+                    if r == zero {
+                        // Same rules as in simplify_eq_const
+                        let relbits = l.relevant_bits();
+                        if relbits.end == 1 ||
+                            and_mask_to_shift_in_eq_zero(l).is_some()
+                        {
+                            removable_eq_zero_seen = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !removable_eq_zero_seen {
+            return None;
+        }
+        for part in slice.iter_mut() {
+            *part = simplify_eq_const(*part, 0, ctx);
+        }
+        if arith.ty == ArithOpType::Or {
+            simplify_and_ops(slice, ctx, &mut SimplifyWithZeroBits::default()).ok()
+        } else {
+            simplify_or_ops(slice, ctx, &mut SimplifyWithZeroBits::default()).ok()
+        }
+    })
+}
+
 /// For or simplify:
 ///     Joins any (x == 0) ops to single (x & y & z) == 0 (merge_ty == And)
 /// For and simplify:
@@ -4532,9 +4587,10 @@ fn simplify_demorgan<'e>(
 ) {
     let mut i = 0;
     let mut op = None;
+    let zero = ctx.const_0();
     while i < ops.len() {
         if let Some((l, r)) = ops[i].if_arithmetic_eq() {
-            if r == ctx.const_0() {
+            if r == zero {
                 op = Some(l);
                 break;
             }
@@ -4547,7 +4603,7 @@ fn simplify_demorgan<'e>(
         let mut result = op;
         while i < ops.len() {
             if let Some((l, r)) = ops[i].if_arithmetic_eq() {
-                if r == ctx.const_0() {
+                if r == zero {
                     result = ctx.arithmetic(
                         merge_ty,
                         result,
