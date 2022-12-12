@@ -870,9 +870,21 @@ impl<'e> State<'e> {
                     }
                 }
                 // Right is often a constant so predict that case before calling resolve
-                let resolved_left = self.resolve(left);
+                let mut resolved_left = self.resolve(left);
+                if op.left.if_flag().is_some() && resolved_left.relevant_bits().end > 1 {
+                    // Flag operands may contain larger than 1bit values
+                    // (Especially undefined), but treat the high bits as unimportant.
+                    // Though leave x == 0 untouched.
+                    if right != ctx.const_0() {
+                        resolved_left = ctx.and_const(resolved_left, 1);
+                    }
+                }
                 let resolved_right = if right.needs_resolve() {
-                    self.resolve(right)
+                    let mut right = self.resolve(right);
+                    if op.right.if_flag().is_some() && right.relevant_bits().end > 1 {
+                        right = ctx.and_const(right, 1);
+                    }
+                    right
                 } else {
                     right
                 };

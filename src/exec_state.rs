@@ -321,7 +321,8 @@ where E: ExecutionState<'e>,
 {
     let mut no_jump_state = state.clone();
     let mut jump_state = state;
-    if let OperandType::Arithmetic(arith) = condition.ty() {
+    let ty = condition.ty();
+    if let OperandType::Arithmetic(arith) = ty {
         if matches!(arith.ty, ArithOpType::Equal | ArithOpType::Or | ArithOpType::And) {
             let ctx = jump_state.ctx();
 
@@ -332,30 +333,12 @@ where E: ExecutionState<'e>,
             let mut do_unresolved_constraint = true;
             if arith.ty == ArithOpType::Equal {
                 // Update relevant flag to 0/1 if reasonable, if not, then add constraint.
-                let assignable_flag = if arith.right == ctx.const_0() {
-                    let (other, jump_flag_state) = arith.left.if_arithmetic_eq()
-                        .and_then(|(l, r)| {
-                            r.if_constant().map(|c| (l, c == 0))
-                        })
-                        .unwrap_or_else(|| (arith.left, false));
-                    match *other.ty() {
-                        OperandType::Flag(f) => Some((f, jump_flag_state)),
-                        _ => None,
+                if let OperandType::Flag(flag) = *arith.left.ty() {
+                    if arith.right == ctx.const_0() {
+                        jump_state.set_flag(flag, ctx.const_0());
+                        no_jump_state.set_flag(flag, ctx.const_1());
+                        do_unresolved_constraint = false;
                     }
-                } else {
-                    None
-                };
-                if let Some((flag, flag_state)) = assignable_flag {
-                    let (jump_const, no_jump_const) = if flag_state {
-                        (ctx.const_1(), ctx.const_0())
-                    } else {
-                        (ctx.const_0(), ctx.const_1())
-                    };
-                    jump_state.set_flag(flag, jump_const);
-                    no_jump_state.set_flag(flag, no_jump_const);
-                    do_unresolved_constraint = false;
-                } else {
-                    // do_unresolved_constraint = true here
                 }
             }
             if do_unresolved_constraint {
@@ -364,6 +347,13 @@ where E: ExecutionState<'e>,
                 no_jump_state.add_unresolved_constraint(Constraint::new(unresolved_no_jump));
             }
         }
+    } else if let OperandType::Flag(flag) = *ty {
+        let ctx = jump_state.ctx();
+        let resolved_no_jump = ctx.eq_const(condition_resolved, 0);
+        jump_state.add_resolved_constraint(Constraint::new(condition_resolved));
+        no_jump_state.add_resolved_constraint(Constraint::new(resolved_no_jump));
+        jump_state.set_flag(flag, ctx.const_1());
+        no_jump_state.set_flag(flag, ctx.const_0());
     }
     (jump_state, no_jump_state)
 }
@@ -1248,19 +1238,13 @@ pub fn is_flag_const_constraint<'e>(
     ctx: OperandCtx<'e>,
     constraint: Operand<'e>,
 ) -> Option<(Flag, Operand<'e>)> {
+    if let Some(flag) = constraint.if_flag() {
+        return Some((flag, ctx.const_1()));
+    }
     let (l, r) = constraint.if_arithmetic_eq()?;
-    if let Some((l, r)) = l.if_arithmetic_eq() {
+    if let Some(flag) = l.if_flag() {
         if r == ctx.const_0() {
-            // l != 0
-            if let OperandType::Flag(flag) = *l.ty() {
-                return Some((flag, ctx.const_1()));
-            }
-        }
-    } else {
-        if let OperandType::Flag(flag) = *l.ty() {
-            if r == ctx.const_0() || r == ctx.const_1() {
-                return Some((flag, r));
-            }
+            return Some((flag, r));
         }
     }
     None
@@ -3087,4 +3071,25 @@ fn test_iter_until_immutable() {
         ((addr, 0), ctx.constant(2), true),
     ];
     assert_eq!(results, cmp);
+}
+
+#[test]
+fn test_is_flag_const_constraint() {
+    let ctx = &crate::operand::OperandContext::new();
+    let flag = ctx.flag_z();
+    let eq_0 = ctx.eq_const(flag, 0);
+    let eq_1 = ctx.eq_const(flag, 1);
+    let neq_0 = ctx.neq_const(flag, 0);
+    assert_eq!(
+        is_flag_const_constraint(ctx, eq_0).unwrap(),
+        (Flag::Zero, ctx.constant(0)),
+    );
+    assert_eq!(
+        is_flag_const_constraint(ctx, eq_1).unwrap(),
+        (Flag::Zero, ctx.constant(1)),
+    );
+    assert_eq!(
+        is_flag_const_constraint(ctx, neq_0).unwrap(),
+        (Flag::Zero, ctx.constant(1)),
+    );
 }

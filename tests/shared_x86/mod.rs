@@ -1107,3 +1107,60 @@ fn parity() {
          (ctx.register(0), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn stc_jbe_on_undef_zero() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x3b, 0xc8, // cmp ecx, eax
+        0xf9, // stc
+        0x76, 0x01, // jbe skip
+        0xcc, // int3
+        0x74, 0x02, // je skip2
+        0x31, 0xc0, // xor eax, eax
+        // skip2:
+        0xeb, 0x00, // jmp end
+        // end:
+        0xf9, // stc
+        0x76, 0x01, // jbe skip
+        0xcc, // int3
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.new_undef()),
+    ]);
+}
+
+#[test]
+fn carry_known_zero_after_loop() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        // loop:
+        0x46, // inc esi
+        0x83, 0xfe, 0x10, // cmp esi, 10
+        0x72, 0xfa, // jb loop
+        0x83, 0xfe, 0x10, // cmp esi, 10
+        0x73, 0x01, // jae end
+        0xcc, // int3
+        0x31, 0xf6, // xor esi, esi
+        0xc3, // ret
+    ], &[
+         (ctx.register(6), ctx.const_0()),
+    ]);
+}
+
+#[test]
+fn ja_jge_jl() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x3c, 0x19, // cmp al, 19
+        0x77, 0x03, // ja skip
+        0x80, 0xc1, 0x20,  // add cl, 20
+        // skip:
+        0x7d, 0x03, // jge end
+        0x7c, 0x01, // jl end
+        0xcc, // int3
+        0xc3, // ret
+    ], &[
+         (ctx.register(1), ctx.new_undef()),
+    ]);
+}

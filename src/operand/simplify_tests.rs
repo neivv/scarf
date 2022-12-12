@@ -11115,6 +11115,72 @@ fn masked_xor_shifts_simplify() {
 }
 
 #[test]
+fn neq_0_flag() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.neq_const(
+        ctx.flag_c(),
+        0,
+    );
+    let eq1 = ctx.flag_c();
+    assert_eq!(op1, eq1);
+
+    let op1 = ctx.neq_const(
+        ctx.and_const(
+            ctx.register(0),
+            1,
+        ),
+        0,
+    );
+    let eq1 = ctx.and_const(
+        ctx.register(0),
+        1,
+    );
+    assert_eq!(op1, eq1);
+
+    let op1 = ctx.neq_const(
+        ctx.or(
+            ctx.flag_c(),
+            ctx.flag_z(),
+        ),
+        0,
+    );
+    let eq1 = ctx.or(
+        ctx.flag_c(),
+        ctx.flag_z(),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn neq_0_flag_and_eq() {
+    let ctx = &OperandContext::new();
+    // ((o == s) & (z == 0)) == 0
+    // is same as
+    // (((o == s) == 0) | z
+    let op1 = ctx.eq_const(
+        ctx.and(
+            ctx.eq(
+                ctx.flag_o(),
+                ctx.flag_s(),
+            ),
+            ctx.eq_const(
+                ctx.flag_z(),
+                0,
+            ),
+        ),
+        0,
+    );
+    let eq1 = ctx.or(
+        ctx.neq(
+            ctx.flag_o(),
+            ctx.flag_s(),
+        ),
+        ctx.flag_z(),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
 fn neq_0_reg_and_eq() {
     let ctx = &OperandContext::new();
     // ((o == s) & (r0 == 0)) == 0

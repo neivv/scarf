@@ -2050,6 +2050,7 @@ impl<'e> OperandType<'e> {
                 ArithOpType::Equal | ArithOpType::GreaterThan => 0..1,
                 _ => 0..(size.bits() as u8),
             }
+            OperandType::Flag(..) => 0..1,
             // Note: constants not handled here; const_relevant_bits instead
             _ => 0..(self.expr_size().bits() as u8),
         }
@@ -2527,6 +2528,15 @@ impl<'e> Operand<'e> {
     pub fn if_register(self) -> Option<u8> {
         match *self.ty() {
             OperandType::Register(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(f)` if `self.ty` is `OperandType::Flag(f)`
+    #[inline]
+    pub fn if_flag(self) -> Option<Flag> {
+        match *self.ty() {
+            OperandType::Flag(f) => Some(f),
             _ => None,
         }
     }
