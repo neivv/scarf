@@ -1672,8 +1672,12 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     fn conditional_set(&mut self) -> Result<(), Failed> {
         let condition = self.condition()?;
         let (rm, _) = self.parse_modrm(MemAccessSize::Mem8);
-        let dest = self.rm_to_dest_operand(&rm);
-        self.output_mov(dest, condition);
+        let rm = self.rm_to_dest_and_operand(&rm);
+        self.output_mov(rm.dest, condition);
+        // Reads from flags may contain undefined which is not masked
+        // to 1bit automatically. The masking has to be done in a separate
+        // operation as `ctx.and_const(flag, 1)` simplifies to `flag`.
+        self.output_mov(rm.dest, self.ctx.and_const(rm.op, 1));
         Ok(())
     }
 

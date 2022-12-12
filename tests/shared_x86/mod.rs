@@ -1164,3 +1164,24 @@ fn ja_jge_jl() {
          (ctx.register(1), ctx.new_undef()),
     ]);
 }
+
+#[test]
+fn sete_undef() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x3c, 0x19, // cmp al, 19
+        0x77, 0x02, // ja skip
+        0x3c, 0x12, // cmp al, 18
+        // skip:
+        0xeb, 0x00, // jmp next
+        // next:
+        0x0f, 0x94, 0xc0, // sete al
+        0x3c, 0x02, // cmp al, 2
+        0x72, 0x01, // jb end
+        0xcc, // int3
+        0x33, 0xc0, // xor eax, eax
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.const_0()),
+    ]);
+}
