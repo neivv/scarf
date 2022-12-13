@@ -1791,18 +1791,15 @@ pub fn simplify_lsh_const<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
-    let default = move || intern_lsh_const(left, constant, ctx);
     if constant == 0 {
         return left;
     } else if constant >= 64 - left.relevant_bits().start {
         return ctx.const_0();
     }
 
-    let new_left = simplify_with_and_mask(left, u64::MAX >> constant, ctx, swzb_ctx);
-    if new_left != left {
-        return simplify_lsh_const(new_left, constant, ctx, swzb_ctx);
-    }
+    let left = simplify_with_and_mask(left, u64::MAX >> constant, ctx, swzb_ctx);
 
+    let default = move || intern_lsh_const(left, constant, ctx);
     match *left.ty() {
         OperandType::Constant(a) => ctx.constant(a << constant),
         OperandType::Arithmetic(ref arith) => {
@@ -1986,6 +1983,13 @@ pub fn simplify_rsh_const<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Operand<'e> {
+    if constant == 0 {
+        return left;
+    } else if constant >= left.relevant_bits().end {
+        return ctx.const_0();
+    }
+
+    let left = simplify_with_and_mask(left, u64::MAX << constant, ctx, swzb_ctx);
     let default = || {
         let arith = ArithOperand {
             ty: ArithOpType::Rsh,
@@ -1994,16 +1998,6 @@ pub fn simplify_rsh_const<'e>(
         };
         ctx.intern(OperandType::Arithmetic(arith))
     };
-    if constant == 0 {
-        return left;
-    } else if constant >= left.relevant_bits().end {
-        return ctx.const_0();
-    }
-
-    let new_left = simplify_with_and_mask(left, u64::MAX << constant, ctx, swzb_ctx);
-    if new_left != left {
-        return simplify_rsh_const(new_left, constant, ctx, swzb_ctx);
-    }
 
     match *left.ty() {
         OperandType::Constant(a) => ctx.constant(a >> constant),
