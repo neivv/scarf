@@ -3894,11 +3894,6 @@ fn simplify_and_main<'e>(
             simplify_demorgan(ops, ctx, ArithOpType::Or);
         }
 
-        // Prefer (rax & 0xff) << 1 over (rax << 1) & 0x1fe.
-        // Should this be limited to only when all ops are lsh?
-        // Or ops.len() == 1.
-        // Can't think of any cases now where this early break
-        // would hurt though.
         let skip_simplifications = ops.iter().all(|x| {
             x.relevant_bits_mask() == const_remain
         });
