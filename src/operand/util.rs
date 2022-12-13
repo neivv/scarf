@@ -72,6 +72,13 @@ impl<'e> Iterator for IterArithOps<'e> {
     }
 }
 
+impl<'e> IterArithOps1<'e> {
+    #[inline]
+    pub fn rest(&self) -> Option<Operand<'e>> {
+        self.rest
+    }
+}
+
 impl<'e> Iterator for IterArithOps1<'e> {
     type Item = Operand<'e>;
     fn next(&mut self) -> Option<Self::Item> {

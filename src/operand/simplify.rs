@@ -5878,8 +5878,14 @@ pub fn simplify_mul<'e>(
     if left_rel.start.wrapping_add(right_rel.start) >= 64 {
         return ctx.const_0();
     }
-    let const_other = Operand::either(left, right, |x| x.if_constant());
-    if let Some((c, other)) = const_other {
+    let const_other = match right.if_constant() {
+        Some(c) => Some((c, right, left)),
+        None => match left.if_constant() {
+            Some(c) => Some((c, left, right)),
+            None => None,
+        },
+    };
+    if let Some((c, const_op, other)) = const_other {
         // Go through lsh simplification for power of two, it will still intern Mul
         // if the shift is small enough.
         if c.wrapping_sub(1) & c == 0 {
@@ -5892,13 +5898,31 @@ pub fn simplify_mul<'e>(
             1 => return other,
             _ => (),
         }
-        if let Some((l, r)) = check_quick_arith_simplify(left, right) {
+        if can_quick_mul_simplify(other, c) {
             let arith = ArithOperand {
                 ty: ArithOpType::Mul,
-                left: l,
-                right: r,
+                left: other,
+                right: const_op,
             };
             return ctx.intern(OperandType::Arithmetic(arith));
+        }
+        if let Some(c2) = other.if_constant() {
+            return ctx.constant(c.wrapping_mul(c2));
+        }
+    } else {
+        // Could maybe always do simplify_mul_no_const(left_without_const, right_without_const)
+        // and then if they have consts go to simplify_mul_ops.
+        fn has_const_mul<'e>(op: Operand<'e>) -> bool {
+            op.if_arithmetic_any()
+                .filter(|x| {
+                    // collect_mul_ops converts lsh const to mul const too.
+                    matches!(x.ty, ArithOpType::Mul | ArithOpType::Lsh) &&
+                        x.right.if_constant().is_some()
+                })
+                .is_some()
+        }
+        if !has_const_mul(left) && !has_const_mul(right) {
+            return simplify_mul_no_const(left, right, ctx);
         }
     }
 
@@ -5914,6 +5938,104 @@ pub fn simplify_mul<'e>(
                 };
                 ctx.intern(OperandType::Arithmetic(arith))
             })
+    })
+}
+
+fn can_quick_mul_simplify<'e>(left: Operand<'e>, right: u64) -> bool {
+    match left.ty() {
+        OperandType::Register(_) | OperandType::Xmm(_, _) | OperandType::Fpu(_) |
+            OperandType::Flag(_) | OperandType::Undefined(_) | OperandType::Custom(_) => true,
+        OperandType::Arithmetic(arith) => {
+            match arith.ty {
+                ArithOpType::And | ArithOpType::Or | ArithOpType::Xor => {
+                    // Allow if no bits are shifted out
+                    // E.g. mul by ff can at most shift by 8 to left;
+                    // meaning that below 56 relbits.end is fine
+                    let max_relbit = right.leading_zeros();
+                    (left.relevant_bits().end as u32) < max_relbit
+                }
+                _ => false,
+            }
+        }
+        OperandType::Memory(_) => {
+            // Same as with bitwise arith
+            let max_relbit = right.leading_zeros();
+            (left.relevant_bits().end as u32) < max_relbit
+        }
+        OperandType::SignExtend(_, from, _) => {
+            // Sign extend from u32 becomes useless if shifted by 0x20,
+            // from u16 if by 0x30, from u8 if by 0x38.
+            let max_relbit = right.leading_zeros();
+            from.bits() < max_relbit
+        }
+        _ => false,
+    }
+}
+
+pub fn simplify_mul_no_const<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ctx: OperandCtx<'e>,
+) -> Operand<'e> {
+    // Mul simplify doesn't do anything special if there's no constant,
+    // so just merge left and right
+    if left.if_arithmetic_mul().is_none() && right.if_arithmetic_mul().is_none() {
+        // Fast path for two non-mul ops.
+        // Innermost (left) is op which is sorted as greatest.
+        let (left, right) = match left < right {
+            true => (right, left),
+            false => (left, right),
+        };
+        let arith = ArithOperand {
+            ty: ArithOpType::Mul,
+            left: left,
+            right: right,
+        };
+        return ctx.intern(OperandType::Arithmetic(arith));
+    }
+    let result = ctx.simplify_temp_stack().alloc(|slice| {
+        let mut left_iter = IterArithOps::new(left, ArithOpType::Mul);
+        let mut right_iter = IterArithOps::new(right, ArithOpType::Mul);
+        let mut next_left = left_iter.next().unwrap_or(left);
+        let mut next_right = right_iter.next().unwrap_or(right);
+        // The iteration order of IterArithOps is from smallest to greatest,
+        // so slice will be sorted at the end, with `rest` being the remaining
+        // greater ops not in slice.
+        let (next, rest) = loop {
+            if next_left > next_right {
+                slice.push(next_right)?;
+                next_right = match right_iter.next() {
+                    Some(s) => s,
+                    None => break (next_left, left_iter),
+                };
+            } else {
+                slice.push(next_left)?;
+                next_left = match left_iter.next() {
+                    Some(s) => s,
+                    None => break (next_right, right_iter),
+                };
+            }
+        };
+        let rest = if let Some(rest) = rest.rest() {
+            slice.push(next)?;
+            rest
+        } else {
+            next
+        };
+        Result::<_, SizeLimitReached>::Ok(util::intern_arith_ops_to_tree_with_base(
+            ctx,
+            rest,
+            slice.iter().rev().copied(),
+            ArithOpType::Mul,
+        ))
+    });
+    result.unwrap_or_else(|_| {
+        let arith = ArithOperand {
+            ty: ArithOpType::Mul,
+            left: left,
+            right: right,
+        };
+        ctx.intern(OperandType::Arithmetic(arith))
     })
 }
 
@@ -5958,9 +6080,6 @@ fn simplify_mul_ops<'e>(
         return Ok(ctx.const_0());
     }
     ops.retain(|x| x.if_constant().is_none());
-    if ops.is_empty() {
-        return Ok(ctx.constant(const_product));
-    }
     heapsort::sort(ops);
     if const_product != 1 {
         let mut changed;
