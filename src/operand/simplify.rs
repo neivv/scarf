@@ -1989,6 +1989,62 @@ pub fn simplify_rsh_const<'e>(
         return ctx.const_0();
     }
 
+    if let Some(mem) = left.if_memory() {
+        // Do memory before simplify_with_and_mask.
+        // As (Mem64[x] >> 20) would be simplified to (Mem32[x + 4] << 20) >> 20
+        // which is unneccessary work
+        let default = || {
+            let arith = ArithOperand {
+                ty: ArithOpType::Rsh,
+                left,
+                right: ctx.constant(constant as u64),
+            };
+            ctx.intern(OperandType::Arithmetic(arith))
+        };
+        let (address, offset) = mem.address();
+        let (size, offset_add) = match mem.size {
+            MemAccessSize::Mem64 => {
+                if constant >= 56 {
+                    (MemAccessSize::Mem8, 7u8)
+                } else if constant >= 48 {
+                    (MemAccessSize::Mem16, 6)
+                } else if constant >= 32 {
+                    (MemAccessSize::Mem32, 4)
+                } else {
+                    return default();
+                }
+            }
+            MemAccessSize::Mem32 => {
+                if constant >= 24 {
+                    (MemAccessSize::Mem8, 3)
+                } else if constant >= 16 {
+                    (MemAccessSize::Mem16, 2)
+                } else {
+                    return default();
+                }
+            }
+            MemAccessSize::Mem16 => {
+                if constant >= 8 {
+                    (MemAccessSize::Mem8, 1)
+                } else {
+                    return default();
+                }
+            }
+            _ => return default(),
+        };
+        let c = constant - offset_add * 8;
+        let new = ctx.mem_any(size, address, offset.wrapping_add(u64::from(offset_add)));
+        if c == 0 {
+            return new;
+        }
+        let arith = ArithOperand {
+            ty: ArithOpType::Rsh,
+            left: new,
+            right: ctx.constant(c as u64),
+        };
+        return ctx.intern(OperandType::Arithmetic(arith));
+    }
+
     let left = simplify_with_and_mask(left, u64::MAX << constant, ctx, swzb_ctx);
     let default = || {
         let arith = ArithOperand {
@@ -2150,42 +2206,6 @@ pub fn simplify_rsh_const<'e>(
                 _ => default(),
             }
         },
-        OperandType::Memory(ref mem) => {
-            let (address, offset) = mem.address();
-            let (size, offset_add) = match mem.size {
-                MemAccessSize::Mem64 => {
-                    if constant >= 56 {
-                        (MemAccessSize::Mem8, 7u8)
-                    } else if constant >= 48 {
-                        (MemAccessSize::Mem16, 6)
-                    } else if constant >= 32 {
-                        (MemAccessSize::Mem32, 4)
-                    } else {
-                        return default();
-                    }
-                }
-                MemAccessSize::Mem32 => {
-                    if constant >= 24 {
-                        (MemAccessSize::Mem8, 3)
-                    } else if constant >= 16 {
-                        (MemAccessSize::Mem16, 2)
-                    } else {
-                        return default();
-                    }
-                }
-                MemAccessSize::Mem16 => {
-                    if constant >= 8 {
-                        (MemAccessSize::Mem8, 1)
-                    } else {
-                        return default();
-                    }
-                }
-                _ => return default(),
-            };
-            let c = constant - offset_add * 8;
-            let new = ctx.mem_any(size, address, offset.wrapping_add(u64::from(offset_add)));
-            simplify_rsh_const(new, c, ctx, swzb_ctx)
-        }
         _ => default(),
     }
 }
