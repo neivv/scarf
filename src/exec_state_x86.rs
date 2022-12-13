@@ -966,12 +966,7 @@ impl<'e> State<'e> {
             OperandType::Fpu(id) => {
                 self.xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize]
             }
-            OperandType::Flag(flag) => {
-                if self.pending_flags.is_pending(flag) {
-                    self.realize_pending_flag(flag);
-                }
-                self.state[FLAGS_INDEX + flag as usize]
-            }
+            OperandType::Flag(flag) => self.resolve_flag(flag),
             OperandType::Arithmetic(ref op) => {
                 let left = op.left;
                 let right = op.right;
@@ -1066,6 +1061,9 @@ impl<'e> State<'e> {
 
     #[inline]
     fn resolve_flag(&mut self, flag: Flag) -> Operand<'e> {
+        if self.pending_flags.is_pending(flag) {
+            self.realize_pending_flag(flag);
+        }
         self.state[FLAGS_INDEX + flag as usize]
     }
 
