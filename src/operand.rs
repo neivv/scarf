@@ -1334,8 +1334,12 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left * right`.
     pub fn mul_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        let right = self.constant(right);
-        simplify::simplify_mul(left, right, self)
+        if right.wrapping_sub(1) & right == 0 {
+            self.lsh_const(left, right.trailing_zeros() as u64)
+        } else {
+            let right = self.constant(right);
+            simplify::simplify_mul(left, right, self)
+        }
     }
 
     /// Returns `Operand` for `left & right`.
