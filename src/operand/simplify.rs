@@ -3794,6 +3794,19 @@ fn simplify_and_before_ops_collect_checks<'e>(
     if let Some((c, c_op, other)) = const_other {
         return Some(simplify_and_const_op(other, c, Some(c_op), ctx, swzb_ctx));
     }
+
+    if can_quick_simplify_type(left.ty()) && can_quick_simplify_type(right.ty()) {
+        let (left, right) = match left < right {
+            true => (right, left),
+            false => (left, right),
+        };
+        let arith = ArithOperand {
+            ty: ArithOpType::And,
+            left,
+            right,
+        };
+        return Some(ctx.intern(OperandType::Arithmetic(arith)));
+    }
     None
 }
 
