@@ -3619,6 +3619,7 @@ pub fn simplify_and_const_op<'e>(
         // Masking with right doesn't change the result
         return left;
     }
+    let mut left_is_and = false;
     if let OperandType::Arithmetic(arith) = left.ty() {
         if arith.ty == ArithOpType::Or || arith.ty == ArithOpType::Xor {
             // These checks aren't too common out of all and_const simplifications (~3%)
@@ -3671,13 +3672,65 @@ pub fn simplify_and_const_op<'e>(
                     }
                 }
             }
+        } else if arith.ty == ArithOpType::And {
+            left_is_and = true;
         }
     }
-    if let Some(result) = quick_and_simplify(left, right, right_op, ctx) {
-        return result;
-    }
-    if let Some(result) = simplify_and_const_mem(left, right, right_op, ctx) {
-        return result;
+    if !left_is_and {
+        if let Some(result) = quick_and_simplify(left, right, right_op, ctx) {
+            return result;
+        }
+        if let Some(result) = simplify_and_const_mem(left, right, right_op, ctx) {
+            return result;
+        }
+        // 1op and with const can skip simplify_and_main and just do
+        // simplify_with_and_mask + ending canonicalization.
+        // Unfortunately there's some issues with simplify_with_and_mask that
+        // don't always guarantee the result being stable so will have to loop
+        // to make things work for now. Should try removing the loop later.
+        loop {
+            let prev = left;
+            left = simplify_with_and_mask(left, right, ctx, swzb_ctx);
+            if let Some(c) = left.if_constant() {
+                if c & right == c {
+                    return left;
+                } else {
+                    return ctx.constant(c & right);
+                }
+            }
+            if let Some(result) =
+                simplify_and_1op_insert_mask_to_or_xor(left, right, ctx, swzb_ctx)
+            {
+                return result;
+            }
+            if left == prev {
+                break;
+            }
+        }
+        if let Some(..) = left.if_arithmetic_and() {
+            // Will have to do main and simplify / restart const and simplify.
+            // Trying const simplify again is probably better?
+            return simplify_and_const_op(left, right, right_op, ctx, swzb_ctx);
+        } else {
+            if let Some(result) = canonicalize_1op_and_with_mask(left, right, ctx, swzb_ctx) {
+                return result;
+            } else {
+                let relbits = relevant_bits_for_and_simplify(left);
+                if relbits & right == relbits {
+                    return left;
+                }
+                if relbits & right != right {
+                    right_op = None;
+                    right = relbits & right;
+                }
+                let arith = ArithOperand {
+                    ty: ArithOpType::And,
+                    left,
+                    right: right_op.unwrap_or_else(|| ctx.constant(right)),
+                };
+                return ctx.intern(OperandType::Arithmetic(arith));
+            }
+        }
     }
     ctx.simplify_temp_stack().alloc(|slice| {
         collect_and_ops(left, slice, 30)
@@ -3876,16 +3929,8 @@ fn simplify_and_main<'e>(
         }
 
         if const_remain != u64::MAX && ops.len() == 1 {
-            // Canonicalize (x | const) & mask
-            // to (x & (!const mask)) | const
-            if let Some((l, r)) = ops[0].if_arithmetic_or() {
-                if let Some(or_val) = r.if_constant() {
-                    let inner = simplify_and_const(l, !or_val & const_remain, ctx, swzb_ctx);
-                    return Ok(simplify_or(inner, r, ctx, swzb_ctx));
-                }
-            }
             if let Some(result) =
-                simplify_and_insert_mask_to_or_xor(ops[0], const_remain, ctx, swzb_ctx)
+                simplify_and_1op_insert_mask_to_or_xor(ops[0], const_remain, ctx, swzb_ctx)
             {
                 return Ok(result);
             }
@@ -3961,45 +4006,10 @@ fn simplify_and_main<'e>(
         return Ok(ctx.const_0());
     }
     if ops.len() == 1 && final_const_remain != 0 {
-        // Canonicalize mask to be inside left shift if there is only one operand.
-        // Right shifts are canonicalized to mask outside in simplify_rsh_const
-        // however.
-        let op = ops[0];
-        if let Some(arith) = op.if_arithmetic_any() {
-            let shift = arith.right.if_constant()
-                .and_then(|c| {
-                    if arith.ty == ArithOpType::Lsh {
-                        Some(c as u8)
-                    } else if arith.ty == ArithOpType::Mul && c.wrapping_sub(1) & c == 0 {
-                        Some(c.trailing_zeros() as u8)
-                    } else {
-                        None
-                    }
-                });
-            if let Some(shift) = shift {
-                let masked = simplify_and_const(
-                    arith.left,
-                    final_const_remain >> shift,
-                    ctx,
-                    swzb_ctx,
-                );
-                // I think just interning here is fine...
-                // simplify_lsh_const would otherwise try to undo
-                // what this does here by doing (arith.left << shift)
-                // and seeing if it simplified further.
-                // But since it was already shifted it shouldn't ever
-                // simplify.
-                // Though just in case the simplification reduced to
-                // a constant, handle that to prevent degenerate `0 << shift`
-                // cases from being interned. (I'd expect that the above
-                // simplifications should have reduced it to constant already
-                // though, but there may be some edge case with swzb_ctx
-                // hitting a limit)
-                if let Some(c) = masked.if_constant() {
-                    return Ok(ctx.constant(c >> shift));
-                }
-                return Ok(intern_lsh_const(masked, shift, ctx));
-            }
+        if let Some(result) =
+            canonicalize_1op_and_with_mask(ops[0], final_const_remain, ctx, swzb_ctx)
+        {
+            return Ok(result);
         }
     }
 
@@ -4025,6 +4035,73 @@ fn simplify_and_main<'e>(
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
     Ok(tree)
+}
+
+// Canonicalize (x | const) & mask
+// to (x & (!const mask)) | const
+fn simplify_and_1op_insert_mask_to_or_xor<'e>(
+    op: Operand<'e>,
+    mask: u64,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Option<Operand<'e>> {
+    if let Some((l, r)) = op.if_arithmetic_or() {
+        if let Some(or_val) = r.if_constant() {
+            let inner = simplify_and_const(l, !or_val & mask, ctx, swzb_ctx);
+            return Some(simplify_or(inner, r, ctx, swzb_ctx));
+        }
+    }
+    if let Some(result) = simplify_and_insert_mask_to_or_xor(op, mask, ctx, swzb_ctx) {
+        return Some(result);
+    }
+    None
+}
+
+// Canonicalize mask to be inside left shift if there is only one operand.
+// Right shifts are canonicalized to mask outside in simplify_rsh_const
+// however.
+fn canonicalize_1op_and_with_mask<'e>(
+    op: Operand<'e>,
+    mask: u64,
+    ctx: OperandCtx<'e>,
+    swzb_ctx: &mut SimplifyWithZeroBits,
+) -> Option<Operand<'e>> {
+    let arith = op.if_arithmetic_any()?;
+
+    let shift = arith.right.if_constant()
+        .and_then(|c| {
+            if arith.ty == ArithOpType::Lsh {
+                Some(c as u8)
+            } else if arith.ty == ArithOpType::Mul && c.wrapping_sub(1) & c == 0 {
+                Some(c.trailing_zeros() as u8)
+            } else {
+                None
+            }
+        });
+    let shift = shift?;
+    let masked = simplify_and_const(
+        arith.left,
+        mask >> shift,
+        ctx,
+        swzb_ctx,
+    );
+    // I think just interning here is fine...
+    // simplify_lsh_const would otherwise try to undo
+    // what this does here by doing (arith.left << shift)
+    // and seeing if it simplified further.
+    // But since it was already shifted it shouldn't ever
+    // simplify.
+    // Though just in case the simplification reduced to
+    // a constant, handle that to prevent degenerate `0 << shift`
+    // cases from being interned. (I'd expect that the above
+    // simplifications should have reduced it to constant already
+    // though, but there may be some edge case with swzb_ctx
+    // hitting a limit)
+    if let Some(c) = masked.if_constant() {
+        Some(ctx.constant(c >> shift))
+    } else {
+        Some(intern_lsh_const(masked, shift, ctx))
+    }
 }
 
 /// Transform (x | y | ...) & x => x
