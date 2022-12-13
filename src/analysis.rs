@@ -95,28 +95,25 @@ pub fn find_functions_with_callers_x86_64(
     let mut out = Vec::with_capacity(800);
     for code in file.code_sections() {
         let data = &code.data;
+        let code_va = code.virtual_address;
+        let code_end = code_va + data.len() as u32;
         // Ignoring long jumps here, unlike in 32-bit.
         // Should probably ignore them there as well but I don't want to change it right now.
-        out.extend(
-            data.iter().enumerate()
-                .filter(|&(_, &x)| x == 0xe8)
-                .flat_map(|(idx, _)| {
-                    data.get(idx + 1..).and_then(|mut x| x.read_i32().ok())
-                        .map(|relative| FuncCallPair {
-                            caller: code.virtual_address + idx as u32,
-                            callee: VirtualAddress64(
-                                code.virtual_address.0
-                                    .wrapping_add(
-                                        (idx as i64 + 5).wrapping_add(relative as i64) as u64
-                                    )
-                            ),
-                        })
-                })
-                .filter(|pair| {
-                    pair.callee >= code.virtual_address &&
-                        pair.callee < code.virtual_address + data.len() as u32
-                })
-        );
+        for (idx, bytes) in data.windows(5).enumerate() {
+            if bytes[0] != 0xe8 {
+                continue;
+            }
+            let relative = LittleEndian::read_i32(&bytes[1..5]);
+            let dest = VirtualAddress64(code_va.0.wrapping_add(
+                (idx as i64).wrapping_add(5).wrapping_add(relative as i64) as u64
+            ));
+            if dest >= code_va && dest < code_end {
+                out.push(FuncCallPair {
+                    caller: code_va + idx as u32,
+                    callee: dest,
+                });
+            }
+        }
     }
     out.sort_unstable_by_key(|x| (x.callee, x.caller));
     out
