@@ -3927,30 +3927,11 @@ fn simplify_and_main<'e>(
             break;
         }
     }
-    simplify_and_merge_child_ors(ops, ctx);
-    let new_const_remain = simplify_and_merge_gt_const(ops, ctx);
-    const_remain &= new_const_remain;
 
-    // Replace not(x) & not(y) with not(x | y)
     if ops.len() >= 2 {
-        let neq_compare_count = ops.iter().filter(|&&x| is_neq_compare(x, ctx)).count();
-        if neq_compare_count >= 2 {
-            let not: Result<_, SizeLimitReached> = ctx.simplify_temp_stack().alloc(|slice| {
-                for &op in ops.iter() {
-                    if is_neq_compare(op, ctx) {
-                        if let Some((l, _)) = op.if_arithmetic_eq() {
-                            slice.push(l)?;
-                        }
-                    }
-                }
-                let or = simplify_or_ops(slice, ctx, swzb_ctx)?;
-                Ok(simplify_eq(or, ctx.const_0(), ctx))
-            });
-            if let Ok(not) = not {
-                ops.retain(|x| !is_neq_compare(x, ctx));
-                ops.push(not)?;
-            }
-        }
+        simplify_and_merge_child_ors(ops, ctx);
+        let new_const_remain = simplify_and_merge_gt_const(ops, ctx);
+        const_remain &= new_const_remain;
     }
 
     let relevant_bits = ops.iter().fold(!0, |bits, &op| {
@@ -4044,16 +4025,6 @@ fn simplify_and_main<'e>(
         tree = ctx.intern(OperandType::Arithmetic(arith));
     }
     Ok(tree)
-}
-
-fn is_neq_compare<'e>(op: Operand<'e>, ctx: OperandCtx<'e>) -> bool {
-    match op.if_arithmetic_eq() {
-        Some((l, r)) if r == ctx.const_0() => match l.ty() {
-            OperandType::Arithmetic(a) => a.is_compare_op(),
-            _ => false,
-        },
-        _ => false,
-    }
 }
 
 /// Transform (x | y | ...) & x => x
