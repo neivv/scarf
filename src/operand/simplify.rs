@@ -3807,6 +3807,15 @@ fn simplify_and_before_ops_collect_checks<'e>(
         };
         return Some(ctx.intern(OperandType::Arithmetic(arith)));
     }
+    // (x == 0) & (y == 0) => (x | y) == 0;
+    // this ends up being surprisingly common when
+    // const / quick_simplify pairs are already handled.
+    if let Some((l, 0)) = left.if_eq_with_const() {
+        if let Some((r, 0)) = right.if_eq_with_const() {
+            let or_result = simplify_or(l, r, ctx, swzb_ctx);
+            return Some(ctx.eq_const(or_result, 0));
+        }
+    }
     None
 }
 
