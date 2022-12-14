@@ -11316,3 +11316,27 @@ fn or_with_mem8_high_bit_add_eq_zero() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_sub_zero_lhs() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.sub(
+            ctx.and_const(
+                ctx.register(0),
+                0x2_0000_0000,
+            ),
+            ctx.mem16(ctx.register(1), 0),
+        ),
+        0xffff_ffff,
+    );
+    let eq1 = ctx.and_const(
+        ctx.sub(
+            ctx.constant(0),
+            ctx.mem16(ctx.register(1), 0),
+        ),
+        0xffff_ffff,
+    );
+
+    assert_eq!(op1, eq1);
+}

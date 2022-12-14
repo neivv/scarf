@@ -7004,11 +7004,13 @@ fn simplify_with_and_mask_inner<'e>(
                     // Adding 1 makes a valid mask to overflow to 10000000...
                     // Though the 1 bit can be carried out so count_ones is 1 or 0.
                     let mask_end_bit = 64 - mask.leading_zeros() as u8;
-                    let other = Operand::either(arith.left, arith.right, |x| {
-                        if x.relevant_bits().start >= mask_end_bit { Some(()) } else { None }
-                    }).map(|((), other)| other);
-                    if let Some(other) = other {
-                        return simplify_with_and_mask(other, mask, ctx, swzb_ctx);
+                    if arith.ty != ArithOpType::Sub {
+                        let other = Operand::either(arith.left, arith.right, |x| {
+                            if x.relevant_bits().start >= mask_end_bit { Some(()) } else { None }
+                        }).map(|((), other)| other);
+                        if let Some(other) = other {
+                            return simplify_with_and_mask(other, mask, ctx, swzb_ctx);
+                        }
                     }
                     if arith.ty == ArithOpType::Add {
                         // With add, carry will propagate left until a bit in both
