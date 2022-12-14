@@ -235,6 +235,10 @@ const FLAG_PARTIAL_32BIT_NORMALIZED_ADD: u8 = 0x20;
 const ALWAYS_INHERITED_FLAGS: u8 =
     FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE | FLAG_CONTAINS_MEMORY;
 
+// Caches ([0] == 0) & ([1] == 0) => [2]
+const SIMPLIFY_CACHE_AND_EQ_ZERO: usize = 0;
+const SIMPLIFY_CACHE_SIZE: usize = SIMPLIFY_CACHE_AND_EQ_ZERO + 3;
+
 impl<'e> Hash for OperandHashByAddress<'e> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         ((self.0).0 as *const OperandBase<'e> as usize).hash(state)
@@ -650,6 +654,9 @@ pub struct OperandContext<'e> {
     max_undefined: Cell<u32>,
     // Contains SMALL_CONSTANT_COUNT small constants, 0x10 registers, 0x6 flags
     common_operands: Box<[OperandSelfRef; COMMON_OPERANDS_COUNT]>,
+    // Mutable state that simplify code uses for caching.
+    // Initialized to full of const_0()
+    simplify_cache: [Cell<OperandSelfRef>; SIMPLIFY_CACHE_SIZE],
     interner: intern::Interner<'e>,
     const_interner: intern::ConstInterner<'e>,
     undef_interner: intern::UndefInterner,
@@ -830,6 +837,7 @@ impl<'e> OperandContext<'e> {
             next_undefined: Cell::new(0),
             max_undefined: Cell::new(0),
             common_operands,
+            simplify_cache: array_init::array_init(|_| Cell::new(OperandSelfRef(null_mut()))),
             interner: intern::Interner::new(),
             const_interner: intern::ConstInterner::new(),
             undef_interner: intern::UndefInterner::new(),
@@ -876,6 +884,10 @@ impl<'e> OperandContext<'e> {
                 common_operands[pos] = const_interner.add_uninterned(n as u64).self_ref();
                 pos += 1;
             }
+        }
+        let zero = common_operands[0];
+        for i in 0..SIMPLIFY_CACHE_SIZE {
+            result.simplify_cache[i].set(zero);
         }
         result
     }
@@ -1695,6 +1707,19 @@ impl<'e> OperandContext<'e> {
 
     pub(crate) fn simplify_temp_stack(&'e self) -> &'e SliceStack {
         &self.simplify_temp_stack
+    }
+
+    #[inline]
+    pub(crate) fn simplify_cache_get(&'e self, index: usize) -> Operand<'e> {
+        unsafe { self.simplify_cache[index].get().cast() }
+    }
+
+    #[inline]
+    pub(crate) fn simplify_cache_set(&'e self, index: usize, values: &[Operand<'e>]) {
+        assert!(index + values.len() <= SIMPLIFY_CACHE_SIZE);
+        for i in 0..values.len() {
+            self.simplify_cache[index + i].set(values[i].self_ref());
+        }
     }
 
     pub(crate) fn swap_freeze_buffer(&'e self, other: &mut Vec<exec_state::FreezeOperation<'e>>) {

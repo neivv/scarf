@@ -3812,8 +3812,16 @@ fn simplify_and_before_ops_collect_checks<'e>(
     // const / quick_simplify pairs are already handled.
     if let Some((l, 0)) = left.if_eq_with_const() {
         if let Some((r, 0)) = right.if_eq_with_const() {
+            // There's also usually enough repeats (specificcaly with same l/r order too)
+            // that caching is worth it.
+            const INDEX: usize = super::SIMPLIFY_CACHE_AND_EQ_ZERO;
+            if ctx.simplify_cache_get(INDEX) == l && ctx.simplify_cache_get(INDEX + 1) == r {
+                return Some(ctx.simplify_cache_get(INDEX + 2));
+            }
             let or_result = simplify_or(l, r, ctx, swzb_ctx);
-            return Some(ctx.eq_const(or_result, 0));
+            let result = ctx.eq_const(or_result, 0);
+            ctx.simplify_cache_set(INDEX, &[l, r, result]);
+            return Some(result);
         }
     }
     None
