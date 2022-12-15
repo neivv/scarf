@@ -11382,3 +11382,32 @@ fn unnecessary_mask_from_sub_const() {
 
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_masked_mul_const() {
+    let ctx = &OperandContext::new();
+    // Multiplication shifts everything by at least 8 to left,
+    // making high bits of or const be past and mask.
+    let op1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.or_const(
+                ctx.mem16(ctx.register(1), 0),
+                0x10_0035_0005,
+            ),
+            0x500,
+        ),
+        0x10_0500_0000,
+    );
+    let eq1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.or_const(
+                ctx.mem16(ctx.register(1), 0),
+                0x0035_0005,
+            ),
+            0x500,
+        ),
+        0x0500_0000,
+    );
+
+    assert_eq!(op1, eq1);
+}

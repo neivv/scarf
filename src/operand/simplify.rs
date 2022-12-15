@@ -3690,6 +3690,11 @@ pub fn simplify_and_const_op<'e>(
         // don't always guarantee the result being stable so will have to loop
         // to make things work for now. Should try removing the loop later.
         loop {
+            let better_left_relbits = relevant_bits_for_and_simplify(left);
+            if better_left_relbits & right != right {
+                right &= better_left_relbits;
+                right_op = None;
+            }
             let prev = left;
             left = simplify_with_and_mask(left, right, ctx, swzb_ctx);
             if let Some(c) = left.if_constant() {
@@ -3707,30 +3712,29 @@ pub fn simplify_and_const_op<'e>(
             if left == prev {
                 break;
             }
-        }
-        if let Some(..) = left.if_arithmetic_and() {
-            // Will have to do main and simplify / restart const and simplify.
-            // Trying const simplify again is probably better?
-            return simplify_and_const_op(left, right, right_op, ctx, swzb_ctx);
-        } else {
-            if let Some(result) = canonicalize_1op_and_with_mask(left, right, ctx, swzb_ctx) {
-                return result;
-            } else {
-                let relbits = relevant_bits_for_and_simplify(left);
-                if relbits & right == relbits {
-                    return left;
-                }
-                if relbits & right != right {
-                    right_op = None;
-                    right = relbits & right;
-                }
-                let arith = ArithOperand {
-                    ty: ArithOpType::And,
-                    left,
-                    right: right_op.unwrap_or_else(|| ctx.constant(right)),
-                };
-                return ctx.intern(OperandType::Arithmetic(arith));
+            if let Some(..) = left.if_arithmetic_and() {
+                // Will have to do main and simplify / restart const and simplify.
+                // Trying const simplify again is probably better?
+                return simplify_and_const_op(left, right, right_op, ctx, swzb_ctx);
             }
+        }
+        if let Some(result) = canonicalize_1op_and_with_mask(left, right, ctx, swzb_ctx) {
+            return result;
+        } else {
+            let relbits = relevant_bits_for_and_simplify(left);
+            if relbits & right == relbits {
+                return left;
+            }
+            if relbits & right != right {
+                right_op = None;
+                right = relbits & right;
+            }
+            let arith = ArithOperand {
+                ty: ArithOpType::And,
+                left,
+                right: right_op.unwrap_or_else(|| ctx.constant(right)),
+            };
+            return ctx.intern(OperandType::Arithmetic(arith));
         }
     }
     ctx.simplify_temp_stack().alloc(|slice| {
