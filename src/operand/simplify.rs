@@ -1436,10 +1436,11 @@ fn simplify_or_xor_canonicalize_and_masks<'e>(
             if mask == 0 {
                 return None;
             }
+
             let mut result = if arith_ty == ArithOpType::Xor {
                 *const_val
             } else {
-                // Or places constant outside mask, so it be checked for mask here
+                // Or places constant outside mask, so it doesn't have to be checked for mask here
                 0
             };
             let mut had_non_masked_op = false;
@@ -6413,8 +6414,13 @@ pub fn simplify_or<'e>(
                 other = l;
             }
         }
-        let mut quick_simplify = can_quick_simplify_type(other.ty()) ||
-            other.relevant_bits_mask() & c == 0;
+        let mut quick_simplify = can_quick_simplify_type(other.ty());
+        if !quick_simplify && other.relevant_bits_mask() & c == 0 {
+            // `(Mem8 & 1) | fe` allows removing and mask etc.
+            // But after that it should be fine to just intern?
+            other = simplify_with_and_mask(other, !c, ctx, swzb);
+            quick_simplify = true;
+        }
         if !quick_simplify && other.if_memory().is_some() {
             // Setting only one bit of memory is not going to simplify to
             // anything, and is somewhat common case, with assmebly code setting a bit.

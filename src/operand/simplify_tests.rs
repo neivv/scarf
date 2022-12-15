@@ -11340,3 +11340,21 @@ fn masked_sub_zero_lhs() {
 
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn low_bit_with_or_const() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.or_const(
+        ctx.and_const(
+            ctx.mem8(ctx.register(0), 0),
+            1,
+        ),
+        0x7fff_fffe,
+    );
+    let eq1 = ctx.or_const(
+        ctx.mem8(ctx.register(0), 0),
+        0x7fff_fffe,
+    );
+
+    assert_eq!(op1, eq1);
+}
