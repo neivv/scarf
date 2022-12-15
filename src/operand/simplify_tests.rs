@@ -11358,3 +11358,27 @@ fn low_bit_with_or_const() {
 
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn unnecessary_mask_from_sub_const() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.sub_const(
+            ctx.and_const(
+                ctx.register(0),
+                1,
+            ),
+            0x7f,
+        ),
+        0xffff_ffff,
+    );
+    let eq1 = ctx.add_const(
+        ctx.and_const(
+            ctx.register(0),
+            1,
+        ),
+        0xffff_ff81,
+    );
+
+    assert_eq!(op1, eq1);
+}

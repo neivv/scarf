@@ -31,7 +31,6 @@ use fxhash::FxHashMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::bit_misc::bits_overlap;
 use crate::exec_state;
 
 use self::slice_stack::SliceStack;
@@ -1794,12 +1793,18 @@ impl<'e> OperandContext<'e> {
         // Only 32-bit value passed here should be and mask
         // that can be removed. (Or mask + shift)
         if let Some(arith) = value.if_arithmetic_any() {
-            if arith.left.0.flags & (FLAG_32BIT_NORMALIZED | FLAG_PARTIAL_32BIT_NORMALIZED_ADD)
+            if value.0.flags & (FLAG_32BIT_NORMALIZED | FLAG_PARTIAL_32BIT_NORMALIZED_ADD)
                 == FLAG_PARTIAL_32BIT_NORMALIZED_ADD
             {
-                self.normalize_32bit_add(arith.left)
+                self.normalize_32bit_add(value)
             } else {
                 if arith.ty == ArithOpType::And {
+                    if arith.left.0.flags &
+                        (FLAG_32BIT_NORMALIZED | FLAG_PARTIAL_32BIT_NORMALIZED_ADD) ==
+                            FLAG_PARTIAL_32BIT_NORMALIZED_ADD
+                    {
+                        return self.normalize_32bit_add(arith.left);
+                    }
                     return arith.left;
                 } else if matches!(arith.ty, ArithOpType::Lsh | ArithOpType::Mul) {
                     // `(x & mask) << shift` to `x << shift`
@@ -1831,6 +1836,24 @@ impl<'e> OperandContext<'e> {
     }
 
     fn normalize_32bit_add(&'e self, value: Operand<'e>) -> Operand<'e> {
+        if let Some(arith) = value.if_arithmetic_any() {
+            // Swap add/sub constants be less than 8000_0000
+            if let Some(c) = arith.right.if_constant() {
+                let max = match arith.ty {
+                    ArithOpType::Add => 0x8000_0000,
+                    _ => 0x7fff_ffff,
+                };
+                if (c as u32) > max {
+                    let swapped_c = 0u32.wrapping_sub(c as u32) as u64;
+                    let left = self.normalize_32bit(arith.left);
+                    if arith.ty == ArithOpType::Add {
+                        return self.sub_const(left, swapped_c);
+                    } else {
+                        return self.add_const(left, swapped_c);
+                    };
+                }
+            }
+        }
         let mut needs_mask = None;
         let mut needs_is_sub = false;
         let mut doesnt_need_mask = self.const_0();
@@ -1999,15 +2022,21 @@ impl<'e> OperandType<'e> {
                 ArithOpType::Add => {
                     // Add will only increase nonzero bits by one at most.
                     // And if the bits don't overlap they won't increase even by one.
+                    // If rhs is constant use bit more accurate bitmask.
+                    let left_relbits = arith.left.relevant_bits_mask();
+                    let right_relbits = if let Some(c) = arith.right.if_constant() {
+                        c
+                    } else {
+                        arith.right.relevant_bits_mask()
+                    };
+                    let max_value = left_relbits.checked_add(right_relbits)
+                        .unwrap_or(u64::MAX);
+
                     let rel_left = arith.left.relevant_bits();
                     let rel_right = arith.right.relevant_bits();
-                    let higher_end = max(rel_left.end, rel_right.end);
+                    let max_end = 64u8 - max_value.leading_zeros() as u8;
                     let lower_start = min(rel_left.start, rel_right.start);
-                    if bits_overlap(&rel_left, &rel_right) {
-                        lower_start..min(higher_end + 1, 64)
-                    } else {
-                        lower_start..higher_end
-                    }
+                    lower_start..max_end
                 }
                 ArithOpType::Sub => {
                     // Sub will not add any nonzero bits to lower end, but higher end
@@ -2302,7 +2331,7 @@ impl<'e> OperandType<'e> {
                             _ => 0x7fff_ffff,
                         };
                         if c as u32 > limit {
-                            return 0;
+                            return FLAG_PARTIAL_32BIT_NORMALIZED_ADD;
                         }
                     }
                     result

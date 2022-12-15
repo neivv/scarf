@@ -799,3 +799,16 @@ fn normalize_sub1() {
     );
     assert_eq!(ctx.normalize(op), op);
 }
+
+#[test]
+fn normalize_sub7f() {
+    let ctx = &crate::operand::OperandContext::new();
+    let op = ctx.sub_const(
+        ctx.and_const(
+            ctx.register(1),
+            1,
+        ),
+        0x7f,
+    );
+    assert_eq!(ctx.normalize(op), op);
+}
