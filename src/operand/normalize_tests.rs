@@ -786,3 +786,16 @@ fn normalize_or_with_shift() {
     );
     assert_eq!(ctx.normalize(op), eq);
 }
+
+#[test]
+fn normalize_sub1() {
+    let ctx = &crate::operand::OperandContext::new();
+    let op = ctx.sub_const(
+        ctx.and_const(
+            ctx.register(1),
+            1,
+        ),
+        0x1,
+    );
+    assert_eq!(ctx.normalize(op), op);
+}

@@ -7285,7 +7285,7 @@ fn check_sub_const_swap_to_add<'e>(
     // limits though?
     let swapped = max.wrapping_sub(right);
     let (max_possible, overflow) = left.relevant_bits_mask().overflowing_add(swapped);
-    !overflow && max_possible <= max
+    !overflow && max_possible < max
 }
 
 /// simplify_with_and_mask helper for add/sub.
