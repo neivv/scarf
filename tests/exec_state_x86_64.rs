@@ -9,7 +9,8 @@ use std::ffi::OsStr;
 use byteorder::{ReadBytesExt, LittleEndian};
 
 use scarf::{
-    BinaryFile, BinarySection, Operand, Operation, OperandContext, VirtualAddress64,
+    BinaryFile, BinarySection, DestOperand, Operand, Operation, OperandContext, VirtualAddress64,
+    MemAccessSize,
 };
 use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86_64 as ExecutionState;
@@ -987,6 +988,60 @@ fn misc_coverage() {
     ]);
 }
 
+#[test]
+fn mem_oversized_writes() {
+    // Verify that memory writes values larger than the MemAccess size won't break
+    // following memory.
+    let ctx = &OperandContext::new();
+    let mut state = ExecutionState::new(ctx);
+    let dest = |addr, size| DestOperand::from_oper(ctx.mem_any(size, ctx.register(1), addr));
+    state.move_resolved(&dest(0x100, MemAccessSize::Mem32), ctx.constant(0));
+    state.move_resolved(&dest(0x104, MemAccessSize::Mem32), ctx.constant(0));
+    state.move_resolved(&dest(0x108, MemAccessSize::Mem32), ctx.constant(0));
+    state.move_resolved(&dest(0x10c, MemAccessSize::Mem32), ctx.constant(0));
+    state.move_resolved(&dest(0x100, MemAccessSize::Mem8), ctx.custom(0));
+    state.move_resolved(&dest(0x105, MemAccessSize::Mem16), ctx.custom(1));
+    state.move_resolved(&dest(0x109, MemAccessSize::Mem32), ctx.custom(2));
+
+    assert_eq!(
+        state.resolve(ctx.mem32(ctx.register(1), 0x100)),
+        ctx.and_const(
+            ctx.custom(0),
+            0xff,
+        ),
+    );
+    assert_eq!(
+        state.resolve(ctx.mem32(ctx.register(1), 0x104)),
+        ctx.lsh_const(
+            ctx.and_const(
+                ctx.custom(1),
+                0xffff,
+            ),
+            8,
+        ),
+    );
+    assert_eq!(
+        state.resolve(ctx.mem32(ctx.register(1), 0x108)),
+        ctx.lsh_const(
+            ctx.and_const(
+                ctx.custom(2),
+                0xffff_ff,
+            ),
+            8,
+        ),
+    );
+    assert_eq!(
+        state.resolve(ctx.mem32(ctx.register(1), 0x10c)),
+        ctx.rsh_const(
+            ctx.and_const(
+                ctx.custom(2),
+                0xffff_ffff,
+            ),
+            0x18,
+        ),
+    );
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }
@@ -1045,14 +1100,21 @@ fn test_inner<'e, 'b>(
     file: &'e BinaryFile<VirtualAddress64>,
     func: VirtualAddress64,
     changes: &[(Operand<'b>, Operand<'b>)],
+    init: &[(Operand<'b>, Operand<'b>)],
     xmm: bool,
 ) {
     let ctx = &OperandContext::new();
     let expected = changes.iter().map(|&(a, b)| {
         (ctx.copy_operand(a), ctx.copy_operand(b))
     }).collect::<Vec<_>>();
+    let init = init.iter().map(|&(a, b)| {
+        (ctx.copy_operand(a), ctx.copy_operand(b))
+    }).collect::<Vec<_>>();
 
-    let state = ExecutionState::with_binary(file, ctx);
+    let mut state = ExecutionState::with_binary(file, ctx);
+    for &(op, val) in &init {
+        state.move_resolved(&DestOperand::from_oper(op), val);
+    }
     let mut analysis = analysis::FuncAnalysis::with_state(file, ctx, func, state);
     let mut collect_end_state = CollectEndState {
         end_state: None,
@@ -1088,7 +1150,7 @@ fn test_inner<'e, 'b>(
                 ctx.transform(val, 16, |x| if x.is_undefined() { Some(replace) } else { None });
             let cmp2 =
                 ctx.transform(val2, 16, |x| if x.is_undefined() { Some(replace) } else { None });
-            assert_eq!(cmp1, cmp2, "Operand {op}: got {} expected {}", val, val2);
+            assert_eq!(cmp1, cmp2, "Operand {op}: got {} expected {}", val2, val);
         } else {
             assert_eq!(val, val2, "Operand {op}: got {val2} expected {val}");
         }
@@ -1110,17 +1172,26 @@ fn make_binary(code: &[u8]) -> BinaryFile<VirtualAddress64> {
 
 fn test_inline_xmm<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
     let binary = make_binary(code);
-    test_inner(&binary, binary.code_section().virtual_address, changes, true);
+    test_inner(&binary, binary.code_section().virtual_address, changes, &[], true);
 }
 
 fn test_inline<'e>(code: &[u8], changes: &[(Operand<'e>, Operand<'e>)]) {
     let binary = make_binary(code);
-    test_inner(&binary, binary.code_section().virtual_address, changes, false);
+    test_inner(&binary, binary.code_section().virtual_address, changes, &[], false);
+}
+
+fn test_inline_with_init<'e>(
+    code: &[u8],
+    changes: &[(Operand<'e>, Operand<'e>)],
+    init: &[(Operand<'e>, Operand<'e>)],
+) {
+    let binary = make_binary(code);
+    test_inner(&binary, binary.code_section().virtual_address, changes, init, false);
 }
 
 fn test<'b>(idx: usize, changes: &[(Operand<'b>, Operand<'b>)]) {
     let binary = helpers::raw_bin_64(OsStr::new("test_inputs/exec_state_x86_64.bin")).unwrap();
     let offset = (&binary.code_section().data[idx * 8..]).read_u64::<LittleEndian>().unwrap();
     let func = VirtualAddress64(offset);
-    test_inner(&binary, func, changes, false);
+    test_inner(&binary, func, changes, &[], false);
 }

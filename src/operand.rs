@@ -22,6 +22,7 @@ use std::cmp::{max, min, Ordering};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::num::NonZeroU8;
 use std::ops::Range;
 use std::ptr;
 
@@ -3406,6 +3407,35 @@ impl MemAccessSize {
     #[inline]
     pub fn mask(self) -> u64 {
         (self.sign_bit() << 1).wrapping_sub(1)
+    }
+
+    /// Returns mask where each bit corresponds to a byte.
+    ///
+    /// ```rust
+    /// use scarf::MemAccessSize;
+    /// assert_eq!(MemAccessSize::Mem8.byte_mask().get(), 0b1);
+    /// assert_eq!(MemAccessSize::Mem16.byte_mask().get(), 0b11);
+    /// assert_eq!(MemAccessSize::Mem32.byte_mask().get(), 0b1111);
+    /// assert_eq!(MemAccessSize::Mem64.byte_mask().get(), 0b1111_1111);
+    /// ```
+    #[inline]
+    pub fn byte_mask(self) -> NonZeroU8 {
+        const fn gen_values() -> [NonZeroU8; 4] {
+            const fn unwrap(val: Option<NonZeroU8>) -> NonZeroU8 {
+                match val {
+                    Some(x) => x,
+                    None => panic!(),
+                }
+            }
+            let mut ret = [unwrap(NonZeroU8::new(1)); 4];
+            ret[MemAccessSize::Mem8 as usize] = unwrap(NonZeroU8::new(1));
+            ret[MemAccessSize::Mem16 as usize] = unwrap(NonZeroU8::new(0x3));
+            ret[MemAccessSize::Mem32 as usize] = unwrap(NonZeroU8::new(0xf));
+            ret[MemAccessSize::Mem64 as usize] = unwrap(NonZeroU8::new(0xff));
+            ret
+        }
+        static VALUES: [NonZeroU8; 4] = gen_values();
+        VALUES[self as usize]
     }
 
     /// Returns the sign bit of variables of this `MemAccessSize` (Highest mask bit).

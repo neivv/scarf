@@ -8,7 +8,9 @@ use copyless::BoxHelper;
 
 use crate::analysis;
 use crate::disasm::{FlagArith, Disassembler64, DestOperand, FlagUpdate, Operation};
-use crate::exec_state::{self, Constraint, FreezeOperation, Memory, MergeStateCache, PendingFlags};
+use crate::exec_state::{
+    self, Constraint, FreezeOperation, Memory, MemoryValue, MergeStateCache, PendingFlags,
+};
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{
@@ -644,19 +646,18 @@ impl<'e> State<'e> {
         size: MemAccessSize,
     ) -> Option<Operand<'e>> {
         let ctx = self.ctx;
-        let mask = match size {
-            MemAccessSize::Mem8 => 0xffu32,
-            MemAccessSize::Mem16 => 0xffff,
-            MemAccessSize::Mem32 => 0xffff_ffff,
-            MemAccessSize::Mem64 => 0,
-        };
+        let mask = size.mask();
+
         // Use 8-aligned addresses if there's a const offset
-        let size_bytes = size.bits() / 8;
+        let size_bytes = size.bytes();
+        let read_bytes = size.byte_mask().get() as u32;
         let offset_8 = offset as u32 & 7;
         let offset_rest = offset & !7;
         let const_base = base == ctx.const_0();
         if offset_8 != 0 {
+            let read_bytes = read_bytes << offset_8;
             let low = self.memory.get(base, offset_rest >> 3)
+                .filter(|x| x.written_bytes & (read_bytes & 0xff) as u8 != 0)
                 .or_else(|| {
                     if const_base {
                         // Avoid reading Mem64 if it's not necessary as it may go
@@ -668,14 +669,19 @@ impl<'e> State<'e> {
                             _ => MemAccessSize::Mem64,
                         };
                         self.resolve_binary_constant_mem(offset_rest, size)
+                            .map(|x| MemoryValue {
+                                value: x,
+                                written_bytes: 0xff,
+                            })
                     } else {
                         None
                     }
                 });
-            let needs_high = offset_8 + size_bytes > 8;
+            let needs_high = read_bytes >= 0x100;
             let high = if needs_high {
                 let high_offset = offset_rest.wrapping_add(8);
                 self.memory.get(base, high_offset >> 3)
+                    .filter(|x| x.written_bytes & (read_bytes >> 8) as u8 != 0)
                     .or_else(|| {
                         if const_base {
                             let size = match (offset_8 + size_bytes) - 8 {
@@ -685,6 +691,10 @@ impl<'e> State<'e> {
                                 _ => MemAccessSize::Mem64,
                             };
                             self.resolve_binary_constant_mem(high_offset, size)
+                                .map(|x| MemoryValue {
+                                    value: x,
+                                    written_bytes: 0xff,
+                                })
                         } else {
                             None
                         }
@@ -695,31 +705,123 @@ impl<'e> State<'e> {
             if low.is_none() && high.is_none() {
                 return None;
             }
-            let low = low.unwrap_or_else(|| ctx.mem64(base, offset_rest));
-            let low = ctx.rsh_const(low, offset_8 as u64 * 8);
+
+            let low_shift;
+            let mut low = match low {
+                Some(ref low) => {
+                    let read_bytes = (read_bytes & 0xff) as u8;
+                    // Note: case of reading only unwritten bytes is filtered out above
+                    // right after memory.get()
+                    if low.written_bytes == read_bytes {
+                        if !needs_high {
+                            // Entire value is in `low`, and no other bytes are written.
+                            // Can just return the value.
+                            if low.value.is_undefined() {
+                                // Undefined from mem merge may be bigger than
+                                // written_bytes.
+                                return Some(ctx.and_const(low.value, mask));
+                            } else {
+                                return Some(low.value);
+                            }
+                        }
+                        low_shift = 0;
+                        if low.value.is_undefined() {
+                            // Must be mem merge undefined since otherwise there'd
+                            // be an and mask. Mask it to not break high.
+                            let u64_mask = u64::MAX >> (offset_8 << 3);
+                            ctx.and_const(low.value, u64_mask)
+                        } else {
+                            low.value
+                        }
+                    } else if low.written_bytes | read_bytes != low.written_bytes {
+                        // Reading written bytes and unwritten bytes.
+                        low_shift = offset_8;
+                        self.merge_memory_read_64(base, offset_rest, low)
+                    } else {
+                        // Reading only written bytes, but there are other written bytes too
+                        // which may have to be shifted out
+                        let offset = low.written_bytes.trailing_zeros();
+                        low_shift = offset_8.saturating_sub(offset);
+                        if low.value.is_undefined() {
+                            let u64_mask = u64::MAX >> (offset << 3);
+                            ctx.and_const(low.value, u64_mask)
+                        } else {
+                            low.value
+                        }
+                    }
+                }
+                None => {
+                    low_shift = offset_8;
+                    ctx.mem64(base, offset_rest)
+                }
+            };
+            if low_shift != 0 {
+                low = ctx.rsh_const(low, (low_shift << 3) as u64);
+            }
+
             let combined = if needs_high {
-                let high = high.unwrap_or_else(|| {
-                    let high_offset = offset_rest.wrapping_add(8);
-                    ctx.mem64(base, high_offset)
-                });
-                let high = ctx.lsh_const(high, (0x40 - offset_8 * 8) as u64);
+                let high = match high {
+                    Some(ref high) => {
+                        // Can assume offset 0 (read_bytes & 1 != 0)
+                        let read_bytes = (read_bytes >> 8) as u8;
+                        if high.written_bytes | read_bytes != high.written_bytes {
+                            // Reading written bytes and unwritten bytes.
+                            let high_offset = offset_rest.wrapping_add(8);
+                            self.merge_memory_read_64(base, high_offset, high)
+                        } else {
+                            // Reading only written bytes.
+                            // Since first byte of high is always read, high.value
+                            // does not need to be shifted right like low.value may have to;
+                            // high.written_bytes & 1 != 0 always on this branch.
+                            high.value
+                        }
+                    }
+                    None => {
+                        let high_offset = offset_rest.wrapping_add(8);
+                        ctx.mem64(base, high_offset)
+                    }
+                };
+                let high = ctx.lsh_const(
+                    high,
+                    ((8 - offset_8) << 3) as u64,
+                );
                 ctx.or(low, high)
             } else {
                 low
             };
+
             let masked = if size != MemAccessSize::Mem64 {
-                ctx.and_const(combined, mask as u64)
+                ctx.and_const(combined, mask)
             } else {
                 combined
             };
             return Some(masked);
         } else {
+            // 8-Aligned address
             self.memory.get(base, offset >> 3)
-                .map(|operand| {
-                    if size != MemAccessSize::Mem64 {
-                        ctx.and_const(operand, mask as u64)
+                .map(|mem_value| {
+                    // Can assume offset 0 (read_bytes & 1 != 0) and
+                    let read_bytes = read_bytes as u8;
+                    if mem_value.written_bytes == read_bytes {
+                        // Early exit, as this is probably the common case
+                        if mem_value.value.is_undefined() && size != MemAccessSize::Mem64 {
+                            ctx.and_const(mem_value.value, mask)
+                        } else {
+                            mem_value.value
+                        }
                     } else {
-                        operand
+                        // Else the value has to be masked, maybe also merge with
+                        // unwritten value.
+                        let written_bytes = mem_value.written_bytes;
+                        let value = if written_bytes | read_bytes != written_bytes {
+                            // Merge written and unwritten.
+                            self.merge_memory_read_64(base, offset, &mem_value)
+                        } else {
+                            // Only written bytes, so written_bytes & 1 != 0
+                            // always (offset is aligned)
+                            mem_value.value
+                        };
+                        ctx.and_const(value, mask)
                     }
                 })
                 .or_else(|| {
@@ -729,8 +831,46 @@ impl<'e> State<'e> {
                         None
                     }
                 })
-
         }
+    }
+
+    /// For accessing memory;
+    /// Creates Operand from MemoryValue containing both unwritten and written bytes.
+    /// (64nits)
+    ///
+    /// While this is valid to do for every MemoryValue, the callers avoid calling this and not
+    /// creating unwritten values at all by checking value.written_bytes, and this
+    /// function will only be used in hopefully rare case where the memory read accesses both
+    /// written and unwritten bytes.
+    fn merge_memory_read_64(
+        &self,
+        mem_base: Operand<'e>,
+        mem_offset: u64,
+        value: &MemoryValue<'e>,
+    ) -> Operand<'e> {
+        let ctx = self.ctx;
+        let unwritten = self.resolve_binary_constant_mem(mem_offset, MemAccessSize::Mem64)
+            .unwrap_or_else(|| ctx.mem64(mem_base, mem_offset));
+        // This could technically also have param read_bytes and
+        // use that, which would possibly be faster as it masks
+        // unused bytes earlier.
+        // But ultimately merging written + unwritten should not
+        // be common case either way.
+        let mask = exec_state::eight_byte_mask_to_bit_mask(value.written_bytes);
+        let value_shift = value.written_bytes.trailing_zeros() << 3;
+        ctx.or(
+            ctx.and_const(
+                ctx.lsh_const(
+                    value.value,
+                    value_shift as u64,
+                ),
+                mask,
+            ),
+            ctx.and_const(
+                unwritten,
+                !mask,
+            ),
+        )
     }
 
     fn write_memory(
@@ -740,68 +880,188 @@ impl<'e> State<'e> {
         size: MemAccessSize,
         value: Operand<'e>,
     ) {
-        let offset_8 = offset & 7;
+        let offset_8 = (offset & 7) as u32;
         let offset_rest = offset & !7;
         let ctx = self.ctx;
-        if offset_8 != 0 {
-            let size_bits = size.bits() as u64;
-            let low_old = self.read_memory_impl(base, offset_rest, MemAccessSize::Mem64)
-                .unwrap_or_else(|| ctx.mem64(base, offset_rest));
 
-            let mask_low = offset_8 * 8;
-            let mask_high = (mask_low + size_bits).min(0x40);
-            let mask = !0u64 >> mask_low << mask_low <<
-                (0x40 - mask_high) >> (0x40 - mask_high);
-            let low_value = ctx.or(
-                ctx.and_const(
-                    ctx.lsh_const(
-                        value,
-                        8 * offset_8,
-                    ),
-                    mask
-                ),
-                ctx.and_const(
-                    low_old,
-                    !mask,
-                ),
-            );
-            self.memory.set(base, offset_rest >> 3, low_value);
-            let needs_high = mask_low + size_bits > 0x40;
-            if needs_high {
-                let high_offset = offset_rest.wrapping_add(8);
-                let high_old =
-                    self.read_memory_impl(base, high_offset, MemAccessSize::Mem64)
-                        .unwrap_or_else(|| ctx.mem64(base, high_offset));
-                let mask = !0u64 >> (0x40 - (mask_low + size_bits - 0x40));
-                let high_value = ctx.or(
-                    ctx.and_const(
-                        ctx.rsh_const(
+        let written_bytes = size.byte_mask().get() as u32;
+        let low_index = offset_rest >> 3;
+
+        // No guarantee that value is actually small enough to fit here.
+        // Though assuming that masking isn't necessary if value is Mem32
+        // (It can still gets maske if offset isn't 4-aligned, but
+        // normalize_32bit should make the end result same).
+        let size_bits = size.bits();
+        let value = if value.relevant_bits().end <= size_bits as u8 {
+            value
+        } else {
+            ctx.and_const(value, size.mask())
+        };
+
+        if offset_8 != 0 {
+            let written_bytes = written_bytes << offset_8;
+            let needs_high = written_bytes > 0xff;
+
+            // Low:
+            {
+                let low_old = self.memory.get(base, low_index);
+                let written_bytes = (written_bytes & 0xff) as u8;
+                // Part of the value that is written to low word
+                let value = match needs_high {
+                    false => value,
+                    true => {
+                        let mask = u64::MAX >> (offset_8 << 3);
+                        ctx.and_const(value, mask as u64)
+                    }
+                };
+                let low_value = match low_old {
+                    Some(ref old) => {
+                        if old.written_bytes & written_bytes == old.written_bytes {
+                            // Can just overwrite the value
+                            MemoryValue {
+                                value,
+                                written_bytes,
+                            }
+                        } else {
+                            let mut old_value = old.value;
+                            let mut new_value = value;
+                            let old_offset = old.written_bytes.trailing_zeros();
+                            // If old value contains bytes that are now being written,
+                            // zero them out.
+                            if old.written_bytes & written_bytes != 0 {
+                                let shared_mask = exec_state::eight_byte_mask_to_bit_mask(
+                                    old.written_bytes & written_bytes
+                                ) >> (old_offset << 3);
+                                old_value = ctx.and_const(old_value, !shared_mask);
+                            }
+                            // The value that is located at higher offset
+                            // (More trailing zeros)
+                            // will have to be shifted left.
+                            let shift = old_offset.wrapping_sub(offset_8) as i8;
+                            if shift > 0 {
+                                old_value = ctx.lsh_const(old_value, ((shift as u8) << 3) as u64);
+                            } else if shift < 0 {
+                                new_value = ctx.lsh_const(
+                                    new_value,
+                                    ((0i8.wrapping_sub(shift) as u8) << 3) as u64,
+                                );
+                            }
+                            MemoryValue {
+                                value: ctx.or(
+                                    new_value,
+                                    old_value,
+                                ),
+                                written_bytes: written_bytes | old.written_bytes,
+                            }
+                        }
+                    }
+                    None => {
+                        MemoryValue {
                             value,
-                            0x40 - 8 * offset_8,
-                        ),
-                        mask,
-                    ),
-                    ctx.and_const(
-                        high_old,
-                        !mask,
-                    ),
-                );
-                self.memory.set(base, high_offset >> 3, high_value);
+                            written_bytes,
+                        }
+                    }
+                };
+                self.memory.set(base, low_index, low_value);
+            }
+            // High:
+            if needs_high {
+                let high_index: u64 = (offset_rest.wrapping_add(8)) >> 3;
+                let high_old = self.memory.get(base, high_index as u64);
+                let written_bytes = (written_bytes >> 8) as u8;
+                let value = ctx.rsh_const(value, ((8 - offset_8) << 3) as u64);
+                let high_value = match high_old {
+                    Some(ref old) => {
+                        if old.written_bytes == written_bytes {
+                            // Can just overwrite the value
+                            MemoryValue {
+                                value,
+                                written_bytes,
+                            }
+                        } else {
+                            let mut old_value = old.value;
+                            // If old value contains bytes that are now being written,
+                            // zero them out.
+                            if old.written_bytes & written_bytes != 0 {
+                                let shared_mask = exec_state::eight_byte_mask_to_bit_mask(
+                                    old.written_bytes & written_bytes
+                                );
+                                old_value = ctx.and_const(old_value, !shared_mask);
+                            }
+                            // If the new bytes are at lower offset than old ones,
+                            // old value has to be shifted left.
+                            if old.written_bytes & 1 == 0 {
+                                let shift = old.written_bytes.trailing_zeros() << 3;
+                                old_value = ctx.lsh_const(old_value, shift as u64);
+                            }
+                            MemoryValue {
+                                value: ctx.or(
+                                    value,
+                                    old_value,
+                                ),
+                                written_bytes: written_bytes | old.written_bytes,
+                            }
+                        }
+                    }
+                    None => {
+                        MemoryValue {
+                            value,
+                            written_bytes,
+                        }
+                    }
+                };
+                self.memory.set(base, high_index, high_value);
             }
         } else {
-            let value = match size {
-                MemAccessSize::Mem64 => value,
-                _ => {
-                    let old = self.read_memory_impl(base, offset, MemAccessSize::Mem64)
-                        .unwrap_or_else(|| ctx.mem64(base, offset));
-                    let new_mask = size.mask();
-                    ctx.or(
-                        ctx.and_const(value, new_mask),
-                        ctx.and_const(old, !new_mask),
-                    )
+            // 8-aligned store address.
+            let written_bytes = written_bytes as u8;
+            let mem_value = if size == MemAccessSize::Mem64 {
+                MemoryValue {
+                    value,
+                    written_bytes,
+                }
+            } else {
+                let old = self.memory.get(base, low_index);
+                match old {
+                    Some(ref old) => {
+                        if old.written_bytes & written_bytes == old.written_bytes {
+                            // Can just overwrite the value
+                            MemoryValue {
+                                value,
+                                written_bytes,
+                            }
+                        } else {
+                            // If the new bytes are at lower offset than old ones,
+                            // old value has to be shifted left.
+                            let mut old_value = old.value;
+                            if old.written_bytes & 1 == 0 {
+                                let shift = old.written_bytes.trailing_zeros() << 3;
+                                old_value = ctx.lsh_const(old_value, shift as u64);
+                            }
+                            let mask = size.mask();
+                            // If old value contains bytes that are now being written,
+                            // zero them out.
+                            if old.written_bytes & written_bytes != 0 {
+                                old_value = ctx.and_const(old_value, !mask);
+                            }
+                            MemoryValue {
+                                value: ctx.or(
+                                    value,
+                                    old_value,
+                                ),
+                                written_bytes: written_bytes | old.written_bytes,
+                            }
+                        }
+                    }
+                    None => {
+                        MemoryValue {
+                            value: value,
+                            written_bytes,
+                        }
+                    }
                 }
             };
-            self.memory.set(base, offset >> 3, value);
+            self.memory.set(base, low_index as u64, mem_value);
         }
     }
 
@@ -810,7 +1070,7 @@ impl<'e> State<'e> {
         address: u64,
         size: MemAccessSize,
     ) -> Option<Operand<'e>> {
-        let size_bytes = size.bits() / 8;
+        let size_bytes = size.bytes();
         // Simplify constants stored in code section (constant switch jumps etc)
         let end = address.checked_add(size_bytes as u64)?;
         let section = self.binary.and_then(|b| {

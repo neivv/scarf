@@ -1,6 +1,6 @@
 //! 32/64-bit x86 tests
 
-use super::{test_inline, test_inline_xmm};
+use super::{test_inline, test_inline_xmm, test_inline_with_init};
 
 use scarf::{OperandCtx, OperandContext, Operand};
 
@@ -450,7 +450,7 @@ fn merge_mem_to_undef() {
     ], &[
         (ctx.register(0), ctx.mem32(ctx.register(4), 4)),
         (ctx.register(1),
-            if is_64bit() { ctx.rsh_const(ctx.new_undef(), 0x20) } else { ctx.new_undef() },
+            if is_64bit() { ctx.and_const(ctx.new_undef(), 0xffff_ffff) } else { ctx.new_undef() },
         ),
         (ctx.register(2), ctx.constant(0)),
     ]);
@@ -1288,5 +1288,335 @@ fn or_simplify_crash() {
         0xc3, // ret
     ], &[
          (ctx.register(0), ctx.constant(0)),
+    ]);
+}
+
+#[test]
+fn memory_writes_every_second_byte() {
+    // Write (1, _, 2, _, 6, _, cl, _)
+    // with 8 different offsets.
+    let ctx = &OperandContext::new();
+    for i in 0..8 {
+        let base = ctx.add_const(ctx.register(5), 0x100 + i);
+        test_inline_with_init(&[
+            0xc6, 0x00, 0x01, // mov byte [eax], 1
+            0xc6, 0x40, 0x02, 0x02, // mov byte [eax + 2], 2
+            0xc6, 0x40, 0x04, 0x06, // mov byte [eax + 4], 6
+            0x88, 0x48, 0x06, // mov byte [eax + 6], cl
+            0x8b, 0x08, // mov ecx, [eax]
+            0x8b, 0x50, 0x04, // mov edx, [eax + 4]
+            0xc3, // ret
+        ], &[
+            (ctx.register(0), base),
+            (ctx.register(1), ctx.or(
+                ctx.and_const(ctx.mem32(base, 0), 0xff00_ff00),
+                ctx.constant(0x0002_0001)
+            )),
+            (ctx.register(2), ctx.or(
+                ctx.and_const(ctx.mem32(base, 4), 0xff00_ff00),
+                ctx.or(
+                    ctx.lsh_const(
+                        ctx.and_const(ctx.register(1), 0xff),
+                        0x10,
+                    ),
+                    ctx.constant(0x0000_0006)
+                ),
+            )),
+        ], &[
+            (ctx.register(0), base),
+        ]);
+    }
+}
+
+#[test]
+fn memory_writes_every_second_byte_2() {
+    // Write (_, 1, _, 2, _, 6, _, cl)
+    // with 8 different offsets.
+    let ctx = &OperandContext::new();
+    for i in 0..8 {
+        let base = ctx.add_const(ctx.register(5), 0x100 + i);
+        test_inline_with_init(&[
+            0xc6, 0x40, 0x01, 0x01, // mov byte [eax + 1], 1
+            0xc6, 0x40, 0x03, 0x02, // mov byte [eax + 3], 2
+            0xc6, 0x40, 0x05, 0x06, // mov byte [eax + 5], 6
+            0x88, 0x48, 0x07, // mov byte [eax + 7], cl
+            0x8b, 0x08, // mov ecx, [eax]
+            0x8b, 0x50, 0x04, // mov edx, [eax + 4]
+            0xc3, // ret
+        ], &[
+            (ctx.register(0), base),
+            (ctx.register(1), ctx.or(
+                ctx.and_const(ctx.mem32(base, 0), 0x00ff_00ff),
+                ctx.constant(0x0200_0100)
+            )),
+            (ctx.register(2), ctx.or(
+                ctx.and_const(ctx.mem32(base, 4), 0x00ff_00ff),
+                ctx.or(
+                    ctx.lsh_const(
+                        ctx.and_const(ctx.register(1), 0xff),
+                        0x18,
+                    ),
+                    ctx.constant(0x0000_0600)
+                ),
+            )),
+        ], &[
+            (ctx.register(0), base),
+        ]);
+    }
+}
+
+#[test]
+fn memory_writes_every_second_word() {
+    // Write u16 (2001, _, cx, _)
+    // with 8 different offsets.
+    let ctx = &OperandContext::new();
+    for i in 0..8 {
+        let base = ctx.add_const(ctx.register(5), 0x100 + i);
+        test_inline_with_init(&[
+            0x66, 0xc7, 0x00, 0x01, 0x20, // mov word [eax], 2001
+            0x66, 0x89, 0x48, 0x04, // mov word [eax + 4], cx
+            0x8b, 0x08, // mov ecx, [eax]
+            0x8b, 0x50, 0x04, // mov edx, [eax + 4]
+            0xc3, // ret
+        ], &[
+            (ctx.register(0), base),
+            (ctx.register(1), ctx.or(
+                ctx.and_const(ctx.mem32(base, 0), 0xffff_0000),
+                ctx.constant(0x0000_2001)
+            )),
+            (ctx.register(2), ctx.or(
+                ctx.and_const(ctx.mem32(base, 4), 0xffff_0000),
+                ctx.and_const(
+                    ctx.register(1),
+                    0xffff,
+                ),
+            )),
+        ], &[
+            (ctx.register(0), base),
+        ]);
+    }
+}
+
+#[test]
+fn memory_writes_every_second_word_2() {
+    // Write u16 (_, 2001, _, cx)
+    // with 8 different offsets.
+    let ctx = &OperandContext::new();
+    for i in 0..8 {
+        let base = ctx.add_const(ctx.register(5), 0x100 + i);
+        test_inline_with_init(&[
+            0x66, 0xc7, 0x40, 0x02, 0x01, 0x20, // mov word [eax + 2], 2001
+            0x66, 0x89, 0x48, 0x06, // mov word [eax + 6], cx
+            0x8b, 0x08, // mov ecx, [eax]
+            0x8b, 0x50, 0x04, // mov edx, [eax + 4]
+            0xc3, // ret
+        ], &[
+            (ctx.register(0), base),
+            (ctx.register(1), ctx.or(
+                ctx.and_const(ctx.mem32(base, 0), 0x0000_ffff),
+                ctx.constant(0x2001_0000)
+            )),
+            (ctx.register(2), ctx.or(
+                ctx.and_const(ctx.mem32(base, 4), 0x0000_ffff),
+                ctx.lsh_const(
+                    ctx.and_const(
+                        ctx.register(1),
+                        0xffff,
+                    ),
+                    0x10,
+                ),
+            )),
+        ], &[
+            (ctx.register(0), base),
+        ]);
+    }
+}
+
+#[test]
+fn memory_writes_dword() {
+    // Write u32 (ecx, _)
+    // with 8 different offsets.
+    let ctx = &OperandContext::new();
+    for i in 0..8 {
+        let base = ctx.add_const(ctx.register(5), 0x100 + i);
+        test_inline_with_init(&[
+            0x89, 0x08, // mov [eax], ecx
+            0x8b, 0x08, // mov ecx, [eax]
+            0x8b, 0x50, 0x04, // mov edx, [eax + 4]
+            0xc3, // ret
+        ], &[
+            (ctx.register(0), base),
+            (ctx.register(1), mask_if_64bit(ctx, ctx.register(1), 0xffff_ffff)),
+            (ctx.register(2), ctx.mem32(base, 4)),
+        ], &[
+            (ctx.register(0), base),
+        ]);
+    }
+}
+
+#[test]
+fn memory_writes_dword_2() {
+    // Write u32 (u16 _, ecx, u16 _)
+    // with 8 different offsets.
+    let ctx = &OperandContext::new();
+    for i in 0..8 {
+        let base = ctx.add_const(ctx.register(5), 0x100 + i);
+        test_inline_with_init(&[
+            0x89, 0x48, 0x02, // mov [eax + 2], ecx
+            0x8b, 0x08, // mov ecx, [eax]
+            0x8b, 0x50, 0x04, // mov edx, [eax + 4]
+            0xc3, // ret
+        ], &[
+            (ctx.register(0), base),
+            (ctx.register(1), ctx.or(
+                ctx.and_const(ctx.mem32(base, 0), 0x0000_ffff),
+                ctx.lsh_const(
+                    ctx.and_const(
+                        ctx.register(1),
+                        0xffff,
+                    ),
+                    0x10,
+                ),
+            )),
+            (ctx.register(2), ctx.or(
+                ctx.and_const(ctx.mem32(base, 4), 0xffff_0000),
+                ctx.rsh_const(
+                    ctx.and_const(
+                        ctx.register(1),
+                        0xffff_0000,
+                    ),
+                    0x10,
+                ),
+            )),
+        ], &[
+            (ctx.register(0), base),
+        ]);
+    }
+}
+
+#[test]
+fn memory_writes_dword_3() {
+    // Write u32 (ecx, edx)
+    // with 8 different offsets.
+    let ctx = &OperandContext::new();
+    for i in 0..8 {
+        let base = ctx.add_const(ctx.register(5), 0x100 + i);
+        test_inline_with_init(&[
+            0x89, 0x48, 0x00, // mov [eax], ecx
+            0x89, 0x50, 0x04, // mov [eax + 4], edx
+            0x8b, 0x08, // mov ecx, [eax]
+            0x8b, 0x50, 0x04, // mov edx, [eax + 4]
+            0xc3, // ret
+        ], &[
+            (ctx.register(0), base),
+            (ctx.register(1), mask_if_64bit(ctx, ctx.register(1), 0xffff_ffff)),
+            (ctx.register(2), mask_if_64bit(ctx, ctx.register(2), 0xffff_ffff)),
+        ], &[
+            (ctx.register(0), base),
+        ]);
+    }
+}
+
+#[test]
+fn merge_unwritten_mem() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0xb8, 0x04, 0x00, 0x05, 0x00, // mov eax, 0005_0004
+        0x31, 0xc9, // xor ecx, ecx
+        0x85, 0xd2, // test edx, edx
+        0x74, 0x04, // je skip_store
+        0xc6, 0x40, 0x02, 0x04, // mov byte [eax + 2], 4
+        // skip_store:
+        0xeb, 0x00, // jmp next
+        // next:
+        0x8a, 0x08, // mov cl, byte [eax]
+        0x8b, 0x50, 0x03, // mov edx, [eax + 3]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0x5_0004)),
+         (ctx.register(1), ctx.mem8(ctx.constant(0x5_0004), 0)),
+         (ctx.register(2), ctx.mem32(ctx.constant(0x5_0007), 0)),
+    ]);
+}
+
+#[test]
+fn merge_unwritten_mem_correct_masks_when_read_back_unaligned() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0xb8, 0x04, 0x00, 0x05, 0x00, // mov eax, 0005_0004
+        0x31, 0xc9, // xor ecx, ecx
+        0x31, 0xd2, // xor edx, edx
+        0x85, 0xf6, // test esi, esi
+        0x74, 0x11, // je skip_store
+        0xc6, 0x40, 0x02, 0x04, // mov [eax + 2], 4
+        0x66, 0xc7, 0x40, 0x06, 0x04, 0x00, // mov word [eax + 6], 4
+        0xc7, 0x40, 0x0a, 0x04, 0x00, 0x00, 0x00, // mov dword [eax + a], 4
+        // skip_store:
+        0xeb, 0x00, // jmp next
+        // next:
+        0x8a, 0x48, 0x02, // mov cl, byte [eax + 2]
+        0x0f, 0xb6, 0x58, 0x02, // movzx ebx, byte [eax + 2]
+        0x66, 0x8b, 0x50, 0x06, // mov dx, [eax + 6]
+        0x0f, 0xb7, 0x70, 0x06, // movzx esi, word [eax + 6]
+        0x8b, 0x40, 0x0a, // mov eax, [eax + a]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), if !is_64bit() {
+             // Idk these can be many things, though the two undefs shouldn't overlap
+             let ud = ctx.new_undef();
+             ctx.and_const(
+                 ctx.or(
+                     ctx.and_const(ud, 0xffff),
+                     ctx.lsh_const(ud, 0x10),
+                 ),
+                 0xffff_ffff,
+             )
+         } else {
+             let ud = ctx.new_undef();
+             ctx.and_const(
+                 ctx.or(
+                     ctx.and_const(ctx.rsh_const(ud, 0x20), 0xffff),
+                     ctx.lsh_const(ud, 0x10),
+                 ),
+                 0xffff_ffff,
+             )
+         }),
+         (ctx.register(1), ctx.and_const(ctx.new_undef(), 0xff)),
+         (ctx.register(2), ctx.and_const(ctx.new_undef(), 0xffff)),
+         (ctx.register(3), ctx.and_const(ctx.new_undef(), 0xff)),
+         (ctx.register(6), ctx.and_const(ctx.new_undef(), 0xffff)),
+    ]);
+}
+
+#[test]
+fn merge_unwritten_mem_correct_masks_when_read_back_aligned() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0xb8, 0x00, 0x00, 0x05, 0x00, // mov eax, 0005_0000
+        0x31, 0xc9, // xor ecx, ecx
+        0x31, 0xd2, // xor edx, edx
+        0x85, 0xf6, // test esi, esi
+        0x74, 0x11, // je skip_store
+        0xc6, 0x40, 0x00, 0x04, // mov [eax + 0], 4
+        0x66, 0xc7, 0x40, 0x08, 0x04, 0x00, // mov word [eax + 8], 4
+        0xc7, 0x40, 0x10, 0x04, 0x00, 0x00, 0x00, // mov dword [eax + 10], 4
+        // skip_store:
+        0xeb, 0x00, // jmp next
+        // next:
+        0x8a, 0x48, 0x00, // mov cl, byte [eax + 0]
+        0x0f, 0xb6, 0x58, 0x00, // movzx ebx, byte [eax + 0]
+        0x66, 0x8b, 0x50, 0x08, // mov dx, [eax + 8]
+        0x0f, 0xb7, 0x70, 0x08, // movzx esi, word [eax + 8]
+        0x8b, 0x40, 0x10, // mov eax, [eax + 10]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), mask_if_64bit(ctx, ctx.new_undef(), 0xffff_ffff)),
+         (ctx.register(1), ctx.and_const(ctx.new_undef(), 0xff)),
+         (ctx.register(2), ctx.and_const(ctx.new_undef(), 0xffff)),
+         (ctx.register(3), ctx.and_const(ctx.new_undef(), 0xff)),
+         (ctx.register(6), ctx.and_const(ctx.new_undef(), 0xffff)),
     ]);
 }

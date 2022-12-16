@@ -1426,7 +1426,41 @@ pub struct Memory<'e> {
     map: MemoryMap<'e>,
     /// Caches value of last read/write
     cached_addr: Option<(Operand<'e>, u64)>,
-    cached_value: Option<Operand<'e>>,
+    cached_value: Option<MemoryValue<'e>>,
+}
+
+/// As the memory is stored in larger blocks than bytes
+/// (In effect ExecutionState words), write to nearby byte will make
+/// entire word merge to `Undefined`. To alleviate this inaccuracy a bit,
+/// keep track of bytes that have never been written, and consider `value`
+/// to not apply to these bytes. This also makes smaller-than-word writes bit
+/// more efficient when they don't have to be merged with `Mem64[addr]` for the
+/// untouched bytes.
+///
+/// E.g. for `{ value: (rdx & ffff_ffff), written_bytes: 0x0f }` at address `1000`
+/// Reading `Mem64[1000]` gives `(Mem32[1004] << 20) | (rdx & ffff_ffff)`
+///
+/// Additionally there is invariant that `value` must not be larger than what
+/// written_bytes can fit to. That is, the above example with `value: rdx` would not be valid.
+/// Value also starts at first written_byte. E.g. write of `(rdx & ffff_ffff) to Mem32[1004]`
+/// would result in`{ value: (rdx & ffff_ffff), written_bytes: 0xf0 }`, instead of
+/// `value: (rdx & ffff_ffff) << 20`
+///
+/// This is for supporting the likely common case of only one variable being written in memory
+/// unit. When reading it back the ExecutionState impl can just see that
+/// `written_bytes == bytes_to_read` and take `value` without having to mask it at all.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct MemoryValue<'e> {
+    /// Starts at first written_byte, not at offset 0.
+    /// Whether value is larger than byte mask specified at written_bytes is up to user,
+    /// but currently memory merge will generate undefined without any masks regardless of
+    /// written_bytes value, so that'll have to be handled at least. Currently exec_state
+    /// code assumes that outside mem merge undefined and 32bit normalized value filling
+    /// all written bytes, the value is not larger than byte mask implies.
+    pub value: Operand<'e>,
+    /// 0x1 = byte at address + 0
+    /// 0x80 = byte at address + 7
+    pub written_bytes: u8,
 }
 
 #[derive(Clone)]
@@ -1492,12 +1526,10 @@ struct MemoryMap<'e> {
     /// Sum of map.len() of immutable map chain and own `map.len()`, only set when map
     /// is made immutable.
     immutable_length: usize,
-    /// True if all values stored in `self.map` are `Undefined`.
-    /// False does not guarantee that that there are not-undefined values though.
-    all_undefined: bool,
 }
 
-type MemoryMapTopLevel<'e> = HashMap<(OperandHashByAddress<'e>, u64), Operand<'e>, FxBuildHasher>;
+type MemoryMapTopLevel<'e> =
+    HashMap<(OperandHashByAddress<'e>, u64), MemoryValue<'e>, FxBuildHasher>;
 
 struct MemoryIterMapsUntilImm<'a, 'e> {
     map: Option<&'a MemoryMap<'e>>,
@@ -1513,14 +1545,13 @@ impl<'e> Memory<'e> {
                 slower_immutable: None,
                 immutable_depth: 0,
                 immutable_length: 0,
-                all_undefined: true,
             },
             cached_addr: None,
             cached_value: None,
         }
     }
 
-    pub fn get(&mut self, base: Operand<'e>, offset: u64) -> Option<Operand<'e>> {
+    pub fn get(&mut self, base: Operand<'e>, offset: u64) -> Option<MemoryValue<'e>> {
         let address = (base, offset);
         if Some(address) == self.cached_addr {
             return self.cached_value;
@@ -1531,7 +1562,7 @@ impl<'e> Memory<'e> {
         result
     }
 
-    pub fn set(&mut self, base: Operand<'e>, offset: u64, value: Operand<'e>) {
+    pub fn set(&mut self, base: Operand<'e>, offset: u64, value: MemoryValue<'e>) {
         let address = (base, offset);
         self.map.set((base.hash_by_address(), offset), value);
         self.cached_addr = Some(address);
@@ -1602,11 +1633,14 @@ impl<'e> Memory<'e> {
 
         let (value, mask) = Operand::and_masked(value);
         let cached = if exec_state_mask != u64::MAX {
-            ctx.and_const(cached_value, exec_state_mask)
+            // Is this necessary?
+            ctx.and_const(cached_value.value, exec_state_mask)
         } else {
-            cached_value
+            cached_value.value
         };
         let (cached, _) = Operand::and_masked(cached);
+        let byte_offset = cached_value.written_bytes.trailing_zeros();
+        let cached_offset = cached_offset.wrapping_add(byte_offset as u64);
         let result = if value == cached {
             Some((cached_base, cached_offset, MemAccessSize::Mem64))
         } else if let Some((l, r)) = cached.if_arithmetic_or() {
@@ -1657,17 +1691,13 @@ impl<'e> Memory<'e> {
 }
 
 impl<'e> MemoryMap<'e> {
-    pub fn get(&self, address: &(OperandHashByAddress<'e>, u64)) -> Option<Operand<'e>> {
+    pub fn get(&self, address: &(OperandHashByAddress<'e>, u64)) -> Option<MemoryValue<'e>> {
         let op = self.map.get(address).cloned()
             .or_else(|| self.immutable.as_ref().and_then(|x| x.get(address)));
         op
     }
 
-    fn get_no_immutable(&self, address: &(OperandHashByAddress<'e>, u64)) -> Option<Operand<'e>> {
-        self.map.get(address).cloned()
-    }
-
-    pub fn set(&mut self, address: (OperandHashByAddress<'e>, u64), value: Operand<'e>) {
+    pub fn set(&mut self, address: (OperandHashByAddress<'e>, u64), value: MemoryValue<'e>) {
         // Don't insert a duplicate entry to mutable map if the immutable map already
         // has the correct key.
         //
@@ -1683,7 +1713,6 @@ impl<'e> MemoryMap<'e> {
             }
         }
         map.insert(address, value);
-        self.all_undefined &= value.is_undefined();
     }
 
     fn is_empty(&self) -> bool {
@@ -1694,7 +1723,7 @@ impl<'e> MemoryMap<'e> {
     fn get_with_immutable_info(
         &self,
         address: &(OperandHashByAddress<'e>, u64),
-    ) -> Option<(Operand<'e>, bool)> {
+    ) -> Option<(MemoryValue<'e>, bool)> {
         let op = self.map.get(address).map(|&x| (x, false))
             .or_else(|| {
                 self.immutable.as_ref().and_then(|x| x.get(address)).map(|x| (x, true))
@@ -1833,7 +1862,6 @@ impl<'e> MemoryMap<'e> {
         );
         let old_immutable = self.immutable.take();
         let immutable_depth = self.immutable_depth;
-        let all_undefined = self.all_undefined;
         let immutable_length = old_immutable.as_ref().map(|x| x.immutable_length).unwrap_or(0) +
             map.len();
         self.immutable = Some(Rc::new(MemoryMap {
@@ -1842,9 +1870,7 @@ impl<'e> MemoryMap<'e> {
             slower_immutable: None,
             immutable_depth,
             immutable_length,
-            all_undefined,
         }));
-        self.all_undefined = true;
         self.immutable_depth = immutable_depth.wrapping_add(1);
         // Merge 4 immutables to one larger map, another layer if we're at 16
         // immutables etc.
@@ -1865,14 +1891,12 @@ impl<'e> MemoryMap<'e> {
             // Actually build the map
             let mut merged_map = HashMap::with_capacity_and_hasher(sum, Default::default());
             let mut pos = self.immutable.as_ref();
-            let mut all_undefined = true;
             for _ in 0..4 {
                 match pos {
                     Some(next) => {
                         for (&k, &val) in next.map.iter() {
                             merged_map.entry(k).or_insert_with(|| val);
                         }
-                        all_undefined &= next.all_undefined;
                         pos = next.immutable.as_ref();
                     }
                     None => break,
@@ -1888,7 +1912,6 @@ impl<'e> MemoryMap<'e> {
                 slower_immutable,
                 immutable_depth,
                 immutable_length,
-                all_undefined,
             }));
             n = n << 2;
         }
@@ -1943,10 +1966,14 @@ impl<'e> MemoryMap<'e> {
         if (a_empty || b_empty) && a.immutable.is_none() && b.immutable.is_none() {
             let other = if a_empty { b } else { a };
             for (&key, &val) in other.map.iter() {
-                if val.is_undefined() {
+                if val.value.is_undefined() {
                     result.insert(key, val);
                 } else {
-                    result.insert(key, ctx.new_undef());
+                    let new_val = MemoryValue {
+                        value: ctx.new_undef(),
+                        written_bytes: val.written_bytes,
+                    };
+                    result.insert(key, new_val);
                 }
             }
             let immutable_length = result_immutable_len + result.len();
@@ -1956,37 +1983,40 @@ impl<'e> MemoryMap<'e> {
                 slower_immutable,
                 immutable_depth: a.immutable_depth,
                 immutable_length,
-                all_undefined: true,
             };
         }
         let imm_eq = a.immutable.as_ref().map(|x| &**x as *const MemoryMap) ==
             b.immutable.as_ref().map(|x| &**x as *const MemoryMap);
         let result = if imm_eq {
             // Allows just checking a.map.iter() instead of a.iter()
-            let mut all_undefined = true;
             for (key, &a_val) in a.map.iter() {
-                if a_val.is_undefined() {
-                    result.insert(*key, a_val);
-                } else {
-                    if let Some((b_val, is_imm)) = b.get_with_immutable_info(key) {
-                        match a_val == b_val {
-                            true => {
-                                if !is_imm {
-                                    all_undefined &= a_val.is_undefined();
-                                    result.insert(*key, a_val);
-                                }
-                            }
-                            false => {
-                                if b_val.is_undefined() {
-                                    result.insert(*key, b_val);
-                                } else {
-                                    result.insert(*key, ctx.new_undef());
-                                }
+                if let Some((b_val, is_imm)) = b.get_with_immutable_info(key) {
+                    match a_val == b_val {
+                        true => {
+                            if !is_imm {
+                                result.insert(*key, a_val);
                             }
                         }
-                    } else {
-                        result.insert(*key, ctx.new_undef());
+                        false => {
+                            let new_val = MemoryValue {
+                                value: match b_val.value.is_undefined() {
+                                    true => b_val.value,
+                                    false => ctx.new_undef(),
+                                },
+                                written_bytes: a_val.written_bytes | b_val.written_bytes,
+                            };
+                            result.insert(*key, new_val);
+                        }
                     }
+                } else {
+                    let new_val = MemoryValue {
+                        value: match a_val.value.is_undefined() {
+                            true => a_val.value,
+                            false => ctx.new_undef(),
+                        },
+                        written_bytes: a_val.written_bytes,
+                    };
+                    result.insert(*key, new_val);
                 }
             }
             'b_loop: for (key, &b_val) in b.map.iter() {
@@ -1995,17 +2025,21 @@ impl<'e> MemoryMap<'e> {
                 // that won't actually always be better, but it seems consistent
                 // enough that I'm leaving this as is.
                 if !result.contains_key(key) {
-                    let val = if b_val.is_undefined() {
-                        b_val
-                    } else {
-                        if let Some((a_val, is_imm)) = a.get_with_immutable_info(key) {
-                            if is_imm && a_val == b_val {
-                                continue 'b_loop;
-                            }
+                    let mut new_written_bytes = b_val.written_bytes;
+                    if let Some((a_val, is_imm)) = a.get_with_immutable_info(key) {
+                        if is_imm && a_val == b_val {
+                            continue 'b_loop;
                         }
-                        ctx.new_undef()
+                        new_written_bytes |= a_val.written_bytes;
+                    }
+                    let new_val = MemoryValue {
+                        value: match b_val.value.is_undefined() {
+                            true => b_val.value,
+                            false => ctx.new_undef(),
+                        },
+                        written_bytes: new_written_bytes,
                     };
-                    result.insert(*key, val);
+                    result.insert(*key, new_val);
                 }
             }
             let immutable_length = result_immutable_len + result.len();
@@ -2015,14 +2049,12 @@ impl<'e> MemoryMap<'e> {
                 slower_immutable,
                 immutable_depth: a.immutable_depth,
                 immutable_length,
-                all_undefined,
             }
         } else {
             // a's immutable map is used as base, so one which exist there don't get inserted to
             // result, but if it has ones that should become undefined, the undefined has to be
             // inserted to the result instead.
             let common = a.common_immutable(b);
-            let mut all_undefined = true;
             let mut b_is_imm = false;
             for map in b.iter_maps_until_immutable(common) {
                 for (key, &b_val) in map.map.iter() {
@@ -2034,27 +2066,35 @@ impl<'e> MemoryMap<'e> {
                         match a_val == b_val {
                             true => {
                                 if !is_imm {
-                                    all_undefined &= a_val.is_undefined();
                                     result.insert(*key, a_val);
                                 }
                             }
                             false => {
-                                if !a_val.is_undefined() {
-                                    if b_val.is_undefined() {
-                                        result.insert(*key, b_val);
-                                    } else {
-                                        result.insert(*key, ctx.new_undef());
-                                    }
+                                let new_written_bytes = a_val.written_bytes | b_val.written_bytes;
+                                if !a_val.value.is_undefined() ||
+                                    new_written_bytes != a_val.written_bytes
+                                {
+                                    let new_val = MemoryValue {
+                                        value: match b_val.value.is_undefined() {
+                                            true => b_val.value,
+                                            false => ctx.new_undef(),
+                                        },
+                                        written_bytes: new_written_bytes,
+                                    };
+                                    result.insert(*key, new_val);
                                 }
                             }
                         }
                     } else {
                         if !key.0.0.contains_undefined() {
-                            if b_val.is_undefined() {
-                                result.insert(*key, b_val);
-                            } else {
-                                result.insert(*key, ctx.new_undef());
-                            }
+                            let new_val = MemoryValue {
+                                value: match b_val.value.is_undefined() {
+                                    true => b_val.value,
+                                    false => ctx.new_undef(),
+                                },
+                                written_bytes: b_val.written_bytes,
+                            };
+                            result.insert(*key, new_val);
                         }
                     }
                 }
@@ -2064,40 +2104,23 @@ impl<'e> MemoryMap<'e> {
             //
             // Repeat for a's unique branch.
             let mut a_is_imm = false;
-            let a_mutable_all_undef = a.all_undefined;
             for map in a.iter_maps_until_immutable(common) {
-                if a_mutable_all_undef && a_is_imm && map.all_undefined {
-                    continue;
-                }
                 for (key, &a_val) in map.map.iter() {
                     if a_is_imm {
-                        if a_val.is_undefined() {
-                            if a_mutable_all_undef {
-                                continue;
-                            }
-                            if let Some(nonimm) = a.get_no_immutable(key) {
-                                if nonimm.is_undefined() {
-                                    // Do nothing, the result will have 'key = a_val'
-                                    // instead of 'key = nonimm', but both are undefined anyway
-                                    continue;
-                                }
-                                // else continues to `if !result.contains_key(..)`
-                            } else {
-                                // Do nothing, if this is not the newest value it should've
-                                // been skipped anyway, if this is then undef merged with
-                                // anything will still be undef
-                                continue;
-                            }
-                        } else {
-                            if a.get(key) != Some(a_val) {
-                                // Wasn't newest value
-                                continue;
-                            }
+                        if a.get(key) != Some(a_val) {
+                            // Wasn't newest value
+                            continue;
                         }
                     }
                     if !result.contains_key(key) {
+                        let mut new_written_bytes = a_val.written_bytes;
                         let needs_undef = if let Some(b_val) = b.get(key) {
-                            a_val != b_val
+                            new_written_bytes |= b_val.written_bytes;
+                            if a_val.value.is_undefined() {
+                                !a_is_imm || new_written_bytes != a_val.written_bytes
+                            } else {
+                                a_val != b_val
+                            }
                         } else {
                             true
                         };
@@ -2105,7 +2128,11 @@ impl<'e> MemoryMap<'e> {
                             // If the key with undefined was in imm, override its value,
                             // but otherwise just don't bother adding it back.
                             if !key.0.0.contains_undefined() || !a_is_imm {
-                                result.insert(*key, ctx.new_undef());
+                                let new_val = MemoryValue {
+                                    value: ctx.new_undef(),
+                                    written_bytes: new_written_bytes,
+                                };
+                                result.insert(*key, new_val);
                             }
                         }
                     }
@@ -2120,7 +2147,6 @@ impl<'e> MemoryMap<'e> {
                 slower_immutable,
                 immutable_depth: a.immutable_depth,
                 immutable_length,
-                all_undefined,
             }
         };
         result
@@ -2135,20 +2161,27 @@ impl<'e> MemoryMap<'e> {
         let common = a.common_immutable(b);
         let mut is_imm = false;
         for map in a.iter_maps_until_immutable(common) {
-            if !map.all_undefined {
-                for (key, &a_val) in map.map.iter() {
-                    if !key.0.0.contains_undefined() {
-                        if !a_val.is_undefined() {
-                            if b.get(key) != Some(a_val) {
-                                let was_newest_value = if !is_imm {
-                                    true
-                                } else {
-                                    a.get(key) == Some(a_val)
-                                };
-                                if was_newest_value {
-                                    return true;
-                                }
+            for (key, &a_val) in map.map.iter() {
+                if !key.0.0.contains_undefined() {
+                    let b_val = b.get(key);
+                    if b_val != Some(a_val) {
+                        // Check for a_val being undefined and covering all of
+                        // b_val's changed bytes, in which case it has not
+                        // merge changed.
+                        if a_val.value.is_undefined() {
+                            let b_written = b_val.map(|b| b.written_bytes).unwrap_or(0);
+                            if b_written | a_val.written_bytes == a_val.written_bytes {
+                                continue;
                             }
+                        }
+
+                        let was_newest_value = if !is_imm {
+                            true
+                        } else {
+                            a.get(key) == Some(a_val)
+                        };
+                        if was_newest_value {
+                            return true;
                         }
                     }
                 }
@@ -2159,11 +2192,17 @@ impl<'e> MemoryMap<'e> {
         for map in b.iter_maps_until_immutable(common) {
             for (key, &b_val) in map.map.iter() {
                 if !key.0.0.contains_undefined() {
-                    let different = match a.get(key) {
-                        Some(a_val) => !a_val.is_undefined() && a_val != b_val,
-                        None => true,
-                    };
-                    if different {
+                    let a_val = a.get(key);
+                    if a_val != Some(b_val) {
+                        if let Some(ref a_val) = a_val {
+                            if a_val.value.is_undefined() {
+                                let a_written = a_val.written_bytes;
+                                if b_val.written_bytes | a_written == a_written {
+                                    continue;
+                                }
+                            }
+                        }
+
                         let was_newest_value = if !is_imm {
                             true
                         } else {
@@ -2225,6 +2264,35 @@ fn if_1bit_neq<'e>(ctx: OperandCtx<'e>, op: Operand<'e>) -> Option<MergeConstrai
     } else {
         None
     }
+}
+
+#[inline]
+pub(crate) fn four_byte_mask_to_bit_mask(value: u8) -> u32 {
+    static LOOKUP: [u32; 16] = [
+        0x0000_0000,
+        0x0000_00ff,
+        0x0000_ff00,
+        0x0000_ffff,
+        0x00ff_0000,
+        0x00ff_00ff,
+        0x00ff_ff00,
+        0x00ff_ffff,
+        0xff00_0000,
+        0xff00_00ff,
+        0xff00_ff00,
+        0xff00_ffff,
+        0xffff_0000,
+        0xffff_00ff,
+        0xffff_ff00,
+        0xffff_ffff,
+    ];
+    LOOKUP[value as usize & 0xf]
+}
+
+#[inline]
+pub(crate) fn eight_byte_mask_to_bit_mask(value: u8) -> u64 {
+    (four_byte_mask_to_bit_mask(value & 0xf) as u64) |
+        ((four_byte_mask_to_bit_mask(value >> 4) as u64) << 32)
 }
 
 pub fn merge_constraint<'e>(
@@ -2419,6 +2487,17 @@ impl<'e> MergeStateCache<'e> {
 mod test {
     use super::*;
 
+    fn memval_op<'e>(value: Operand<'e>) -> MemoryValue<'e> {
+        MemoryValue {
+            value,
+            written_bytes: 0xff,
+        }
+    }
+
+    fn memval_const<'e>(ctx: OperandCtx<'e>, val: u64) -> MemoryValue<'e> {
+        memval_op(ctx.constant(val))
+    }
+
     #[test]
     fn apply_constraint() {
         let ctx = &crate::operand::OperandContext::new();
@@ -2533,17 +2612,17 @@ mod test {
         let ctx = &crate::operand::OperandContext::new();
         let mut a = Memory::new();
         let mut b = Memory::new();
-        a.set(ctx.constant(4), 0, ctx.constant(8));
-        a.set(ctx.constant(12), 0, ctx.constant(8));
-        b.set(ctx.constant(8), 0, ctx.constant(15));
-        b.set(ctx.constant(12), 0, ctx.constant(8));
+        a.set(ctx.constant(4), 0, memval_const(ctx, 8));
+        a.set(ctx.constant(12), 0, memval_const(ctx, 8));
+        b.set(ctx.constant(8), 0, memval_const(ctx, 15));
+        b.set(ctx.constant(12), 0, memval_const(ctx, 8));
         a.map.convert_immutable();
         b.map.convert_immutable();
         let mut cache = MergeStateCache::new();
         let mut new = cache.merge_memory(&a, &b, ctx);
-        assert!(new.get(ctx.constant(4), 0).unwrap().is_undefined());
-        assert!(new.get(ctx.constant(8), 0).unwrap().is_undefined());
-        assert_eq!(new.get(ctx.constant(12), 0).unwrap(), ctx.constant(8));
+        assert!(new.get(ctx.constant(4), 0).unwrap().value.is_undefined());
+        assert!(new.get(ctx.constant(8), 0).unwrap().value.is_undefined());
+        assert_eq!(new.get(ctx.constant(12), 0).unwrap(), memval_const(ctx, 8));
     }
 
     #[test]
@@ -2552,12 +2631,12 @@ mod test {
         let mut a = Memory::new();
         let mut b = Memory::new();
         let addr = ctx.sub_const(ctx.new_undef(), 8);
-        a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
-        b.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
+        a.set(addr, 0, memval_op(ctx.mem32(ctx.constant(4), 0)));
+        b.set(addr, 0, memval_op(ctx.mem32(ctx.constant(4), 0)));
         a.map.convert_immutable();
         let mut cache = MergeStateCache::new();
         let mut new = cache.merge_memory(&a, &b, ctx);
-        assert_eq!(new.get(addr, 0).unwrap(), ctx.mem32(ctx.constant(4), 0));
+        assert_eq!(new.get(addr, 0).unwrap(), memval_op(ctx.mem32(ctx.constant(4), 0)));
     }
 
     #[test]
@@ -2569,20 +2648,20 @@ mod test {
         let mut b = Memory::new();
         let addr = ctx.sub_const(ctx.register(4), 8);
         let addr2 = ctx.sub_const(ctx.register(4), 0xc);
-        a.set(addr, 0, ctx.constant(8));
-        a.set(addr2, 0, ctx.constant(0));
-        b.set(addr, 0, ctx.constant(4));
+        a.set(addr, 0, memval_const(ctx, 8));
+        a.set(addr2, 0, memval_const(ctx, 0));
+        b.set(addr, 0, memval_const(ctx, 4));
         a.map.convert_immutable();
         b.map.convert_immutable();
-        a.set(addr, 0, ctx.constant(4));
-        a.set(addr2, 0, ctx.constant(1));
+        a.set(addr, 0, memval_const(ctx, 4));
+        a.set(addr2, 0, memval_const(ctx, 1));
         //  { addr: 8, addr2: 4 }       { addr: 4 }
         //          ^                      ^
         //  a { addr: 4, addr2: 1 }     b { }
         let mut cache = MergeStateCache::new();
         let mut new = cache.merge_memory(&a, &b, ctx);
-        assert_eq!(new.get(addr, 0).unwrap(), ctx.constant(4));
-        assert!(new.get(addr2, 0).unwrap().is_undefined());
+        assert_eq!(new.get(addr, 0).unwrap(), memval_const(ctx, 4));
+        assert!(new.get(addr2, 0).unwrap().value.is_undefined());
     }
 
     #[test]
@@ -2593,11 +2672,11 @@ mod test {
         let mut a = Memory::new();
         let mut b = Memory::new();
         let addr = ctx.sub_const(ctx.register(4), 8);
-        a.set(addr, 0, ctx.constant(8));
-        b.set(addr, 0, ctx.constant(4));
+        a.set(addr, 0, memval_const(ctx, 8));
+        b.set(addr, 0, memval_const(ctx, 4));
         a.map.convert_immutable();
         b.map.convert_immutable();
-        a.set(addr, 0, ctx.constant(4));
+        a.set(addr, 0, memval_const(ctx, 4));
         assert!(!a.map.has_merge_changed(&b.map));
     }
 
@@ -2607,17 +2686,17 @@ mod test {
         let mut a = Memory::new();
         let addr = ctx.sub_const(ctx.register(5), 8);
         let addr2 = ctx.sub_const(ctx.register(5), 16);
-        a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
+        a.set(addr, 0, memval_op(ctx.mem32(ctx.constant(4), 0)));
         a.map.convert_immutable();
         let mut b = a.clone();
-        b.set(addr, 0, ctx.mem32(ctx.constant(9), 0));
+        b.set(addr, 0, memval_op(ctx.mem32(ctx.constant(9), 0)));
         b.map.convert_immutable();
-        a.set(addr, 0, ctx.new_undef());
-        a.set(addr2, 0, ctx.new_undef());
+        a.set(addr, 0, memval_op(ctx.new_undef()));
+        a.set(addr2, 0, memval_op(ctx.new_undef()));
         let mut cache = MergeStateCache::new();
         let mut new = cache.merge_memory(&a, &b, ctx);
-        assert!(new.get(addr, 0).unwrap().is_undefined());
-        assert!(new.get(addr2, 0).unwrap().is_undefined());
+        assert!(new.get(addr, 0).unwrap().value.is_undefined());
+        assert!(new.get(addr2, 0).unwrap().value.is_undefined());
     }
 
     #[test]
@@ -2641,23 +2720,23 @@ mod test {
         let mut a = Memory::new();
         let addr = ctx.sub_const(ctx.register(5), 8);
         let addr2 = ctx.sub_const(ctx.register(5), 16);
-        a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
+        a.set(addr, 0, memval_op(ctx.mem32(ctx.constant(4), 0)));
         a.map.convert_immutable();
         let mut b = a.clone();
-        b.set(addr2, 0, ctx.new_undef());
+        b.set(addr2, 0, memval_op(ctx.new_undef()));
         b.map.convert_immutable();
-        a.set(addr, 0, ctx.new_undef());
-        a.set(addr2, 0, ctx.new_undef());
+        a.set(addr, 0, memval_op(ctx.new_undef()));
+        a.set(addr2, 0, memval_op(ctx.new_undef()));
         //          base { addr: mem32[4] }
         //          ^               ^
         //  b { addr2: ud }     a { addr: ud, addr2: ud }
         let mut cache = MergeStateCache::new();
         let mut new = cache.merge_memory(&a, &b, ctx);
-        assert!(new.get(addr, 0).unwrap().is_undefined());
-        assert!(new.get(addr2, 0).unwrap().is_undefined());
+        assert!(new.get(addr, 0).unwrap().value.is_undefined());
+        assert!(new.get(addr2, 0).unwrap().value.is_undefined());
         let mut new = cache.merge_memory(&b, &a, ctx);
-        assert!(new.get(addr, 0).unwrap().is_undefined());
-        assert!(new.get(addr2, 0).unwrap().is_undefined());
+        assert!(new.get(addr, 0).unwrap().value.is_undefined());
+        assert!(new.get(addr2, 0).unwrap().value.is_undefined());
     }
 
     #[test]
@@ -2666,23 +2745,23 @@ mod test {
         let mut a = Memory::new();
         let addr = ctx.sub_const(ctx.register(5), 8);
         let addr2 = ctx.sub_const(ctx.register(5), 16);
-        a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
+        a.set(addr, 0, memval_op(ctx.mem32(ctx.constant(4), 0)));
         a.map.convert_immutable();
         let mut b = a.clone();
-        b.set(addr2, 0, ctx.new_undef());
+        b.set(addr2, 0, memval_op(ctx.new_undef()));
         b.map.convert_immutable();
-        a.set(addr, 0, ctx.constant(6));
-        a.set(addr2, 0, ctx.constant(5));
+        a.set(addr, 0, memval_const(ctx, 6));
+        a.set(addr2, 0, memval_const(ctx, 5));
         //          base { addr: mem32[4] }
         //          ^               ^
         //  b { addr2: ud }     a { addr: 6, addr2: 5 }
         let mut cache = MergeStateCache::new();
         let mut new = cache.merge_memory(&a, &b, ctx);
-        assert!(new.get(addr, 0).unwrap().is_undefined());
-        assert!(new.get(addr2, 0).unwrap().is_undefined());
+        assert!(new.get(addr, 0).unwrap().value.is_undefined());
+        assert!(new.get(addr2, 0).unwrap().value.is_undefined());
         let mut new = cache.merge_memory(&b, &a, ctx);
-        assert!(new.get(addr, 0).unwrap().is_undefined());
-        assert!(new.get(addr2, 0).unwrap().is_undefined());
+        assert!(new.get(addr, 0).unwrap().value.is_undefined());
+        assert!(new.get(addr2, 0).unwrap().value.is_undefined());
     }
 
     #[test]
@@ -2691,29 +2770,29 @@ mod test {
         let mut a = Memory::new();
         let addr = ctx.sub_const(ctx.register(5), 8);
         let addr2 = ctx.sub_const(ctx.register(5), 16);
-        a.set(addr, 0, ctx.constant(1));
-        a.set(addr2, 0, ctx.constant(2));
+        a.set(addr, 0, memval_const(ctx, 1));
+        a.set(addr2, 0, memval_const(ctx, 2));
         a.map.convert_immutable();
         let b = a.clone();
-        a.set(addr, 0, ctx.constant(6));
+        a.set(addr, 0, memval_const(ctx, 6));
         //      { addr: 1, addr2: 2 }
         //      ^             ^
         //  b { }     a { addr: 6 }
         let mut cache = MergeStateCache::new();
         let mut new = cache.merge_memory(&a, &b, ctx);
-        assert!(new.get(addr, 0).unwrap().is_undefined());
-        assert_eq!(new.get(addr2, 0).unwrap(), ctx.constant(2));
+        assert!(new.get(addr, 0).unwrap().value.is_undefined());
+        assert_eq!(new.get(addr2, 0).unwrap(), memval_const(ctx, 2));
         let mut cache = MergeStateCache::new();
         let mut new = cache.merge_memory(&b, &a, ctx);
-        assert!(new.get(addr, 0).unwrap().is_undefined());
-        assert_eq!(new.get(addr2, 0).unwrap(), ctx.constant(2));
+        assert!(new.get(addr, 0).unwrap().value.is_undefined());
+        assert_eq!(new.get(addr2, 0).unwrap(), memval_const(ctx, 2));
     }
 
     #[test]
     fn merge_memory_undef6() {
         fn add_filler<'e>(mem: &mut Memory<'e>, ctx: OperandCtx<'e>, seed: u64) {
             for i in 0..64 {
-                mem.set(ctx.constant(i * 0x100), 0, ctx.constant(seed + i));
+                mem.set(ctx.constant(i * 0x100), 0, memval_const(ctx, seed + i));
             }
         }
         let ctx = &crate::operand::OperandContext::new();
@@ -2721,17 +2800,17 @@ mod test {
         let mut b = Memory::new();
         let addr = ctx.sub_const(ctx.register(5), 8);
         let addr2 = ctx.sub_const(ctx.register(5), 16);
-        a.set(addr, 0, ctx.constant(3));
+        a.set(addr, 0, memval_const(ctx, 3));
         a.map.convert_immutable();
         add_filler(&mut a, ctx, 0);
         a.map.convert_immutable();
-        b.set(addr, 0, ctx.constant(2));
+        b.set(addr, 0, memval_const(ctx, 2));
         b.map.convert_immutable();
         let mut c = b.clone();
-        b.set(addr, 0, ctx.constant(3));
+        b.set(addr, 0, memval_const(ctx, 3));
         b.map.convert_immutable();
         add_filler(&mut c, ctx, 8);
-        c.set(addr2, 0, ctx.new_undef());
+        c.set(addr2, 0, memval_op(ctx.new_undef()));
 
         // Test against broken cache logic
         // If cache takes advantage of a+b = m merge,
@@ -2764,11 +2843,11 @@ mod test {
                 true => cache.merge_memory(&c, &m2, ctx),
             };
 
-            assert_eq!(a.get(addr, 0).unwrap(), ctx.constant(3));
-            assert_eq!(b.get(addr, 0).unwrap(), ctx.constant(3));
-            assert_eq!(m.get(addr, 0).unwrap(), ctx.constant(3));
-            assert_eq!(c.get(addr, 0).unwrap(), ctx.constant(2));
-            assert!(result.get(addr, 0).unwrap().is_undefined());
+            assert_eq!(a.get(addr, 0).unwrap(), memval_const(ctx, 3));
+            assert_eq!(b.get(addr, 0).unwrap(), memval_const(ctx, 3));
+            assert_eq!(m.get(addr, 0).unwrap(), memval_const(ctx, 3));
+            assert_eq!(c.get(addr, 0).unwrap(), memval_const(ctx, 2));
+            assert!(result.get(addr, 0).unwrap().value.is_undefined());
         }
     }
 
@@ -2804,9 +2883,9 @@ mod test {
         let addr = ctx.sub_const(ctx.register(5), 8);
         let addr2 = ctx.sub_const(ctx.register(5), 16);
         for i in 0..20 {
-            map.set(addr, 0, ctx.constant(i));
+            map.set(addr, 0, memval_const(ctx, i));
             if i == 3 {
-                map.set(addr2, 0, ctx.constant(8));
+                map.set(addr2, 0, memval_const(ctx, 8));
             }
             map.map.convert_immutable();
         }
@@ -2844,9 +2923,9 @@ mod test {
                 continue;
             }
 
-            assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
+            assert_eq!(pos.get(addr_key), Some(memval_const(ctx, i as u64)));
             if i >= 3 {
-                assert_eq!(pos.get(addr2_key), Some(ctx.constant(8)));
+                assert_eq!(pos.get(addr2_key), Some(memval_const(ctx, 8)));
             } else {
                 assert_eq!(pos.get(addr2_key), None);
             }
@@ -2854,15 +2933,15 @@ mod test {
             if matches!(i, 19 | 11 | 7 | 3) {
                 prev_fast = pos.immutable.as_deref();
                 pos = pos.slower_immutable.as_deref().unwrap();
-                assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
+                assert_eq!(pos.get(addr_key), Some(memval_const(ctx, i as u64)));
             }
             if i == 15 {
                 pos = pos.slower_immutable.as_deref().unwrap();
-                assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
+                assert_eq!(pos.get(addr_key), Some(memval_const(ctx, i as u64)));
 
                 prev_fast = pos.immutable.as_deref();
                 pos = pos.slower_immutable.as_deref().unwrap();
-                assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
+                assert_eq!(pos.get(addr_key), Some(memval_const(ctx, i as u64)));
             }
             if matches!(i, 16 | 12 | 8 | 4) {
                 let prev_fast = prev_fast.unwrap();
@@ -2878,7 +2957,7 @@ mod test {
     fn test_common_immutable() {
         fn add_immutables<'e>(mem: &mut Memory<'e>, ctx: OperandCtx<'e>, count: usize) {
             for i in 0..count {
-                mem.set(ctx.constant(444), 0, ctx.constant(i as u64));
+                mem.set(ctx.constant(444), 0, memval_const(ctx, i as u64));
                 mem.map.convert_immutable();
             }
         }
@@ -2886,7 +2965,7 @@ mod test {
         let mut mem = Memory::new();
         for i in 0..72 {
             println!("--- {} ---", i);
-            mem.set(ctx.constant(999), 0, ctx.constant(i as u64));
+            mem.set(ctx.constant(999), 0, memval_const(ctx, i as u64));
             mem.map.convert_immutable();
             let mut a = mem.clone();
             let mut b = mem.clone();
@@ -3174,11 +3253,15 @@ mod test {
         //      |        |      (18)
         //      |       (19)--->(19)
         let ctx = &crate::operand::OperandContext::new();
+        let memval_const = |val| {
+            super::test::memval_const(ctx, val)
+        };
+
         let mut map = Memory::new();
         let addr = ctx.sub_const(ctx.register(5), 8);
         let mut maps = Vec::new();
         for i in 0..20 {
-            map.set(addr, 0, ctx.constant(i));
+            map.set(addr, 0, memval_const(i));
             map.map.convert_immutable();
             maps.push(map.clone());
         }
@@ -3202,8 +3285,8 @@ mod test {
             .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
             .collect::<Vec<_>>();
         let cmp = vec![
-            ((addr, 0u64), ctx.constant(19), false),
-            ((addr, 0), ctx.constant(15), true),
+            ((addr, 0u64), memval_const(19), false),
+            ((addr, 0), memval_const(15), true),
         ];
         assert_eq!(results, cmp);
 
@@ -3213,10 +3296,10 @@ mod test {
             .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
             .collect::<Vec<_>>();
         let cmp = vec![
-            ((addr, 0u64), ctx.constant(19), false),
-            ((addr, 0), ctx.constant(15), true),
-            ((addr, 0), ctx.constant(14), true),
-            ((addr, 0), ctx.constant(13), true),
+            ((addr, 0u64), memval_const(19), false),
+            ((addr, 0), memval_const(15), true),
+            ((addr, 0), memval_const(14), true),
+            ((addr, 0), memval_const(13), true),
         ];
         assert_eq!(results, cmp);
 
@@ -3226,8 +3309,8 @@ mod test {
             .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
             .collect::<Vec<_>>();
         let cmp = vec![
-            ((addr, 0u64), ctx.constant(19), false),
-            ((addr, 0), ctx.constant(15), true),
+            ((addr, 0u64), memval_const(19), false),
+            ((addr, 0), memval_const(15), true),
         ];
         assert_eq!(results, cmp);
 
@@ -3237,10 +3320,10 @@ mod test {
             .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
             .collect::<Vec<_>>();
         let cmp = vec![
-            ((addr, 0u64), ctx.constant(19), false),
-            ((addr, 0), ctx.constant(15), true),
-            ((addr, 0), ctx.constant(11), true),
-            ((addr, 0), ctx.constant(7), true),
+            ((addr, 0u64), memval_const(19), false),
+            ((addr, 0), memval_const(15), true),
+            ((addr, 0), memval_const(11), true),
+            ((addr, 0), memval_const(7), true),
         ];
         assert_eq!(results, cmp);
 
@@ -3250,12 +3333,12 @@ mod test {
             .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
             .collect::<Vec<_>>();
         let cmp = vec![
-            ((addr, 0u64), ctx.constant(19), false),
-            ((addr, 0), ctx.constant(15), true),
-            ((addr, 0), ctx.constant(11), true),
-            ((addr, 0), ctx.constant(7), true),
-            ((addr, 0), ctx.constant(3), true),
-            ((addr, 0), ctx.constant(2), true),
+            ((addr, 0u64), memval_const(19), false),
+            ((addr, 0), memval_const(15), true),
+            ((addr, 0), memval_const(11), true),
+            ((addr, 0), memval_const(7), true),
+            ((addr, 0), memval_const(3), true),
+            ((addr, 0), memval_const(2), true),
         ];
         assert_eq!(results, cmp);
 
@@ -3265,13 +3348,13 @@ mod test {
             .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
             .collect::<Vec<_>>();
         let cmp = vec![
-            ((addr, 0u64), ctx.constant(14), false),
-            ((addr, 0), ctx.constant(13), true),
-            ((addr, 0), ctx.constant(12), true),
-            ((addr, 0), ctx.constant(11), true),
-            ((addr, 0), ctx.constant(7), true),
-            ((addr, 0), ctx.constant(3), true),
-            ((addr, 0), ctx.constant(2), true),
+            ((addr, 0u64), memval_const(14), false),
+            ((addr, 0), memval_const(13), true),
+            ((addr, 0), memval_const(12), true),
+            ((addr, 0), memval_const(11), true),
+            ((addr, 0), memval_const(7), true),
+            ((addr, 0), memval_const(3), true),
+            ((addr, 0), memval_const(2), true),
         ];
         assert_eq!(results, cmp);
     }
