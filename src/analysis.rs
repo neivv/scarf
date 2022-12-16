@@ -1266,8 +1266,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         if self.unchecked_branches.is_empty() {
             std::mem::swap(&mut self.unchecked_branches, &mut self.more_unchecked_branches);
         }
-        let addr = self.unchecked_branches.keys().next().cloned()?;
-        let state = self.unchecked_branches.remove(&addr).unwrap();
+        let (addr, state) = self.unchecked_branches.pop_first()?;
         Some((addr, (state.0, state.1), state.2))
     }
 
