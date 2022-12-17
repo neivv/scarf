@@ -1812,6 +1812,32 @@ pub fn simplify_lsh_const<'e>(
                     // but some simplifications benefit from shifting
                     // the inner value.
                     if let Some(c) = arith.right.if_constant() {
+                        if let Some(mem) = arith.left.if_memory() {
+                            let byte_shift = constant & !7;
+                            // If byte-sized shift can be removed by
+                            // changing address, remove it.
+                            // E.g. (Mem32[1] & ff00ff) << 8 to Mem32[0] & ff00ff00
+                            if ((c << byte_shift) & mem.size.mask()) >> byte_shift == c {
+                                let new_mask = c << byte_shift;
+                                let new_mem = ctx.memory(
+                                    &mem.with_offset_size(
+                                        0u64.wrapping_sub((byte_shift >> 3) as u64),
+                                        mem.size,
+                                    ),
+                                );
+                                let arith = ArithOperand {
+                                    ty: ArithOpType::And,
+                                    left: new_mem,
+                                    right: ctx.constant(new_mask),
+                                };
+                                let value = ctx.intern(OperandType::Arithmetic(arith));
+                                if constant & 7 == 0 {
+                                    return value;
+                                } else {
+                                    return intern_lsh_const(value, constant & 7, ctx);
+                                }
+                            }
+                        }
                         let zero_bits = (64 - constant)..64;
                         let high = 64 - zero_bits.start;
                         let low = left.relevant_bits().start;
@@ -6956,6 +6982,33 @@ fn simplify_with_and_mask_inner<'e>(
                     if let Some(c) = arith.right.if_constant() {
                         let c = c as u8;
                         let left = simplify_with_and_mask(arith.left, mask >> c, ctx, swzb_ctx);
+                        if let Some(mem) = left.if_memory() {
+                            // If byte-sized shift can be replaced with and mask by
+                            // changing address, do that.
+                            // Roughly matches how simplify_lsh_const does things, but
+                            // does not require exact same conditions for change.
+                            // As long as tests keep passing it's fine =)
+                            // E.g. `Mem32[1] << 8` with mask ffff_ffff to
+                            // `Mem32[0] & ffff_ff00`
+                            if c & 7 == 0 {
+                                // If and mask doesn't keep any bits greater than
+                                // unshifted mem, can replace the shift with
+                                // Mem & shift_mask
+                                let mem_mask = mem.size.mask();
+                                if mask <= mem_mask {
+                                    let shift_bytes = 0u64.wrapping_sub((c >> 3) as u64);
+                                    let new_mem = ctx.memory(&mem.with_offset(shift_bytes));
+                                    let new_mask = mask & (mem_mask >> c << c);
+                                    let arith = ArithOperand {
+                                        ty: ArithOpType::And,
+                                        left: new_mem,
+                                        right: ctx.constant(new_mask),
+                                    };
+                                    let value = ctx.intern(OperandType::Arithmetic(arith));
+                                    return value;
+                                }
+                            }
+                        }
                         if left == arith.left {
                             op
                         } else {
@@ -7532,19 +7585,18 @@ fn simplify_with_and_mask_mem_dont_apply_shift<'e>(
         return (op, 0);
     }
     let mask_size = mask_high - mask_low;
-    let mem_size = mem.size.bits();
+    let mem_size = mem.size.bytes();
     let new_size;
-    if mask_size <= 1 && mem_size > 8 {
+    if mask_size <= 1 && mem_size > 1 {
         new_size = MemAccessSize::Mem8;
-    } else if mask_size <= 2 && mem_size > 16 {
+    } else if mask_size <= 2 && mem_size > 2 {
         new_size = MemAccessSize::Mem16;
-    } else if mask_size <= 4 && mem_size > 32 {
+    } else if mask_size <= 4 && mem_size > 4 {
         new_size = MemAccessSize::Mem32;
     } else {
         return (op, 0);
     }
-    let (address, offset) = mem.address();
-    let mem = ctx.mem_any(new_size, address, offset.wrapping_add(mask_low as u64));
+    let mem = ctx.memory(&mem.with_offset_size(mask_low as u64, new_size));
     (mem, (mask_low as u8) << 3)
 }
 

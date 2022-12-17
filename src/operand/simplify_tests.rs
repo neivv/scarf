@@ -11411,3 +11411,57 @@ fn simplify_masked_mul_const() {
 
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn equivalent_masked_shifted_memory() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.mem32(ctx.register(0), 0x101),
+        0xff00_ff00,
+    );
+    let eq1 = ctx.lsh_const(
+        ctx.and_const(
+            ctx.mem32(ctx.register(0), 0x102),
+            0xff00_ff,
+        ),
+        8,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn equivalent_masked_shifted_memory2() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.mem64(ctx.register(0), 0x101),
+        0x00ff_ff00_ff00,
+    );
+    let eq1 = ctx.lsh_const(
+        ctx.and_const(
+            ctx.mem32(ctx.register(0), 0x102),
+            0xffff00_ff,
+        ),
+        8,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn equivalent_masked_shifted_memory3() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.lsh_const(
+        ctx.and_const(
+            ctx.mem32(ctx.register(0), 0x101),
+            0xff00_ff00,
+        ),
+        4,
+    );
+    let eq1 = ctx.lsh_const(
+        ctx.and_const(
+            ctx.mem32(ctx.register(0), 0x102),
+            0xff00_ff,
+        ),
+        12,
+    );
+    assert_eq!(op1, eq1);
+}

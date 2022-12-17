@@ -3249,6 +3249,17 @@ impl<'e> MemAccess<'e> {
     }
 
     /// Creates new `MemAccess` with address offset from `self` by `offset`
+    /// and same size as before.
+    pub fn with_offset(&self, offset: u64) -> MemAccess<'e> {
+        MemAccess {
+            base: self.base,
+            offset: self.offset.wrapping_add(offset),
+            size: self.size,
+            const_base: self.const_base,
+        }
+    }
+
+    /// Creates new `MemAccess` with address offset from `self` by `offset`
     /// and size set to `size`.
     pub fn with_offset_size(&self, offset: u64, size: MemAccessSize) -> MemAccess<'e> {
         MemAccess {
