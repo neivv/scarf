@@ -1679,18 +1679,27 @@ pub fn simplify_lsh<'e>(
             if left == ctx.const_0() {
                 return left;
             }
-            let arith = ArithOperand {
-                ty: ArithOpType::Lsh,
-                left,
-                right,
-            };
-            return ctx.intern(OperandType::Arithmetic(arith));
+            return intern_arith(ctx, left, right, ArithOpType::Lsh);
         }
     };
     if constant >= 256 {
         return ctx.const_0();
     }
     simplify_lsh_const(left, constant as u8, ctx, swzb_ctx)
+}
+
+fn intern_arith<'e>(
+    ctx: OperandCtx<'e>,
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ty: ArithOpType,
+) -> Operand<'e> {
+    let arith = ArithOperand {
+        ty,
+        left,
+        right,
+    };
+    ctx.intern(OperandType::Arithmetic(arith))
 }
 
 fn intern_and_const<'e>(
@@ -1712,28 +1721,18 @@ fn intern_and_const<'e>(
                     }
                 };
                 if let Some(shift) = shift {
-                    let a = ArithOperand {
-                        ty: ArithOpType::And,
-                        left: arith.left,
-                        right: ctx.constant(constant >> shift),
-                    };
-                    let masked = ctx.intern(OperandType::Arithmetic(a));
-                    let a = ArithOperand {
-                        ty: arith.ty,
-                        left: masked,
-                        right: arith.right,
-                    };
-                    return ctx.intern(OperandType::Arithmetic(a));
+                    let masked = intern_arith(
+                        ctx,
+                        arith.left,
+                        ctx.constant(constant >> shift),
+                        ArithOpType::And,
+                    );
+                    return intern_arith(ctx, masked, arith.right, arith.ty);
                 }
             }
         }
     }
-    let arith = ArithOperand {
-        ty: ArithOpType::And,
-        left,
-        right: ctx.constant(constant),
-    };
-    ctx.intern(OperandType::Arithmetic(arith))
+    intern_arith(ctx, left, ctx.constant(constant), ArithOpType::And)
 }
 
 fn intern_lsh_const<'e>(
@@ -1743,19 +1742,9 @@ fn intern_lsh_const<'e>(
 ) -> Operand<'e> {
     // Normalize small shifts to a mul
     if constant < 0x6 {
-        let arith = ArithOperand {
-            ty: ArithOpType::Mul,
-            left: left,
-            right: ctx.constant(1 << constant),
-        };
-        ctx.intern(OperandType::Arithmetic(arith))
+        intern_arith(ctx, left, ctx.constant(1 << constant), ArithOpType::Mul)
     } else {
-        let arith = ArithOperand {
-            ty: ArithOpType::Lsh,
-            left: left,
-            right: ctx.constant(constant as u64),
-        };
-        ctx.intern(OperandType::Arithmetic(arith))
+        intern_arith(ctx, left, ctx.constant(constant as u64), ArithOpType::Lsh)
     }
 }
 
