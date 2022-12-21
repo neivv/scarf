@@ -11465,3 +11465,49 @@ fn equivalent_masked_shifted_memory3() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn eq_zero_xor_1() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor_const(
+        ctx.gt(
+            ctx.register(1),
+            ctx.register(0),
+        ),
+        1,
+    );
+    let eq1 = ctx.eq_const(
+        ctx.gt(
+            ctx.register(1),
+            ctx.register(0),
+        ),
+        0,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn neq_xor_1() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.xor(
+        ctx.gt(
+            ctx.register(1),
+            ctx.register(0),
+        ),
+        ctx.gt(
+            ctx.register(2),
+            ctx.register(4),
+        ),
+    );
+    let eq1 = ctx.neq(
+        ctx.gt(
+            ctx.register(1),
+            ctx.register(0),
+        ),
+        ctx.gt(
+            ctx.register(2),
+            ctx.register(4),
+        ),
+    );
+    assert_eq!(op1, eq1);
+}

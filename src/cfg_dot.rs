@@ -164,82 +164,18 @@ fn comparision_from_operand<'e>(
                         false => None,
                     };
                     if let Some(other) = other {
-                        if let Some(inner) = comparision_from_operand(ctx, other) {
-                            let inverted = match inner.comparision {
-                                Comparision::Equal => Comparision::NotEqual,
-                                Comparision::NotEqual => Comparision::Equal,
-                                Comparision::LessThan => Comparision::GreaterOrEqual,
-                                Comparision::GreaterOrEqual => Comparision::LessThan,
-                                Comparision::GreaterThan => Comparision::LessOrEqual,
-                                Comparision::LessOrEqual => Comparision::GreaterThan,
-                                Comparision::SignedLessThan => Comparision::SignedGreaterOrEqual,
-                                Comparision::SignedGreaterOrEqual => Comparision::SignedLessThan,
-                                Comparision::SignedGreaterThan => Comparision::SignedLessOrEqual,
-                                Comparision::SignedLessOrEqual => Comparision::SignedGreaterThan,
-                            };
-                            Some(ComparisionGuess {
-                                comparision: inverted,
-                                ..inner
-                            })
-                        } else {
-                            let (other, size) = extract_mask_single(other);
-                            let (l2, r2) = compare_base_op(ctx, other).decide(ctx);
-                            Some(ComparisionGuess {
-                                comparision: Comparision::Equal,
-                                left: l2,
-                                right: r2,
-                                size,
-                            })
-                        }
+                        neq_comparison(ctx, other)
                     } else {
-                        if let Some(left) = comparision_from_operand(ctx, l) {
-                            let right = comparision_from_operand(ctx, r)
-                                .filter(|r| r.size == left.size);
-                            if let Some(right) = right {
-                                let lc = left.comparision;
-                                let ll = left.left;
-                                let lr = left.right;
-                                let rc = right.comparision;
-                                let rl = right.left;
-                                let rr = right.right;
-                                let result = sign_flag_check(ctx, lc, ll, lr, left.size)
-                                    .and_then(|x| {
-                                        Some((x, overflow_flag_check(ctx, rc, rl, rr, right.size)?))
-                                    })
-                                    .and_then(|(op1, op2)| {
-                                        op1.decide_with_lhs(ctx, op2.0)
-                                            .filter(|op1_new| *op1_new == op2)
-                                    })
-                                    .or_else(|| {
-                                        sign_flag_check(ctx, rc, rl, rr, right.size)
-                                            .and_then(|x| {
-                                                Some((
-                                                    x,
-                                                    overflow_flag_check(ctx, lc, ll, lr, left.size)?,
-                                                ))
-                                            })
-                                            .and_then(|(op1, op2)| {
-                                                op1.decide_with_lhs(ctx, op2.0)
-                                                    .filter(|op1_new| *op1_new == op2)
-                                            })
-                                    });
-                                if let Some(result) = result {
-                                    return Some(ComparisionGuess {
-                                        comparision: Comparision::SignedGreaterOrEqual,
-                                        left: result.0,
-                                        right: result.1,
-                                        size: left.size,
-                                    });
-                                }
-                            }
-                        }
-                        let (l, r, size) = extract_masks(l, r);
-                        Some(ComparisionGuess {
-                            comparision: Comparision::Equal,
-                            left: l,
-                            right: r,
-                            size,
-                        })
+                        eq_not_zero_comparison(ctx, l, r)
+                    }
+                }
+                ArithOpType::Xor => {
+                    // 1bit x ^ y is same as (x == y) == 0
+                    if oper.relevant_bits().end == 1 {
+                        let eq_result = eq_not_zero_comparison(ctx, l, r)?;
+                        Some(invert_comparison_guess(eq_result))
+                    } else {
+                        None
                     }
                 }
                 ArithOpType::GreaterThan => {
@@ -373,6 +309,95 @@ fn comparision_from_operand<'e>(
         },
         _ => None,
     }
+}
+
+fn invert_comparison_guess<'e>(inner: ComparisionGuess<'e>) -> ComparisionGuess<'e> {
+    let inverted = match inner.comparision {
+        Comparision::Equal => Comparision::NotEqual,
+        Comparision::NotEqual => Comparision::Equal,
+        Comparision::LessThan => Comparision::GreaterOrEqual,
+        Comparision::GreaterOrEqual => Comparision::LessThan,
+        Comparision::GreaterThan => Comparision::LessOrEqual,
+        Comparision::LessOrEqual => Comparision::GreaterThan,
+        Comparision::SignedLessThan => Comparision::SignedGreaterOrEqual,
+        Comparision::SignedGreaterOrEqual => Comparision::SignedLessThan,
+        Comparision::SignedGreaterThan => Comparision::SignedLessOrEqual,
+        Comparision::SignedLessOrEqual => Comparision::SignedGreaterThan,
+    };
+    ComparisionGuess {
+        comparision: inverted,
+        ..inner
+    }
+}
+
+fn neq_comparison<'e>(ctx: OperandCtx<'e>, other: Operand<'e>) -> Option<ComparisionGuess<'e>> {
+    if let Some(inner) = comparision_from_operand(ctx, other) {
+        Some(invert_comparison_guess(inner))
+    } else {
+        let (other, size) = extract_mask_single(other);
+        let (l2, r2) = compare_base_op(ctx, other).decide(ctx);
+        Some(ComparisionGuess {
+            comparision: Comparision::Equal,
+            left: l2,
+            right: r2,
+            size,
+        })
+    }
+}
+
+fn eq_not_zero_comparison<'e>(
+    ctx: OperandCtx<'e>,
+    l: Operand<'e>,
+    r: Operand<'e>,
+) -> Option<ComparisionGuess<'e>> {
+    if let Some(left) = comparision_from_operand(ctx, l) {
+        let right = comparision_from_operand(ctx, r)
+            .filter(|r| r.size == left.size);
+        if let Some(right) = right {
+            let lc = left.comparision;
+            let ll = left.left;
+            let lr = left.right;
+            let rc = right.comparision;
+            let rl = right.left;
+            let rr = right.right;
+            let result = sign_flag_check(ctx, lc, ll, lr, left.size)
+                .and_then(|x| {
+                    Some((x, overflow_flag_check(ctx, rc, rl, rr, right.size)?))
+                })
+                .and_then(|(op1, op2)| {
+                    op1.decide_with_lhs(ctx, op2.0)
+                        .filter(|op1_new| *op1_new == op2)
+                })
+                .or_else(|| {
+                    sign_flag_check(ctx, rc, rl, rr, right.size)
+                        .and_then(|x| {
+                            Some((
+                                x,
+                                overflow_flag_check(ctx, lc, ll, lr, left.size)?,
+                            ))
+                        })
+                        .and_then(|(op1, op2)| {
+                            op1.decide_with_lhs(ctx, op2.0)
+                                .filter(|op1_new| *op1_new == op2)
+                        })
+                });
+            if let Some(result) = result {
+                return Some(ComparisionGuess {
+                    comparision: Comparision::SignedGreaterOrEqual,
+                    left: result.0,
+                    right: result.1,
+                    size: left.size,
+                });
+            }
+        }
+    }
+    let (l, r, size) = extract_masks(l, r);
+    Some(ComparisionGuess {
+        comparision: Comparision::Equal,
+        left: l,
+        right: r,
+        size,
+    })
 }
 
 fn check_signed_lt_zero(

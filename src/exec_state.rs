@@ -2131,6 +2131,39 @@ impl<'a, 'e> Iterator for MemoryIterMapsUntilImm<'a, 'e> {
     }
 }
 
+/// merge_constraint wants to extract `x` from `x == 0` as well
+/// as `x == y` from `x ^ y`, but avoid simplifying `x == y` until it is surely needed.
+#[derive(Copy, Clone)]
+enum MergeConstraint1BitNeq<'e> {
+    Op(Operand<'e>),
+    LazyEq(Operand<'e>, Operand<'e>),
+}
+
+impl<'e> MergeConstraint1BitNeq<'e> {
+    fn get(self, ctx: OperandCtx<'e>) -> Operand<'e> {
+        match self {
+            MergeConstraint1BitNeq::Op(op) => op,
+            MergeConstraint1BitNeq::LazyEq(a, b) => ctx.eq(a, b),
+        }
+    }
+}
+
+fn if_1bit_neq<'e>(ctx: OperandCtx<'e>, op: Operand<'e>) -> Option<MergeConstraint1BitNeq<'e>> {
+    let arith = op.if_arithmetic_any()?;
+    if arith.ty == ArithOpType::Equal &&
+        arith.right == ctx.const_0() &&
+        arith.left.relevant_bits().end == 1
+    {
+        Some(MergeConstraint1BitNeq::Op(arith.left))
+    } else if arith.ty == ArithOpType::Xor &&
+        op.relevant_bits().end == 1
+    {
+        Some(MergeConstraint1BitNeq::LazyEq(arith.left, arith.right))
+    } else {
+        None
+    }
+}
+
 pub fn merge_constraint<'e>(
     ctx: OperandCtx<'e>,
     old: Option<Constraint<'e>>,
@@ -2141,15 +2174,11 @@ pub fn merge_constraint<'e>(
     }
     let old = old?;
     let new = new?;
-    if let Some((old_l, old_r)) = old.0.if_arithmetic_eq() {
-        if let Some((new_l, new_r)) = new.0.if_arithmetic_eq() {
-            if old_r == ctx.const_0() && new_r == ctx.const_0() {
-                if old_l.relevant_bits().end == 1 && new_l.relevant_bits().end == 1 {
-                    // Use De Morgan's laws
-                    let res = merge_constraint_inner(ctx, old_l, new_l, ArithOpType::Or)?;
-                    return Some(Constraint(ctx.eq_const(res, 0)));
-                }
-            }
+    if let Some(old) = if_1bit_neq(ctx, old.0) {
+        if let Some(new) = if_1bit_neq(ctx, new.0) {
+            // Use De Morgan's laws
+            let res = merge_constraint_inner(ctx, old.get(ctx), new.get(ctx), ArithOpType::Or)?;
+            return Some(Constraint(ctx.eq_const(res, 0)));
         }
     }
     let res = merge_constraint_inner(ctx, old.0, new.0, ArithOpType::And)?;
@@ -3092,4 +3121,24 @@ fn test_is_flag_const_constraint() {
         is_flag_const_constraint(ctx, neq_0).unwrap(),
         (Flag::Zero, ctx.constant(1)),
     );
+}
+
+#[test]
+fn merge_flag_eq_constraint() {
+    let ctx = &crate::operand::OperandContext::new();
+    let flag_eq = ctx.eq(
+        ctx.flag_s(),
+        ctx.flag_o(),
+    );
+    // A: (s == o) == 0
+    // B: ((s == o) | z) == 0
+    //  => ((s == o) == 0) & (z == 0)
+    // Can keep (s == o) == 0
+    let a = ctx.eq_const(flag_eq, 0);
+    let b = ctx.eq_const(
+        ctx.or(flag_eq, ctx.flag_z()),
+        0,
+    );
+    let result = merge_constraint(ctx, Some(Constraint(a)), Some(Constraint(b))).unwrap();
+    assert_eq!(result.0, a);
 }

@@ -2531,6 +2531,17 @@ pub fn simplify_eq_const<'e>(
                         );
                     }
                 }
+                // Also 1bit (x == y) == 0 => x ^ y
+                if arith.left.relevant_bits().end == 1 {
+                    if arith.right.relevant_bits().end == 1 && arith.right != ctx.const_1() {
+                        return simplify_xor(
+                            arith.left,
+                            arith.right,
+                            ctx,
+                            &mut SimplifyWithZeroBits::default(),
+                        );
+                    }
+                }
             } else if arith.ty == ArithOpType::Sub {
                 // Simplify x - y == 0 as x == y
                 return simplify_eq(arith.left, arith.right, ctx);
@@ -4694,12 +4705,21 @@ fn simplify_demorgan<'e>(
 ) {
     let mut i = 0;
     let mut op = None;
+    let mut result_is_xor = false;
     let zero = ctx.const_0();
     while i < ops.len() {
-        if let Some((l, r)) = ops[i].if_arithmetic_eq() {
-            if r == zero {
-                op = Some(l);
-                break;
+        let val = ops[i];
+        if val.relevant_bits().end == 1 {
+            if let Some(arith) = val.if_arithmetic_any() {
+                if arith.ty == ArithOpType::Equal && arith.right == zero {
+                    op = Some(arith.left);
+                    break;
+                } else if arith.ty == ArithOpType::Xor {
+                    // 1bit (x ^ y) is same as (x == y) == 0
+                    op = Some(val);
+                    result_is_xor = true;
+                    break;
+                }
             }
         }
         i = i.wrapping_add(1);
@@ -4709,12 +4729,28 @@ fn simplify_demorgan<'e>(
         i = i.wrapping_add(1);
         let mut result = op;
         while i < ops.len() {
-            if let Some((l, r)) = ops[i].if_arithmetic_eq() {
-                if r == zero {
+            let val = ops[i];
+            if val.relevant_bits().end == 1 {
+                if let Some(arith) = val.if_arithmetic_any() {
+                    let new = if arith.ty == ArithOpType::Equal && arith.right == zero {
+                        arith.left
+                    } else if arith.ty == ArithOpType::Xor {
+                        ctx.eq(arith.left, arith.right)
+                    } else {
+                        i += 1;
+                        continue;
+                    };
+                    if result_is_xor {
+                        // Fix first result being xor to form that is `n` from `n == 0`
+                        result_is_xor = false;
+                        if let Some(arith) = result.if_arithmetic_any() {
+                            result = ctx.eq(arith.left, arith.right);
+                        }
+                    }
                     result = ctx.arithmetic(
                         merge_ty,
                         result,
-                        l,
+                        new,
                     );
                     ops.swap_remove(i);
                     // Don't increment i
@@ -7694,13 +7730,15 @@ pub fn simplify_xor<'e>(
     if right_bits.start >= right_bits.end {
         return left;
     }
+    if left_bits.end == 1 &&
+        right_bits.end == 1 &&
+        (left == ctx.const_1() || right == ctx.const_1())
+    {
+        // 1bit x ^ y => x != y
+        return ctx.neq(left, right);
+    }
     if let Some((l, r)) = check_quick_arith_simplify(left, right) {
-        let arith = ArithOperand {
-            ty: ArithOpType::Xor,
-            left: l.clone(),
-            right: r.clone(),
-        };
-        return ctx.intern(OperandType::Arithmetic(arith));
+        return intern_arith(ctx, l, r, ArithOpType::Xor);
     }
     // Simplify (x & a) ^ (y & a) to (x ^ y) & a
     if let Some((l, r, mask)) = check_shared_and_mask(left, right) {
@@ -7731,12 +7769,7 @@ pub fn simplify_xor<'e>(
             // This is likely some hash function being unrolled, give up
             // Also set swzb to stop everything
             swzb.with_and_mask_count = u8::MAX;
-            let arith = ArithOperand {
-                ty: ArithOpType::Xor,
-                left,
-                right,
-            };
-            return ctx.intern(OperandType::Arithmetic(arith));
+            return intern_arith(ctx, left, right, ArithOpType::Xor);
         })
 }
 
