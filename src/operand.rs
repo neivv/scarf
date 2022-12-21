@@ -51,7 +51,7 @@ use self::slice_stack::SliceStack;
 /// address.
 ///
 /// All `Operand`s are created through [`OperandContext`] arena, which interns the created
-/// `Operand`s, allowing implementing equality comparision as a single reference equality
+/// `Operand`s, allowing implementing equality comparison as a single reference equality
 /// check. The lifetime `'e` refers to this backing memory in `OperandContext`
 /// which the `Operand` reference points to.
 ///
@@ -110,7 +110,7 @@ use self::slice_stack::SliceStack;
 /// ## Canonicalization guarantees
 ///
 /// Simplification tries to convert any equivalent expression to a single 'canonical' form,
-/// to make equality comparisions useful. As the simplification rules get improved, this may
+/// to make equality comparisons useful. As the simplification rules get improved, this may
 /// result in user code which matches against a specific form of arithmetic expression to break.
 ///
 /// This does mean that updating scarf dependency can bring surprising breaking changes! Try to
@@ -208,7 +208,7 @@ pub(crate) struct OperandBase<'e> {
     /// And when there are conflicts (E.g. Mem32[rax], Mem8[rax], Mem32[rax + 8]
     /// have all same sort_order) it should be quick to check remaining variables.
     /// (In general you'd never compare two equal `OperandBase`s, since `Operand`
-    /// comparision includes equality check already.)
+    /// comparison includes equality check already.)
     ///
     /// `sort_order` could be also used as input to hash, though it would require
     /// remembering to add data that is not included, with `Memory` and other
@@ -592,7 +592,7 @@ const fn sign_mask_const_index(group: usize) -> usize {
 /// A variable of type `OperandContext` / `OperandCtx` is usually named `ctx`.
 ///
 /// `OperandContext` is used to create `Operand`s, returning reference to already existing
-/// `Operand` if it was already created, allowing equality comparisions be done with a simple
+/// `Operand` if it was already created, allowing equality comparisons be done with a simple
 /// pointer equality check.
 ///
 /// Additionally `OperandContext` makes sure that all created `Operand`s are simplified and
@@ -617,7 +617,7 @@ const fn sign_mask_const_index(group: usize) -> usize {
 /// two different `OperandContext`s. However, if you have `OperandCtx<'static>` or create two
 /// separate `OperandContext`s in same scope, Rust allows assigning the same lifetime to them,
 /// allowing the allocations to be mixed. While this is not expected to cause memory safety
-/// issues, it will make scarf produce nonsensical results as equality comparisions are no
+/// issues, it will make scarf produce nonsensical results as equality comparisons are no
 /// longer reliable. Try to avoid cases where there are two `OperandContext` with same lifetime.
 ///
 /// A common use case for multiple `OperandContext`s is to use a shorter-lived one to analyze
@@ -644,10 +644,10 @@ const fn sign_mask_const_index(group: usize) -> usize {
 ///
 /// Some code uses this to micro-optimize cases where you want to check if `Operand` equals
 /// to constant zero/one or constant register.
-/// `op.if_constant() == 0` has to do two comparisions and two memory reads:
+/// `op.if_constant() == 0` has to do two comparisons and two memory reads:
 /// One to verify `OperandType::Constant` variant, second to verify that the constant is zero.
 /// `op == ctx.const_0()` does just a single memory read to get the cached const_0, and
-/// a single pointer comparision.
+/// a single pointer comparison.
 pub struct OperandContext<'e> {
     next_undefined: Cell<u32>,
     max_undefined: Cell<u32>,
@@ -2404,7 +2404,7 @@ impl<'e> OperandType<'e> {
         }
     }
 
-    /// Separate function for comparision when fast path doesn't work
+    /// Separate function for comparison when fast path doesn't work
     /// (Give compiler chance to inline only fast path if it wants)
     ///
     /// Assumes that self and other have same `OperandType` variant
@@ -2417,9 +2417,9 @@ impl<'e> OperandType<'e> {
         } else if let OperandType::Arithmetic(ref self_arith) = *self {
             if let OperandType::Arithmetic(ref other_arith) = *other {
                 // Note that ArithOperand (i.e. without sort_order)
-                // comparision can give different result than OperandType comparision since
+                // comparison can give different result than OperandType comparison since
                 // sort_order depends on both left and right, while ArithOperand
-                // is left-then-right comparision.
+                // is left-then-right comparison.
                 return self_arith.cmp(other_arith);
             }
         } else if let OperandType::ArithmeticFloat(ref self_arith, self_size) = *self {
@@ -3175,7 +3175,7 @@ impl Clone for SelfOwnedOperand {
 #[cfg_attr(feature = "serde", derive(Serialize))]
 #[derive(Copy, Clone, Eq, Ord, PartialOrd)]
 pub struct MemAccess<'e> {
-    // Note: OperandType comparision relies on base being compared
+    // Note: OperandType comparison relies on base being compared
     // first here with Ord derive
     base: Operand<'e>,
     offset: u64,

@@ -2702,7 +2702,7 @@ fn simplify_eq_main<'e>(
     right: Operand<'e>,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
-    // Equality is just bit comparision without overflow semantics, even though
+    // Equality is just bit comparison without overflow semantics, even though
     // this also uses x == y => x - y == 0 property to simplify it.
     let shared_mask = left.relevant_bits_mask() | right.relevant_bits_mask();
     let add_sub_mask = if shared_mask == 0 {
@@ -2805,7 +2805,7 @@ fn simplify_eq_ops<'e>(
                 }
                 simplify_eq_1op_const(op, constant, ctx)
             } else {
-                // constant == 0 so ops[0] == 0 comparision
+                // constant == 0 so ops[0] == 0 comparison
                 if let Some((left, right)) = ops[0].0.if_arithmetic_eq() {
                     // Check for (x == 0) == 0
                     if right == zero {
@@ -4936,7 +4936,7 @@ fn equal_when_shifted_right<'e>(
     None
 }
 
-// Simplify or: merge comparisions
+// Simplify or: merge comparisons
 // Converts
 // (c > x) | (c == x) to (c + 1 > x),
 //      More general: (c1 > x - c2) | (c1 + c2) == x to (c1 + 1 > x - c2)
@@ -4946,7 +4946,7 @@ fn equal_when_shifted_right<'e>(
 // (x == 0) | (x == 1) to (2 > x)
 // Cannot do for values that can overflow, so just limit it to constants for now.
 // (Well, could do (c + 1 > x) | (c == max_value), but that isn't really simpler)
-fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
+fn simplify_or_merge_comparisons<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
     struct Match<'e> {
         op: Operand<'e>,
         // y in (x > (y + c))
@@ -5135,7 +5135,7 @@ fn simplify_or_merge_comparisions<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) 
 /// so more correct implementation would be something like
 /// simplify(`lhs == rhs + 5000`).left == compare
 ///
-/// Helper for simplify_or_merge_comparisions.
+/// Helper for simplify_or_merge_comparisons.
 fn is_eq_sub_for_gt<'e>(
     lhs: Operand<'e>,
     rhs: Operand<'e>,
@@ -6665,7 +6665,7 @@ fn simplify_or_ops<'e>(
             simplify_or_merge_child_ands(ops, ctx, swzb_ctx, !const_val, ArithOpType::Or)?;
             simplify_or_merge_xors(ops, ctx, swzb_ctx);
             simplify_or_with_xor_of_op(ops, ctx);
-            simplify_or_merge_comparisions(ops, ctx);
+            simplify_or_merge_comparisons(ops, ctx);
             simplify_xor_merge_ands_with_same_mask(ops, true, ctx, swzb_ctx);
             simplify_demorgan(ops, ctx, ArithOpType::And);
         }

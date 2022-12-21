@@ -142,7 +142,7 @@ fn operand_type_hash(ty: &OperandType<'_>) -> usize {
         // Should be handled by const interner
         OperandType::Constant(_) => unreachable!(),
         // Note: copy_operand requires being able to copy undef, so it may get
-        // interned by this -- even if it doesn't behave too well for comparisions.
+        // interned by this -- even if it doesn't behave too well for comparisons.
         OperandType::Undefined(s) => s.0.hash(&mut hasher),
         OperandType::Custom(c) => c.hash(&mut hasher),
         OperandType::Flag(f) => (f as u8).hash(&mut hasher),

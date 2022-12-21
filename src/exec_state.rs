@@ -2233,7 +2233,7 @@ fn collect_ops<'e>(
 ///
 /// For now, it caches last memory-changed result and
 /// memory-merge results. Merge result caching is especially useful, as the
-/// results will share their Rc pointer values, allowing deep comparisions
+/// results will share their Rc pointer values, allowing deep comparisons
 /// between them skipped - and even more merge caching.
 ///
 /// This should be useful any time a branch has two destinations which aren't
