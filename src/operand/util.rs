@@ -210,7 +210,7 @@ pub fn remove_eq_arith_parts_sorted_and_rejoin<'e>(
 ) -> Option<Operand<'e>> {
     remove_eq_arith_parts_sorted(ctx, slice, arith, |result| {
         // assumes that the func input was sorted / simplified arith.
-        let result = intern_arith_ops_to_tree(ctx, result.iter().copied().rev(), arith.2)
+        let result = intern_arith_ops_to_tree(ctx, result, arith.2)
             .unwrap_or_else(|| ctx.const_0());
         result
     })
@@ -289,7 +289,7 @@ pub fn remove_matching_arith_parts_sorted_and_rejoin<'e>(
                 }
             }
         }
-        let result = intern_arith_ops_to_tree(ctx, result.iter().copied().rev(), ty)
+        let result = intern_arith_ops_to_tree(ctx, result, ty)
             .unwrap_or_else(|| ctx.const_0());
         Some(result)
     })
@@ -450,7 +450,7 @@ fn rejoin_op_without_parts<'e>(
             let (&last, rest) = result.split_last()?;
             (last, rest)
         };
-        Some(intern_arith_ops_to_tree_with_base(ctx, first, parts.iter().copied().rev(), ty))
+        Some(intern_arith_ops_to_tree_with_base(ctx, first, parts, ty))
     })
 }
 
@@ -525,27 +525,25 @@ pub fn sorted_arith_chain_remove_one_and_join<'e>(
     pos
 }
 
-/// Use only if the iterator produces items in sorted order.
-/// (Meaning slice.rev() of a sorted slice)
-pub fn intern_arith_ops_to_tree<'e, I: Iterator<Item = Operand<'e>>>(
+/// Use only if the slice is in sorted order.
+pub fn intern_arith_ops_to_tree<'e>(
     ctx: OperandCtx<'e>,
-    mut iter: I,
+    slice: &[Operand<'e>],
     ty: ArithOpType,
 ) -> Option<Operand<'e>> {
-    let first = iter.next()?;
-    Some(intern_arith_ops_to_tree_with_base(ctx, first, iter, ty))
+    let (&first, rest) = slice.split_last()?;
+    Some(intern_arith_ops_to_tree_with_base(ctx, first, rest, ty))
 }
 
-/// Use only if the iterator produces items in sorted order.
-/// (Meaning slice.rev() of a sorted slice)
-pub fn intern_arith_ops_to_tree_with_base<'e, I: Iterator<Item = Operand<'e>>>(
+/// Use only if the slice is in sorted order.
+pub fn intern_arith_ops_to_tree_with_base<'e>(
     ctx: OperandCtx<'e>,
     base: Operand<'e>,
-    iter: I,
+    slice: &[Operand<'e>],
     ty: ArithOpType,
 ) -> Operand<'e> {
     let mut tree = base;
-    for op in iter {
+    for &op in slice.iter().rev() {
         let arith = ArithOperand {
             ty,
             left: tree,

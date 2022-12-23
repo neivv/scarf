@@ -4357,7 +4357,7 @@ fn simplify_and_remove_unnecessary_ors_xors<'e>(
                                         } else {
                                             let rest = util::intern_arith_ops_to_tree(
                                                 ctx,
-                                                result.iter().rev().copied(),
+                                                result,
                                                 arith.ty,
                                             ).unwrap_or_else(|| ctx.const_0());
                                             let rest_not = ctx.xor_const(rest, u64::MAX);
@@ -5027,12 +5027,10 @@ fn simplify_or_merge_ands_try_merge<'e>(
             // Rejoin remaining operands to a new arith if any were removed.
             // Assume that they can just be rebuilt without simplification
             if !out.is_empty() {
-                let iter = slice.iter().rev().copied();
-                if let Some(first) = util::intern_arith_ops_to_tree(ctx, iter, arith_ty) {
+                if let Some(first) = util::intern_arith_ops_to_tree(ctx, slice, arith_ty) {
                     out.push(ctx.and_const(first, first_c));
                 }
-                let iter = other_slice.iter().rev().copied();
-                if let Some(second) = util::intern_arith_ops_to_tree(ctx, iter, arith_ty) {
+                if let Some(second) = util::intern_arith_ops_to_tree(ctx, other_slice, arith_ty) {
                     out.push(ctx.and_const(second, second_c));
                 }
             }
@@ -6303,7 +6301,7 @@ pub fn simplify_mul_no_const<'e>(
         Result::<_, SizeLimitReached>::Ok(util::intern_arith_ops_to_tree_with_base(
             ctx,
             rest,
-            slice.iter().rev().copied(),
+            slice,
             ArithOpType::Mul,
         ))
     });
