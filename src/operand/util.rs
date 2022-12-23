@@ -77,6 +77,15 @@ impl<'e> IterArithOps1<'e> {
     pub fn rest(&self) -> Option<Operand<'e>> {
         self.rest
     }
+
+    pub fn peek_next(&self) -> Option<Operand<'e>> {
+        let rest = self.rest?;
+        if let Some((_, inner_b)) = rest.if_arithmetic(self.ty) {
+            Some(inner_b)
+        } else {
+            Some(rest)
+        }
+    }
 }
 
 impl<'e> Iterator for IterArithOps1<'e> {

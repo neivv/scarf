@@ -11511,3 +11511,161 @@ fn neq_xor_1() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn simplify_and_xor() {
+    let ctx = &OperandContext::new();
+    // (x & y) ^ x => (x & !y)
+    let x = ctx.xor(
+        ctx.register(0),
+        ctx.register(4),
+    );
+    let y = ctx.xor(
+        ctx.register(3),
+        ctx.register(9),
+    );
+    let op1 = ctx.xor(
+        ctx.and(x, y),
+        x,
+    );
+    let eq1 = ctx.and(
+        x,
+        ctx.xor_const(
+            y,
+            u64::MAX,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_and_xor_not() {
+    let ctx = &OperandContext::new();
+    // (!x & y) ^ x => (x | y)
+    let x = ctx.xor(
+        ctx.register(0),
+        ctx.register(4),
+    );
+    let y = ctx.xor(
+        ctx.register(3),
+        ctx.register(9),
+    );
+    let op1 = ctx.xor(
+        ctx.and(
+            ctx.xor_const(x, u64::MAX),
+            y,
+        ),
+        x,
+    );
+    let eq1 = ctx.or(x, y);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_and_xor_both() {
+    let ctx = &OperandContext::new();
+    // (x & y) ^ (x ^ y) => (x | y)
+    let x = ctx.xor(
+        ctx.register(0),
+        ctx.register(4),
+    );
+    let y = ctx.xor(
+        ctx.register(3),
+        ctx.register(9),
+    );
+    let op1 = ctx.xor(
+        ctx.and(x, y),
+        ctx.xor(x, y),
+    );
+    let eq1 = ctx.or(x, y);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_and_xor_both2() {
+    let ctx = &OperandContext::new();
+    // (x & y) ^ (x ^ y) => (x | y)
+    let x = ctx.xor(
+        ctx.register(6),
+        ctx.mem32(ctx.register(2), 0),
+    );
+    let y = ctx.xor(
+        ctx.mem32(ctx.register(1), 0),
+        ctx.mem32(ctx.register(4), 0),
+    );
+    let op1 = ctx.xor(
+        ctx.and(x, y),
+        ctx.xor(x, y),
+    );
+    let eq1 = ctx.or(x, y);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_or_xor() {
+    let ctx = &OperandContext::new();
+    // (x | y) ^ x => (!x & y)
+    let x = ctx.xor(
+        ctx.register(0),
+        ctx.register(4),
+    );
+    let y = ctx.xor(
+        ctx.register(3),
+        ctx.register(9),
+    );
+    let op1 = ctx.xor(
+        ctx.or(x, y),
+        x,
+    );
+    let eq1 = ctx.and(
+        ctx.xor_const(
+            x,
+            u64::MAX,
+        ),
+        y,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_and_xor_not2() {
+    let ctx = &OperandContext::new();
+    // (!x & y) ^ y => (x & y)
+    let x = ctx.xor(
+        ctx.register(0),
+        ctx.register(4),
+    );
+    let y = ctx.xor(
+        ctx.register(3),
+        ctx.register(9),
+    );
+    let op1 = ctx.xor(
+        ctx.and(
+            ctx.xor_const(x, u64::MAX),
+            y,
+        ),
+        y,
+    );
+    let eq1 = ctx.and(x, y);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn simplify_or_xor_both() {
+    let ctx = &OperandContext::new();
+    // (x | y) ^ (x ^ y) => (x & y)
+    let x = ctx.xor(
+        ctx.register(0),
+        ctx.register(4),
+    );
+    let y = ctx.xor(
+        ctx.register(3),
+        ctx.register(9),
+    );
+    let op1 = ctx.xor(
+        ctx.or(x, y),
+        ctx.xor(x, y),
+    );
+    let eq1 = ctx.and(x, y);
+    assert_eq!(op1, eq1);
+}

@@ -173,20 +173,32 @@ impl<'e, T: Copy> Slice<'e, T> {
     }
 
     pub fn retain<F: FnMut(T) -> bool>(&mut self, mut func: F) {
-        let mut i = 0;
-        let mut end = self.len();
+        self.retain_mut(|x| func(*x))
+    }
+
+    pub fn retain_mut<F: FnMut(&mut T) -> bool>(&mut self, mut func: F) {
+        let slice_len = self.len();
         unsafe {
-            let ptr = self.slice_ptr.as_ptr() as *mut T;
-            while i < end {
-                let input = ptr.add(i);
-                if !func(*input) {
-                    *input = *ptr.add(end - 1);
-                    end -= 1;
-                } else {
-                    i += 1;
+            let start = self.slice_ptr.as_ptr() as *mut T;
+            let mut in_ptr = start;
+            let end = start.add(slice_len);
+            while in_ptr < end {
+                if !func(&mut *in_ptr) {
+                    let mut out_ptr = in_ptr;
+                    in_ptr = in_ptr.add(1);
+                    while in_ptr < end {
+                        if func(&mut *in_ptr) {
+                            *out_ptr = *in_ptr;
+                            out_ptr = out_ptr.add(1);
+                        }
+                        in_ptr = in_ptr.add(1);
+                    }
+                    let new_len = out_ptr.offset_from(start) as usize;
+                    self.slice_len = new_len;
+                    return;
                 }
+                in_ptr = in_ptr.add(1);
             }
-            self.slice_len = end;
         }
     }
 
@@ -209,6 +221,26 @@ impl<'e, T: Copy> Slice<'e, T> {
             self.slice_len = self.slice_len.wrapping_sub(1);
         }
         ret
+    }
+
+    pub fn insert_sorted<F>(&mut self, value: T, mut cmp: F) -> Result<(), SizeLimitReached>
+    where F: FnMut(&T) -> std::cmp::Ordering,
+    {
+        let insert_pos = match self.binary_search_by(|x| cmp(x)) {
+            Ok(o) | Err(o) => o,
+        };
+        self.push(value)?;
+        let len = self.len();
+        if insert_pos != len {
+            let slice = self.deref_mut();
+            unsafe {
+                let ptr = slice.as_mut_ptr();
+                let copy_len = len.wrapping_sub(insert_pos).wrapping_sub(1);
+                ptr::copy(ptr.add(insert_pos), ptr.add(insert_pos).add(1), copy_len);
+                *ptr.add(insert_pos) = value;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -404,4 +436,25 @@ fn test_mixed() {
         }
     }
     recurse(ctx, 0);
+}
+
+#[test]
+fn test_retain() {
+    let ctx = &super::OperandContext::new();
+
+    ctx.simplify_temp_stack().alloc(|slice| {
+        for i in 0u64..16 {
+            slice.push(i).unwrap();
+        }
+        slice.retain(|x| x & 1 == 0);
+        assert_eq!(&slice[..], [0, 2, 4, 6, 8, 10, 12, 14]);
+        ctx.simplify_temp_stack().alloc(|slice| {
+            for i in 0u64..16 {
+                slice.push(i).unwrap();
+            }
+            slice.retain(|x| x & 1 != 0);
+            assert_eq!(&slice[..], [1, 3, 5, 7, 9, 11, 13, 15]);
+        });
+        assert_eq!(&slice[..], [0, 2, 4, 6, 8, 10, 12, 14]);
+    });
 }
