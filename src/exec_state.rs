@@ -323,7 +323,10 @@ where E: ExecutionState<'e>,
     let mut jump_state = state;
     let ty = condition.ty();
     if let OperandType::Arithmetic(arith) = ty {
-        if matches!(arith.ty, ArithOpType::Equal | ArithOpType::Or | ArithOpType::And) {
+        if matches!(
+            arith.ty,
+            ArithOpType::Equal | ArithOpType::Or | ArithOpType::And | ArithOpType::Xor
+        ) {
             let ctx = jump_state.ctx();
 
             let resolved_no_jump = ctx.eq_const(condition_resolved, 0);
@@ -333,7 +336,7 @@ where E: ExecutionState<'e>,
             let mut do_unresolved_constraint = true;
             if arith.ty == ArithOpType::Equal {
                 // Update relevant flag to 0/1 if reasonable, if not, then add constraint.
-                if let OperandType::Flag(flag) = *arith.left.ty() {
+                if let Some(flag) = arith.left.if_flag() {
                     if arith.right == ctx.const_0() {
                         jump_state.set_flag(flag, ctx.const_0());
                         no_jump_state.set_flag(flag, ctx.const_1());
@@ -1218,9 +1221,13 @@ fn apply_constraint_split<'e>(
                     })
                 }
             } else {
-                let subst_val = if with { one } else { zero };
-                ctx.substitute(val, constraint, subst_val, 6)
+                apply_constraint_eq(ctx, val, arith.left, arith.right, with)
             }
+        }
+        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Xor &&
+            constraint.relevant_bits().end == 1 =>
+        {
+            apply_constraint_eq(ctx, val, arith.left, arith.right, !with)
         }
         _ => {
             let subst_val = if with { one } else { zero };
@@ -1228,6 +1235,34 @@ fn apply_constraint_split<'e>(
         }
     }
 }
+
+fn apply_constraint_eq<'e>(
+    ctx: OperandCtx<'e>,
+    val: Operand<'e>,
+    left: Operand<'e>,
+    right: Operand<'e>,
+    with: bool,
+) -> Operand<'e> {
+    let zero = ctx.const_0();
+    let one = ctx.const_1();
+    ctx.transform(val, 4, |x| {
+        let arith = x.if_arithmetic_any()?;
+        // xor / equal sort left/right differently at the moment ._.
+        if (arith.left == left && arith.right == right) ||
+            (arith.left == right && arith.right == left)
+        {
+            if arith.ty == ArithOpType::Xor && x.relevant_bits().end == 1 {
+                let subst_val = if !with { one } else { zero };
+                return Some(subst_val);
+            } else if arith.ty == ArithOpType::Equal {
+                let subst_val = if with { one } else { zero };
+                return Some(subst_val);
+            }
+        }
+        None
+    })
+}
+
 
 /// For constraint X, return Y:
 /// Assumes that flags are 1bit, which isn't super set in stone elsewhere (yet)
@@ -3141,4 +3176,23 @@ fn merge_flag_eq_constraint() {
     );
     let result = merge_constraint(ctx, Some(Constraint(a)), Some(Constraint(b))).unwrap();
     assert_eq!(result.0, a);
+}
+
+#[test]
+fn apply_neq_constraint() {
+    let ctx = &crate::operand::OperandContext::new();
+    let flag_eq = ctx.eq(
+        ctx.flag_s(),
+        ctx.flag_o(),
+    );
+    let flag_neq = ctx.neq(
+        ctx.flag_s(),
+        ctx.flag_o(),
+    );
+    let result = Constraint(flag_eq).apply_to(ctx, flag_neq);
+    assert_eq!(result, ctx.constant(0));
+    let result = Constraint(flag_neq).apply_to(ctx, flag_eq);
+    assert_eq!(result, ctx.constant(0));
+    let result = Constraint(flag_neq).apply_to(ctx, flag_neq);
+    assert_eq!(result, ctx.constant(1));
 }

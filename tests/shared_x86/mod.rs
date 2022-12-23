@@ -1230,3 +1230,21 @@ fn mem_move_regs() {
         ))
     ]);
 }
+
+#[test]
+fn jl_jge() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x3b, 0x05, 0x23, 0x01, 0x00, 0x00, // cmp eax, [123]
+        0x75, 0x04, // jne skip
+        0x8b, 0x04, 0xe4, // mov eax, [esp]
+        0xc3, // ret
+        0x8b, 0x04, 0xe4, // mov eax, [esp]
+        0x7c, 0x03, // jl end
+        0x7d, 0x01, // jge end
+        0xcc, // int3
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.mem32(ctx.register(4), 0)),
+    ]);
+}
