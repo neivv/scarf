@@ -11669,3 +11669,16 @@ fn simplify_or_xor_both() {
     let eq1 = ctx.and(x, y);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn shifted_or_mem_nop() {
+    let ctx = &OperandContext::new();
+    let value = ctx.or(
+        ctx.mem32(ctx.register(1), 1),
+        ctx.register(6),
+    );
+    let high = ctx.and_const(value, 0xff00_0000);
+    let high_shifted = ctx.rsh_const(high, 0x18);
+    let high_shifted_back = ctx.lsh_const(high_shifted, 0x18);
+    assert_eq!(high, high_shifted_back);
+}

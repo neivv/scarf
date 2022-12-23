@@ -1992,11 +1992,11 @@ pub fn simplify_lsh_const<'e>(
                     }
                     default()
                 }
-                ArithOpType::Xor => {
-                    // Try to simplify any parts of the xor separately
+                ArithOpType::Xor | ArithOpType::Or => {
+                    // Try to simplify any parts of the xor / or separately
                     ctx.simplify_temp_stack()
                         .alloc(|slice| {
-                            collect_xor_ops(left, slice, 16).ok()?;
+                            collect_arith_ops(left, slice, arith.ty, 16).ok()?;
                             if simplify_shift_is_too_long_xor(slice) {
                                 // Give up on dumb long xors
                                 None
@@ -2004,7 +2004,11 @@ pub fn simplify_lsh_const<'e>(
                                 for op in slice.iter_mut() {
                                     *op = simplify_lsh_const(*op, constant, ctx, swzb_ctx);
                                 }
-                                simplify_xor_ops(slice, ctx, swzb_ctx).ok()
+                                if arith.ty == ArithOpType::Or {
+                                    simplify_or_ops(slice, ctx, swzb_ctx).ok()
+                                } else {
+                                    simplify_xor_ops(slice, ctx, swzb_ctx).ok()
+                                }
                             }
                         })
                         .unwrap_or_else(|| default())
