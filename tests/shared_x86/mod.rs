@@ -1185,3 +1185,48 @@ fn sete_undef() {
          (ctx.register(0), ctx.const_0()),
     ]);
 }
+
+#[test]
+fn mem_move_regs() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x89, 0x41, 0x04, // mov [ecx + 4], eax
+        0x8b, 0x41, 0x07, // mov eax, [ecx + 7]
+        0x89, 0x49, 0x08, // mov [ecx + 8], ecx
+        0x8b, 0x49, 0x06, // mov eax, [ecx + 6]
+        0xc3, // ret
+    ], &[
+        (ctx.register(0), ctx.or(
+            ctx.rsh_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xff00_0000,
+                ),
+                0x18,
+            ),
+            ctx.lsh_const(
+                ctx.and_const(
+                    ctx.mem32(ctx.register(1), 8),
+                    0xffff_ff,
+                ),
+                8,
+            ),
+        )),
+        (ctx.register(1), ctx.or(
+            ctx.rsh_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xffff_0000,
+                ),
+                0x10,
+            ),
+            ctx.lsh_const(
+                ctx.and_const(
+                    ctx.register(1),
+                    0xffff,
+                ),
+                0x10,
+            ),
+        ))
+    ]);
+}

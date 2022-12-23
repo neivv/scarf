@@ -750,6 +750,15 @@ impl<'e> State<'e> {
                 return None;
             }
             let low = low.unwrap_or_else(|| ctx.mem32(base, offset_rest.into()));
+            // There is no guarantee that low is actually 32bits or less,
+            // as normalize_32bit is used to make high 32bits not matter.
+            // But since here we shift those high bits right, they must
+            // be explicitly cleared.
+            let low = if low.relevant_bits().end > 32 {
+                ctx.and_const(low, 0xffff_ffff)
+            } else {
+                low
+            };
             let low = ctx.rsh_const(low, (offset_4 * 8) as u64);
             let combined = if needs_high {
                 let high = high.unwrap_or_else(|| {
