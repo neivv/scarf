@@ -4157,11 +4157,9 @@ fn simplify_and_1op_insert_mask_to_or_xor<'e>(
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Option<Operand<'e>> {
-    if let Some((l, r)) = op.if_arithmetic_or() {
-        if let Some(or_val) = r.if_constant() {
-            let inner = simplify_and_const(l, !or_val & mask, ctx, swzb_ctx);
-            return Some(simplify_or(inner, r, ctx, swzb_ctx));
-        }
+    if let Some((l, or_val)) = op.if_or_with_const() {
+        let inner = simplify_and_const(l, !or_val & mask, ctx, swzb_ctx);
+        return Some(simplify_or(inner, ctx.constant(or_val & mask), ctx, swzb_ctx));
     }
     if let Some(result) = simplify_and_insert_mask_to_or_xor(op, mask, ctx, swzb_ctx) {
         return Some(result);

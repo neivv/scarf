@@ -558,7 +558,7 @@ pub(crate) fn calculate_parity<'e>(ctx: OperandCtx<'e>, mut value: Operand<'e>) 
     }
     if rel_bits.end > 8 {
         value = ctx.and_const(value, 0xff);
-        rel_bits.end = 8;
+        rel_bits = value.relevant_bits();
     }
     if rel_bits.start != 0 {
         value = ctx.rsh_const(value, rel_bits.start as u64);

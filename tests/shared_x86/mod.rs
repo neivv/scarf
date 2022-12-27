@@ -1248,3 +1248,20 @@ fn jl_jge() {
          (ctx.register(0), ctx.mem32(ctx.register(4), 0)),
     ]);
 }
+
+#[test]
+fn parity_crash() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x00, 0x00, // add [eax], al
+        0x00, 0x00, // add [eax], al
+        0x25, 0x40, 0x09, 0x00, 0x09, // add eax, 0900_0940
+        0x04, 0x7a, // add al, 7a
+        0x09, 0x00, // or [eax], eax
+        0x7a, 0x00, // jpe
+        0x31, 0xc0, // xor eax, eax
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0)),
+    ]);
+}

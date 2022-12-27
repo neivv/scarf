@@ -11804,3 +11804,38 @@ fn merge_or_xor_cant_merge_mul() {
     assert_ne!(xor, ne1);
     assert_ne!(xor, ne2);
 }
+
+#[test]
+fn incorrect_and_simplify() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.or(
+            ctx.and_const(
+                ctx.sub_const(
+                    ctx.and_const(
+                        ctx.register(0),
+                        0x40,
+                    ),
+                    0x6,
+                ),
+                0x7e,
+            ),
+            ctx.mem8(ctx.register(0), 0),
+        ),
+        0xf,
+    );
+    let eq1 = ctx.or(
+        ctx.and_const(
+            ctx.sub_const(
+                ctx.constant(0),
+                0x6,
+            ),
+            0xf,
+        ),
+        ctx.and_const(
+            ctx.mem8(ctx.register(0), 0),
+            0xf,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}
