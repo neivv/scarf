@@ -11682,3 +11682,125 @@ fn shifted_or_mem_nop() {
     let high_shifted_back = ctx.lsh_const(high_shifted, 0x18);
     assert_eq!(high, high_shifted_back);
 }
+
+#[test]
+fn shifted_or_mem_should_remove_shift() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.rsh_const(
+        ctx.or(
+            ctx.mem32(ctx.register(1), 1),
+            ctx.mem32(ctx.register(5), 0),
+        ),
+        8,
+    );
+    let eq1 = ctx.and_const(
+        ctx.or(
+            ctx.mem32(ctx.register(1), 2),
+            ctx.mem32(ctx.register(5), 1),
+        ),
+        0xff_ffff,
+    );
+    let eq2 = ctx.and_const(
+        op1,
+        0xff_ffff,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op1, eq2);
+}
+
+#[test]
+fn shifted_mem_should_remove_shift() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.rsh_const(
+        ctx.mem32(ctx.register(1), 1),
+        8,
+    );
+    let eq1 = ctx.and_const(
+        ctx.mem32(ctx.register(1), 2),
+        0xff_ffff
+    );
+    let eq2 = ctx.and_const(
+        op1,
+        0xff_ffff,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op1, eq2);
+}
+
+#[test]
+fn merge_or_xor_cant_merge() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.add_const(
+            ctx.register(0),
+            0x6600,
+        ),
+        0xff00,
+    );
+    let op2 = ctx.and_const(
+        ctx.add_const(
+            ctx.register(0),
+            0x6610,
+        ),
+        0xffff_0000,
+    );
+    let or = ctx.or(op1, op2);
+    let xor = ctx.xor(op1, op2);
+    let ne1 = ctx.and_const(
+        ctx.add_const(
+            ctx.register(0),
+            0x6610,
+        ),
+        0xffff_ff00,
+    );
+    let ne2 = ctx.and_const(
+        ctx.add_const(
+            ctx.register(0),
+            0x6600,
+        ),
+        0xffff_ff00,
+    );
+    assert_ne!(or, ne1);
+    assert_ne!(or, ne2);
+    assert_ne!(xor, ne1);
+    assert_ne!(xor, ne2);
+}
+
+#[test]
+fn merge_or_xor_cant_merge_mul() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.register(0),
+            0x6600,
+        ),
+        0xff00,
+    );
+    let op2 = ctx.and_const(
+        ctx.mul_const(
+            ctx.register(0),
+            0x6610,
+        ),
+        0xffff_0000,
+    );
+    let or = ctx.or(op1, op2);
+    let xor = ctx.xor(op1, op2);
+    let ne1 = ctx.and_const(
+        ctx.mul_const(
+            ctx.register(0),
+            0x6610,
+        ),
+        0xffff_ff00,
+    );
+    let ne2 = ctx.and_const(
+        ctx.mul_const(
+            ctx.register(0),
+            0x6600,
+        ),
+        0xffff_ff00,
+    );
+    assert_ne!(or, ne1);
+    assert_ne!(or, ne2);
+    assert_ne!(xor, ne1);
+    assert_ne!(xor, ne2);
+}

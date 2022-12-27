@@ -1253,12 +1253,43 @@ fn simplify_xor_base_for_shifted_rec<'e>(
     ctx: OperandCtx<'e>,
     limit: &mut u32,
 ) -> Option<(Operand<'e>, u8)> {
+    if shift1 >= 64 || shift2 >= 64 {
+        // TODO should be able to just return 0 / other value?
+        // This can happen, but maybe only in hash function -like complex
+        // simplifications so maybe not worth it to think about.
+        // (tests/slow will hit this)
+        return None;
+    }
     let (op1, shift1_add, mask1) = simplify_xor_shifted_unwrap_shifts(op1, shift1, mask1);
     let shift1 = (shift1 as i8).wrapping_add(shift1_add) as u8;
     let (op2, shift2_add, mask2) = simplify_xor_shifted_unwrap_shifts(op2, shift2, mask2);
     let shift2 = (shift2 as i8).wrapping_add(shift2_add) as u8;
+    if (shift1 as i8) >= 64 || (shift2 as i8) >= 64 {
+        // TODO should be able to just return 0 / other value?
+        return None;
+    }
     if (shift1 as i8) < 0 || (shift2 as i8) < 0 {
-        // Maybe could handle but other parts of this are not ready to do it now
+        // Could probably handle this better too, but this'll be enough for now
+        if shift1 == shift2 {
+            let shift_abs = (shift1 as i8).unsigned_abs();
+            let result = simplify_xor_base_for_shifted_rec(
+                op1,
+                (0, mask1 << shift_abs),
+                op2,
+                (0, mask2 << shift_abs),
+                ctx,
+                limit,
+            );
+            if let Some((op, shift)) = result {
+                if shift >= shift_abs {
+                    return Some((op, shift - shift_abs));
+                } else {
+                    let swzb = &mut SimplifyWithZeroBits::default();
+                    let op = simplify_rsh_const(op, shift_abs - shift, ctx, swzb);
+                    return Some((op, 0));
+                }
+            }
+        }
         return None;
     }
     if op1 == op2 && shift1 == shift2 {
@@ -1267,19 +1298,34 @@ fn simplify_xor_base_for_shifted_rec<'e>(
     let mut result = None;
     if let Some(a1) = op1.if_arithmetic_any() {
         if let Some(a2) = op2.if_arithmetic_any() {
-            if a1.ty == a2.ty &&
-                matches!(a1.ty, ArithOpType::Xor | ArithOpType::Or | ArithOpType::And)
-            {
-                *limit = limit.checked_sub(1)?;
-                let s1 = (shift1, mask1);
-                let s2 = (shift2, mask2);
-                result = simplify_xor_base_for_shifted_arith_chain(a1, s1, a2, s2, ctx, limit);
+            if a1.ty == a2.ty {
+                if matches!(a1.ty, ArithOpType::Xor | ArithOpType::Or | ArithOpType::And) {
+                    *limit = limit.checked_sub(1)?;
+                    let s1 = (shift1, mask1);
+                    let s2 = (shift2, mask2);
+                    result = simplify_xor_base_for_shifted_arith_chain(a1, s1, a2, s2, ctx, limit);
+                } else if matches!(a1.ty, ArithOpType::Mul | ArithOpType::Add | ArithOpType::Sub) {
+                    // Fill all bits below highest one to 1
+                    let mask1 = mask1.wrapping_add(1).
+                        checked_next_power_of_two()
+                        .unwrap_or(0u64)
+                        .wrapping_sub(1);
+                    let mask2 = mask2.wrapping_add(1).
+                        checked_next_power_of_two()
+                        .unwrap_or(0u64)
+                        .wrapping_sub(1);
+                    let s1 = (shift1, mask1);
+                    let s2 = (shift2, mask2);
+                    result = simplify_xor_base_for_shifted_arith_chain(a1, s1, a2, s2, ctx, limit);
+                }
             }
         }
     } else {
         if let Some((val, mut off1)) = is_offset_mem(op1) {
             if let Some((other_val, mut off2)) = is_offset_mem(op2) {
-                if val == other_val && shift1 & 7 == 0 && shift2 & 7 == 0 {
+                // Do merge with 8-aligned shifts, and then add the rest back at the end.
+                // The not-8-aligned value for both has to be same
+                if val == other_val && shift1 & 7 == shift2 & 7 {
                     off1.3 = off1.3 & (mask1 >> (off1.2 * 8));
                     off1.2 = off1.2.wrapping_add((shift1 / 8) as u32);
                     off2.3 = off2.3 & (mask2 >> (off2.2 * 8));
@@ -1299,6 +1345,8 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                     {
                         let mask = (((off1.3 & size_mask1) << (off1.2 * 8)) |
                             ((off2.3 & size_mask2) << (off2.2 * 8))) >> shift;
+                        // Add the not-8-aligned shift part back
+                        let shift = shift.wrapping_add(shift1 & 7);
                         if mask.wrapping_add(1) & mask != 0 {
                             // Not continuous mask, try_merge_memory won't mask in
                             // such cases so do it here.
@@ -1306,6 +1354,15 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                         } else {
                             result = Some((merged, shift));
                         }
+                    }
+                }
+            }
+        } else if let Some(c1) = op1.if_constant() {
+            if let Some(c2) = op2.if_constant() {
+                if shift1 == shift2 {
+                    let merged = (c1 | c2) & (mask1 | mask2);
+                    if merged & mask1 == c1 && merged & mask2 == c2 {
+                        result = Some((ctx.constant(merged), shift1));
                     }
                 }
             }
@@ -1328,6 +1385,23 @@ fn simplify_xor_base_for_shifted_arith_chain<'e>(
                 return None;
             }
             ctx.simplify_temp_stack().alloc(|result_parts| {
+                // For sub, match last (leftmost) parts first
+                // so that the lack of commutativity won't matter.
+                if arith1.ty == ArithOpType::Sub {
+                    if let Some(&part1) = parts1.last() {
+                        if let Some(&part2) = parts2.last() {
+                            let result =
+                                simplify_xor_base_for_shifted_rec(part1, s1, part2, s2, ctx, limit);
+                            if let Some(result) = result {
+                                result_parts.push(result).ok()?;
+                                parts2.pop();
+                                parts1.pop();
+                            } else {
+                                return None;
+                            }
+                        }
+                    }
+                }
                 'outer: for &part1 in parts1.iter() {
                     for j in 0..parts2.len() {
                         let part2 = parts2[j];
@@ -2167,67 +2241,29 @@ pub fn simplify_rsh_const<'e>(
         // Do memory before simplify_with_and_mask.
         // As (Mem64[x] >> 20) would be simplified to (Mem32[x + 4] << 20) >> 20
         // which is unneccessary work
-        let default = || {
-            let arith = ArithOperand {
-                ty: ArithOpType::Rsh,
-                left,
-                right: ctx.constant(constant as u64),
-            };
-            ctx.intern(OperandType::Arithmetic(arith))
-        };
         let (address, offset) = mem.address();
-        let (size, offset_add) = match mem.size {
-            MemAccessSize::Mem64 => {
-                if constant >= 56 {
-                    (MemAccessSize::Mem8, 7u8)
-                } else if constant >= 48 {
-                    (MemAccessSize::Mem16, 6)
-                } else if constant >= 32 {
-                    (MemAccessSize::Mem32, 4)
-                } else {
-                    return default();
-                }
-            }
-            MemAccessSize::Mem32 => {
-                if constant >= 24 {
-                    (MemAccessSize::Mem8, 3)
-                } else if constant >= 16 {
-                    (MemAccessSize::Mem16, 2)
-                } else {
-                    return default();
-                }
-            }
-            MemAccessSize::Mem16 => {
-                if constant >= 8 {
-                    (MemAccessSize::Mem8, 1)
-                } else {
-                    return default();
-                }
-            }
-            _ => return default(),
+        let offset_add = constant / 8;
+        let mask = mem.size.mask() >> constant;
+        let shift = constant & 7;
+        let size = if mask > 0xffff_ffff {
+            MemAccessSize::Mem64
+        } else if mask > 0xffff {
+            MemAccessSize::Mem32
+        } else if mask > 0xff {
+            MemAccessSize::Mem16
+        } else {
+            MemAccessSize::Mem8
         };
-        let c = constant - offset_add * 8;
-        let new = ctx.mem_any(size, address, offset.wrapping_add(u64::from(offset_add)));
-        if c == 0 {
-            return new;
+
+        let mut new = ctx.mem_any(size, address, offset.wrapping_add(offset_add as u64));
+        if shift != 0 {
+            new = intern_arith(ctx, new, ctx.constant(shift as u64), ArithOpType::Rsh);
         }
-        let arith = ArithOperand {
-            ty: ArithOpType::Rsh,
-            left: new,
-            right: ctx.constant(c as u64),
-        };
-        return ctx.intern(OperandType::Arithmetic(arith));
+        return simplify_and_const(new, mask, ctx, swzb_ctx);
     }
 
     let left = simplify_with_and_mask(left, u64::MAX << constant, ctx, swzb_ctx);
-    let default = || {
-        let arith = ArithOperand {
-            ty: ArithOpType::Rsh,
-            left,
-            right: ctx.constant(constant as u64),
-        };
-        ctx.intern(OperandType::Arithmetic(arith))
-    };
+    let default = || intern_arith(ctx, left, ctx.constant(constant as u64), ArithOpType::Rsh);
 
     match *left.ty() {
         OperandType::Constant(a) => ctx.constant(a >> constant),
@@ -3313,140 +3349,6 @@ fn sum_valid_range(ops: &[(Operand<'_>, bool)], mask: u64) -> (u64, u64) {
     (low & mask, high)
 }
 
-/// Return Some(larger) if the the operand with smaller mask is same as the
-/// larger operand if it were masked with that small mask.
-///
-/// Aims to be cheaper subset of `smaller == ctx.and_const(larger, small_mask)` check,
-/// with the assumption that a & b are add/sub chains
-fn try_merge_ands_check_add_merge<'e>(
-    a: Operand<'e>,
-    b: Operand<'e>,
-    a_mask: u64,
-    b_mask: u64,
-) -> Option<Operand<'e>> {
-    fn is_subset<'e>(larger: Operand<'e>, smaller: Operand<'e>, smaller_mask: u64) -> bool {
-        if larger == smaller {
-            return true;
-        }
-        // The larger part must include all of smaller part as it will affect results
-        // with add/sub even if the mask would mask those bits out.
-        match (larger.ty(), smaller.ty()) {
-            (&OperandType::Arithmetic(ref a), &OperandType::Arithmetic(ref b)) => {
-                if a.ty != b.ty {
-                    return false;
-                }
-                match a.ty {
-                    ArithOpType::Lsh => {
-                        if a.right != b.right {
-                            return false;
-                        }
-                        if let Some(c) = a.right.if_constant() {
-                            is_subset(a.left, b.left, smaller_mask.wrapping_shr(c as u32))
-                        } else {
-                            false
-                        }
-                    }
-                    ArithOpType::Rsh => {
-                        if a.right != b.right {
-                            return false;
-                        }
-                        if let Some(c) = a.right.if_constant() {
-                            is_subset(a.left, b.left, smaller_mask.wrapping_shl(c as u32))
-                        } else {
-                            false
-                        }
-                    }
-                    ArithOpType::And | ArithOpType::Xor | ArithOpType::Or | ArithOpType::Mul => {
-                        is_subset(a.left, b.left, smaller_mask) &&
-                            is_subset(a.right, b.right, smaller_mask)
-                    }
-                    ArithOpType::Add | ArithOpType::Sub => {
-                        // Uh, this sould be correct, try_merge_ands_check_add_merge
-                        // just ends up having a signature that isn't ideal here.
-                        // (It always either returns None or Some(larger) and
-                        // large mask would get ignored anyway)
-                        try_merge_ands_check_add_merge(
-                            larger,
-                            smaller,
-                            !0u64,
-                            smaller_mask,
-                        ).is_some()
-                    }
-                    _ => false,
-                }
-            }
-            (&OperandType::Constant(a), &OperandType::Constant(b)) => {
-                a & smaller_mask == b & smaller_mask
-            }
-            (&OperandType::Memory(ref a_mem), &OperandType::Memory(ref b_mem)) => {
-                if a_mem.address() != b_mem.address() {
-                    return false;
-                }
-                if a_mem.size.bits() < b_mem.size.bits() {
-                    return false;
-                }
-                // Shouldn't accept (Mem8[x] - y) & ffff as a subset
-                // of (Mem32[x] - y) & ffff_ffff for example
-                let smaller_mem_mask = 1u64
-                    .wrapping_shl(b_mem.size.bits().into())
-                    .wrapping_sub(1);
-                if smaller_mem_mask & smaller_mask != smaller_mask {
-                    return false;
-                }
-                true
-            }
-            _ => false,
-        }
-    }
-
-    let (larger, smaller, smaller_mask) = match a_mask > b_mask {
-        true => (a, b, b_mask),
-        false => (b, a, a_mask),
-    };
-    // Would be cleaner to have these be iterators, but this is likely an one-off case so eh
-    let mut l_chain = Some(larger);
-    let mut s_chain = Some(smaller);
-    let mut current_ty;
-    loop {
-        let (next_l, next_s) = match (l_chain, s_chain) {
-            (Some(l), Some(s)) => (l, s),
-            (None, None) => return Some(larger),
-            _ => return None,
-        };
-        let larger_part = match *next_l.ty() {
-            OperandType::Arithmetic(ref arith) if
-                matches!(arith.ty, ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul |
-                    ArithOpType::And | ArithOpType::Or | ArithOpType::Xor) =>
-            {
-                l_chain = Some(arith.left);
-                current_ty = Some(arith.ty);
-                arith.right
-            }
-            _ => {
-                l_chain = None;
-                current_ty = None;
-                next_l
-            }
-        };
-        let smaller_part = match *next_s.ty() {
-            OperandType::Arithmetic(ref arith) if current_ty.is_some() => {
-                s_chain = Some(arith.left);
-                if current_ty != Some(arith.ty) {
-                    return None;
-                }
-                arith.right
-            }
-            _ => {
-                s_chain = None;
-                next_s
-            }
-        };
-        if !is_subset(larger_part, smaller_part, smaller_mask) {
-            return None;
-        }
-    }
-}
-
 /// Tries to merge (a & a_mask) | (b & b_mask) to (a_mask | b_mask) & result
 /// (Does not mask the result)
 fn try_merge_ands<'e>(
@@ -3517,10 +3419,6 @@ fn try_merge_ands<'e>(
                                 }
                             }
                         }
-                    }
-                } else if matches!(c.ty, ArithOpType::Add | ArithOpType::Sub) {
-                    if let Some(result) = try_merge_ands_check_add_merge(a, b, a_mask, b_mask) {
-                        return Some(result);
                     }
                 }
             }
@@ -8329,6 +8227,34 @@ fn test_simplify_xor_base_for_shifted() {
     assert_eq!(
         simplify_xor_base_for_shifted(mem16, (0x10, 0xffff), mem8_0, (0x10, 0xff), ctx, limit),
         Some(ctx.lsh_const(ctx.mem16(ctx.register(0), 0), 0x10)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_0, (0, 0xf), ctx, limit),
+        Some(ctx.mem16(ctx.register(0), 0)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0x10, 0xffff), mem8_0, (0x10, 0xf), ctx, limit),
+        Some(ctx.lsh_const(ctx.mem16(ctx.register(0), 0), 0x10)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0, 0xfff), mem8_0, (0, 0xf), ctx, limit),
+        // and_const not required but allowed
+        Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0xfff)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0x10, 0xfff), mem8_0, (0x10, 0xf), ctx, limit),
+        // and_const not required but allowed
+        Some(ctx.lsh_const(ctx.and_const(ctx.mem16(ctx.register(0), 0), 0xfff), 0x10)),
+    );
+    // Similar to above but shifts which aren't divisible by 8
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0x13, 0xffff), mem8_0, (0x13, 0xf), ctx, limit),
+        Some(ctx.lsh_const(ctx.mem16(ctx.register(0), 0), 0x13)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0x13, 0xfff), mem8_0, (0x13, 0xf), ctx, limit),
+        // and_const not required but allowed
+        Some(ctx.lsh_const(ctx.and_const(ctx.mem16(ctx.register(0), 0), 0xfff), 0x13)),
     );
 }
 
