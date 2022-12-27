@@ -1284,16 +1284,21 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                     off1.2 = off1.2.wrapping_add((shift1 / 8) as u32);
                     off2.3 = off2.3 & (mask2 >> (off2.2 * 8));
                     off2.2 = off2.2.wrapping_add((shift2 / 8) as u32);
-                    if (off1.3 << (off1.2 * 8)) & (off2.3 << (off2.2 * 8)) != 0 {
-                        return None;
-                    }
                     let size_mask1 = 1u64.checked_shl(off1.1 * 8).unwrap_or(0).wrapping_sub(1);
                     let size_mask2 = 1u64.checked_shl(off2.1 * 8).unwrap_or(0).wrapping_sub(1);
-                    let mask = ((off1.3 & size_mask1) << (off1.2 * 8)) |
-                        ((off2.3 & size_mask2) << (off2.2 * 8));
+                    // Check for cases where memory can't be merged e.g.
+                    // Mem8 with mask ffff must keep high 8bit half zero.
+                    // Idk hard to make it clear but there are tests for that.
+                    if ((off1.3 & !size_mask1) << (off1.2 * 8)) & (off2.3 << (off2.2 * 8)) != 0 ||
+                        ((off2.3 & !size_mask2) << (off2.2 * 8)) & (off1.3 << (off1.2 * 8)) != 0
+                    {
+                        return None;
+                    }
                     if let Some((merged, shift)) =
                         try_merge_memory_no_shift(val, off1, off2, ctx)
                     {
+                        let mask = (((off1.3 & size_mask1) << (off1.2 * 8)) |
+                            ((off2.3 & size_mask2) << (off2.2 * 8))) >> shift;
                         if mask.wrapping_add(1) & mask != 0 {
                             // Not continuous mask, try_merge_memory won't mask in
                             // such cases so do it here.
@@ -8286,6 +8291,7 @@ fn test_sum_valid_range() {
 fn test_simplify_xor_base_for_shifted() {
     let ctx = &crate::OperandContext::new();
     let mem16 = ctx.mem16(ctx.register(0), 0);
+    let mem8_0 = ctx.mem8(ctx.register(0), 0);
     let mem8_2 = ctx.mem32(ctx.register(0), 2);
     let mem8_3 = ctx.mem32(ctx.register(0), 3);
     let limit = &mut 500000;
@@ -8311,6 +8317,18 @@ fn test_simplify_xor_base_for_shifted() {
     assert_eq!(
         simplify_xor_base_for_shifted(mem16, (0, 0xf_ffff), mem8_2, (0x10, 0x34), ctx, limit),
         None,
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_0, (0, 0xff), ctx, limit),
+        Some(ctx.mem16(ctx.register(0), 0)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_0, (0, 0xffff), ctx, limit),
+        None,
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(mem16, (0x10, 0xffff), mem8_0, (0x10, 0xff), ctx, limit),
+        Some(ctx.lsh_const(ctx.mem16(ctx.register(0), 0), 0x10)),
     );
 }
 
