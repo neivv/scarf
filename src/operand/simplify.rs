@@ -1291,15 +1291,15 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                     let size_mask2 = 1u64.checked_shl(off2.1 * 8).unwrap_or(0).wrapping_sub(1);
                     let mask = ((off1.3 & size_mask1) << (off1.2 * 8)) |
                         ((off2.3 & size_mask2) << (off2.2 * 8));
-                    if let Some(merged) = try_merge_memory(val, off1, off2, ctx) {
-                        // Return shift == 0 since try_merge_memory always shifts
-                        // if needed
+                    if let Some((merged, shift)) =
+                        try_merge_memory_no_shift(val, off1, off2, ctx)
+                    {
                         if mask.wrapping_add(1) & mask != 0 {
                             // Not continuous mask, try_merge_memory won't mask in
                             // such cases so do it here.
-                            result = Some((ctx.and_const(merged, mask), 0));
+                            result = Some((ctx.and_const(merged, mask), shift));
                         } else {
-                            result = Some((merged, 0));
+                            result = Some((merged, shift));
                         }
                     }
                 }
@@ -5821,12 +5821,12 @@ fn is_offset_mem<'e>(
 /// shift and other_shift are (offset, len, left_shift_in_operand)
 /// E.g. `Mem32[x + 6] << 0x18` => (6, 4, 3, u64::MAX)
 /// Same as in is_offset_mem return value.
-fn try_merge_memory<'e>(
+fn try_merge_memory_no_shift<'e>(
     val: Operand<'e>,
     shift: (u64, u32, u32, u64),
     other_shift: (u64, u32, u32, u64),
     ctx: OperandCtx<'e>,
-) -> Option<Operand<'e>> {
+) -> Option<(Operand<'e>, u8)> {
     let (shift, other_shift) = match shift.2 < other_shift.2 {
         true => (shift, other_shift),
         false => (other_shift, shift),
@@ -5858,12 +5858,6 @@ fn try_merge_memory<'e>(
         8 => ctx.mem64(val, off1),
         _ => return None,
     };
-    if val_off1 != 0 {
-        oper = ctx.lsh_const(
-            oper,
-            (val_off1 << 3).into(),
-        );
-    }
 
     if mask1 != u64::MAX || mask2 != u64::MAX {
         // If mask1 is not u64::MAX use that, otherwise 1.checked_shl(len * 8).unwrap_or(0)
@@ -5878,10 +5872,24 @@ fn try_merge_memory<'e>(
         } else {
             (1u64 << (len2 * 8)).wrapping_sub(1)
         };
-        let mask = (mask1 << (val_off1 * 8)) | (mask2 << (val_off2 * 8));
+        let mask = mask1 | (mask2 << ((val_off2 - val_off1) * 8));
         oper = ctx.and_const(oper, mask);
     }
-    Some(oper)
+    Some((oper, (val_off1 as u8) << 3))
+}
+
+fn try_merge_memory<'e>(
+    val: Operand<'e>,
+    shift: (u64, u32, u32, u64),
+    other_shift: (u64, u32, u32, u64),
+    ctx: OperandCtx<'e>,
+) -> Option<Operand<'e>> {
+    let (result, shift) = try_merge_memory_no_shift(val, shift, other_shift, ctx)?;
+    if shift != 0 {
+        Some(simplify_lsh_const(result, shift, ctx, &mut SimplifyWithZeroBits::default()))
+    } else {
+        Some(result)
+    }
 }
 
 fn is_sub_with_lhs_const<'e>(left: Operand<'e>) -> Option<u64> {
