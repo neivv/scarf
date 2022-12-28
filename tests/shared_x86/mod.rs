@@ -1265,3 +1265,28 @@ fn parity_crash() {
          (ctx.register(0), ctx.constant(0)),
     ]);
 }
+
+#[test]
+fn or_simplify_crash() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x0d, 0x0d, 0x0d, 0x09, 0x00, // or eax, 09_0d0d
+        0x00, 0x00, // add [eax], al
+        0x0b, 0x00, // or eax, [eax]
+        0x00, 0x20, // add [eax], ah
+        0x0b, 0x00, // or eax, [eax]
+        0x00, 0x20, // add [eax], ah
+        0x20, 0x00, // and [eax], al
+        0x0b, 0x00, // or eax, [eax]
+        0x00, 0x00, // add [eax], al
+        0x0b, 0x00, // or eax, [eax]
+        0x20, 0x00, // and [eax], al
+        0x00, 0x00, // add [eax], al
+        0x00, 0x00, // add [eax], al
+        0x0b, 0x00, // or eax, [eax]
+        0x31, 0xc0, // xor eax, eax
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0)),
+    ]);
+}

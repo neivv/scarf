@@ -6782,6 +6782,15 @@ fn finish_or_simplify<'e>(
     const_val: u64,
     best_mask: Option<u64>,
 ) -> Operand<'e> {
+    if let Some(c) = best_mask {
+        if c & !const_val == 0 {
+            // This is almost never hit since simplify_with_and_mask should just remove
+            // ops that the constant zeroes, but in complex simplify situations it may end
+            // up with useless `ops` here. Has to be checked separately or else would
+            // try to intern `tree & 0`, hitting debug asssertion due to 0 relevant bits.
+            return ctx.constant(const_val);
+        }
+    }
     heapsort::sort(ops);
     let mut tree = ops.pop()
         .unwrap_or_else(|| ctx.const_0());
