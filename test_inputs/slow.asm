@@ -11,6 +11,7 @@ dd many_adc
 dd slow7
 dd slow8
 dd slow9
+dd slow10
 
 ; Interestingly this was slow since it analyzed the loop twice, creating two distinct Operand
 ; trees which it then compared.
@@ -11845,6 +11846,91 @@ xor dword [ecx],esi
 cmp dword [eax],edx
 inc eax
 add byte [ecx],dh
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+ret
+
+slow10:
+xor dword [edi],esi
+xor al, 0x31
+xor ebp,dword [ecx]
+xor esi,dword [eax + ebx]
+xor esi,dword [edx]
+xor dh,byte [edx]
+xor esi,dword [ebx]
+xor esi,dword [esi + ebx]
+xor esi,dword [ecx]
+xor esi,dword [esi + ebx]
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+add byte [ecx],dl
+add byte [ebx],bh
+xor dword [ecx],esi
+inc ecx
+xor dword [edi],edi
+xor dword [ecx],esi
+xor dword [ecx],ebp
+xor esi,dword [esi + ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dh,byte [ebx]
+xor esi,dword [ebx]
+xor esi,dword [ecx]
+xor dword [ecx],esi
+sub dword [ebx],esi
+xor esi,dword [edx]
+xor dh,byte [edx]
+xor esi,dword [ebx]
+xor ebp,dword [esi]
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+inc ecx
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [edx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],eax
+xor dword [ecx],esi
+add byte [edx],ch
+xor ebp,dword [esi]
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor esi,dword [edx]
+xor dh,byte [edx]
+xor esi,dword [ebx]
+xor esi,dword [eax + ebx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+inc ecx
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+sub dword [ebx],esi
+xor dword [ecx],esi
+xor dh,byte [ebx]
+xor esi,dword [ebx]
+xor esi,dword [ecx]
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
+xor dword [ecx],esi
 xor dword [ecx],esi
 xor dword [ecx],esi
 xor dword [ecx],esi

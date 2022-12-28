@@ -62,6 +62,11 @@ fn slow9() {
     test(9);
 }
 
+#[test]
+fn slow10() {
+    test(10);
+}
+
 struct DummyAnalyzer;
 impl<'e> analysis::Analyzer<'e> for DummyAnalyzer {
     type State = analysis::DefaultState;

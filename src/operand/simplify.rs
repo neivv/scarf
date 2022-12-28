@@ -6600,7 +6600,7 @@ pub fn simplify_or<'e>(
                 }
                 _ => {
                     ctx.simplify_temp_stack().alloc(|ops| {
-                        move_masked_ops_to_operand_slice(ctx, masked_ops, ops)?;
+                        move_masked_ops_to_operand_slice(ctx, masked_ops, ops, swzb)?;
                         simplify_or_ops(ops, ctx, swzb)
                     })
                 }
@@ -7828,7 +7828,7 @@ pub fn simplify_xor<'e>(
                 }
                 _ => {
                     temp_stack.alloc(|ops| {
-                        move_masked_ops_to_operand_slice(ctx, masked_ops, ops)?;
+                        move_masked_ops_to_operand_slice(ctx, masked_ops, ops, swzb)?;
                         simplify_xor_ops(ops, ctx, swzb)
                     })
                 }
@@ -7873,13 +7873,15 @@ fn move_masked_ops_to_operand_slice<'e>(
     ctx: OperandCtx<'e>,
     ops: &MaskedOpSlice<'e>,
     out: &mut Slice<'e>,
+    swzb: &mut SimplifyWithZeroBits,
 ) -> Result<(), SizeLimitReached> {
     for &(op, mask) in ops.iter() {
         let relbit_mask = op.relevant_bits_mask();
         if relbit_mask & mask == relbit_mask {
             out.push(op)?;
         } else {
-            out.push(ctx.and_const(op, mask))?;
+            let masked = simplify_and_const(op, mask, ctx, swzb);
+            out.push(masked)?;
         }
     }
     Ok(())
