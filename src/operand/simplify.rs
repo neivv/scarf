@@ -3213,7 +3213,7 @@ fn simplify_eq_2_ops<'e>(
     };
 
     if let Some(result) = simplify_eq_2op_check_signed_less(ctx, left, right) {
-        return result;
+        return ctx.eq_const(result, 0);
     }
     let arith = ArithOperand {
         ty: ArithOpType::Equal,
@@ -3223,7 +3223,7 @@ fn simplify_eq_2_ops<'e>(
     ctx.intern(OperandType::Arithmetic(arith))
 }
 
-// Check for sign(x - y) == overflow(x - y) => (y sgt x) == 0
+// Check for sign(x - y) != overflow(x - y) => (y sgt x)
 fn simplify_eq_2op_check_signed_less<'e>(
     ctx: OperandCtx<'e>,
     left: Operand<'e>,
@@ -3311,7 +3311,7 @@ fn simplify_eq_2op_check_signed_less<'e>(
     } else {
         (ctx.add_const(cmp_l, offset), ctx.add_const(cmp_r, offset))
     };
-    Some(ctx.eq_const(ctx.gt_signed(cmp_r, cmp_l, size), 0))
+    Some(ctx.gt_signed(cmp_r, cmp_l, size))
 }
 
 /// Returns (lowest, highest) constant what the sum of all `ops` can have.
@@ -7799,12 +7799,14 @@ pub fn simplify_xor<'e>(
     if right_bits.start >= right_bits.end {
         return left;
     }
-    if left_bits.end == 1 &&
-        right_bits.end == 1 &&
-        (left == ctx.const_1() || right == ctx.const_1())
-    {
-        // 1bit x ^ y => x != y
-        return ctx.neq(left, right);
+    if left_bits.end == 1 && right_bits.end == 1 {
+        if left == ctx.const_1() || right == ctx.const_1() {
+            // 1bit x ^ y => x != y
+            return ctx.neq(left, right);
+        }
+        if let Some(result) = simplify_eq_2op_check_signed_less(ctx, left, right) {
+            return result;
+        }
     }
     if let Some((l, r)) = check_quick_arith_simplify(left, right) {
         return intern_arith(ctx, l, r, ArithOpType::Xor);

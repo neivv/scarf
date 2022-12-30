@@ -4832,12 +4832,26 @@ fn gt_signed() {
             0,
         ),
     );
+    let op1_xor = ctx.xor(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, ctx.register(1)),
+            ctx.gt_signed(arith, ctx.register(0), MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
     let eq1 = ctx.gt_signed(
         ctx.register(1),
         ctx.register(0),
         MemAccessSize::Mem32,
     );
     assert_eq!(op1, eq1);
+    assert_eq!(op1_xor, eq1);
 }
 
 #[test]
@@ -4861,12 +4875,26 @@ fn gt_signed2() {
             0,
         ),
     );
+    let op1_xor = ctx.xor(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, ctx.constant(0x50)),
+            ctx.gt_signed(arith, ctx.add_const(ctx.register(0), 1), MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
     let eq1 = ctx.gt_signed(
         ctx.constant(0x50),
         ctx.add_const(ctx.register(0), 1),
         MemAccessSize::Mem32,
     );
     assert_eq!(op1, eq1);
+    assert_eq!(op1_xor, eq1);
 }
 
 #[test]
@@ -4918,9 +4946,84 @@ fn gt_signed4() {
             0,
         ),
     );
+    let op1_xor = ctx.xor(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, ctx.constant(0x50)),
+            ctx.gt_signed(arith, ctx.sub_const(ctx.register(0), 1), MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
     let eq1 = ctx.gt_signed(
         ctx.constant(0x50),
         ctx.sub_const(ctx.register(0), 1),
+        MemAccessSize::Mem32,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op1_xor, eq1);
+}
+
+#[test]
+fn gt_signed5() {
+    // sign(x - y) == overflow(x - y) => gt_signed(y, x) == 0
+    let ctx = &OperandContext::new();
+    let arith = ctx.sub(
+        ctx.register(0),
+        ctx.register(1),
+    );
+    let op1 = ctx.eq(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, ctx.register(1)),
+            ctx.gt_signed(arith, ctx.register(0), MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let eq1 = ctx.eq_const(
+        ctx.gt_signed(
+            ctx.register(1),
+            ctx.register(0),
+            MemAccessSize::Mem32,
+        ),
+        0,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn gt_signed6() {
+    // sign(x - y) == overflow(x - y) => gt_signed(y, x) == 0 => gt_signed(x, y - 1)
+    let ctx = &OperandContext::new();
+    let arith = ctx.sub(
+        ctx.add_const(ctx.register(0), 1),
+        ctx.constant(0x50),
+    );
+    let op1 = ctx.eq(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, ctx.constant(0x50)),
+            ctx.gt_signed(arith, ctx.add_const(ctx.register(0), 1), MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let eq1 = ctx.gt_signed(
+        ctx.add_const(ctx.register(0), 1),
+        ctx.constant(0x4f),
         MemAccessSize::Mem32,
     );
     assert_eq!(op1, eq1);
