@@ -3249,6 +3249,9 @@ fn simplify_eq_2op_check_signed_less<'e>(
         Some((l, r, sign_bit, size))
     })?;
     let mask = (sign_bit << 1).wrapping_sub(1);
+    // If cmp_r is (x & mask), the mask would be simplified out
+    // from `& sign_bit` part. Reapply it here to keep rest simpler.
+    let cmp_r = ctx.and_const(cmp_r, mask);
     // Overflow: (sign_bit > y) == ((x - y) sgt x)
     // Extract `(x - y) sgt x` part first.
     let other = other.if_arithmetic_eq()
@@ -3281,10 +3284,14 @@ fn simplify_eq_2op_check_signed_less<'e>(
     // Since `a sgt b` is `((a + sign_bit) & mask) > ((b + sign_bit) & mask)`
     // `(x - y) sgt x` will have been simplified to `(y & mask) > ((x + sign_bit) & mask)`
     let (l, r) = other.if_arithmetic_gt()?;
-    let (l, l_mask) = Operand::and_masked(l);
+    let (l, l_mask) = if l == cmp_r {
+        (l, u64::MAX)
+    } else {
+        Operand::and_masked(l)
+    };
     let (r, r_mask) = Operand::and_masked(r);
     if l_mask != mask {
-        if l_mask != !0u64 || l.relevant_bits().end > size.bits() as u8 {
+        if l_mask != u64::MAX || l.relevant_bits().end > size.bits() as u8 {
             return None;
         }
     }

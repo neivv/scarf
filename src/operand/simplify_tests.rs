@@ -4815,16 +4815,72 @@ fn simplify_gt_const_left() {
 fn gt_signed() {
     // sign(x - y) != overflow(x - y) => gt_signed(y, x)
     let ctx = &OperandContext::new();
+    // Effectively x = r0 & ffff_ffff, y = r1 & ffff_ffff,
+    // but arith is being always masked later so no masks needed here.
     let arith = ctx.sub(
         ctx.register(0),
         ctx.register(1),
     );
     let op1 = ctx.neq(
         ctx.eq(
-            ctx.gt_const_left(0x8000_0000, ctx.register(1)),
+            ctx.gt_const_left(0x8000_0000, ctx.and_const(ctx.register(1), 0xffff_ffff)),
             ctx.gt_signed(arith, ctx.register(0), MemAccessSize::Mem32),
         ),
         ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let op1_xor = ctx.xor(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, ctx.and_const(ctx.register(1), 0xffff_ffff)),
+            ctx.gt_signed(arith, ctx.register(0), MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let eq1 = ctx.gt_signed(
+        ctx.register(1),
+        ctx.register(0),
+        MemAccessSize::Mem32,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op1_xor, eq1);
+}
+
+#[test]
+fn gt_signed_nomask() {
+    // like gt_signed, but does not have mask for y at one point.
+    let ctx = &OperandContext::new();
+    let arith = ctx.sub(
+        ctx.register(0),
+        ctx.register(1),
+    );
+    // Consider x (r0) = 8, y (r1) = 1_0000_0000
+    // arith = ffff_ffff_0000_0008 = 8
+    //      (ctx.gt_signed will mask lhs/rhs so `arith` is always masked to just 8)
+    // 0 sgt 8 should be 0, but op1 becomes 1 due to missing mask.
+
+    // 1 != 0 => 1
+    let op1 = ctx.neq(
+        // 0 == 0 => 1
+        ctx.eq(
+            // -- no mask here -- => 8000_0000 > 1_0000_0000 => 0
+            ctx.gt_const_left(0x8000_0000, ctx.register(1)),
+            // 8 sgt 8 => 0
+            ctx.gt_signed(arith, ctx.register(0), MemAccessSize::Mem32),
+        ),
+        // 0 != 0 => 0
+        ctx.neq_const(
+            // 0
             ctx.and_const(
                 arith,
                 0x8000_0000,
@@ -4850,8 +4906,9 @@ fn gt_signed() {
         ctx.register(0),
         MemAccessSize::Mem32,
     );
-    assert_eq!(op1, eq1);
-    assert_eq!(op1_xor, eq1);
+    assert_ne!(op1, eq1);
+    assert_ne!(op1_xor, eq1);
+    assert_eq!(op1, op1_xor);
 }
 
 #[test]
@@ -4978,7 +5035,7 @@ fn gt_signed5() {
     );
     let op1 = ctx.eq(
         ctx.eq(
-            ctx.gt_const_left(0x8000_0000, ctx.register(1)),
+            ctx.gt_const_left(0x8000_0000, ctx.and_const(ctx.register(1), 0xffff_ffff)),
             ctx.gt_signed(arith, ctx.register(0), MemAccessSize::Mem32),
         ),
         ctx.neq_const(
@@ -4998,6 +5055,40 @@ fn gt_signed5() {
         0,
     );
     assert_eq!(op1, eq1);
+}
+
+#[test]
+fn gt_signed5_nomask() {
+    // Can't simplify due to missing mask.
+    // Effectively same case as gt_signed_nomask, just == 0 added to op1 / eq1,
+    // see that for more details.
+    let ctx = &OperandContext::new();
+    let arith = ctx.sub(
+        ctx.register(0),
+        ctx.register(1),
+    );
+    let op1 = ctx.eq(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, ctx.register(1)),
+            ctx.gt_signed(arith, ctx.register(0), MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let eq1 = ctx.eq_const(
+        ctx.gt_signed(
+            ctx.register(1),
+            ctx.register(0),
+            MemAccessSize::Mem32,
+        ),
+        0,
+    );
+    assert_ne!(op1, eq1);
 }
 
 #[test]
@@ -5027,6 +5118,98 @@ fn gt_signed6() {
         MemAccessSize::Mem32,
     );
     assert_eq!(op1, eq1);
+}
+
+#[test]
+fn gt_signed7() {
+    // sign(x - y) != overflow(x - y) => gt_signed(y, x),
+    //      with masked y
+    let ctx = &OperandContext::new();
+    let x = ctx.mem32(ctx.register(0), 0);
+    let y = ctx.and_const(
+        ctx.register(1),
+        0xffff_ffff,
+    );
+    let arith = ctx.sub(x, y);
+    let op1 = ctx.neq(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, y),
+            ctx.gt_signed(arith, x, MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let op1_xor = ctx.xor(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, y),
+            ctx.gt_signed(arith, x, MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let eq1 = ctx.gt_signed(
+        y,
+        x,
+        MemAccessSize::Mem32,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op1_xor, eq1);
+}
+
+#[test]
+fn gt_signed8() {
+    // sign(x - y) != overflow(x - y) => gt_signed(y, x),
+    //      with masked x
+    let ctx = &OperandContext::new();
+    let x = ctx.and_const(
+        ctx.register(1),
+        0xffff_ffff,
+    );
+    let y = ctx.mem32(ctx.register(0), 0);
+    let arith = ctx.sub(x, y);
+    let op1 = ctx.neq(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, y),
+            ctx.gt_signed(arith, x, MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let op1_xor = ctx.xor(
+        ctx.eq(
+            ctx.gt_const_left(0x8000_0000, y),
+            ctx.gt_signed(arith, x, MemAccessSize::Mem32),
+        ),
+        ctx.neq_const(
+            ctx.and_const(
+                arith,
+                0x8000_0000,
+            ),
+            0,
+        ),
+    );
+    let eq1 = ctx.gt_signed(
+        y,
+        x,
+        MemAccessSize::Mem32,
+    );
+    assert_eq!(op1, eq1);
+    assert_eq!(op1_xor, eq1);
 }
 
 #[test]
