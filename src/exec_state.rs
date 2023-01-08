@@ -2387,812 +2387,817 @@ impl<'e> MergeStateCache<'e> {
     }
 }
 
-#[test]
-fn apply_constraint() {
-    let ctx = &crate::operand::OperandContext::new();
-    let constraint = Constraint(ctx.eq_const(
-        ctx.neq_const(
-            ctx.flag_z(),
-            0,
-        ),
-        0,
-    ));
-    let val = ctx.or(
-        ctx.neq_const(
-            ctx.flag_c(),
-            0,
-        ),
-        ctx.neq_const(
-            ctx.flag_z(),
-            0,
-        ),
-    );
-    let old = val.clone();
-    let val = constraint.apply_to(ctx, val);
-    let eq = ctx.neq_const(
-        ctx.flag_c(),
-        0,
-    );
-    assert_ne!(val, old);
-    assert_eq!(val, eq);
-}
+#[cfg(test)]
+mod test {
+    use super::*;
 
-#[test]
-fn apply_constraint_2() {
-    let ctx = &crate::operand::OperandContext::new();
-    let constraint = Constraint(ctx.eq_const(
-        ctx.eq_const(
-            ctx.flag_z(),
-            0,
-        ),
-        0,
-    ));
-    let val = ctx.or(
-        ctx.neq_const(
-            ctx.flag_c(),
-            0,
-        ),
-        ctx.neq_const(
-            ctx.flag_z(),
-            0,
-        ),
-    );
-    let old = val.clone();
-    let val = constraint.apply_to(ctx, val);
-    let eq = ctx.const_1();
-    assert_ne!(val, old);
-    assert_eq!(val, eq);
-}
-
-#[test]
-fn apply_constraint_non1bit() {
-    let ctx = &crate::operand::OperandContext::new();
-    // This shouldn't cause 0x8000_0000 to be optimized out
-    let constraint = ctx.eq(
-        ctx.and(
-            ctx.constant(0x8000_0000),
-            ctx.register(1),
-        ),
-        ctx.constant(0),
-    );
-    let val = ctx.and(
-        ctx.constant(0x8000_0000),
-        ctx.sub(
-            ctx.register(1),
-            ctx.register(2),
-        ),
-    );
-    assert_eq!(Constraint(constraint).apply_to(ctx, val), val);
-}
-
-#[test]
-fn apply_constraint_or() {
-    let ctx = &crate::operand::OperandContext::new();
-    let constraint = ctx.or(
-        ctx.neq(
-            ctx.flag_o(),
-            ctx.flag_s(),
-        ),
-        ctx.neq_const(
-            ctx.flag_z(),
-            0,
-        ),
-    );
-    let val = ctx.eq_const(
-        ctx.and(
-            ctx.eq(
-                ctx.flag_o(),
-                ctx.flag_s(),
+    #[test]
+    fn apply_constraint() {
+        let ctx = &crate::operand::OperandContext::new();
+        let constraint = Constraint(ctx.eq_const(
+            ctx.neq_const(
+                ctx.flag_z(),
+                0,
             ),
+            0,
+        ));
+        let val = ctx.or(
+            ctx.neq_const(
+                ctx.flag_c(),
+                0,
+            ),
+            ctx.neq_const(
+                ctx.flag_z(),
+                0,
+            ),
+        );
+        let old = val.clone();
+        let val = constraint.apply_to(ctx, val);
+        let eq = ctx.neq_const(
+            ctx.flag_c(),
+            0,
+        );
+        assert_ne!(val, old);
+        assert_eq!(val, eq);
+    }
+
+    #[test]
+    fn apply_constraint_2() {
+        let ctx = &crate::operand::OperandContext::new();
+        let constraint = Constraint(ctx.eq_const(
             ctx.eq_const(
                 ctx.flag_z(),
                 0,
             ),
-        ),
-        0,
-    );
-    let applied = Constraint(constraint).apply_to(ctx, val);
-    let eq = ctx.constant(1);
-    assert_eq!(applied, eq);
-}
-
-#[test]
-fn merge_immutable_memory() {
-    let ctx = &crate::operand::OperandContext::new();
-    let mut a = Memory::new();
-    let mut b = Memory::new();
-    a.set(ctx.constant(4), 0, ctx.constant(8));
-    a.set(ctx.constant(12), 0, ctx.constant(8));
-    b.set(ctx.constant(8), 0, ctx.constant(15));
-    b.set(ctx.constant(12), 0, ctx.constant(8));
-    a.map.convert_immutable();
-    b.map.convert_immutable();
-    let mut cache = MergeStateCache::new();
-    let mut new = cache.merge_memory(&a, &b, ctx);
-    assert!(new.get(ctx.constant(4), 0).unwrap().is_undefined());
-    assert!(new.get(ctx.constant(8), 0).unwrap().is_undefined());
-    assert_eq!(new.get(ctx.constant(12), 0).unwrap(), ctx.constant(8));
-}
-
-#[test]
-fn merge_memory_undef() {
-    let ctx = &crate::operand::OperandContext::new();
-    let mut a = Memory::new();
-    let mut b = Memory::new();
-    let addr = ctx.sub_const(ctx.new_undef(), 8);
-    a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
-    b.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
-    a.map.convert_immutable();
-    let mut cache = MergeStateCache::new();
-    let mut new = cache.merge_memory(&a, &b, ctx);
-    assert_eq!(new.get(addr, 0).unwrap(), ctx.mem32(ctx.constant(4), 0));
-}
-
-#[test]
-fn merge_memory_equal() {
-    // a has [addr] = 4 in top level, but 8 in immutable
-    // b has [addr] = 4 in immutable
-    let ctx = &crate::operand::OperandContext::new();
-    let mut a = Memory::new();
-    let mut b = Memory::new();
-    let addr = ctx.sub_const(ctx.register(4), 8);
-    let addr2 = ctx.sub_const(ctx.register(4), 0xc);
-    a.set(addr, 0, ctx.constant(8));
-    a.set(addr2, 0, ctx.constant(0));
-    b.set(addr, 0, ctx.constant(4));
-    a.map.convert_immutable();
-    b.map.convert_immutable();
-    a.set(addr, 0, ctx.constant(4));
-    a.set(addr2, 0, ctx.constant(1));
-    //  { addr: 8, addr2: 4 }       { addr: 4 }
-    //          ^                      ^
-    //  a { addr: 4, addr2: 1 }     b { }
-    let mut cache = MergeStateCache::new();
-    let mut new = cache.merge_memory(&a, &b, ctx);
-    assert_eq!(new.get(addr, 0).unwrap(), ctx.constant(4));
-    assert!(new.get(addr2, 0).unwrap().is_undefined());
-}
-
-#[test]
-fn equal_memory_no_need_to_merge() {
-    // a has [addr] = 4 in top level, but 8 in immutable
-    // b has [addr] = 4 in immutable
-    let ctx = &crate::operand::OperandContext::new();
-    let mut a = Memory::new();
-    let mut b = Memory::new();
-    let addr = ctx.sub_const(ctx.register(4), 8);
-    a.set(addr, 0, ctx.constant(8));
-    b.set(addr, 0, ctx.constant(4));
-    a.map.convert_immutable();
-    b.map.convert_immutable();
-    a.set(addr, 0, ctx.constant(4));
-    assert!(!a.map.has_merge_changed(&b.map));
-}
-
-#[test]
-fn merge_memory_undef2() {
-    let ctx = &crate::operand::OperandContext::new();
-    let mut a = Memory::new();
-    let addr = ctx.sub_const(ctx.register(5), 8);
-    let addr2 = ctx.sub_const(ctx.register(5), 16);
-    a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
-    a.map.convert_immutable();
-    let mut b = a.clone();
-    b.set(addr, 0, ctx.mem32(ctx.constant(9), 0));
-    b.map.convert_immutable();
-    a.set(addr, 0, ctx.new_undef());
-    a.set(addr2, 0, ctx.new_undef());
-    let mut cache = MergeStateCache::new();
-    let mut new = cache.merge_memory(&a, &b, ctx);
-    assert!(new.get(addr, 0).unwrap().is_undefined());
-    assert!(new.get(addr2, 0).unwrap().is_undefined());
-}
-
-#[test]
-fn value_limits_gt_range() {
-    let ctx = &crate::operand::OperandContext::new();
-    let constraint = ctx.gt_const_left(
-        6,
-        ctx.sub_const(
-            ctx.register(0),
-            2,
-        ),
-    );
-    let (low, high) = value_limits(constraint, ctx.register(0));
-    assert_eq!(low, 2);
-    assert_eq!(high, 7);
-}
-
-#[test]
-fn merge_memory_undef3() {
-    let ctx = &crate::operand::OperandContext::new();
-    let mut a = Memory::new();
-    let addr = ctx.sub_const(ctx.register(5), 8);
-    let addr2 = ctx.sub_const(ctx.register(5), 16);
-    a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
-    a.map.convert_immutable();
-    let mut b = a.clone();
-    b.set(addr2, 0, ctx.new_undef());
-    b.map.convert_immutable();
-    a.set(addr, 0, ctx.new_undef());
-    a.set(addr2, 0, ctx.new_undef());
-    //          base { addr: mem32[4] }
-    //          ^               ^
-    //  b { addr2: ud }     a { addr: ud, addr2: ud }
-    let mut cache = MergeStateCache::new();
-    let mut new = cache.merge_memory(&a, &b, ctx);
-    assert!(new.get(addr, 0).unwrap().is_undefined());
-    assert!(new.get(addr2, 0).unwrap().is_undefined());
-    let mut new = cache.merge_memory(&b, &a, ctx);
-    assert!(new.get(addr, 0).unwrap().is_undefined());
-    assert!(new.get(addr2, 0).unwrap().is_undefined());
-}
-
-#[test]
-fn merge_memory_undef4() {
-    let ctx = &crate::operand::OperandContext::new();
-    let mut a = Memory::new();
-    let addr = ctx.sub_const(ctx.register(5), 8);
-    let addr2 = ctx.sub_const(ctx.register(5), 16);
-    a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
-    a.map.convert_immutable();
-    let mut b = a.clone();
-    b.set(addr2, 0, ctx.new_undef());
-    b.map.convert_immutable();
-    a.set(addr, 0, ctx.constant(6));
-    a.set(addr2, 0, ctx.constant(5));
-    //          base { addr: mem32[4] }
-    //          ^               ^
-    //  b { addr2: ud }     a { addr: 6, addr2: 5 }
-    let mut cache = MergeStateCache::new();
-    let mut new = cache.merge_memory(&a, &b, ctx);
-    assert!(new.get(addr, 0).unwrap().is_undefined());
-    assert!(new.get(addr2, 0).unwrap().is_undefined());
-    let mut new = cache.merge_memory(&b, &a, ctx);
-    assert!(new.get(addr, 0).unwrap().is_undefined());
-    assert!(new.get(addr2, 0).unwrap().is_undefined());
-}
-
-#[test]
-fn merge_memory_undef5() {
-    let ctx = &crate::operand::OperandContext::new();
-    let mut a = Memory::new();
-    let addr = ctx.sub_const(ctx.register(5), 8);
-    let addr2 = ctx.sub_const(ctx.register(5), 16);
-    a.set(addr, 0, ctx.constant(1));
-    a.set(addr2, 0, ctx.constant(2));
-    a.map.convert_immutable();
-    let b = a.clone();
-    a.set(addr, 0, ctx.constant(6));
-    //      { addr: 1, addr2: 2 }
-    //      ^             ^
-    //  b { }     a { addr: 6 }
-    let mut cache = MergeStateCache::new();
-    let mut new = cache.merge_memory(&a, &b, ctx);
-    assert!(new.get(addr, 0).unwrap().is_undefined());
-    assert_eq!(new.get(addr2, 0).unwrap(), ctx.constant(2));
-    let mut cache = MergeStateCache::new();
-    let mut new = cache.merge_memory(&b, &a, ctx);
-    assert!(new.get(addr, 0).unwrap().is_undefined());
-    assert_eq!(new.get(addr2, 0).unwrap(), ctx.constant(2));
-}
-
-#[test]
-fn merge_memory_undef6() {
-    fn add_filler<'e>(mem: &mut Memory<'e>, ctx: OperandCtx<'e>, seed: u64) {
-        for i in 0..64 {
-            mem.set(ctx.constant(i * 0x100), 0, ctx.constant(seed + i));
-        }
+            0,
+        ));
+        let val = ctx.or(
+            ctx.neq_const(
+                ctx.flag_c(),
+                0,
+            ),
+            ctx.neq_const(
+                ctx.flag_z(),
+                0,
+            ),
+        );
+        let old = val.clone();
+        let val = constraint.apply_to(ctx, val);
+        let eq = ctx.const_1();
+        assert_ne!(val, old);
+        assert_eq!(val, eq);
     }
-    let ctx = &crate::operand::OperandContext::new();
-    let mut a = Memory::new();
-    let mut b = Memory::new();
-    let addr = ctx.sub_const(ctx.register(5), 8);
-    let addr2 = ctx.sub_const(ctx.register(5), 16);
-    a.set(addr, 0, ctx.constant(3));
-    a.map.convert_immutable();
-    add_filler(&mut a, ctx, 0);
-    a.map.convert_immutable();
-    b.set(addr, 0, ctx.constant(2));
-    b.map.convert_immutable();
-    let mut c = b.clone();
-    b.set(addr, 0, ctx.constant(3));
-    b.map.convert_immutable();
-    add_filler(&mut c, ctx, 8);
-    c.set(addr2, 0, ctx.new_undef());
 
-    // Test against broken cache logic
-    // If cache takes advantage of a+b = m merge,
-    // it should realize that addr in result is undefined
+    #[test]
+    fn apply_constraint_non1bit() {
+        let ctx = &crate::operand::OperandContext::new();
+        // This shouldn't cause 0x8000_0000 to be optimized out
+        let constraint = ctx.eq(
+            ctx.and(
+                ctx.constant(0x8000_0000),
+                ctx.register(1),
+            ),
+            ctx.constant(0),
+        );
+        let val = ctx.and(
+            ctx.constant(0x8000_0000),
+            ctx.sub(
+                ctx.register(1),
+                ctx.register(2),
+            ),
+        );
+        assert_eq!(Constraint(constraint).apply_to(ctx, val), val);
+    }
 
-    //  { addr: 3 }    { addr: 2 } <-----
-    //      ^             ^             ^
-    // a { filler }   b { addr: 3 }  c { filler }
-    //     ^             ^               ^
-    //  m { } ~~~~~~~~~~~~               |
-    //    ^                              |
-    //  m2 { filler }                    |
-    //    ^                              |
-    //  result { } ~~~~~~~~~~~~~~~~~~~~~~~
+    #[test]
+    fn apply_constraint_or() {
+        let ctx = &crate::operand::OperandContext::new();
+        let constraint = ctx.or(
+            ctx.neq(
+                ctx.flag_o(),
+                ctx.flag_s(),
+            ),
+            ctx.neq_const(
+                ctx.flag_z(),
+                0,
+            ),
+        );
+        let val = ctx.eq_const(
+            ctx.and(
+                ctx.eq(
+                    ctx.flag_o(),
+                    ctx.flag_s(),
+                ),
+                ctx.eq_const(
+                    ctx.flag_z(),
+                    0,
+                ),
+            ),
+            0,
+        );
+        let applied = Constraint(constraint).apply_to(ctx, val);
+        let eq = ctx.constant(1);
+        assert_eq!(applied, eq);
+    }
 
-    for &(swap_ab, swap_cm2) in &[(false, false), (false, true), (true, false), (true, true)] {
-        println!("----------- {} {}", swap_ab, swap_cm2);
+    #[test]
+    fn merge_immutable_memory() {
+        let ctx = &crate::operand::OperandContext::new();
+        let mut a = Memory::new();
+        let mut b = Memory::new();
+        a.set(ctx.constant(4), 0, ctx.constant(8));
+        a.set(ctx.constant(12), 0, ctx.constant(8));
+        b.set(ctx.constant(8), 0, ctx.constant(15));
+        b.set(ctx.constant(12), 0, ctx.constant(8));
+        a.map.convert_immutable();
+        b.map.convert_immutable();
         let mut cache = MergeStateCache::new();
-        let mut m = match swap_ab {
-            false => cache.merge_memory(&a, &b, ctx),
-            true => cache.merge_memory(&b, &a, ctx),
-        };
-        m.map.convert_immutable();
-        let mut m2 = m.clone();
-        add_filler(&mut m2, ctx, 16);
-        m2.map.convert_immutable();
-
-        let mut result = match swap_cm2 {
-            false => cache.merge_memory(&m2, &c, ctx),
-            true => cache.merge_memory(&c, &m2, ctx),
-        };
-
-        assert_eq!(a.get(addr, 0).unwrap(), ctx.constant(3));
-        assert_eq!(b.get(addr, 0).unwrap(), ctx.constant(3));
-        assert_eq!(m.get(addr, 0).unwrap(), ctx.constant(3));
-        assert_eq!(c.get(addr, 0).unwrap(), ctx.constant(2));
-        assert!(result.get(addr, 0).unwrap().is_undefined());
+        let mut new = cache.merge_memory(&a, &b, ctx);
+        assert!(new.get(ctx.constant(4), 0).unwrap().is_undefined());
+        assert!(new.get(ctx.constant(8), 0).unwrap().is_undefined());
+        assert_eq!(new.get(ctx.constant(12), 0).unwrap(), ctx.constant(8));
     }
-}
 
-#[test]
-fn immutable_tree() {
-    // Building 19-deep map and verifying it is correct
-    //                      (0)
-    //                      (1)
-    //                      (2)
-    //              (3)---->(3)
-    //               |
-    //               |<-----(4)
-    //               |      (5)
-    //               |      (6)
-    //              (7)---->(7)
-    //               |
-    //               |<-----(8)
-    //               |      (9)
-    //               |      (10)
-    //              (11)--->(11)
-    //               |
-    //               |<-----(12)
-    //               |      (13)
-    //               |      (14)
-    //     (15)---->(15)--->(15)
-    //      |
-    //      |<--------------(16)
-    //      |        |      (17)
-    //      |        |      (18)
-    //      |       (19)--->(19)
-    let ctx = &crate::operand::OperandContext::new();
-    let mut map = Memory::new();
-    let addr = ctx.sub_const(ctx.register(5), 8);
-    let addr2 = ctx.sub_const(ctx.register(5), 16);
-    for i in 0..20 {
-        map.set(addr, 0, ctx.constant(i));
-        if i == 3 {
-            map.set(addr2, 0, ctx.constant(8));
+    #[test]
+    fn merge_memory_undef() {
+        let ctx = &crate::operand::OperandContext::new();
+        let mut a = Memory::new();
+        let mut b = Memory::new();
+        let addr = ctx.sub_const(ctx.new_undef(), 8);
+        a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
+        b.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
+        a.map.convert_immutable();
+        let mut cache = MergeStateCache::new();
+        let mut new = cache.merge_memory(&a, &b, ctx);
+        assert_eq!(new.get(addr, 0).unwrap(), ctx.mem32(ctx.constant(4), 0));
+    }
+
+    #[test]
+    fn merge_memory_equal() {
+        // a has [addr] = 4 in top level, but 8 in immutable
+        // b has [addr] = 4 in immutable
+        let ctx = &crate::operand::OperandContext::new();
+        let mut a = Memory::new();
+        let mut b = Memory::new();
+        let addr = ctx.sub_const(ctx.register(4), 8);
+        let addr2 = ctx.sub_const(ctx.register(4), 0xc);
+        a.set(addr, 0, ctx.constant(8));
+        a.set(addr2, 0, ctx.constant(0));
+        b.set(addr, 0, ctx.constant(4));
+        a.map.convert_immutable();
+        b.map.convert_immutable();
+        a.set(addr, 0, ctx.constant(4));
+        a.set(addr2, 0, ctx.constant(1));
+        //  { addr: 8, addr2: 4 }       { addr: 4 }
+        //          ^                      ^
+        //  a { addr: 4, addr2: 1 }     b { }
+        let mut cache = MergeStateCache::new();
+        let mut new = cache.merge_memory(&a, &b, ctx);
+        assert_eq!(new.get(addr, 0).unwrap(), ctx.constant(4));
+        assert!(new.get(addr2, 0).unwrap().is_undefined());
+    }
+
+    #[test]
+    fn equal_memory_no_need_to_merge() {
+        // a has [addr] = 4 in top level, but 8 in immutable
+        // b has [addr] = 4 in immutable
+        let ctx = &crate::operand::OperandContext::new();
+        let mut a = Memory::new();
+        let mut b = Memory::new();
+        let addr = ctx.sub_const(ctx.register(4), 8);
+        a.set(addr, 0, ctx.constant(8));
+        b.set(addr, 0, ctx.constant(4));
+        a.map.convert_immutable();
+        b.map.convert_immutable();
+        a.set(addr, 0, ctx.constant(4));
+        assert!(!a.map.has_merge_changed(&b.map));
+    }
+
+    #[test]
+    fn merge_memory_undef2() {
+        let ctx = &crate::operand::OperandContext::new();
+        let mut a = Memory::new();
+        let addr = ctx.sub_const(ctx.register(5), 8);
+        let addr2 = ctx.sub_const(ctx.register(5), 16);
+        a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
+        a.map.convert_immutable();
+        let mut b = a.clone();
+        b.set(addr, 0, ctx.mem32(ctx.constant(9), 0));
+        b.map.convert_immutable();
+        a.set(addr, 0, ctx.new_undef());
+        a.set(addr2, 0, ctx.new_undef());
+        let mut cache = MergeStateCache::new();
+        let mut new = cache.merge_memory(&a, &b, ctx);
+        assert!(new.get(addr, 0).unwrap().is_undefined());
+        assert!(new.get(addr2, 0).unwrap().is_undefined());
+    }
+
+    #[test]
+    fn value_limits_gt_range() {
+        let ctx = &crate::operand::OperandContext::new();
+        let constraint = ctx.gt_const_left(
+            6,
+            ctx.sub_const(
+                ctx.register(0),
+                2,
+            ),
+        );
+        let (low, high) = value_limits(constraint, ctx.register(0));
+        assert_eq!(low, 2);
+        assert_eq!(high, 7);
+    }
+
+    #[test]
+    fn merge_memory_undef3() {
+        let ctx = &crate::operand::OperandContext::new();
+        let mut a = Memory::new();
+        let addr = ctx.sub_const(ctx.register(5), 8);
+        let addr2 = ctx.sub_const(ctx.register(5), 16);
+        a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
+        a.map.convert_immutable();
+        let mut b = a.clone();
+        b.set(addr2, 0, ctx.new_undef());
+        b.map.convert_immutable();
+        a.set(addr, 0, ctx.new_undef());
+        a.set(addr2, 0, ctx.new_undef());
+        //          base { addr: mem32[4] }
+        //          ^               ^
+        //  b { addr2: ud }     a { addr: ud, addr2: ud }
+        let mut cache = MergeStateCache::new();
+        let mut new = cache.merge_memory(&a, &b, ctx);
+        assert!(new.get(addr, 0).unwrap().is_undefined());
+        assert!(new.get(addr2, 0).unwrap().is_undefined());
+        let mut new = cache.merge_memory(&b, &a, ctx);
+        assert!(new.get(addr, 0).unwrap().is_undefined());
+        assert!(new.get(addr2, 0).unwrap().is_undefined());
+    }
+
+    #[test]
+    fn merge_memory_undef4() {
+        let ctx = &crate::operand::OperandContext::new();
+        let mut a = Memory::new();
+        let addr = ctx.sub_const(ctx.register(5), 8);
+        let addr2 = ctx.sub_const(ctx.register(5), 16);
+        a.set(addr, 0, ctx.mem32(ctx.constant(4), 0));
+        a.map.convert_immutable();
+        let mut b = a.clone();
+        b.set(addr2, 0, ctx.new_undef());
+        b.map.convert_immutable();
+        a.set(addr, 0, ctx.constant(6));
+        a.set(addr2, 0, ctx.constant(5));
+        //          base { addr: mem32[4] }
+        //          ^               ^
+        //  b { addr2: ud }     a { addr: 6, addr2: 5 }
+        let mut cache = MergeStateCache::new();
+        let mut new = cache.merge_memory(&a, &b, ctx);
+        assert!(new.get(addr, 0).unwrap().is_undefined());
+        assert!(new.get(addr2, 0).unwrap().is_undefined());
+        let mut new = cache.merge_memory(&b, &a, ctx);
+        assert!(new.get(addr, 0).unwrap().is_undefined());
+        assert!(new.get(addr2, 0).unwrap().is_undefined());
+    }
+
+    #[test]
+    fn merge_memory_undef5() {
+        let ctx = &crate::operand::OperandContext::new();
+        let mut a = Memory::new();
+        let addr = ctx.sub_const(ctx.register(5), 8);
+        let addr2 = ctx.sub_const(ctx.register(5), 16);
+        a.set(addr, 0, ctx.constant(1));
+        a.set(addr2, 0, ctx.constant(2));
+        a.map.convert_immutable();
+        let b = a.clone();
+        a.set(addr, 0, ctx.constant(6));
+        //      { addr: 1, addr2: 2 }
+        //      ^             ^
+        //  b { }     a { addr: 6 }
+        let mut cache = MergeStateCache::new();
+        let mut new = cache.merge_memory(&a, &b, ctx);
+        assert!(new.get(addr, 0).unwrap().is_undefined());
+        assert_eq!(new.get(addr2, 0).unwrap(), ctx.constant(2));
+        let mut cache = MergeStateCache::new();
+        let mut new = cache.merge_memory(&b, &a, ctx);
+        assert!(new.get(addr, 0).unwrap().is_undefined());
+        assert_eq!(new.get(addr2, 0).unwrap(), ctx.constant(2));
+    }
+
+    #[test]
+    fn merge_memory_undef6() {
+        fn add_filler<'e>(mem: &mut Memory<'e>, ctx: OperandCtx<'e>, seed: u64) {
+            for i in 0..64 {
+                mem.set(ctx.constant(i * 0x100), 0, ctx.constant(seed + i));
+            }
         }
-        map.map.convert_immutable();
+        let ctx = &crate::operand::OperandContext::new();
+        let mut a = Memory::new();
+        let mut b = Memory::new();
+        let addr = ctx.sub_const(ctx.register(5), 8);
+        let addr2 = ctx.sub_const(ctx.register(5), 16);
+        a.set(addr, 0, ctx.constant(3));
+        a.map.convert_immutable();
+        add_filler(&mut a, ctx, 0);
+        a.map.convert_immutable();
+        b.set(addr, 0, ctx.constant(2));
+        b.map.convert_immutable();
+        let mut c = b.clone();
+        b.set(addr, 0, ctx.constant(3));
+        b.map.convert_immutable();
+        add_filler(&mut c, ctx, 8);
+        c.set(addr2, 0, ctx.new_undef());
+
+        // Test against broken cache logic
+        // If cache takes advantage of a+b = m merge,
+        // it should realize that addr in result is undefined
+
+        //  { addr: 3 }    { addr: 2 } <-----
+        //      ^             ^             ^
+        // a { filler }   b { addr: 3 }  c { filler }
+        //     ^             ^               ^
+        //  m { } ~~~~~~~~~~~~               |
+        //    ^                              |
+        //  m2 { filler }                    |
+        //    ^                              |
+        //  result { } ~~~~~~~~~~~~~~~~~~~~~~~
+
+        for &(swap_ab, swap_cm2) in &[(false, false), (false, true), (true, false), (true, true)] {
+            println!("----------- {} {}", swap_ab, swap_cm2);
+            let mut cache = MergeStateCache::new();
+            let mut m = match swap_ab {
+                false => cache.merge_memory(&a, &b, ctx),
+                true => cache.merge_memory(&b, &a, ctx),
+            };
+            m.map.convert_immutable();
+            let mut m2 = m.clone();
+            add_filler(&mut m2, ctx, 16);
+            m2.map.convert_immutable();
+
+            let mut result = match swap_cm2 {
+                false => cache.merge_memory(&m2, &c, ctx),
+                true => cache.merge_memory(&c, &m2, ctx),
+            };
+
+            assert_eq!(a.get(addr, 0).unwrap(), ctx.constant(3));
+            assert_eq!(b.get(addr, 0).unwrap(), ctx.constant(3));
+            assert_eq!(m.get(addr, 0).unwrap(), ctx.constant(3));
+            assert_eq!(c.get(addr, 0).unwrap(), ctx.constant(2));
+            assert!(result.get(addr, 0).unwrap().is_undefined());
+        }
     }
 
-    let addr_key = &(addr.hash_by_address(), 0);
-    let addr2_key = &(addr2.hash_by_address(), 0);
+    #[test]
+    fn immutable_tree() {
+        // Building 19-deep map and verifying it is correct
+        //                      (0)
+        //                      (1)
+        //                      (2)
+        //              (3)---->(3)
+        //               |
+        //               |<-----(4)
+        //               |      (5)
+        //               |      (6)
+        //              (7)---->(7)
+        //               |
+        //               |<-----(8)
+        //               |      (9)
+        //               |      (10)
+        //              (11)--->(11)
+        //               |
+        //               |<-----(12)
+        //               |      (13)
+        //               |      (14)
+        //     (15)---->(15)--->(15)
+        //      |
+        //      |<--------------(16)
+        //      |        |      (17)
+        //      |        |      (18)
+        //      |       (19)--->(19)
+        let ctx = &crate::operand::OperandContext::new();
+        let mut map = Memory::new();
+        let addr = ctx.sub_const(ctx.register(5), 8);
+        let addr2 = ctx.sub_const(ctx.register(5), 16);
+        for i in 0..20 {
+            map.set(addr, 0, ctx.constant(i));
+            if i == 3 {
+                map.set(addr2, 0, ctx.constant(8));
+            }
+            map.map.convert_immutable();
+        }
 
-    // Just show the map for debugging the test
-    let mut pos = &map.map;
-    for i in (0..21).rev() {
-        println!("--- {} ---", i);
-        println!("{:?}", pos.get(addr_key));
-        if matches!(i, 15) {
-            pos = pos.slower_immutable.as_deref().unwrap();
+        let addr_key = &(addr.hash_by_address(), 0);
+        let addr2_key = &(addr2.hash_by_address(), 0);
+
+        // Just show the map for debugging the test
+        let mut pos = &map.map;
+        for i in (0..21).rev() {
+            println!("--- {} ---", i);
             println!("{:?}", pos.get(addr_key));
-            pos = pos.slower_immutable.as_deref().unwrap();
-            println!("{:?}", pos.get(addr_key));
+            if matches!(i, 15) {
+                pos = pos.slower_immutable.as_deref().unwrap();
+                println!("{:?}", pos.get(addr_key));
+                pos = pos.slower_immutable.as_deref().unwrap();
+                println!("{:?}", pos.get(addr_key));
+            }
+            if matches!(i, 19 | 11 | 7 | 3) {
+                pos = pos.slower_immutable.as_deref().unwrap();
+                println!("{:?}", pos.get(addr_key));
+            }
+            if i != 0 {
+                pos = pos.immutable.as_deref().unwrap();
+            }
         }
-        if matches!(i, 19 | 11 | 7 | 3) {
-            pos = pos.slower_immutable.as_deref().unwrap();
-            println!("{:?}", pos.get(addr_key));
-        }
-        if i != 0 {
-            pos = pos.immutable.as_deref().unwrap();
+
+        let mut pos = &map.map;
+        let mut prev_fast = None;
+        for i in (0..21).rev() {
+            println!("--- {} ---", i);
+            assert_eq!(pos.immutable_depth, i);
+            if i == 20 {
+                pos = pos.immutable.as_deref().unwrap();
+                continue;
+            }
+
+            assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
+            if i >= 3 {
+                assert_eq!(pos.get(addr2_key), Some(ctx.constant(8)));
+            } else {
+                assert_eq!(pos.get(addr2_key), None);
+            }
+
+            if matches!(i, 19 | 11 | 7 | 3) {
+                prev_fast = pos.immutable.as_deref();
+                pos = pos.slower_immutable.as_deref().unwrap();
+                assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
+            }
+            if i == 15 {
+                pos = pos.slower_immutable.as_deref().unwrap();
+                assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
+
+                prev_fast = pos.immutable.as_deref();
+                pos = pos.slower_immutable.as_deref().unwrap();
+                assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
+            }
+            if matches!(i, 16 | 12 | 8 | 4) {
+                let prev_fast = prev_fast.unwrap();
+                assert!(Rc::ptr_eq(&pos.immutable.as_deref().unwrap().map, &prev_fast.map));
+            }
+            if i != 0 {
+                pos = pos.immutable.as_deref().unwrap();
+            }
         }
     }
 
-    let mut pos = &map.map;
-    let mut prev_fast = None;
-    for i in (0..21).rev() {
-        println!("--- {} ---", i);
-        assert_eq!(pos.immutable_depth, i);
-        if i == 20 {
-            pos = pos.immutable.as_deref().unwrap();
-            continue;
+    #[test]
+    fn test_common_immutable() {
+        fn add_immutables<'e>(mem: &mut Memory<'e>, ctx: OperandCtx<'e>, count: usize) {
+            for i in 0..count {
+                mem.set(ctx.constant(444), 0, ctx.constant(i as u64));
+                mem.map.convert_immutable();
+            }
         }
-
-        assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
-        if i >= 3 {
-            assert_eq!(pos.get(addr2_key), Some(ctx.constant(8)));
-        } else {
-            assert_eq!(pos.get(addr2_key), None);
-        }
-
-        if matches!(i, 19 | 11 | 7 | 3) {
-            prev_fast = pos.immutable.as_deref();
-            pos = pos.slower_immutable.as_deref().unwrap();
-            assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
-        }
-        if i == 15 {
-            pos = pos.slower_immutable.as_deref().unwrap();
-            assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
-
-            prev_fast = pos.immutable.as_deref();
-            pos = pos.slower_immutable.as_deref().unwrap();
-            assert_eq!(pos.get(addr_key), Some(ctx.constant(i as u64)));
-        }
-        if matches!(i, 16 | 12 | 8 | 4) {
-            let prev_fast = prev_fast.unwrap();
-            assert!(Rc::ptr_eq(&pos.immutable.as_deref().unwrap().map, &prev_fast.map));
-        }
-        if i != 0 {
-            pos = pos.immutable.as_deref().unwrap();
-        }
-    }
-}
-
-#[test]
-fn test_common_immutable() {
-    fn add_immutables<'e>(mem: &mut Memory<'e>, ctx: OperandCtx<'e>, count: usize) {
-        for i in 0..count {
-            mem.set(ctx.constant(444), 0, ctx.constant(i as u64));
+        let ctx = &crate::operand::OperandContext::new();
+        let mut mem = Memory::new();
+        for i in 0..72 {
+            println!("--- {} ---", i);
+            mem.set(ctx.constant(999), 0, ctx.constant(i as u64));
             mem.map.convert_immutable();
+            let mut a = mem.clone();
+            let mut b = mem.clone();
+            add_immutables(&mut a, ctx, i + 4);
+            add_immutables(&mut b, ctx, i + 7);
+            let common = a.map.common_immutable(&b.map).unwrap();
+            assert!(Rc::ptr_eq(&common.map, &mem.map.immutable.as_deref().unwrap().map));
+            let common = mem.map.common_immutable(&a.map).unwrap();
+            assert!(Rc::ptr_eq(&common.map, &mem.map.immutable.as_deref().unwrap().map));
+            let common = mem.map.common_immutable(&b.map).unwrap();
+            assert!(Rc::ptr_eq(&common.map, &mem.map.immutable.as_deref().unwrap().map));
         }
-    }
-    let ctx = &crate::operand::OperandContext::new();
-    let mut mem = Memory::new();
-    for i in 0..72 {
-        println!("--- {} ---", i);
-        mem.set(ctx.constant(999), 0, ctx.constant(i as u64));
-        mem.map.convert_immutable();
-        let mut a = mem.clone();
-        let mut b = mem.clone();
-        add_immutables(&mut a, ctx, i + 4);
-        add_immutables(&mut b, ctx, i + 7);
-        let common = a.map.common_immutable(&b.map).unwrap();
-        assert!(Rc::ptr_eq(&common.map, &mem.map.immutable.as_deref().unwrap().map));
-        let common = mem.map.common_immutable(&a.map).unwrap();
-        assert!(Rc::ptr_eq(&common.map, &mem.map.immutable.as_deref().unwrap().map));
-        let common = mem.map.common_immutable(&b.map).unwrap();
-        assert!(Rc::ptr_eq(&common.map, &mem.map.immutable.as_deref().unwrap().map));
-    }
-    let common = mem.map.common_immutable(&mem.map).unwrap();
-    assert!(Rc::ptr_eq(&common.map, &mem.map.map));
-}
-
-#[test]
-fn value_limits_sext() {
-    let ctx = &crate::operand::OperandContext::new();
-    let constraint = ctx.gt_const_left(
-        0x38,
-        ctx.sub_const(
-            ctx.mem8(ctx.register(0), 0),
-            0x41,
-        ),
-    );
-    let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0), 0));
-    assert_eq!(low, 0x41);
-    assert_eq!(high, 0x78);
-    let (low, high) = value_limits(
-        constraint,
-        ctx.sign_extend(
-            ctx.mem8(ctx.register(0), 0),
-            MemAccessSize::Mem8,
-            MemAccessSize::Mem32,
-        ),
-    );
-    assert_eq!(low, 0x41);
-    assert_eq!(high, 0x78);
-
-    let constraint = ctx.gt_const_left(
-        0x42,
-        ctx.sub_const(
-            ctx.mem8(ctx.register(0), 0),
-            0x41,
-        ),
-    );
-    let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0), 0));
-    assert_eq!(low, 0x41);
-    assert_eq!(high, 0x82);
-    let (low, high) = value_limits(
-        constraint,
-        ctx.sign_extend(
-            ctx.mem8(ctx.register(0), 0),
-            MemAccessSize::Mem8,
-            MemAccessSize::Mem32,
-        ),
-    );
-    assert_eq!(low, 0x41);
-    assert_eq!(high, 0xffff_ff82);
-}
-
-#[test]
-fn test_merge_flags() {
-    fn test<'e, F: FnOnce(&mut FlagState<'_, 'e>, &mut FlagState<'_, 'e>)>(
-        ctx: OperandCtx<'e>,
-        callback: F,
-    ) {
-        let mut flags1 = array_init::array_init(|i| ctx.register(i as u8));
-        let mut flags2 = array_init::array_init(|i| ctx.register(8 + i as u8));
-        flags1[5] = ctx.const_0();
-        flags2[5] = ctx.const_0();
-        let mut pending1 = PendingFlags::new();
-        let mut pending2 = PendingFlags::new();
-        let update = FlagUpdate {
-            left: ctx.mem32c(0x100),
-            right: ctx.mem32c(0x200),
-            ty: FlagArith::Sub,
-            size: MemAccessSize::Mem32,
-        };
-        pending1.reset(&update, None);
-        pending2.reset(&update, None);
-
-        let mut flag_state1 = FlagState {
-            flags: &mut flags1,
-            pending_flags: &mut pending1,
-        };
-        let mut flag_state2 = FlagState {
-            flags: &mut flags2,
-            pending_flags: &mut pending2,
-        };
-        callback(&mut flag_state1, &mut flag_state2);
+        let common = mem.map.common_immutable(&mem.map).unwrap();
+        assert!(Rc::ptr_eq(&common.map, &mem.map.map));
     }
 
-    let ctx = &crate::operand::OperandContext::new();
-    test(ctx, |old, new| {
-        // Should be equal, no changes
-        assert!(flags_merge_changed(old, new, ctx) == false);
-        let mut new_flags = array_init::array_init(|_| ctx.const_0());
-        let new_pending = merge_flags(old, new, &mut new_flags, ctx);
-        assert_eq!(new_pending.pending_bits, 0x1f);
-        assert_eq!(new_pending.update, old.pending_flags.update);
-    });
-    test(ctx, |old, new| {
-        new.pending_flags.clear_pending(Flag::Zero);
-        old.pending_flags.clear_pending(Flag::Carry);
-        let zero_carry_mask = (1 << Flag::Zero as u32) | (1 << Flag::Carry as u32);
-        // Should assume that they're equal and new zero and old carry can be used
-        assert!(flags_merge_changed(old, new, ctx) == false);
-        let mut new_flags = array_init::array_init(|_| ctx.const_0());
-        let new_pending = merge_flags(old, new, &mut new_flags, ctx);
-        assert_eq!(new_pending.flag_bits, 0x1f);
-        assert_eq!(new_pending.pending_bits, 0x1f & !zero_carry_mask);
-        assert_eq!(new_pending.update, old.pending_flags.update);
-        assert_eq!(new_flags[Flag::Zero as usize], new.flags[Flag::Zero as usize]);
-        assert_eq!(new_flags[Flag::Carry as usize], old.flags[Flag::Carry as usize]);
-    });
-    test(ctx, |old, new| {
-        new.pending_flags.clear_pending(Flag::Zero);
-        old.pending_flags.make_non_pending(Flag::Carry);
-        let carry_mask = 1 << Flag::Carry as u32;
-        let zero_carry_mask = (1 << Flag::Zero as u32) | (1 << Flag::Carry as u32);
-        // Now old carry has been assigned from somewhere else than pending FlagUpdate,
-        // should be assumed that new carry isn't same
-        assert!(flags_merge_changed(old, new, ctx) == true);
-        let mut new_flags = array_init::array_init(|_| ctx.const_0());
-        let new_pending = merge_flags(old, new, &mut new_flags, ctx);
-        assert_eq!(new_pending.flag_bits, 0x1f & !carry_mask);
-        assert_eq!(new_pending.pending_bits, 0x1f & !zero_carry_mask);
-        assert_eq!(new_pending.update, old.pending_flags.update);
-        assert_eq!(new_flags[Flag::Zero as usize], new.flags[Flag::Zero as usize]);
-        assert!(new_flags[Flag::Carry as usize].is_undefined());
-    });
-    test(ctx, |old, new| {
-        new.flags[Flag::Carry as usize] = ctx.constant(666);
-        old.flags[Flag::Carry as usize] = ctx.constant(666);
-        new.pending_flags.clear_pending(Flag::Carry);
-        old.pending_flags.make_non_pending(Flag::Carry);
-        let carry_mask = 1 << Flag::Carry as u32;
-        // Carry sources are different but result is same, should not make undefined
-        // or consider changed.
-        assert!(flags_merge_changed(old, new, ctx) == false);
-        let mut new_flags = array_init::array_init(|_| ctx.const_0());
-        let new_pending = merge_flags(old, new, &mut new_flags, ctx);
-        // This could also be 0x1f, but not going to care about it for now
-        assert_eq!(new_pending.flag_bits, 0x1f & !carry_mask);
-        assert_eq!(new_pending.pending_bits, 0x1f & !carry_mask);
-        assert_eq!(new_pending.update, old.pending_flags.update);
-        assert_eq!(new_flags[Flag::Carry as usize], ctx.constant(666));
-    });
-}
+    #[test]
+    fn value_limits_sext() {
+        let ctx = &crate::operand::OperandContext::new();
+        let constraint = ctx.gt_const_left(
+            0x38,
+            ctx.sub_const(
+                ctx.mem8(ctx.register(0), 0),
+                0x41,
+            ),
+        );
+        let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0), 0));
+        assert_eq!(low, 0x41);
+        assert_eq!(high, 0x78);
+        let (low, high) = value_limits(
+            constraint,
+            ctx.sign_extend(
+                ctx.mem8(ctx.register(0), 0),
+                MemAccessSize::Mem8,
+                MemAccessSize::Mem32,
+            ),
+        );
+        assert_eq!(low, 0x41);
+        assert_eq!(high, 0x78);
 
-#[test]
-fn test_iter_until_immutable() {
-    // Building 19-deep map and verifying iter_until_immutable
-    //                      (0)
-    //                      (1)
-    //                      (2)
-    //              (3)---->(3)
-    //               |
-    //               |<-----(4)
-    //               |      (5)
-    //               |      (6)
-    //              (7)---->(7)
-    //               |
-    //               |<-----(8)
-    //               |      (9)
-    //               |      (10)
-    //              (11)--->(11)
-    //               |
-    //               |<-----(12)
-    //               |      (13)
-    //               |      (14)
-    //     (15)---->(15)--->(15)
-    //      |
-    //      |<--------------(16)
-    //      |        |      (17)
-    //      |        |      (18)
-    //      |       (19)--->(19)
-    let ctx = &crate::operand::OperandContext::new();
-    let mut map = Memory::new();
-    let addr = ctx.sub_const(ctx.register(5), 8);
-    let mut maps = Vec::new();
-    for i in 0..20 {
-        map.set(addr, 0, ctx.constant(i));
-        map.map.convert_immutable();
-        maps.push(map.clone());
+        let constraint = ctx.gt_const_left(
+            0x42,
+            ctx.sub_const(
+                ctx.mem8(ctx.register(0), 0),
+                0x41,
+            ),
+        );
+        let (low, high) = value_limits(constraint, ctx.mem8(ctx.register(0), 0));
+        assert_eq!(low, 0x41);
+        assert_eq!(high, 0x82);
+        let (low, high) = value_limits(
+            constraint,
+            ctx.sign_extend(
+                ctx.mem8(ctx.register(0), 0),
+                MemAccessSize::Mem8,
+                MemAccessSize::Mem32,
+            ),
+        );
+        assert_eq!(low, 0x41);
+        assert_eq!(high, 0xffff_ff82);
     }
 
-    let map19 = maps[19].map.immutable.as_ref().unwrap();
-    assert_eq!(map19.immutable_depth, 19);
-    let map14 = maps[14].map.immutable.as_ref().unwrap();
-    assert_eq!(map14.immutable_depth, 14);
-    let map12 = maps[12].map.immutable.as_ref().unwrap();
-    assert_eq!(map12.immutable_depth, 12);
-    let map11 = maps[11].map.immutable.as_ref().unwrap();
-    assert_eq!(map11.immutable_depth, 11);
-    let map3 = maps[3].map.immutable.as_ref().unwrap();
-    assert_eq!(map3.immutable_depth, 3);
-    let map1 = maps[1].map.immutable.as_ref().unwrap();
-    assert_eq!(map1.immutable_depth, 1);
+    #[test]
+    fn test_merge_flags() {
+        fn test<'e, F: FnOnce(&mut FlagState<'_, 'e>, &mut FlagState<'_, 'e>)>(
+            ctx: OperandCtx<'e>,
+            callback: F,
+        ) {
+            let mut flags1 = array_init::array_init(|i| ctx.register(i as u8));
+            let mut flags2 = array_init::array_init(|i| ctx.register(8 + i as u8));
+            flags1[5] = ctx.const_0();
+            flags2[5] = ctx.const_0();
+            let mut pending1 = PendingFlags::new();
+            let mut pending2 = PendingFlags::new();
+            let update = FlagUpdate {
+                left: ctx.mem32c(0x100),
+                right: ctx.mem32c(0x200),
+                ty: FlagArith::Sub,
+                size: MemAccessSize::Mem32,
+            };
+            pending1.reset(&update, None);
+            pending2.reset(&update, None);
 
-    let results = map19.iter_maps_until_immutable(Some(map14))
-        .enumerate()
-        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
-        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
-        .collect::<Vec<_>>();
-    let cmp = vec![
-        ((addr, 0u64), ctx.constant(19), false),
-        ((addr, 0), ctx.constant(15), true),
-    ];
-    assert_eq!(results, cmp);
+            let mut flag_state1 = FlagState {
+                flags: &mut flags1,
+                pending_flags: &mut pending1,
+            };
+            let mut flag_state2 = FlagState {
+                flags: &mut flags2,
+                pending_flags: &mut pending2,
+            };
+            callback(&mut flag_state1, &mut flag_state2);
+        }
 
-    let results = map19.iter_maps_until_immutable(Some(map12))
-        .enumerate()
-        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
-        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
-        .collect::<Vec<_>>();
-    let cmp = vec![
-        ((addr, 0u64), ctx.constant(19), false),
-        ((addr, 0), ctx.constant(15), true),
-        ((addr, 0), ctx.constant(14), true),
-        ((addr, 0), ctx.constant(13), true),
-    ];
-    assert_eq!(results, cmp);
+        let ctx = &crate::operand::OperandContext::new();
+        test(ctx, |old, new| {
+            // Should be equal, no changes
+            assert!(flags_merge_changed(old, new, ctx) == false);
+            let mut new_flags = array_init::array_init(|_| ctx.const_0());
+            let new_pending = merge_flags(old, new, &mut new_flags, ctx);
+            assert_eq!(new_pending.pending_bits, 0x1f);
+            assert_eq!(new_pending.update, old.pending_flags.update);
+        });
+        test(ctx, |old, new| {
+            new.pending_flags.clear_pending(Flag::Zero);
+            old.pending_flags.clear_pending(Flag::Carry);
+            let zero_carry_mask = (1 << Flag::Zero as u32) | (1 << Flag::Carry as u32);
+            // Should assume that they're equal and new zero and old carry can be used
+            assert!(flags_merge_changed(old, new, ctx) == false);
+            let mut new_flags = array_init::array_init(|_| ctx.const_0());
+            let new_pending = merge_flags(old, new, &mut new_flags, ctx);
+            assert_eq!(new_pending.flag_bits, 0x1f);
+            assert_eq!(new_pending.pending_bits, 0x1f & !zero_carry_mask);
+            assert_eq!(new_pending.update, old.pending_flags.update);
+            assert_eq!(new_flags[Flag::Zero as usize], new.flags[Flag::Zero as usize]);
+            assert_eq!(new_flags[Flag::Carry as usize], old.flags[Flag::Carry as usize]);
+        });
+        test(ctx, |old, new| {
+            new.pending_flags.clear_pending(Flag::Zero);
+            old.pending_flags.make_non_pending(Flag::Carry);
+            let carry_mask = 1 << Flag::Carry as u32;
+            let zero_carry_mask = (1 << Flag::Zero as u32) | (1 << Flag::Carry as u32);
+            // Now old carry has been assigned from somewhere else than pending FlagUpdate,
+            // should be assumed that new carry isn't same
+            assert!(flags_merge_changed(old, new, ctx) == true);
+            let mut new_flags = array_init::array_init(|_| ctx.const_0());
+            let new_pending = merge_flags(old, new, &mut new_flags, ctx);
+            assert_eq!(new_pending.flag_bits, 0x1f & !carry_mask);
+            assert_eq!(new_pending.pending_bits, 0x1f & !zero_carry_mask);
+            assert_eq!(new_pending.update, old.pending_flags.update);
+            assert_eq!(new_flags[Flag::Zero as usize], new.flags[Flag::Zero as usize]);
+            assert!(new_flags[Flag::Carry as usize].is_undefined());
+        });
+        test(ctx, |old, new| {
+            new.flags[Flag::Carry as usize] = ctx.constant(666);
+            old.flags[Flag::Carry as usize] = ctx.constant(666);
+            new.pending_flags.clear_pending(Flag::Carry);
+            old.pending_flags.make_non_pending(Flag::Carry);
+            let carry_mask = 1 << Flag::Carry as u32;
+            // Carry sources are different but result is same, should not make undefined
+            // or consider changed.
+            assert!(flags_merge_changed(old, new, ctx) == false);
+            let mut new_flags = array_init::array_init(|_| ctx.const_0());
+            let new_pending = merge_flags(old, new, &mut new_flags, ctx);
+            // This could also be 0x1f, but not going to care about it for now
+            assert_eq!(new_pending.flag_bits, 0x1f & !carry_mask);
+            assert_eq!(new_pending.pending_bits, 0x1f & !carry_mask);
+            assert_eq!(new_pending.update, old.pending_flags.update);
+            assert_eq!(new_flags[Flag::Carry as usize], ctx.constant(666));
+        });
+    }
 
-    let results = map19.iter_maps_until_immutable(Some(map11))
-        .enumerate()
-        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
-        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
-        .collect::<Vec<_>>();
-    let cmp = vec![
-        ((addr, 0u64), ctx.constant(19), false),
-        ((addr, 0), ctx.constant(15), true),
-    ];
-    assert_eq!(results, cmp);
+    #[test]
+    fn test_iter_until_immutable() {
+        // Building 19-deep map and verifying iter_until_immutable
+        //                      (0)
+        //                      (1)
+        //                      (2)
+        //              (3)---->(3)
+        //               |
+        //               |<-----(4)
+        //               |      (5)
+        //               |      (6)
+        //              (7)---->(7)
+        //               |
+        //               |<-----(8)
+        //               |      (9)
+        //               |      (10)
+        //              (11)--->(11)
+        //               |
+        //               |<-----(12)
+        //               |      (13)
+        //               |      (14)
+        //     (15)---->(15)--->(15)
+        //      |
+        //      |<--------------(16)
+        //      |        |      (17)
+        //      |        |      (18)
+        //      |       (19)--->(19)
+        let ctx = &crate::operand::OperandContext::new();
+        let mut map = Memory::new();
+        let addr = ctx.sub_const(ctx.register(5), 8);
+        let mut maps = Vec::new();
+        for i in 0..20 {
+            map.set(addr, 0, ctx.constant(i));
+            map.map.convert_immutable();
+            maps.push(map.clone());
+        }
 
-    let results = map19.iter_maps_until_immutable(Some(map3))
-        .enumerate()
-        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
-        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
-        .collect::<Vec<_>>();
-    let cmp = vec![
-        ((addr, 0u64), ctx.constant(19), false),
-        ((addr, 0), ctx.constant(15), true),
-        ((addr, 0), ctx.constant(11), true),
-        ((addr, 0), ctx.constant(7), true),
-    ];
-    assert_eq!(results, cmp);
+        let map19 = maps[19].map.immutable.as_ref().unwrap();
+        assert_eq!(map19.immutable_depth, 19);
+        let map14 = maps[14].map.immutable.as_ref().unwrap();
+        assert_eq!(map14.immutable_depth, 14);
+        let map12 = maps[12].map.immutable.as_ref().unwrap();
+        assert_eq!(map12.immutable_depth, 12);
+        let map11 = maps[11].map.immutable.as_ref().unwrap();
+        assert_eq!(map11.immutable_depth, 11);
+        let map3 = maps[3].map.immutable.as_ref().unwrap();
+        assert_eq!(map3.immutable_depth, 3);
+        let map1 = maps[1].map.immutable.as_ref().unwrap();
+        assert_eq!(map1.immutable_depth, 1);
 
-    let results = map19.iter_maps_until_immutable(Some(map1))
-        .enumerate()
-        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
-        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
-        .collect::<Vec<_>>();
-    let cmp = vec![
-        ((addr, 0u64), ctx.constant(19), false),
-        ((addr, 0), ctx.constant(15), true),
-        ((addr, 0), ctx.constant(11), true),
-        ((addr, 0), ctx.constant(7), true),
-        ((addr, 0), ctx.constant(3), true),
-        ((addr, 0), ctx.constant(2), true),
-    ];
-    assert_eq!(results, cmp);
+        let results = map19.iter_maps_until_immutable(Some(map14))
+            .enumerate()
+            .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
+            .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
+            .collect::<Vec<_>>();
+        let cmp = vec![
+            ((addr, 0u64), ctx.constant(19), false),
+            ((addr, 0), ctx.constant(15), true),
+        ];
+        assert_eq!(results, cmp);
 
-    let results = map14.iter_maps_until_immutable(Some(map1))
-        .enumerate()
-        .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
-        .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
-        .collect::<Vec<_>>();
-    let cmp = vec![
-        ((addr, 0u64), ctx.constant(14), false),
-        ((addr, 0), ctx.constant(13), true),
-        ((addr, 0), ctx.constant(12), true),
-        ((addr, 0), ctx.constant(11), true),
-        ((addr, 0), ctx.constant(7), true),
-        ((addr, 0), ctx.constant(3), true),
-        ((addr, 0), ctx.constant(2), true),
-    ];
-    assert_eq!(results, cmp);
-}
+        let results = map19.iter_maps_until_immutable(Some(map12))
+            .enumerate()
+            .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
+            .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
+            .collect::<Vec<_>>();
+        let cmp = vec![
+            ((addr, 0u64), ctx.constant(19), false),
+            ((addr, 0), ctx.constant(15), true),
+            ((addr, 0), ctx.constant(14), true),
+            ((addr, 0), ctx.constant(13), true),
+        ];
+        assert_eq!(results, cmp);
 
-#[test]
-fn test_is_flag_const_constraint() {
-    let ctx = &crate::operand::OperandContext::new();
-    let flag = ctx.flag_z();
-    let eq_0 = ctx.eq_const(flag, 0);
-    let eq_1 = ctx.eq_const(flag, 1);
-    let neq_0 = ctx.neq_const(flag, 0);
-    assert_eq!(
-        is_flag_const_constraint(ctx, eq_0).unwrap(),
-        (Flag::Zero, ctx.constant(0)),
-    );
-    assert_eq!(
-        is_flag_const_constraint(ctx, eq_1).unwrap(),
-        (Flag::Zero, ctx.constant(1)),
-    );
-    assert_eq!(
-        is_flag_const_constraint(ctx, neq_0).unwrap(),
-        (Flag::Zero, ctx.constant(1)),
-    );
-}
+        let results = map19.iter_maps_until_immutable(Some(map11))
+            .enumerate()
+            .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
+            .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
+            .collect::<Vec<_>>();
+        let cmp = vec![
+            ((addr, 0u64), ctx.constant(19), false),
+            ((addr, 0), ctx.constant(15), true),
+        ];
+        assert_eq!(results, cmp);
 
-#[test]
-fn merge_flag_eq_constraint() {
-    let ctx = &crate::operand::OperandContext::new();
-    let flag_eq = ctx.eq(
-        ctx.flag_s(),
-        ctx.flag_o(),
-    );
-    // A: (s == o) == 0
-    // B: ((s == o) | z) == 0
-    //  => ((s == o) == 0) & (z == 0)
-    // Can keep (s == o) == 0
-    let a = ctx.eq_const(flag_eq, 0);
-    let b = ctx.eq_const(
-        ctx.or(flag_eq, ctx.flag_z()),
-        0,
-    );
-    let result = merge_constraint(ctx, Some(Constraint(a)), Some(Constraint(b))).unwrap();
-    assert_eq!(result.0, a);
-}
+        let results = map19.iter_maps_until_immutable(Some(map3))
+            .enumerate()
+            .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
+            .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
+            .collect::<Vec<_>>();
+        let cmp = vec![
+            ((addr, 0u64), ctx.constant(19), false),
+            ((addr, 0), ctx.constant(15), true),
+            ((addr, 0), ctx.constant(11), true),
+            ((addr, 0), ctx.constant(7), true),
+        ];
+        assert_eq!(results, cmp);
 
-#[test]
-fn apply_neq_constraint() {
-    let ctx = &crate::operand::OperandContext::new();
-    let flag_eq = ctx.eq(
-        ctx.flag_s(),
-        ctx.flag_o(),
-    );
-    let flag_neq = ctx.neq(
-        ctx.flag_s(),
-        ctx.flag_o(),
-    );
-    let result = Constraint(flag_eq).apply_to(ctx, flag_neq);
-    assert_eq!(result, ctx.constant(0));
-    let result = Constraint(flag_neq).apply_to(ctx, flag_eq);
-    assert_eq!(result, ctx.constant(0));
-    let result = Constraint(flag_neq).apply_to(ctx, flag_neq);
-    assert_eq!(result, ctx.constant(1));
+        let results = map19.iter_maps_until_immutable(Some(map1))
+            .enumerate()
+            .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
+            .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
+            .collect::<Vec<_>>();
+        let cmp = vec![
+            ((addr, 0u64), ctx.constant(19), false),
+            ((addr, 0), ctx.constant(15), true),
+            ((addr, 0), ctx.constant(11), true),
+            ((addr, 0), ctx.constant(7), true),
+            ((addr, 0), ctx.constant(3), true),
+            ((addr, 0), ctx.constant(2), true),
+        ];
+        assert_eq!(results, cmp);
+
+        let results = map14.iter_maps_until_immutable(Some(map1))
+            .enumerate()
+            .flat_map(|(i, x)| x.map.iter().map(move |x| (x.0, *x.1, i != 0)))
+            .map(|x| ((x.0.0.0, x.0.1), x.1, x.2))
+            .collect::<Vec<_>>();
+        let cmp = vec![
+            ((addr, 0u64), ctx.constant(14), false),
+            ((addr, 0), ctx.constant(13), true),
+            ((addr, 0), ctx.constant(12), true),
+            ((addr, 0), ctx.constant(11), true),
+            ((addr, 0), ctx.constant(7), true),
+            ((addr, 0), ctx.constant(3), true),
+            ((addr, 0), ctx.constant(2), true),
+        ];
+        assert_eq!(results, cmp);
+    }
+
+    #[test]
+    fn test_is_flag_const_constraint() {
+        let ctx = &crate::operand::OperandContext::new();
+        let flag = ctx.flag_z();
+        let eq_0 = ctx.eq_const(flag, 0);
+        let eq_1 = ctx.eq_const(flag, 1);
+        let neq_0 = ctx.neq_const(flag, 0);
+        assert_eq!(
+            is_flag_const_constraint(ctx, eq_0).unwrap(),
+            (Flag::Zero, ctx.constant(0)),
+        );
+        assert_eq!(
+            is_flag_const_constraint(ctx, eq_1).unwrap(),
+            (Flag::Zero, ctx.constant(1)),
+        );
+        assert_eq!(
+            is_flag_const_constraint(ctx, neq_0).unwrap(),
+            (Flag::Zero, ctx.constant(1)),
+        );
+    }
+
+    #[test]
+    fn merge_flag_eq_constraint() {
+        let ctx = &crate::operand::OperandContext::new();
+        let flag_eq = ctx.eq(
+            ctx.flag_s(),
+            ctx.flag_o(),
+        );
+        // A: (s == o) == 0
+        // B: ((s == o) | z) == 0
+        //  => ((s == o) == 0) & (z == 0)
+        // Can keep (s == o) == 0
+        let a = ctx.eq_const(flag_eq, 0);
+        let b = ctx.eq_const(
+            ctx.or(flag_eq, ctx.flag_z()),
+            0,
+        );
+        let result = merge_constraint(ctx, Some(Constraint(a)), Some(Constraint(b))).unwrap();
+        assert_eq!(result.0, a);
+    }
+
+    #[test]
+    fn apply_neq_constraint() {
+        let ctx = &crate::operand::OperandContext::new();
+        let flag_eq = ctx.eq(
+            ctx.flag_s(),
+            ctx.flag_o(),
+        );
+        let flag_neq = ctx.neq(
+            ctx.flag_s(),
+            ctx.flag_o(),
+        );
+        let result = Constraint(flag_eq).apply_to(ctx, flag_neq);
+        assert_eq!(result, ctx.constant(0));
+        let result = Constraint(flag_neq).apply_to(ctx, flag_eq);
+        assert_eq!(result, ctx.constant(0));
+        let result = Constraint(flag_neq).apply_to(ctx, flag_neq);
+        assert_eq!(result, ctx.constant(1));
+    }
 }
