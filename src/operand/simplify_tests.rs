@@ -12125,3 +12125,48 @@ fn incorrect_and_simplify() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn incorrect_rsh_simplfiy() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.rsh_const(
+        ctx.or(
+            ctx.or(
+                ctx.lsh_const(
+                    ctx.register(5),
+                    0x38,
+                ),
+                ctx.and_const(
+                    ctx.register(1),
+                    0x00ff_00ff_00ff_00ff,
+                ),
+            ),
+            ctx.constant(
+                0x0000_0600_0400_0200,
+            ),
+        ),
+        0x20,
+    );
+    let eq1 = ctx.or(
+        ctx.or(
+            ctx.rsh_const(
+                ctx.lsh_const(
+                    ctx.register(5),
+                    0x38,
+                ),
+                0x20,
+            ),
+            ctx.and_const(
+                ctx.rsh_const(
+                    ctx.register(1),
+                    0x20,
+                ),
+                0x00ff_00ff,
+            ),
+        ),
+        ctx.constant(
+            0x0000_0600,
+        ),
+    );
+    assert_eq!(op1, eq1);
+}

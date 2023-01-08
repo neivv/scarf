@@ -2301,7 +2301,9 @@ pub fn simplify_rsh_const<'e>(
                     // in which case have a faster path that takes advantage of
                     // simplify_or having early exits
                     let mut or_const = 0u64;
+                    let mut had_or_const = false;
                     if let Some(c) = arith.right.if_constant() {
+                        had_or_const = true;
                         or_const = c >> constant;
                         if arith.left.if_arithmetic_or().is_none() {
                             let left_simplified =
@@ -2317,9 +2319,7 @@ pub fn simplify_rsh_const<'e>(
 
                     ctx.simplify_temp_stack()
                         .alloc(|slice| {
-                            if or_const != 0 {
-                                slice.push(ctx.constant(or_const)).ok()?;
-                            } else {
+                            if !had_or_const {
                                 slice.push(arith.right).ok()?;
                             }
                             collect_arith_ops(arith.left, slice, ArithOpType::Or, 8).ok()?;
@@ -2329,6 +2329,9 @@ pub fn simplify_rsh_const<'e>(
                             } else {
                                 for op in slice.iter_mut() {
                                     *op = simplify_rsh_const(*op, constant, ctx, swzb_ctx);
+                                }
+                                if or_const != 0 {
+                                    slice.push(ctx.constant(or_const)).ok()?;
                                 }
                                 simplify_or_ops(slice, ctx, swzb_ctx).ok()
                             }
