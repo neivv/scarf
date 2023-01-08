@@ -1296,6 +1296,10 @@ fn sign_extend(value: u64, from: MemAccessSize, to: MemAccessSize) -> u64 {
 /// Helper for ExecutionState::value_limits implementations with constraints
 pub(crate) fn value_limits<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64, u64) {
     let result = value_limits_recurse(constraint, value);
+    let relbits = value.relevant_bits();
+    // min possible value from relbits is 0, would need known-1-bits function instead.
+    let max_from_relbits = 1u64.checked_shl(relbits.end as u32).unwrap_or(0).wrapping_sub(1);
+    let result = (result.0, result.1.min(max_from_relbits));
     if let Some((inner, from, to)) = value.if_sign_extend() {
         let inner_result = value_limits_recurse(constraint, inner);
         let inner_sext = (
@@ -1323,13 +1327,21 @@ fn value_limits_recurse<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64
                         let (right_inner, right_mask) = Operand::and_masked(arith.right);
                         let (right, offset) = right_inner.if_sub_with_const()
                             .unwrap_or_else(|| (right_inner, 0));
-                        if Operand::and_masked(value) == (right, right_mask) ||
-                            (right_mask == u64::MAX && is_subset(value, right))
-                        {
+
+                        let mask = if Operand::and_masked(value) == (right, right_mask) {
+                            Some(u64::MAX)
+                        } else if right_mask == u64::MAX {
+                            subset_mask(value, right)
+                        } else {
+                            None
+                        };
+                        if let Some(mask) = mask {
                             debug_assert!(c != 0);
                             let low = offset;
                             if let Some(high) = c.wrapping_sub(1).checked_add(offset) {
-                                return (low, high);
+                                if high <= mask {
+                                    return (low, high);
+                                }
                             }
                         }
                     }
@@ -1362,15 +1374,31 @@ fn value_limits_recurse<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64
 /// Returns true if sub == sup & some_const_mask (Eq is also fine)
 /// Not really considering constants for this (value_limits_recurse)
 fn is_subset<'e>(sub: Operand<'e>, sup: Operand<'e>) -> bool {
+    subset_mask(sub, sup).is_some()
+}
+
+fn subset_mask<'e>(sub: Operand<'e>, sup: Operand<'e>) -> Option<u64> {
+    if sub == sup {
+        return Some(u64::MAX);
+    }
     if sub.ty().expr_size() > sup.ty().expr_size() {
-        return false;
+        return None;
     }
     match sub.ty() {
         OperandType::Memory(mem) => match sup.if_memory() {
-            Some(mem2) => mem.address() == mem2.address(),
-            None => false,
+            Some(mem2) if mem.address() == mem2.address() => Some(mem.size.mask()),
+            _ => None,
         }
-        _ => sub == sup,
+        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
+            if let Some(sub_mask) = arith.right.if_constant() {
+                let (sup_inner, sup_mask) = Operand::and_masked(sup);
+                if arith.left == sup_inner && sup_mask & sub_mask == sub_mask {
+                    return Some(sub_mask);
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -2919,6 +2947,113 @@ mod test {
         );
         assert_eq!(low, 0x41);
         assert_eq!(high, 0xffff_ff82);
+    }
+
+    #[test]
+    fn value_limits_and_masked() {
+        let ctx = &crate::operand::OperandContext::new();
+        // Rax is less than 38, so ax is too
+        let constraint = ctx.gt_const_left(
+            0x38,
+            ctx.register(0),
+        );
+        let ax = ctx.and_const(ctx.register(0), 0xffff);
+        let (low, high) = value_limits(constraint, ax);
+        assert_eq!(low, 0);
+        assert_eq!(high, 0x37);
+
+        // Rax is greater than or equal to 41, and less than 41 + 38, so ax is too
+        let constraint = ctx.gt_const_left(
+            0x38,
+            ctx.sub_const(
+                ctx.register(0),
+                0x41,
+            ),
+        );
+        let (low, high) = value_limits(constraint, ax);
+        assert_eq!(low, 0x41);
+        assert_eq!(high, 0x78);
+
+        // Won't change if sign extended
+        let (low, high) = value_limits(
+            constraint,
+            ctx.sign_extend(
+                ax,
+                MemAccessSize::Mem16,
+                MemAccessSize::Mem32,
+            ),
+        );
+        assert_eq!(low, 0x41);
+        assert_eq!(high, 0x78);
+
+        // Unrelated, but ax can still be at most 0xffff
+        let constraint = ctx.gt_const_left(
+            0x38,
+            ctx.register(1),
+        );
+        let (low, high) = value_limits(constraint, ax);
+        assert_eq!(low, 0);
+        assert_eq!(high, 0xffff);
+
+        // Rax is less than 0x80000, so ax is same as if no constraint at all
+        let constraint = ctx.gt_const_left(
+            0x8_0000,
+            ctx.register(1),
+        );
+        let (low, high) = value_limits(constraint, ax);
+        assert_eq!(low, 0);
+        assert_eq!(high, 0xffff);
+
+        // Rax is greater than or equal to 7000, and less than 12000,
+        // so ax is in than 0000..=ffff range
+        // (0..2000 and 7000..=ffff) would be possible but in one range, anything must be allowed.
+        let constraint = ctx.gt_const_left(
+            0xb000,
+            ctx.sub_const(
+                ctx.register(0),
+                0x7000,
+            ),
+        );
+        let (low, high) = value_limits(constraint, ax);
+        assert_eq!(low, 0x0);
+        assert_eq!(high, 0xffff);
+
+        // Sign extended ax is in 7000..ffff_ffff range
+        let (low, high) = value_limits(
+            constraint,
+            ctx.sign_extend(
+                ax,
+                MemAccessSize::Mem16,
+                MemAccessSize::Mem32,
+            ),
+        );
+        assert_eq!(low, 0x0);
+        assert_eq!(high, 0xffff_ffff);
+
+        // Rax is greater than or equal to 7000, and less than 9000,
+        // so ax is in than 7000..9000 range too
+        let constraint = ctx.gt_const_left(
+            0x2000,
+            ctx.sub_const(
+                ctx.register(0),
+                0x7000,
+            ),
+        );
+        let (low, high) = value_limits(constraint, ax);
+        assert_eq!(low, 0x7000);
+        assert_eq!(high, 0x8fff);
+
+        // Sign extended ax is in 7000..ffff_8fff range
+        let (low, high) = value_limits(
+            constraint,
+            ctx.sign_extend(
+                ax,
+                MemAccessSize::Mem16,
+                MemAccessSize::Mem32,
+            ),
+        );
+        assert_eq!(low, 0x7000);
+        assert_eq!(high, 0xffff_8fff);
     }
 
     #[test]
