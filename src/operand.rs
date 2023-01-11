@@ -359,82 +359,108 @@ impl<'e> fmt::Debug for OperandType<'e> {
 
 impl<'e> fmt::Display for Operand<'e> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::ArithOpType::*;
+        display_operand(f, *self, 0)
+    }
+}
 
-        match *self.ty() {
-            OperandType::Register(r) => match r {
-                0 => write!(f, "rax"),
-                1 => write!(f, "rcx"),
-                2 => write!(f, "rdx"),
-                3 => write!(f, "rbx"),
-                4 => write!(f, "rsp"),
-                5 => write!(f, "rbp"),
-                6 => write!(f, "rsi"),
-                7 => write!(f, "rdi"),
-                x => write!(f, "r{}", x),
-            },
-            OperandType::Xmm(reg, subword) => write!(f, "xmm{}.{}", reg, subword),
-            OperandType::Fpu(reg) => write!(f, "fpu{}", reg),
-            OperandType::Flag(flag) => match flag {
-                Flag::Zero => write!(f, "z"),
-                Flag::Carry => write!(f, "c"),
-                Flag::Overflow => write!(f, "o"),
-                Flag::Parity => write!(f, "p"),
-                Flag::Sign => write!(f, "s"),
-                Flag::Direction => write!(f, "d"),
-            },
-            OperandType::Constant(c) => write!(f, "{:x}", c),
-            OperandType::Memory(ref mem) => {
-                let (base, offset) = mem.address();
-                if let Some(c) = mem.if_constant_address() {
-                    write!(f, "Mem{}[{:x}]", mem.size.bits(), c)
-                } else if offset == 0 {
-                    write!(f, "Mem{}[{}]", mem.size.bits(), base)
-                } else {
+fn display_operand<'e>(f: &mut fmt::Formatter, op: Operand<'e>, recurse: u8) -> fmt::Result {
+    use self::ArithOpType::*;
+    if recurse >= 20 {
+        match *op.ty() {
+            OperandType::Memory(..) | OperandType::Arithmetic(..) |
+                OperandType::ArithmeticFloat(..) | OperandType::SignExtend(..) =>
+            {
+                return write!(f, "(...)");
+            }
+            _ => (),
+        }
+    }
+    match *op.ty() {
+        OperandType::Register(r) => match r {
+            0 => write!(f, "rax"),
+            1 => write!(f, "rcx"),
+            2 => write!(f, "rdx"),
+            3 => write!(f, "rbx"),
+            4 => write!(f, "rsp"),
+            5 => write!(f, "rbp"),
+            6 => write!(f, "rsi"),
+            7 => write!(f, "rdi"),
+            x => write!(f, "r{}", x),
+        },
+        OperandType::Xmm(reg, subword) => write!(f, "xmm{}.{}", reg, subword),
+        OperandType::Fpu(reg) => write!(f, "fpu{}", reg),
+        OperandType::Flag(flag) => match flag {
+            Flag::Zero => write!(f, "z"),
+            Flag::Carry => write!(f, "c"),
+            Flag::Overflow => write!(f, "o"),
+            Flag::Parity => write!(f, "p"),
+            Flag::Sign => write!(f, "s"),
+            Flag::Direction => write!(f, "d"),
+        },
+        OperandType::Constant(c) => write!(f, "{:x}", c),
+        OperandType::Memory(ref mem) => {
+            let (base, offset) = mem.address();
+            if let Some(c) = mem.if_constant_address() {
+                write!(f, "Mem{}[{:x}]", mem.size.bits(), c)
+            } else {
+                write!(f, "Mem{}[", mem.size.bits())?;
+                display_operand(f, base, recurse + 1)?;
+                if offset != 0 {
                     let (sign, offset) = match offset < 0x8000_0000_0000_0000 {
                         true => ('+', offset),
                         false => ('-', 0u64.wrapping_sub(offset)),
                     };
-                    write!(f, "Mem{}[{} {} {:x}]", mem.size.bits(), base, sign, offset)
+                    write!(f, " {} {:x}]", sign, offset)
+                } else {
+                    write!(f, "]")
                 }
             }
-            OperandType::Undefined(id) => write!(f, "Undefined_{:x}", id.0),
-            OperandType::Arithmetic(ref arith) | OperandType::ArithmeticFloat(ref arith, _) => {
-                let l = arith.left;
-                let r = arith.right;
-                match arith.ty {
-                    Add => write!(f, "({} + {})", l, r),
-                    Sub => write!(f, "({} - {})", l, r),
-                    Mul => write!(f, "({} * {})", l, r),
-                    Div => write!(f, "({} / {})", l, r),
-                    Modulo => write!(f, "({} % {})", l, r),
-                    And => write!(f, "({} & {})", l, r),
-                    Or => write!(f, "({} | {})", l, r),
-                    Xor => write!(f, "({} ^ {})", l, r),
-                    Lsh => write!(f, "({} << {})", l, r),
-                    Rsh => write!(f, "({} >> {})", l, r),
-                    Equal => write!(f, "({} == {})", l, r),
-                    GreaterThan => write!(f, "({} > {})", l, r),
-                    SignedMul => write!(f, "mul_signed({}, {})", l, r),
-                    MulHigh => write!(f, "mul_high({}, {})", l, r),
-                    ToFloat => write!(f, "to_float({})", l),
-                    ToDouble => write!(f, "to_double({})", l),
-                    ToInt => write!(f, "to_int({})", l),
-                }?;
-                match *self.ty() {
-                    OperandType::ArithmeticFloat(_, size) => {
-                        write!(f, "[f{}]", size.bits())?;
-                    }
-                    _ => (),
+        }
+        OperandType::Undefined(id) => write!(f, "Undefined_{:x}", id.0),
+        OperandType::Arithmetic(ref arith) | OperandType::ArithmeticFloat(ref arith, _) => {
+            let l = arith.left;
+            let r = arith.right;
+            let (prefix, middle) = match arith.ty {
+                Add => ("(", " + "),
+                Sub => ("(", " - "),
+                Mul => ("(", " * "),
+                Div => ("(", " / "),
+                Modulo => ("(", " % "),
+                And => ("(", " & "),
+                Or => ("(", " | "),
+                Xor => ("(", " ^ "),
+                Lsh => ("(", " << "),
+                Rsh => ("(", " >> "),
+                Equal => ("(", " == "),
+                GreaterThan => ("(", " > "),
+                SignedMul => ("mul_signed(", ", "),
+                MulHigh => ("mul_high(", ", "),
+                ToFloat => ("to_float(", ""),
+                ToDouble => ("to_double(", ""),
+                ToInt => ("to_int(", ""),
+            };
+            write!(f, "{}", prefix)?;
+            display_operand(f, l, recurse + 1)?;
+            if middle != "" {
+                write!(f, "{}", middle)?;
+                display_operand(f, r, recurse + 1)?;
+            }
+            write!(f, ")")?;
+            match *op.ty() {
+                OperandType::ArithmeticFloat(_, size) => {
+                    write!(f, "[f{}]", size.bits())?;
                 }
-                Ok(())
-            },
-            OperandType::SignExtend(ref val, ref from, ref to) => {
-                write!(f, "signext_{}_to_{}({})", from.bits(), to.bits(), val)
+                _ => (),
             }
-            OperandType::Custom(val) => {
-                write!(f, "Custom_{:x}", val)
-            }
+            Ok(())
+        },
+        OperandType::SignExtend(val, ref from, ref to) => {
+            write!(f, "signext_{}_to_{}(", from.bits(), to.bits())?;
+            display_operand(f, val, recurse + 1)?;
+            write!(f, ")")
+        }
+        OperandType::Custom(val) => {
+            write!(f, "Custom_{:x}", val)
         }
     }
 }
