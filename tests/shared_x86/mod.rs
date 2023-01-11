@@ -1620,3 +1620,68 @@ fn merge_unwritten_mem_correct_masks_when_read_back_aligned() {
          (ctx.register(6), ctx.and_const(ctx.new_undef(), 0xffff)),
     ]);
 }
+
+#[test]
+fn crc32() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0x66, 0xb9, 0xff, 0x05, // mov cx, 5ff
+        0xb2, 0xaa, // mov dl, aa
+        0x31, 0xdb, // xor ebx, ebx
+        0xbe, 0xff, 0xaa, 0x00, 0x05, // mov esi, 0500aaff
+        0xf2, 0x0f, 0x38, 0xf0, 0xc1, // crc32 eax, cl
+        0x89, 0xc1, // mov ecx, eax
+        0xf2, 0x0f, 0x38, 0xf0, 0xc2, // crc32 eax, dl
+        0x89, 0xc2, // mov edx, eax
+        0xf2, 0x0f, 0x38, 0xf0, 0xc3, // crc32 eax, bl
+        0x89, 0xc3, // mov ebx, eax
+        0xf2, 0x0f, 0x38, 0xf0, 0xc0, // crc32 eax, al
+        0x89, 0xc5, // mov ebp, eax
+        0xb8, 0xf0, 0x00, 0x00, 0x00, // mov eax, 0xf0
+        0xf2, 0x0f, 0x38, 0xf1, 0xc6, // crc32 eax, esi
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0xc7e82faf)),
+         (ctx.register(1), ctx.constant(0xad7d5351)),
+         (ctx.register(2), ctx.constant(0x6a4ab91d)),
+         (ctx.register(3), ctx.constant(0xaf1cc105)),
+         (ctx.register(5), ctx.constant(0x00af1cc1)),
+         (ctx.register(6), ctx.constant(0x0500aaff)),
+    ]);
+}
+
+#[test]
+fn crc32_u16() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0xbe, 0xff, 0xaa, 0x00, 0x05, // mov esi, 0500aaff
+        0x66, 0xf2, 0x0f, 0x38, 0xf1, 0xc6, // crc32 eax, si
+        0x89, 0xc1, // mov ecx, eax
+        0x66, 0xf2, 0x0f, 0x38, 0xf1, 0xc0, // crc32 eax, ax
+        0x89, 0xc2, // mov edx, eax
+        0xf2, 0x0f, 0x38, 0xf1, 0xc0, // crc32 eax, eax
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.constant(0x6A4AB91D)),
+         (ctx.register(2), ctx.constant(0x00006A4A)),
+         (ctx.register(6), ctx.constant(0x0500aaff)),
+    ]);
+}
+
+#[test]
+fn crc32_eax_ah() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0xb8, 0xff, 0xaa, 0x00, 0x05, // mov eax, 0500aaff
+        0xf2, 0x0f, 0x38, 0xf0, 0xc4, // crc32, eax, ah
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0x64D1CE65)),
+    ]);
+}
