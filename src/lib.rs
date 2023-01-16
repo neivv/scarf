@@ -339,6 +339,14 @@ pub struct BinarySection<Va: exec_state::VirtualAddress> {
     pub data: Vec<u8>,
 }
 
+/// BinaryFile, but caches last section from which data was read from,
+/// allowing faster repeated small reads when the addresses are expected,
+/// but not required to be in same section.
+pub struct BinaryFileWithCachedSection<'e, Va: exec_state::VirtualAddress> {
+    pub file: &'e BinaryFile<Va>,
+    pub last_section: &'e BinarySection<Va>,
+}
+
 impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
     #[inline]
     pub fn base(&self) -> Va {
@@ -541,6 +549,69 @@ impl<Va: exec_state::VirtualAddress> BinarySection<Va> {
             4 => self.read_u32(addr).map(|x| Va::from_u64(x as u64)),
             8 => self.read_u64(addr).map(|x| Va::from_u64(x)),
             x => panic!("Unsupported VirtualAddress size {}", x),
+        }
+    }
+}
+
+impl<'e, Va: exec_state::VirtualAddress> BinaryFileWithCachedSection<'e, Va> {
+    /// Panics if given BinaryFile with no sections.
+    /// (Would be nice to have it just start referencing a static
+    /// dummy section, but it's bit pain to do with generics)
+    pub fn new(file: &'e BinaryFile<Va>) -> Self {
+        Self::try_new(file).expect("Empty BinaryFile")
+    }
+
+    pub fn try_new(file: &'e BinaryFile<Va>) -> Option<Self> {
+        Some(Self {
+            file,
+            last_section: file.sections().next()?,
+        })
+    }
+
+    #[cold]
+    fn update_last_section(&mut self, address: Va) -> Option<()> {
+        let new_section = self.file.section_by_addr(address)?;
+        if std::ptr::eq(new_section, self.last_section) {
+            None
+        } else {
+            self.last_section = new_section;
+            Some(())
+        }
+    }
+
+    pub fn read_u8(&mut self, address: Va) -> Option<u8> {
+        loop {
+            match self.last_section.read_u8(address) {
+                Some(s) => return Some(s),
+                None => self.update_last_section(address)?,
+            }
+        }
+    }
+
+    pub fn read_u16(&mut self, address: Va) -> Option<u16> {
+        loop {
+            match self.last_section.read_u16(address) {
+                Some(s) => return Some(s),
+                None => self.update_last_section(address)?,
+            }
+        }
+    }
+
+    pub fn read_u32(&mut self, address: Va) -> Option<u32> {
+        loop {
+            match self.last_section.read_u32(address) {
+                Some(s) => return Some(s),
+                None => self.update_last_section(address)?,
+            }
+        }
+    }
+
+    pub fn read_u64(&mut self, address: Va) -> Option<u64> {
+        loop {
+            match self.last_section.read_u64(address) {
+                Some(s) => return Some(s),
+                None => self.update_last_section(address)?,
+            }
         }
     }
 }

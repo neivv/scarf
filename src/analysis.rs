@@ -168,15 +168,63 @@ pub(crate) fn find_functions_from_calls_x86_64(
 pub(crate) fn function_ranges_from_exception_info_x86_64(
     file: &BinaryFile<VirtualAddress64>,
 ) -> Result<Vec<(u32, u32)>, crate::OutOfBounds> {
-    let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
-    let exception_offset = file.read_u32(pe_header + 0xa0)?;
-    let exception_len = file.read_u32(pe_header + 0xa4)?;
-    let exceptions = file.slice_from(exception_offset..exception_offset + exception_len)?;
-    Ok(exceptions.chunks_exact(0xc).map(|chunk| {
-        let start = ReadLittleEndian::read_u32(&mut &chunk[..]).unwrap();
-        let end = ReadLittleEndian::read_u32(&mut &chunk[4..]).unwrap();
-        (start, end)
-    }).collect())
+    function_ranges_from_exception_info_x86_64_opt(file).ok_or(crate::OutOfBounds)
+}
+
+fn function_ranges_from_exception_info_x86_64_opt(
+    file: &BinaryFile<VirtualAddress64>,
+) -> Option<Vec<(u32, u32)>> {
+    let base = file.base();
+    let mut read = crate::BinaryFileWithCachedSection::try_new(file)?;
+    let pe_header = base + read.read_u32(base + 0x3c)?;
+    let exception_offset = read.read_u32(pe_header + 0xa0)?;
+    let exception_len = read.read_u32(pe_header + 0xa4)?;
+    if exception_len == 0 {
+        return Some(Vec::new());
+    }
+    let exceptions = file.slice_from(exception_offset..exception_offset + exception_len).ok()?;
+    let count = exceptions.chunks_exact(0xc)
+        .filter_map(|chunk| {
+            let unwind_info = base + LittleEndian::read_u32(&chunk[8..]);
+            let flags = read.read_u8(unwind_info)? >> 3;
+            // 0x4 = chain handler
+            (flags & 0x4 == 0).then_some(())
+        })
+        .count();
+    let mut result = Vec::with_capacity(count);
+    let mut iter = exceptions.chunks_exact(0xc);
+    let mut current = loop {
+        match iter.next() {
+            Some(chunk) => {
+                let unwind_info = base + LittleEndian::read_u32(&chunk[8..]);
+                let flags = read.read_u8(unwind_info)? >> 3;
+                if flags & 0x4 != 0 {
+                    continue;
+                }
+                let start = LittleEndian::read_u32(&chunk[..]);
+                let end = LittleEndian::read_u32(&chunk[4..]);
+                break (start, end)
+            }
+            None => return Some(result),
+        }
+    };
+    for chunk in exceptions.chunks_exact(0xc) {
+        let start = LittleEndian::read_u32(&chunk[..]);
+        let end = LittleEndian::read_u32(&chunk[4..]);
+        let unwind_info = base + LittleEndian::read_u32(&chunk[8..]);
+        let flags = read.read_u8(unwind_info)? >> 3;
+        if flags & 0x4 != 0 {
+            // Should be continuing same range as previous
+            if current.1 == start {
+                current.1 = end;
+            }
+        } else {
+            result.push(current);
+            current = (start, end);
+        }
+    }
+    result.push(current);
+    Some(result)
 }
 
 /// Attempts to find functions of a binary, accepting ones that are called/long jumped to
