@@ -1585,12 +1585,17 @@ fn merge_states<'a: 'r, 'r>(
         );
         let mut cached_low_registers = CachedLowRegisters::new();
         for i in 0..16 {
-            let old_reg = &old.cached_low_registers.registers[i];
-            let new_reg = &new.cached_low_registers.registers[i];
-            for j in 0..old_reg.len() {
-                if old_reg[j] == new_reg[j] {
-                    // Doesn't merge things but sets them uncached if they differ
-                    cached_low_registers.registers[i][j] = old_reg[j];
+            // If register didn't change, can take any set cached registers
+            // from either state to result.
+            if old.state[i] == new.state[i] {
+                let old_reg = &old.cached_low_registers.registers[i];
+                let new_reg = &new.cached_low_registers.registers[i];
+                for j in 0..old_reg.len() {
+                    if old_reg[j].is_some() {
+                        cached_low_registers.registers[i][j] = old_reg[j];
+                    } else if new_reg[j].is_some() {
+                        cached_low_registers.registers[i][j] = new_reg[j];
+                    }
                 }
             }
         }

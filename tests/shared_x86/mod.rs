@@ -1685,3 +1685,43 @@ fn crc32_eax_ah() {
          (ctx.register(0), ctx.constant(0x64D1CE65)),
     ]);
 }
+
+#[test]
+fn cached_low_register_merge_bug() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0x83, 0xf8, 0x01, // cmp eax, 1
+        0x74, 0x18, // je branch_c
+        0x85, 0xc0, // test eax, eax
+        0x75, 0x09, // jne branch_b
+        0x89, 0xcb, // mov ebx, ecx
+        0xb3, 0x01, // mov bl, 1
+        0x84, 0xdb, // test bl, bl
+        0x75, 0x0a, // jne merge_a_b
+        0xcc, // int3
+        // branch_b:
+        0x89, 0xd3, // mov ebx, edx
+        0xb3, 0x01, // mov bl, 1
+        0x84, 0xc0, // test al, al (Do something different to have flags be merged to undef)
+        0xeb, 0x01, // jmp merge_a_b
+        0xcc, // int3
+        // merge_a_b:
+        // Here ebx should be undef, but bl could be known to be 1.
+        // But keeping bl as 1 made branch_c -> merge_c jump not consider
+        // state to be changed, resulting final value of bl always be 1, which would be wrong.
+        0xeb, 0x09, // jmp merge_c
+        // branch_c:
+        0x89, 0xd3, // mov ebx, edx
+        0xb3, 0x00, // mov bl, 0
+        0x84, 0xdb, // test bl, bl
+        0x74, 0x01, // je merge_c
+        0xcc, // int3
+        // merge_c:
+        0x0f, 0xb6, 0xc3, // movzx eax, bl
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.and_const(ctx.new_undef(), 0xff)),
+         (ctx.register(3), ctx.new_undef()),
+    ]);
+}
