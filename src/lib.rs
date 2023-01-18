@@ -353,6 +353,23 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
         self.base
     }
 
+    /// Returns `(address - self.base()) as u32`.
+    ///
+    /// Panics on overflow when overflow checks are enabled.
+    /// If the address is known to be in one of the sections,
+    /// at least on Windows any PE file will have offset that should fit in u32
+    /// even if truncated.
+    pub fn rva_32(&self, address: Va) -> u32 {
+        (address.as_u64() as u32) - (self.base.as_u64() as u32)
+    }
+
+    /// Returns `(address - self.base()) as u64`.
+    ///
+    /// Panics on overflow when overflow checks are enabled.
+    pub fn rva_64(&self, address: Va) -> u64 {
+        address.as_u64() - self.base.as_u64()
+    }
+
     /// Returns the section named ".text".
     ///
     /// Panics if this section for some reason does not exist.
