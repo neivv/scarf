@@ -38,6 +38,18 @@ impl<'a, E: ExecutionState<'a>, S: AnalysisState> CfgState<'a, E, S> {
     pub fn user_state(&self) -> &S {
         &self.data.1
     }
+
+    pub fn exec_state_mut(&mut self) -> &mut E {
+        &mut self.data.0
+    }
+
+    pub fn user_state_mut(&mut self) -> &mut S {
+        &mut self.data.1
+    }
+
+    pub fn into_inner(self) -> (E, S) {
+        self.data
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
