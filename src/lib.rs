@@ -363,11 +363,23 @@ impl<Va: exec_state::VirtualAddress> BinaryFile<Va> {
         (address.as_u64() as u32) - (self.base.as_u64() as u32)
     }
 
+    /// Returns `(address - self.base()) as u32`, or `None` if `address`
+    /// is less than `self.base()` or the difference does not fit in `u32`.
+    pub fn try_rva_32(&self, address: Va) -> Option<u32> {
+        u32::try_from((address.as_u64()).checked_sub(self.base.as_u64())?).ok()
+    }
+
     /// Returns `(address - self.base()) as u64`.
     ///
     /// Panics on overflow when overflow checks are enabled.
     pub fn rva_64(&self, address: Va) -> u64 {
         address.as_u64() - self.base.as_u64()
+    }
+
+    /// Returns `(address - self.base()) as u64`, or `None` if `address`
+    /// is less than `self.base()`.
+    pub fn try_rva_64(&self, address: Va) -> Option<u64> {
+        address.as_u64().checked_sub(self.base.as_u64())
     }
 
     /// Returns the section named ".text".

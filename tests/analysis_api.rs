@@ -104,6 +104,33 @@ impl<'e> analysis::Analyzer<'e> for ContinueAt2 {
     }
 }
 
+#[test]
+fn analyze_address_0() {
+    // Verify that analyzing address 0 is no-op
+    // Used to be for backwards compat so will keep it that way.
+    // It can easily happen with memory write of 0 to variable which is later called.
+    let mut a = AnalyzeAddress0(0);
+    let bin = make_bin(&[
+        0xc3, // ret
+    ]);
+    let ctx = &OperandContext::new();
+
+    test_inline(&bin, ctx, &mut a);
+    assert_eq!(a.0, 1);
+}
+
+struct AnalyzeAddress0(u8);
+impl<'e> analysis::Analyzer<'e> for AnalyzeAddress0 {
+    type State = analysis::DefaultState;
+    type Exec = scarf::ExecutionStateX86_64<'e>;
+    fn operation(&mut self, ctrl: &mut Control<'e, '_, '_, Self>, op: &Operation<'e>) {
+        self.0 += 1;
+        if let Operation::Return(..) = *op {
+            ctrl.analyze_with_current_state(self, VirtualAddress64(0));
+        }
+    }
+}
+
 fn make_bin(code: &[u8]) -> BinaryFile<VirtualAddress64> {
     scarf::raw_bin(VirtualAddress64(0x00400000), vec![BinarySection {
         name: {

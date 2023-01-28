@@ -41,7 +41,7 @@ fn undecideable() {
     let mut cfg = analysis.finish();
 
     let mut dummy = Vec::new();
-    scarf::cfg_dot::write(ctx, &mut cfg, &mut dummy).unwrap();
+    scarf::cfg_dot::write(ctx, &binary, &mut cfg, &mut dummy).unwrap();
 }
 
 #[test]

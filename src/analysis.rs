@@ -15,7 +15,7 @@ use crate::exec_state::{self, Constraint, Disassembler, ExecutionState, MergeSta
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{MemAccess, MemAccessSize, Operand, OperandCtx};
-use crate::{BinaryFile, BinarySection, VirtualAddress, VirtualAddress64};
+use crate::{BinaryFile, BinarySection, Rva, VirtualAddress, VirtualAddress64};
 
 pub use crate::disasm::Error;
 
@@ -28,7 +28,6 @@ pub struct CfgState<'a, E: ExecutionState<'a>, S: AnalysisState> {
 }
 
 impl<'a, E: ExecutionState<'a>, S: AnalysisState> cfg::CfgState for CfgState<'a, E, S> {
-    type VirtualAddress = E::VirtualAddress;
 }
 
 impl<'a, E: ExecutionState<'a>, S: AnalysisState> CfgState<'a, E, S> {
@@ -598,7 +597,7 @@ impl AnalysisState for DefaultState {
 pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     binary: &'a BinaryFile<Exec::VirtualAddress>,
     cfg: Cfg<'a, Exec, State>,
-    unchecked_branches: BTreeMap<Exec::VirtualAddress, (Exec, State, PrecedingBranchAddr)>,
+    unchecked_branches: BTreeMap<Rva, (Exec, State, PrecedingBranchAddr)>,
     // Branches which are before current address.
     // The goal is to reduce amount of work when a switch jumps backwards
     // at end of the case, doing all unchecked_branches before promoting
@@ -641,7 +640,7 @@ pub struct FuncAnalysis<'a, Exec: ExecutionState<'a>, State: AnalysisState> {
     //      dec eax
     //      jne loop2
     // as it'll run to the end once, then starts from loop1 again
-    more_unchecked_branches: BTreeMap<Exec::VirtualAddress, (Exec, State, PrecedingBranchAddr)>,
+    more_unchecked_branches: BTreeMap<Rva, (Exec, State, PrecedingBranchAddr)>,
     current_branch: Exec::VirtualAddress,
     operand_ctx: OperandCtx<'a>,
     merge_state_cache: MergeStateCache<'a>,
@@ -704,7 +703,7 @@ struct ControlInner<'e: 'b, 'b, Exec: ExecutionState<'e> + 'b, State: AnalysisSt
     end: Option<End>,
     address: Exec::VirtualAddress,
     branch_start: Exec::VirtualAddress,
-    continue_at_address: Exec::VirtualAddress,
+    continue_at_address: Rva,
     instruction_length: u8,
     skip_operation: bool,
 }
@@ -901,7 +900,8 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         address: <A::Exec as ExecutionState<'e>>::VirtualAddress,
     ) {
         let state = self.inner.state.clone();
-        self.inner.analysis.add_unchecked_branch(address, state);
+        let rva = self.inner.analysis.binary.rva_32(address);
+        self.inner.analysis.add_unchecked_branch(Rva(rva), state);
     }
 
     /// Adds a branch to be analyzed using given `ExecutionState` and user-defined state.
@@ -911,7 +911,8 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         exec_state: A::Exec,
         user_state: A::State,
     ) {
-        self.inner.analysis.add_unchecked_branch(address, (exec_state, user_state));
+        let rva = self.inner.analysis.binary.rva_32(address);
+        self.inner.analysis.add_unchecked_branch(Rva(rva), (exec_state, user_state));
     }
 
     /// Causes the current branch jump to an address.
@@ -931,7 +932,7 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
         address: <A::Exec as ExecutionState<'e>>::VirtualAddress,
     ) {
         if self.inner.end.is_none() {
-            self.inner.continue_at_address = address;
+            self.inner.continue_at_address = Rva(self.binary().rva_32(address));
             self.inner.end = Some(End::ContinueBranch);
         }
     }
@@ -1084,7 +1085,8 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             cfg: Cfg::new(),
             unchecked_branches: {
                 let mut map = BTreeMap::new();
-                map.insert(start_address, (state.0, state.1, PrecedingBranchAddr::multiple()));
+                let rva = binary.try_rva_32(start_address).unwrap_or(u32::MAX);
+                map.insert(Rva(rva), (state.0, state.1, PrecedingBranchAddr::multiple()));
                 map
             },
             more_unchecked_branches: BTreeMap::new(),
@@ -1096,14 +1098,14 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
     fn pop_next_branch_merge_with_cfg(
         &mut self,
-    ) -> Option<(Exec::VirtualAddress, (Exec, State), PrecedingBranchAddr)> {
-        while let Some((addr, mut branch_state, preceding)) = self.pop_next_branch() {
-            match self.cfg.get_state(addr) {
+    ) -> Option<(Rva, (Exec, State), PrecedingBranchAddr)> {
+        while let Some((rva, mut branch_state, preceding)) = self.pop_next_branch() {
+            match self.cfg.get_state(rva) {
                 Some(state) => {
                     if state.preceding_branch.are_same(preceding) {
                         let mut user_state = state.data.1.clone();
                         user_state.merge(branch_state.1);
-                        return Some((addr, (branch_state.0, user_state), preceding));
+                        return Some((rva, (branch_state.0, user_state), preceding));
                     } else {
                         state.preceding_branch = PrecedingBranchAddr::multiple();
                         state.data.0.maybe_convert_memory_immutable(16);
@@ -1117,7 +1119,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                                 let mut user_state = state.data.1.clone();
                                 user_state.merge(branch_state.1);
                                 return Some((
-                                    addr,
+                                    rva,
                                     (s, user_state),
                                     PrecedingBranchAddr::multiple(),
                                 ));
@@ -1128,7 +1130,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                     }
                 }
                 None => {
-                    return Some((addr, branch_state, preceding));
+                    return Some((rva, branch_state, preceding));
                 }
             }
         }
@@ -1139,7 +1141,8 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         &mut self,
         disasm: &mut Exec::Disassembler,
     ) -> Option<(Exec::VirtualAddress, (Exec, State), PrecedingBranchAddr)> {
-        while let Some((addr, state, preceding)) = self.pop_next_branch_merge_with_cfg() {
+        while let Some((rva, state, preceding)) = self.pop_next_branch_merge_with_cfg() {
+            let addr = self.binary.base() + rva.0;
             if self.disasm_set_pos(disasm, addr).is_ok() {
                 return Some((addr, state, preceding));
             }
@@ -1196,7 +1199,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
             analysis: self,
             address: addr,
             branch_start: addr,
-            continue_at_address: Exec::VirtualAddress::from_u64(0),
+            continue_at_address: Rva(0),
             instruction_length: 0,
             skip_operation: false,
             state,
@@ -1223,7 +1226,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
                 preceding_branch,
             },
             out_edges: CfgOutEdges::None,
-            end_address: Exec::VirtualAddress::from_u64(0),
+            end_address: Rva(0),
             distance: 0,
         });
         // add_resolved_constraint_from_unresolved is not expected to be useful
@@ -1273,20 +1276,21 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
 
     fn add_unchecked_branch(
         &mut self,
-        addr: Exec::VirtualAddress,
+        rva: Rva,
         mut state: (Exec, State),
     ) {
         use std::collections::btree_map::Entry;
-        let queue = match addr < self.current_branch {
+        let base = self.binary.base();
+        let queue = match base + rva.0 < self.current_branch {
             true => &mut self.more_unchecked_branches,
             false => &mut self.unchecked_branches,
         };
 
         let preceding_addr = self.current_branch.as_u64()
-            .checked_sub(self.binary.base().as_u64())
+            .checked_sub(base.as_u64())
             .and_then(|x| Some(PrecedingBranchAddr(u32::try_from(x).ok()?)))
             .unwrap_or(PrecedingBranchAddr::multiple());
-        match queue.entry(addr) {
+        match queue.entry(rva) {
             Entry::Vacant(e) => {
                 e.insert((state.0, state.1, preceding_addr));
             }
@@ -1309,7 +1313,7 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
     }
 
     fn pop_next_branch(&mut self) ->
-        Option<(Exec::VirtualAddress, (Exec, State), PrecedingBranchAddr)>
+        Option<(Rva, (Exec, State), PrecedingBranchAddr)>
     {
         if self.unchecked_branches.is_empty() {
             std::mem::swap(&mut self.unchecked_branches, &mut self.more_unchecked_branches);
@@ -1354,7 +1358,9 @@ impl<'a, Exec: ExecutionState<'a>, State: AnalysisState> FuncAnalysis<'a, Exec, 
         cfg.merge_overlapping_blocks();
         let binary = self.binary;
         let ctx = self.operand_ctx;
-        cfg.resolve_cond_jump_operands(|condition, address, end_address| {
+        cfg.resolve_cond_jump_operands(|condition, rva, end_rva| {
+            let address = binary.base() + rva.0;
+            let end_address = binary.base() + end_rva.0;
             let mut analysis = FuncAnalysis::new(binary, ctx, address);
             let mut analyzer = FinishAnalyzer {
                 hook: &mut hook,
@@ -1489,36 +1495,38 @@ fn try_add_branch<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     analysis: &mut FuncAnalysis<'e, Exec, S>,
     state: (Exec, S),
     to: Operand<'e>,
-    address: Exec::VirtualAddress,
 ) -> Option<Exec::VirtualAddress> {
     match to.if_constant() {
         Some(s) => {
+            let binary = analysis.binary;
+            let code_section = binary.code_section();
             let address = Exec::VirtualAddress::from_u64(s);
-            let code_offset = analysis.binary.code_section().virtual_address;
-            let code_len = analysis.binary.code_section().data.len() as u32;
+            let rva = Rva(binary.try_rva_32(address)?);
+            let code_offset = code_section.virtual_address;
+            let code_len = code_section.data.len() as u32;
             let invalid_dest = address < code_offset || address >= code_offset + code_len;
             if !invalid_dest {
-                analysis.add_unchecked_branch(address, state);
+                analysis.add_unchecked_branch(rva, state);
             } else {
                 trace!("Destination {:x} is out of binary bounds", address);
                 // Add cfg node to keep cfg sensible
                 // (Adding all branches and checking for binary bounds after states have
                 // been merged could be better)
-                analysis.cfg.add_node(address, CfgNode {
+                analysis.cfg.add_node(rva, CfgNode {
                     out_edges: CfgOutEdges::None,
                     state: CfgState {
                         data: state,
                         phantom: Default::default(),
                         preceding_branch: PrecedingBranchAddr::multiple(),
                     },
-                    end_address: address + 1,
+                    end_address: Rva(rva.0.wrapping_add(1)),
                     distance: 0,
                 });
             }
             Some(address)
         }
         None => {
-            trace!("Couldnt resolve jump dest @ {:x}: {:?}", address, to);
+            trace!("Couldnt resolve jump dest @ {:x}: {:?}", analysis.current_branch, to);
             None
         }
     }
@@ -1547,9 +1555,12 @@ where E: ExecutionState<'e> + 'b,
         AnalysisUpdateResult::End(_) => return,
     };
     if let Some(mut cfg_node) = cfg_node_opt.take() {
-        let address = control.address;
-        cfg_node.end_address = address;
-        control.analysis.cfg.add_node(control.branch_start, cfg_node);
+        let binary_base_u32 = control.analysis.binary.base().as_u64() as u32;
+        cfg_node.end_address =
+            Rva((control.address.as_u64() as u32).wrapping_sub(binary_base_u32));
+        let branch_start =
+            Rva((control.branch_start.as_u64() as u32).wrapping_sub(binary_base_u32));
+        control.analysis.cfg.add_node(branch_start, cfg_node);
     }
     if control.end == Some(End::ContinueBranch) {
         let analysis = control.analysis;
@@ -1601,9 +1612,13 @@ where E: ExecutionState<'e> + 'b,
             } else {
                 drop(control.state);
             }
-            cfg_node.end_address = address;
+            let binary_base_u32 = control.analysis.binary.base().as_u64() as u32;
+            cfg_node.end_address = Rva((address.as_u64() as u32).wrapping_sub(binary_base_u32));
             if let Some(cfg_node) = cfg_node_opt.take() {
-                control.analysis.cfg.add_node(control.branch_start, cfg_node);
+                let branch_start = Rva(
+                    (control.branch_start.as_u64() as u32).wrapping_sub(binary_base_u32)
+                );
+                control.analysis.cfg.add_node(branch_start, cfg_node);
             }
         }
         o => {
@@ -1619,7 +1634,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     to: Operand<'e>,
     address: Exec::VirtualAddress,
     instruction_len: u32,
-    cfg_out_edge: &mut CfgOutEdges<'e, Exec::VirtualAddress>,
+    cfg_out_edge: &mut CfgOutEdges<'e>,
 ) {
     /// Returns address of the table,
     /// operand that is being used to index the table,
@@ -1764,12 +1779,14 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     if condition_resolved == ctx.const_0() {
         // Never jump
         let address = address + instruction_len;
-        *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(address));
         if condition != ctx.const_0() {
             let constraint = analysis.operand_ctx.eq_const(condition, 0);
             state.0.add_unresolved_constraint(Constraint::new(constraint));
         }
-        analysis.add_unchecked_branch(address, state);
+        if let Some(rva) = analysis.binary.try_rva_32(address) {
+            *cfg_out_edge = CfgOutEdges::Single(NodeLink::new(Rva(rva)));
+            analysis.add_unchecked_branch(Rva(rva), state);
+        }
     } else if condition_resolved == ctx.const_1() {
         // Always jump
         let to = state.0.resolve(to);
@@ -1786,8 +1803,10 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                 switch_cases(binary, mem_size, switch_table_addr, limits, base_addr);
             if let Some(ref mut case_iter) = case_iter {
                 for addr in case_iter {
-                    analysis.add_unchecked_branch(addr, state.clone());
-                    cases.push(NodeLink::new(addr));
+                    if let Some(rva) = binary.try_rva_32(addr) {
+                        analysis.add_unchecked_branch(Rva(rva), state.clone());
+                        cases.push(NodeLink::new(Rva(rva)));
+                    }
                 }
 
                 if !cases.is_empty() {
@@ -1798,30 +1817,34 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
             if condition != ctx.const_1() {
                 state.0.add_unresolved_constraint(Constraint::new(condition));
             }
-            let dest = try_add_branch(analysis, state, to, address);
+            let dest = try_add_branch(analysis, state, to);
             *cfg_out_edge = CfgOutEdges::Single(
-                dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown)
+                dest.and_then(|dest| {
+                    Some(NodeLink::new(Rva(analysis.binary.try_rva_32(dest)?)))
+                }).unwrap_or_else(NodeLink::unknown)
             );
         }
     } else {
+        let binary = analysis.binary;
         let no_jump_addr = address + instruction_len;
-        let to = state.0.resolve(to);
-        let (jump, no_jump) =
-            exec_state::assume_jump_flag(state.0, condition, condition_resolved);
-        let jump_state = (jump, state.1.clone());
-        let no_jump_state = (no_jump, state.1);
-        analysis.add_unchecked_branch(
-            no_jump_addr,
-            no_jump_state,
-        );
-        let dest = try_add_branch(analysis, jump_state, to, address);
-        *cfg_out_edge = CfgOutEdges::Branch(
-            NodeLink::new(no_jump_addr),
-            OutEdgeCondition {
-                node: dest.map(NodeLink::new).unwrap_or_else(NodeLink::unknown),
-                condition,
-            },
-        );
+        if let Some(rva) = binary.try_rva_32(no_jump_addr) {
+            let to = state.0.resolve(to);
+            let (jump, no_jump) =
+                exec_state::assume_jump_flag(state.0, condition, condition_resolved);
+            let jump_state = (jump, state.1.clone());
+            let no_jump_state = (no_jump, state.1);
+            analysis.add_unchecked_branch(Rva(rva), no_jump_state);
+            let dest = try_add_branch(analysis, jump_state, to);
+            *cfg_out_edge = CfgOutEdges::Branch(
+                NodeLink::new(Rva(rva)),
+                OutEdgeCondition {
+                    node: dest.and_then(|dest| {
+                        Some(NodeLink::new(Rva(binary.try_rva_32(dest)?)))
+                    }).unwrap_or_else(NodeLink::unknown),
+                    condition,
+                },
+            );
+        }
     }
 }
 

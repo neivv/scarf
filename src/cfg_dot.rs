@@ -4,9 +4,11 @@ use std::io::{self, Write};
 use crate::cfg::{Cfg, CfgState, CfgOutEdges, NodeLink};
 use crate::exec_state::VirtualAddress;
 use crate::operand::{ArithOpType, MemAccessSize, Operand, OperandType, OperandCtx};
+use crate::{BinaryFile, Rva};
 
-pub fn write<'e, W: Write, S: CfgState>(
+pub fn write<'e, W: Write, S: CfgState, Va: VirtualAddress>(
     ctx: OperandCtx<'e>,
+    binary: &BinaryFile<Va>,
     cfg: &mut Cfg<'e, S>,
     out: &mut W,
 ) -> Result<(), io::Error> {
@@ -20,17 +22,18 @@ pub fn write<'e, W: Write, S: CfgState>(
         Vec::new()
     };
     cycles.sort();
+    let base = binary.base();
     for n in cfg.nodes() {
         let node_name = next_node_name(&mut node_name_pos);
         let mut label = format!(
             "{:x} -> {:x}\nDistance: {}",
-            n.address,
-            n.node.end_address,
+            base + n.address.0,
+            base + n.node.end_address.0,
             n.node.distance,
         );
         for cycle in cycles.iter().filter(|x| x[0].address() == n.address) {
             use std::fmt::Write;
-            let cycle = cycle.iter().map(|x| x.address().as_u64()).collect::<Vec<_>>();
+            let cycle = cycle.iter().map(|x| (base + x.address().0).as_u64()).collect::<Vec<_>>();
             write!(label, "\nCycle {:x?}", cycle).unwrap();
         }
         writeln!(out, "  {} [label=\"{}\"];", node_name, label)?;
@@ -38,7 +41,7 @@ pub fn write<'e, W: Write, S: CfgState>(
     }
     for n in cfg.nodes() {
         let node_name = nodes.get(&n.address).expect("Broken graph");
-        let mut print = |node: &NodeLink<S::VirtualAddress>, cond| print_out_edge(
+        let mut print = |node: &NodeLink, cond| print_out_edge(
             out,
             &node_name,
             node.address(),
@@ -67,16 +70,16 @@ pub fn write<'e, W: Write, S: CfgState>(
     Ok(())
 }
 
-fn print_out_edge<W: Write, Va: VirtualAddress>(
+fn print_out_edge<W: Write>(
     out: &mut W,
     src: &str,
-    addr: Va,
-    nodes: &HashMap<Va, String>,
+    addr: Rva,
+    nodes: &HashMap<Rva, String>,
     node_name_pos: &mut u32,
     name: Option<String>,
 ) -> Result<(), io::Error> {
     let node_name;
-    let dest = if addr == Va::max_value() {
+    let dest = if addr.0 == u32::MAX {
         node_name = next_node_name(node_name_pos);
         writeln!(out, "  {} [label=\"???\"];", node_name)?;
         &node_name
