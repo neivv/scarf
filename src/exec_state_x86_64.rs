@@ -168,6 +168,12 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     }
 
     #[inline]
+    fn write_memory(&mut self, mem: &MemAccess<'e>, value: Operand<'e>) {
+        let (base, offset) = mem.address();
+        self.inner.write_memory(base, offset, mem.size, value);
+    }
+
+    #[inline]
     fn set_flag(&mut self, flag: Flag, value: Operand<'e>) {
         self.inner.set_flag(flag, value);
     }
@@ -232,11 +238,10 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
 
     fn apply_call(&mut self, ret: VirtualAddress64) {
         let ctx = self.ctx();
-        let rsp = ctx.register(4);
         let new_rsp = ctx.sub_const(self.resolve_register(4), 8);
         self.set_register(4, new_rsp);
-        self.move_to(
-            &DestOperand::Memory(ctx.mem_access(rsp, 0, MemAccessSize::Mem64)),
+        self.write_memory(
+            &ctx.mem_access(new_rsp, 0, MemAccessSize::Mem64),
             ctx.constant(ret.0),
         );
     }

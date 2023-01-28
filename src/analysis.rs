@@ -14,7 +14,7 @@ use crate::disasm::{DestOperand, Operation};
 use crate::exec_state::{self, Constraint, Disassembler, ExecutionState, MergeStateCache};
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::light_byteorder::ReadLittleEndian;
-use crate::operand::{MemAccess, MemAccessSize, Operand, OperandCtx};
+use crate::operand::{Flag, MemAccess, MemAccessSize, Operand, OperandCtx};
 use crate::{BinaryFile, BinarySection, Rva, VirtualAddress, VirtualAddress64};
 
 pub use crate::disasm::Error;
@@ -817,14 +817,32 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     }
 
     /// Convenience function for
+    /// [`exec_state().resolve_register()`](ExecutionState::resolve_register)
+    pub fn resolve_register(&mut self, register: u8) -> Operand<'e> {
+        self.inner.state.0.resolve_register(register)
+    }
+
+    /// Convenience function for [`exec_state().resolve_flag()`](ExecutionState::resolve_flag)
+    pub fn resolve_flag(&mut self, flag: Flag) -> Operand<'e> {
+        self.inner.state.0.resolve_flag(flag)
+    }
+
+    /// Convenience function for
     /// [`exec_state().resolve_apply_constraints()`](ExecutionState::resolve_apply_constraints)
     pub fn resolve_apply_constraints(&mut self, val: Operand<'e>) -> Operand<'e> {
         self.inner.state.0.resolve_apply_constraints(val)
     }
 
-    /// Convenience function for [`exec_state().read_memory()`](ExecutionState::read_memory)
+    /// Convenience function for [`exec_state().read_memory()`](ExecutionState::read_memory).
     pub fn read_memory(&mut self, mem: &MemAccess<'e>) -> Operand<'e> {
         self.inner.state.0.read_memory(mem)
+    }
+
+    /// Convenience function for [`exec_state().write_memory()`](ExecutionState::write_memory).
+    ///
+    /// Sets memory at *resolved address* `mem` to `value`.
+    pub fn write_memory(&mut self, mem: &MemAccess<'e>, value: Operand<'e>) {
+        self.inner.state.0.write_memory(mem, value)
     }
 
     /// Don't use this, will be deprecated at some point. See [`ExecutionState::unresolve`].
@@ -842,6 +860,20 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
     /// Convenience function for [`exec_state().move_resolved()`](ExecutionState::move_resolved),
     pub fn move_resolved(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {
         self.inner.state.0.move_resolved(dest, value);
+    }
+
+    /// Convenience function for [`exec_state().set_register()`](ExecutionState::set_register).
+    ///
+    /// Equivalent to `ctrl.move_resolved(&DestOperand::Register64(register), value)`.
+    pub fn set_register(&mut self, register: u8, value: Operand<'e>) {
+        self.inner.state.0.set_register(register, value);
+    }
+
+    /// Convenience function for [`exec_state().set_flag()`](ExecutionState::set_flag).
+    ///
+    /// Equivalent to `ctrl.move_resolved(&DestOperand::Register64(register), value)`.
+    pub fn set_flag(&mut self, flag: Flag, value: Operand<'e>) {
+        self.inner.state.0.set_flag(flag, value);
     }
 
     /// Takes current analysis' state as starting state for a function.

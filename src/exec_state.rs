@@ -172,10 +172,12 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// first resolve rcx, which may no longer hold the input argument, and then read
     /// memory from there. Whereas `read_memory({rcx, 0, Mem64})` will read the
     /// memory pointed by input argument, no matter what the rcx register currently holds.
-    ///
-    /// While there is no a explicit `write_memory` method, [`move_resolved`](Self::move_resolved)
-    /// with `DestOperand::Memory(mem)` will handle the corresponding write case.
     fn read_memory(&mut self, mem: &MemAccess<'e>) -> Operand<'e>;
+
+    /// Writes value to memory.
+    ///
+    /// Shortcut for `self.move_resolved(&DestOperand::Memory(mem), value)`.
+    fn write_memory(&mut self, mem: &MemAccess<'e>, value: Operand<'e>);
 
     /// Applies changes from operation to the state.
     ///

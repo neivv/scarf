@@ -12,6 +12,7 @@ use crate::exec_state::{
     self, Constraint, FreezeOperation, Memory, MemoryValue, MergeStateCache, PendingFlags
 };
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
+use crate::exec_state::VirtualAddress as VirtualAddressTrait;
 use crate::light_byteorder::{ReadLittleEndian};
 use crate::operand::{
     Flag, MemAccess, MemAccessSize, Operand, OperandCtx, OperandType, ArithOpType,
@@ -55,6 +56,16 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     #[inline]
     fn set_register(&mut self, register: u8, value: Operand<'e>) {
         self.inner.set_register(register, value);
+    }
+
+    fn write_memory(&mut self, mem: &MemAccess<'e>, value: Operand<'e>) {
+        let (base, offset) = mem.address();
+        let value = if mem.size == MemAccessSize::Mem64 {
+            value
+        } else {
+            self.ctx().normalize_32bit(value)
+        };
+        self.inner.write_memory(base, offset as u32, mem.size, value);
     }
 
     #[inline]
@@ -122,11 +133,10 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
 
     fn apply_call(&mut self, ret: VirtualAddress) {
         let ctx = self.ctx();
-        let esp = ctx.register(4);
         let new_esp = ctx.sub_const(self.resolve_register(4), 4);
         self.set_register(4, new_esp);
-        self.move_to(
-            &DestOperand::Memory(ctx.mem_access(esp, 0, MemAccessSize::Mem32)),
+        self.write_memory(
+            &ctx.mem_access(new_esp, 0, MemAccessSize::Mem32),
             ctx.constant(ret.0 as u64),
         );
     }
@@ -139,19 +149,18 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
 
         // Set the return address to somewhere in 0x400000 range
         let return_address = ctx.mem_access(ctx.register(4), 0, MemAccessSize::Mem32);
-        state.move_to(
-            &DestOperand::Memory(return_address),
-            ctx.constant((binary.code_section().virtual_address.0 + 0x4230) as u64),
+        let address = binary.code_section().virtual_address + 0x4230;
+        state.write_memory(
+            &return_address,
+            ctx.constant(address.as_u64()),
         );
 
         // Set the bytes above return address to 'call eax' to make it look like a legitmate call.
-        state.move_to(
-            &DestOperand::Memory(
-                ctx.mem_access(
-                    ctx.memory(&return_address),
-                    0u64.wrapping_sub(2),
-                    MemAccessSize::Mem16,
-                )
+        state.write_memory(
+            &ctx.mem_access(
+                ctx.const_0(),
+                address.as_u64().wrapping_sub(2),
+                MemAccessSize::Mem16,
             ),
             ctx.constant(0xd0ff),
         );
