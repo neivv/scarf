@@ -2626,6 +2626,24 @@ impl<'e> Operand<'e> {
         }
     }
 
+    /// Returns `Some(r)` if `self.ty` is `OperandType::Fpu(r)`
+    #[inline]
+    pub fn if_fpu(self) -> Option<u8> {
+        match *self.ty() {
+            OperandType::Fpu(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(reg, index)` if `self.ty` is `OperandType::Xmm(reg, index)`
+    #[inline]
+    pub fn if_xmm(self) -> Option<(u8, u8)> {
+        match *self.ty() {
+            OperandType::Xmm(a, b) => Some((a, b)),
+            _ => None,
+        }
+    }
+
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)`
     #[inline]
     pub fn if_memory(self) -> Option<&'e MemAccess<'e>> {

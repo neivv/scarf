@@ -31,7 +31,7 @@ pub struct ExecutionState<'e> {
 struct State<'e> {
     // 16 registers, 10 xmm registers with 4 parts each, 6 flags
     state: [Operand<'e>; 0x10 + 0x6],
-    xmm: Rc<[Operand<'e>; 0x10 * 4]>,
+    xmm: Option<Rc<[Operand<'e>; 0x10 * 4]>>,
     cached_low_registers: CachedLowRegisters<'e>,
     memory: Memory<'e>,
     unresolved_constraint: Option<Constraint<'e>>,
@@ -311,13 +311,8 @@ impl<'e> ExecutionState<'e> {
     ) -> ExecutionState<'b> {
         let dummy = ctx.const_0();
         let mut state = [dummy; STATE_OPERANDS];
-        let mut xmm = Rc::new([dummy; 0x10 * 4]);
-        let xmm_mut = Rc::make_mut(&mut xmm);
         for i in 0..16 {
             state[i] = ctx.register(i as u8);
-            for j in 0..4 {
-                xmm_mut[i * 4 + j] = ctx.xmm(i as u8, j as u8);
-            }
         }
         for i in 0..5 {
             state[FLAGS_INDEX + i] = ctx.flag_by_index(i).clone();
@@ -326,7 +321,7 @@ impl<'e> ExecutionState<'e> {
         state[FLAGS_INDEX + 5] = ctx.const_0();
         let inner = Box::alloc().init(State {
             state,
-            xmm,
+            xmm: None,
             cached_low_registers: CachedLowRegisters::new(),
             memory: Memory::new(),
             unresolved_constraint: None,
@@ -381,6 +376,22 @@ impl<'e> State<'e> {
 
     fn registers(&self) -> &[Operand<'e>; 0x10] {
         (&self.state[..0x10]).try_into().unwrap()
+    }
+
+    fn xmm_mut(&mut self) -> &mut [Operand<'e>; 0x10 * 4] {
+        let rc = self.xmm.get_or_insert_with(|| {
+            let ctx = self.ctx;
+            let zero = ctx.const_0();
+            let mut rc = Rc::new([zero; 0x10 * 4]);
+            let out = Rc::make_mut(&mut rc);
+            for i in 0..0x10 {
+                for j in 0..4 {
+                    out[i * 4 + j] = ctx.xmm(i as u8, j as u8);
+                }
+            }
+            rc
+        });
+        Rc::make_mut(rc)
     }
 
     fn flag_state<'a>(&'a mut self) -> exec_state::FlagState<'a, 'e> {
@@ -570,7 +581,7 @@ impl<'e> State<'e> {
             }
             DestOperand::Fpu(_) => (),
             DestOperand::Xmm(reg, word) => {
-                let xmm = Rc::make_mut(&mut self.xmm);
+                let xmm = self.xmm_mut();
                 xmm[(reg & 0xf) as usize * 4 + (word & 3) as usize] = value;
             }
             DestOperand::Flag(flag) => {
@@ -1104,7 +1115,11 @@ impl<'e> State<'e> {
         }
         match *value.ty() {
             OperandType::Xmm(reg, word) => {
-                self.xmm[(reg & 0xf) as usize * 4 + (word & 3) as usize]
+                if let Some(ref xmm) = self.xmm {
+                    xmm[(reg & 0xf) as usize * 4 + (word & 3) as usize]
+                } else {
+                    value
+                }
             }
             OperandType::Fpu(_) => value,
             OperandType::Flag(flag) => self.resolve_flag(flag),
@@ -1523,6 +1538,90 @@ impl<'e> State<'e> {
     }
 }
 
+#[inline]
+fn check_merge_eq<'e>(a: Operand<'e>, b: Operand<'e>) -> bool {
+    a == b || a.is_undefined()
+}
+
+fn merge_op<'e>(ctx: OperandCtx<'e>, a: Operand<'e>, b: Operand<'e>) -> Operand<'e> {
+    match a == b || a.is_undefined() {
+        true => a,
+        false => ctx.new_undef(),
+    }
+}
+
+fn xmm_merge_changed<'e>(
+    old: Option<&Rc<[Operand<'e>; 0x10 * 4]>>,
+    new: Option<&Rc<[Operand<'e>; 0x10 * 4]>>,
+) -> bool {
+    if let Some(old) = old {
+        if let Some(new) = new {
+            if Rc::ptr_eq(old, new) {
+                return false;
+            } else {
+                return old.iter().zip(new.iter())
+                    .any(|(&a, &b)| !check_merge_eq(a, b));
+            }
+        } else {
+            // Merge changed if not all (old are initial values or undef)
+            for i in 0..(0x10 * 4) {
+                let val = old[i as usize];
+                if !val.is_undefined() {
+                    if val.if_xmm() != Some((i >> 2, i & 3)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    } else if let Some(new) = new {
+        // Merge changed if not all new are initial values
+        for i in 0..(0x10 * 4) {
+            let val = new[i as usize];
+            if val.if_xmm() != Some((i >> 2, i & 3)) {
+                return true;
+            }
+        }
+    } else {
+        // Both none, never merge changed
+    }
+    false
+}
+
+fn merge_xmm_to_old<'e>(
+    // Out is assumed to be also "old" values
+    out: &mut Option<Rc<[Operand<'e>; 0x10 * 4]>>,
+    new: Option<&Rc<[Operand<'e>; 0x10 * 4]>>,
+    ctx: OperandCtx<'e>,
+) {
+    if let Some(out) = out {
+        let result = Rc::make_mut(out);
+        if let Some(new) = new {
+            for i in 0..result.len() {
+                result[i] = merge_op(ctx, result[i], new[i]);
+            }
+        } else {
+            // Anything in out that is not undef and differs from default value becomes undef
+            for i in 0..(0x10 * 4) {
+                let val = &mut result[i as usize];
+                if !val.is_undefined() && val.if_xmm() != Some((i >> 2, i & 3)) {
+                    *val = ctx.new_undef();
+                }
+            }
+        }
+    } else {
+        if let Some(new) = new {
+            let result_rc = out.insert(new.clone());
+            let result = Rc::make_mut(result_rc);
+            // Anything differing from default value becomes undef
+            for i in 0..(0x10 * 4) {
+                let val = &mut result[i as usize];
+                if val.if_xmm() != Some((i >> 2, i & 3)) {
+                    *val = ctx.new_undef();
+                }
+            }
+        }
+    }
+}
 
 /// If `old` and `new` have different fields, and the old field is not undefined,
 /// return `ExecutionState` which has the differing fields replaced with (a separate) undefined.
@@ -1531,23 +1630,9 @@ fn merge_states<'a: 'r, 'r>(
     new: &'r mut State<'a>,
     cache: &'r mut MergeStateCache<'a>,
 ) -> Option<ExecutionState<'a>> {
-    fn check_eq<'e>(a: Operand<'e>, b: Operand<'e>) -> bool {
-        a == b || a.is_undefined()
-    }
 
     let ctx = old.ctx;
-    fn merge<'e>(ctx: OperandCtx<'e>, a: Operand<'e>, b: Operand<'e>) -> Operand<'e> {
-        match a == b || a.is_undefined() {
-            true => a,
-            false => ctx.new_undef(),
-        }
-    }
-
-    let xmm_eq = {
-        Rc::ptr_eq(&old.xmm, &new.xmm) ||
-        old.xmm.iter().zip(new.xmm.iter())
-            .all(|(&a, &b)| check_eq(a, b))
-    };
+    let xmm_changed = xmm_merge_changed(old.xmm.as_ref(), new.xmm.as_ref());
     let unresolved_constraint =
         exec_state::merge_constraint(ctx, old.unresolved_constraint, new.unresolved_constraint);
     let resolved_constraint =
@@ -1556,7 +1641,7 @@ fn merge_states<'a: 'r, 'r>(
         exec_state::merge_constraint(ctx, old.memory_constraint, new.memory_constraint);
     let changed = (
             old.registers().iter().zip(new.registers().iter())
-                .any(|(&a, &b)| !check_eq(a, b))
+                .any(|(&a, &b)| !check_merge_eq(a, b))
         ) || (
             if old.memory.is_same(&new.memory) {
                 false
@@ -1571,7 +1656,7 @@ fn merge_states<'a: 'r, 'r>(
                 }
             }
         ) ||
-        !xmm_eq ||
+        xmm_changed ||
         unresolved_constraint != old.unresolved_constraint ||
         resolved_constraint != old.resolved_constraint ||
         memory_constraint != old.memory_constraint ||
@@ -1580,7 +1665,7 @@ fn merge_states<'a: 'r, 'r>(
         let zero = ctx.const_0();
         let mut state = array_init::array_init(|_| zero);
         for i in 0..16 {
-            state[i] = merge(ctx, old.state[i], new.state[i]);
+            state[i] = merge_op(ctx, old.state[i], new.state[i]);
         }
         let pending_flags = exec_state::merge_flags(
             &mut old.flag_state(),
@@ -1605,13 +1690,8 @@ fn merge_states<'a: 'r, 'r>(
             }
         }
         let mut xmm = old.xmm.clone();
-        if !xmm_eq {
-            let state = Rc::make_mut(&mut xmm);
-            let old_xmm = &*old.xmm;
-            let new_xmm = &*new.xmm;
-            for i in 0..state.len() {
-                state[i] = merge(ctx, old_xmm[i], new_xmm[i]);
-            }
+        if xmm_changed {
+            merge_xmm_to_old(&mut xmm, new.xmm.as_ref(), ctx);
         }
         let memory = cache.merge_memory(&old.memory, &new.memory, ctx);
         let inner = Box::alloc().init(State {
