@@ -663,41 +663,65 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
     use crate::Error::*;
     let mut file = BufReader::new(File::open(filename)?);
     let mut buffer = [0u8; 0x58];
+    let mut seek_pos = 0u64;
     file.read_exact(&mut buffer[..0x40])?;
+    seek_pos += 0x40;
     if LittleEndian::read_u16(&buffer[0..]) != 0x5a4d {
         return Err(InvalidPeFile("Missing DOS magic"));
     }
     let pe_offset = LittleEndian::read_u32(&buffer[0x3c..]) as u64;
-    file.seek(io::SeekFrom::Start(pe_offset))?;
+    file.seek_relative((pe_offset as u64).wrapping_sub(seek_pos) as i64)?;
+    seek_pos = pe_offset as u64;
     file.read_exact(&mut buffer)?;
+    seek_pos = seek_pos.wrapping_add(buffer.len() as u64);
 
     if LittleEndian::read_u32(&buffer[0..]) != 0x0000_4550 {
         return Err(InvalidPeFile("Missing PE magic"));
     }
+
     let section_count = LittleEndian::read_u16(&buffer[0x6..]);
     let base = VirtualAddress(LittleEndian::read_u32(&buffer[0x34..]));
     let header_block_size = LittleEndian::read_u32(&buffer[0x54..]);
-    let mut sections = (0..u64::from(section_count)).map(|i| {
-        file.seek(io::SeekFrom::Start(pe_offset + 0xf8 + 0x28 * i))?;
-        file.read_exact(&mut buffer[..0x28])?;
-        let virtual_size = LittleEndian::read_u32(&buffer[0x8..]);
-        let rva = LittleEndian::read_u32(&buffer[0xc..]);
-        let phys_size = LittleEndian::read_u32(&buffer[0x10..]);
-        let phys = LittleEndian::read_u32(&buffer[0x14..]);
 
-        file.seek(io::SeekFrom::Start(u64::from(phys)))?;
-        let mut data = vec![0; phys_size as usize];
-        file.read_exact(&mut data)?;
-        Ok(BinarySection {
-            name: buffer[..8].try_into().unwrap(),
+    let mut sections = Vec::with_capacity(section_count as usize + 1);
+    // Read header
+    file.seek_relative(0u64.wrapping_sub(seek_pos) as i64)?;
+    let mut header_data = Vec::with_capacity(header_block_size as usize);
+    (&mut file).take(header_block_size as u64).read_to_end(&mut header_data)?;
+
+    let section_headers = match header_data.get(((pe_offset + 0xf8) as usize)..)
+        .and_then(|x| x.get(..(0x28 * section_count as usize)))
+    {
+        Some(s) => s,
+        None => return Err(InvalidPeFile("Sections not in header")),
+    };
+
+    // Read sections without extra buffering.
+    // This may not even be worth it as BufReader is smart enough to not
+    // use buffer for reads larger than the buffer, and small sections
+    // could be read with single syscall if using BufReader.
+    let mut file = file.into_inner();
+    // No guarantee of inner seek pos atm, set to invalid
+    seek_pos = u64::MAX;
+    for section in section_headers.chunks_exact(0x28) {
+        let virtual_size = LittleEndian::read_u32(&section[0x8..]);
+        let rva = LittleEndian::read_u32(&section[0xc..]);
+        let phys_size = LittleEndian::read_u32(&section[0x10..]);
+        let phys = LittleEndian::read_u32(&section[0x14..]);
+        if phys as u64 != seek_pos {
+            file.seek(io::SeekFrom::Start(phys as u64))?;
+        }
+        let mut data = Vec::with_capacity(phys_size as usize);
+        (&mut file).take(phys_size as u64).read_to_end(&mut data)?;
+        seek_pos = phys as u64 + phys_size as u64;
+        sections.push(BinarySection {
+            name: section[..8].try_into().unwrap(),
             virtual_address: base + rva,
             virtual_size,
             data,
         })
-    }).collect::<Result<Vec<_>, Error>>()?;
-    file.seek(io::SeekFrom::Start(0))?;
-    let mut header_data = vec![0; header_block_size as usize];
-    file.read_exact(&mut header_data)?;
+    }
+
     sections.push(BinarySection {
         name: *b"(header)",
         virtual_address: base,
@@ -717,13 +741,17 @@ pub fn parse_x86_64(filename: &OsStr) -> Result<BinaryFile<VirtualAddress64>, Er
     use crate::Error::*;
     let mut file = BufReader::new(File::open(filename)?);
     let mut buffer = [0u8; 0x58];
+    let mut seek_pos = 0u64;
     file.read_exact(&mut buffer[..0x40])?;
+    seek_pos += 0x40;
     if LittleEndian::read_u16(&buffer[0..]) != 0x5a4d {
         return Err(InvalidPeFile("Missing DOS magic"));
     }
-    let pe_offset = LittleEndian::read_u32(&buffer[0x3c..]) as u64;
-    file.seek(io::SeekFrom::Start(pe_offset))?;
+    let pe_offset = LittleEndian::read_u32(&buffer[0x3c..]);
+    file.seek_relative((pe_offset as u64).wrapping_sub(seek_pos) as i64)?;
+    seek_pos = pe_offset as u64;
     file.read_exact(&mut buffer)?;
+    seek_pos = seek_pos.wrapping_add(buffer.len() as u64);
 
     if LittleEndian::read_u32(&buffer[0..]) != 0x0000_4550 {
         return Err(InvalidPeFile("Missing PE magic"));
@@ -731,27 +759,46 @@ pub fn parse_x86_64(filename: &OsStr) -> Result<BinaryFile<VirtualAddress64>, Er
     let section_count = LittleEndian::read_u16(&buffer[0x6..]);
     let base = VirtualAddress64(LittleEndian::read_u64(&buffer[0x30..]));
     let header_block_size = LittleEndian::read_u32(&buffer[0x54..]);
-    let mut sections = (0..u64::from(section_count)).map(|i| {
-        file.seek(io::SeekFrom::Start(pe_offset + 0x108 + 0x28 * i))?;
-        file.read_exact(&mut buffer[..0x28])?;
-        let virtual_size = LittleEndian::read_u32(&buffer[0x8..]);
-        let rva = LittleEndian::read_u32(&buffer[0xc..]);
-        let phys_size = LittleEndian::read_u32(&buffer[0x10..]);
-        let phys = LittleEndian::read_u32(&buffer[0x14..]);
 
-        file.seek(io::SeekFrom::Start(u64::from(phys)))?;
-        let mut data = vec![0; phys_size as usize];
-        file.read_exact(&mut data)?;
-        Ok(BinarySection {
-            name: buffer[..8].try_into().unwrap(),
+    let mut sections = Vec::with_capacity(section_count as usize + 1);
+    // Read header
+    file.seek_relative(0u64.wrapping_sub(seek_pos) as i64)?;
+    let mut header_data = Vec::with_capacity(header_block_size as usize);
+    (&mut file).take(header_block_size as u64).read_to_end(&mut header_data)?;
+
+    let section_headers = match header_data.get(((pe_offset + 0x108) as usize)..)
+        .and_then(|x| x.get(..(0x28 * section_count as usize)))
+    {
+        Some(s) => s,
+        None => return Err(InvalidPeFile("Sections not in header")),
+    };
+
+    // Read sections without extra buffering.
+    // This may not even be worth it as BufReader is smart enough to not
+    // use buffer for reads larger than the buffer, and small sections
+    // could be read with single syscall if using BufReader.
+    let mut file = file.into_inner();
+    // No guarantee of inner seek pos atm, set to invalid
+    seek_pos = u64::MAX;
+    for section in section_headers.chunks_exact(0x28) {
+        let virtual_size = LittleEndian::read_u32(&section[0x8..]);
+        let rva = LittleEndian::read_u32(&section[0xc..]);
+        let phys_size = LittleEndian::read_u32(&section[0x10..]);
+        let phys = LittleEndian::read_u32(&section[0x14..]);
+        if phys as u64 != seek_pos {
+            file.seek(io::SeekFrom::Start(phys as u64))?;
+        }
+        let mut data = Vec::with_capacity(phys_size as usize);
+        (&mut file).take(phys_size as u64).read_to_end(&mut data)?;
+        seek_pos = phys as u64 + phys_size as u64;
+        sections.push(BinarySection {
+            name: section[..8].try_into().unwrap(),
             virtual_address: base + rva,
             virtual_size,
             data,
         })
-    }).collect::<Result<Vec<_>, Error>>()?;
-    file.seek(io::SeekFrom::Start(0))?;
-    let mut header_data = vec![0; header_block_size as usize];
-    file.read_exact(&mut header_data)?;
+    }
+
     sections.push(BinarySection {
         name: *b"(header)",
         virtual_address: base,
