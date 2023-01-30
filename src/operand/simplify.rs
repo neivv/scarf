@@ -3401,7 +3401,8 @@ fn try_merge_ands<'e>(
 fn can_quick_simplify_type(ty: &OperandType) -> bool {
     match ty {
         OperandType::Register(_) | OperandType::Xmm(_, _) | OperandType::Fpu(_) |
-            OperandType::Flag(_) | OperandType::Undefined(_) | OperandType::Custom(_) => true,
+            OperandType::Flag(_) | OperandType::Undefined(_) | OperandType::Custom(_) |
+            OperandType::ArithmeticFloat(..) => true,
         _ => false,
     }
 }
@@ -6478,12 +6479,7 @@ pub fn simplify_or<'e>(
             if left_bits & c == left_bits {
                 return c_op;
             }
-            let arith = ArithOperand {
-                ty: ArithOpType::Or,
-                left: other,
-                right: c_op,
-            };
-            return ctx.intern(OperandType::Arithmetic(arith));
+            return intern_arith(ctx, other, c_op, ArithOpType::Or);
         }
     } else {
         if !bits_overlap(&left_bits, &right_bits) {
@@ -6491,7 +6487,17 @@ pub fn simplify_or<'e>(
                 return result;
             }
         }
-        if can_quick_simplify_type(left.ty()) && can_quick_simplify_type(right.ty()) {
+        let can_quick_simplify_left = can_quick_simplify_type(left.ty());
+        let can_quick_simplify_right = can_quick_simplify_type(right.ty());
+        // If one op is quick simplify op, and the other isn't bitwise
+        // arithmetic (as those can affect or simplification), it should be fine
+        // to just result in that.
+        // E.g. anything `(x + y) | z` where z is quick simplify type
+        // should never simplify further?
+        let quick_simplify_2op = (can_quick_simplify_left && can_quick_simplify_right) ||
+            (can_quick_simplify_left && !is_or_relevant_bitwise_arith(right)) ||
+            (can_quick_simplify_right && !is_or_relevant_bitwise_arith(left));
+        if quick_simplify_2op {
             // Two variable operands without arithmetic/memory won't simplify to anything
             // unless they are the same value.
             if left == right {
@@ -6501,13 +6507,7 @@ pub fn simplify_or<'e>(
                 true => (left, right),
                 false => (right, left),
             };
-            let arith = ArithOperand {
-                ty: ArithOpType::Or,
-                left,
-                right,
-            };
-
-            return ctx.intern(OperandType::Arithmetic(arith));
+            return intern_arith(ctx, left, right, ArithOpType::Or);
         }
     }
     // Simplify (x & a) | (y & a) to (x | y) & a
@@ -6543,6 +6543,18 @@ pub fn simplify_or<'e>(
             };
             ctx.intern(OperandType::Arithmetic(arith))
         })
+}
+
+/// Is arithmetic operand that should go through full or simplify, even when
+/// the other or operand has `can_quick_simplify_type() == true`
+/// Currently just assuming and/or/xor.
+fn is_or_relevant_bitwise_arith<'e>(op: Operand<'e>) -> bool {
+    match op.if_arithmetic_any() {
+        Some(s) => {
+            matches!(s.ty, ArithOpType::And | ArithOpType::Or | ArithOpType::Xor)
+        }
+        None => false,
+    }
 }
 
 fn simplify_or_2op_no_overlap<'e>(
