@@ -4918,6 +4918,170 @@ fn equal_when_shifted_right<'e>(
     None
 }
 
+struct ComparisonMatch<'e> {
+    op: Operand<'e>,
+    // y in (x > (y + c))
+    const_side_op: Option<Operand<'e>>,
+    ty: ComparisonMatchType,
+    constant: u64,
+}
+
+#[derive(Eq, PartialEq, Copy, Clone)]
+enum ComparisonMatchType {
+    ConstantGreater,
+    ConstantLess,
+    Equal,
+}
+
+fn simplify_or_check_comparison_match<'e>(op: Operand<'e>) -> Option<ComparisonMatch<'e>> {
+    match op.ty() {
+        OperandType::Arithmetic(arith) => {
+            let left = arith.left;
+            let right = arith.right;
+            match arith.ty {
+                ArithOpType::Equal => {
+                    let c = right.if_constant()?;
+                    return Some(ComparisonMatch {
+                        op: left,
+                        const_side_op: None,
+                        constant: c,
+                        ty: ComparisonMatchType::Equal,
+                    });
+                }
+                ArithOpType::GreaterThan => {
+                    if let Some(c) = left.if_constant() {
+                        return Some(ComparisonMatch {
+                            op: right,
+                            const_side_op: None,
+                            constant: c,
+                            ty: ComparisonMatchType::ConstantGreater,
+                        });
+                    }
+                    if let Some(c) = right.if_constant() {
+                        return Some(ComparisonMatch {
+                            op: left,
+                            const_side_op: None,
+                            constant: c,
+                            ty: ComparisonMatchType::ConstantLess,
+                        });
+                    } else if let Some((l, r)) = right.if_arithmetic_add() {
+                        if let Some(c) = r.if_constant() {
+                            return Some(ComparisonMatch {
+                                op: left,
+                                const_side_op: Some(l),
+                                constant: c,
+                                ty: ComparisonMatchType::ConstantLess,
+                            });
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+        _ => (),
+    }
+    None
+}
+
+fn simplify_or_try_merge_comparison<'e>(
+    ctx: OperandCtx<'e>,
+    m1: &ComparisonMatch<'e>,
+    m2: &ComparisonMatch<'e>,
+) -> Option<Operand<'e>> {
+    match (m1.ty, m2.ty) {
+        (ComparisonMatchType::ConstantGreater, ComparisonMatchType::Equal) |
+            (ComparisonMatchType::Equal, ComparisonMatchType::ConstantGreater) =>
+        {
+            if m1.const_side_op.is_some() || m2.const_side_op.is_some() {
+                // May be able to do something, but not considering it now.
+                return None;
+            }
+
+            // (c1 > y - c2) | (c1 + c2) == y to (c1 + 1 > y - c2)
+            let (gt, c1, eq, mut eq_c) =
+                match m1.ty == ComparisonMatchType::ConstantGreater
+            {
+                true => (m1.op, m1.constant, m2.op, m2.constant),
+                false => (m2.op, m2.constant, m1.op, m1.constant),
+            };
+            let (gt_inner, gt_mask) = Operand::and_masked(gt);
+            let (y, c2) = gt_inner.if_arithmetic_sub()
+                .and_then(|(l, r)| {
+                    Some((l, r.if_constant()?))
+                })
+                .unwrap_or((gt_inner, 0));
+            let mut values_match = if (y, gt_mask) == Operand::and_masked(eq) {
+                true
+            } else {
+                // Can also be that y == eq == (smth & ff),
+                // in which case the previous check would have done
+                // (y, u64::MAX) != (smth, ff)
+                y == eq && gt_mask == u64::MAX
+            };
+            if !values_match {
+                // If values didn't match, check if they match when eq is shifted
+                // E.g. y = ((rcx >> 10) & ff),
+                //      eq = (rcx & ff0000)
+                // If they do, shift eq_c as well
+                if gt_mask == u64::MAX {
+                    if let Some(shift) = equal_when_shifted_right(y, eq) {
+                        eq_c = eq_c.wrapping_shr(shift as u32);
+                        values_match = true;
+                    }
+                }
+            }
+            let constants_match = c1.checked_add(c2)
+                .filter(|&c| c == eq_c)
+                .is_some();
+            if constants_match && values_match {
+                // min/max edge cases can be handled by gt simplification,
+                // don't do them here.
+                if let Some(new_c) = c1.checked_add(1) {
+                    return Some(ctx.gt_const_left(new_c, gt));
+                }
+            }
+        }
+        (ComparisonMatchType::ConstantLess, ComparisonMatchType::Equal) |
+            (ComparisonMatchType::Equal, ComparisonMatchType::ConstantLess) =>
+        {
+            let (eq, cl) = match m1.ty == ComparisonMatchType::Equal {
+                true => (&m1, &m2),
+                false => (&m2, &m1),
+            };
+            if let Some(new_c) = eq.constant.checked_sub(1) {
+                if let Some(const_side) = cl.const_side_op {
+                    if is_eq_sub_for_gt(cl.op, const_side, eq.op) {
+                        return Some(ctx.gt(
+                            cl.op,
+                            ctx.add_const(
+                                const_side,
+                                new_c,
+                            ),
+                        ));
+                    }
+                } else {
+                    if eq.constant == cl.constant && eq.op == cl.op {
+                        return Some(ctx.gt_const(eq.op, new_c));
+                    }
+                }
+            }
+        }
+        (ComparisonMatchType::Equal, ComparisonMatchType::Equal) => {
+            // No need to check const_side_op since it can't be set on equal
+            debug_assert!(m1.const_side_op.is_none());
+            debug_assert!(m2.const_side_op.is_none());
+            if m1.constant.min(m2.constant) == 0 &&
+                m1.constant.max(m2.constant) == 1 &&
+                m1.op == m2.op
+            {
+                return Some(ctx.gt_const_left(2, m1.op));
+            }
+        }
+        _ => (),
+    }
+    None
+}
+
 // Simplify or: merge comparisons
 // Converts
 // (c > x) | (c == x) to (c + 1 > x),
@@ -4929,175 +5093,16 @@ fn equal_when_shifted_right<'e>(
 // Cannot do for values that can overflow, so just limit it to constants for now.
 // (Well, could do (c + 1 > x) | (c == max_value), but that isn't really simpler)
 fn simplify_or_merge_comparisons<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
-    struct Match<'e> {
-        op: Operand<'e>,
-        // y in (x > (y + c))
-        const_side_op: Option<Operand<'e>>,
-        ty: MatchType,
-        constant: u64,
-    }
-
-    #[derive(Eq, PartialEq, Copy, Clone)]
-    enum MatchType {
-        ConstantGreater,
-        ConstantLess,
-        Equal,
-    }
-
-    fn check_match<'e>(op: Operand<'e>) -> Option<Match<'e>> {
-        match op.ty() {
-            OperandType::Arithmetic(arith) => {
-                let left = arith.left;
-                let right = arith.right;
-                match arith.ty {
-                    ArithOpType::Equal => {
-                        let c = right.if_constant()?;
-                        return Some(Match {
-                            op: left,
-                            const_side_op: None,
-                            constant: c,
-                            ty: MatchType::Equal,
-                        });
-                    }
-                    ArithOpType::GreaterThan => {
-                        if let Some(c) = left.if_constant() {
-                            return Some(Match {
-                                op: right,
-                                const_side_op: None,
-                                constant: c,
-                                ty: MatchType::ConstantGreater,
-                            });
-                        }
-                        if let Some(c) = right.if_constant() {
-                            return Some(Match {
-                                op: left,
-                                const_side_op: None,
-                                constant: c,
-                                ty: MatchType::ConstantLess,
-                            });
-                        } else if let Some((l, r)) = right.if_arithmetic_add() {
-                            if let Some(c) = r.if_constant() {
-                                return Some(Match {
-                                    op: left,
-                                    const_side_op: Some(l),
-                                    constant: c,
-                                    ty: MatchType::ConstantLess,
-                                });
-                            }
-                        }
-                    }
-                    _ => (),
-                }
-            }
-            _ => (),
-        }
-        None
-    }
-
     let mut i = 0;
     'outer: while i < ops.len() {
-        if let Some(m1) = check_match(ops[i]) {
+        if let Some(m1) = simplify_or_check_comparison_match(ops[i]) {
             let mut j = i + 1;
-            'inner: while j < ops.len() {
-                if let Some(m2) = check_match(ops[j]) {
-                    match (m1.ty, m2.ty) {
-                        (MatchType::ConstantGreater, MatchType::Equal) |
-                            (MatchType::Equal, MatchType::ConstantGreater) =>
-                        {
-                            if m1.const_side_op.is_some() || m2.const_side_op.is_some() {
-                                // May be able to do something, but not considering it now.
-                                continue 'inner;
-                            }
-
-                            // (c1 > y - c2) | (c1 + c2) == y to (c1 + 1 > y - c2)
-                            let (gt, c1, eq, mut eq_c) =
-                                match m1.ty == MatchType::ConstantGreater
-                            {
-                                true => (m1.op, m1.constant, m2.op, m2.constant),
-                                false => (m2.op, m2.constant, m1.op, m1.constant),
-                            };
-                            let (gt_inner, gt_mask) = Operand::and_masked(gt);
-                            let (y, c2) = gt_inner.if_arithmetic_sub()
-                                .and_then(|(l, r)| {
-                                    Some((l, r.if_constant()?))
-                                })
-                                .unwrap_or((gt_inner, 0));
-                            let mut values_match = if (y, gt_mask) == Operand::and_masked(eq) {
-                                true
-                            } else {
-                                // Can also be that y == eq == (smth & ff),
-                                // in which case the previous check would have done
-                                // (y, u64::MAX) != (smth, ff)
-                                y == eq && gt_mask == u64::MAX
-                            };
-                            if !values_match {
-                                // If values didn't match, check if they match when eq is shifted
-                                // E.g. y = ((rcx >> 10) & ff),
-                                //      eq = (rcx & ff0000)
-                                // If they do, shift eq_c as well
-                                if gt_mask == u64::MAX {
-                                    if let Some(shift) = equal_when_shifted_right(y, eq) {
-                                        eq_c = eq_c.wrapping_shr(shift as u32);
-                                        values_match = true;
-                                    }
-                                }
-                            }
-                            let constants_match = c1.checked_add(c2)
-                                .filter(|&c| c == eq_c)
-                                .is_some();
-                            if constants_match && values_match {
-                                // min/max edge cases can be handled by gt simplification,
-                                // don't do them here.
-                                if let Some(new_c) = c1.checked_add(1) {
-                                    ops[i] = ctx.gt_const_left(new_c, gt);
-                                    ops.swap_remove(j);
-                                    continue 'outer;
-                                }
-                            }
-                        }
-                        (MatchType::ConstantLess, MatchType::Equal) |
-                            (MatchType::Equal, MatchType::ConstantLess) =>
-                        {
-                            let (eq, cl) = match m1.ty == MatchType::Equal {
-                                true => (&m1, &m2),
-                                false => (&m2, &m1),
-                            };
-                            if let Some(new_c) = eq.constant.checked_sub(1) {
-                                if let Some(const_side) = cl.const_side_op {
-                                    if is_eq_sub_for_gt(cl.op, const_side, eq.op) {
-                                        ops[i] = ctx.gt(
-                                            cl.op,
-                                            ctx.add_const(
-                                                const_side,
-                                                new_c,
-                                            ),
-                                        );
-                                        ops.swap_remove(j);
-                                        continue 'outer;
-                                    }
-                                } else {
-                                    if eq.constant == cl.constant && eq.op == cl.op {
-                                        ops[i] = ctx.gt_const(eq.op, new_c);
-                                        ops.swap_remove(j);
-                                        continue 'outer;
-                                    }
-                                }
-                            }
-                        }
-                        (MatchType::Equal, MatchType::Equal) => {
-                            // No need to check const_side_op since it can't be set on equal
-                            debug_assert!(m1.const_side_op.is_none());
-                            debug_assert!(m2.const_side_op.is_none());
-                            if m1.constant.min(m2.constant) == 0 &&
-                                m1.constant.max(m2.constant) == 1 &&
-                                m1.op == m2.op
-                            {
-                                ops[i] = ctx.gt_const_left(2, m1.op);
-                                ops.swap_remove(j);
-                                continue 'outer;
-                            }
-                        }
-                        _ => (),
+            while j < ops.len() {
+                if let Some(m2) = simplify_or_check_comparison_match(ops[j]) {
+                    if let Some(result) = simplify_or_try_merge_comparison(ctx, &m1, &m2) {
+                        ops[i] = result;
+                        ops.swap_remove(j);
+                        continue 'outer;
                     }
                 }
                 j += 1;
@@ -6487,6 +6492,9 @@ pub fn simplify_or<'e>(
                 return result;
             }
         }
+        if left == right {
+            return left;
+        }
         let can_quick_simplify_left = can_quick_simplify_type(left.ty());
         let can_quick_simplify_right = can_quick_simplify_type(right.ty());
         // If one op is quick simplify op, and the other isn't bitwise
@@ -6500,14 +6508,14 @@ pub fn simplify_or<'e>(
         if quick_simplify_2op {
             // Two variable operands without arithmetic/memory won't simplify to anything
             // unless they are the same value.
-            if left == right {
-                return left;
-            }
             let (left, right) = match left > right {
                 true => (left, right),
                 false => (right, left),
             };
             return intern_arith(ctx, left, right, ArithOpType::Or);
+        }
+        if let Some(op) = simplify_or_2op_compare(left, right, ctx) {
+            return op;
         }
     }
     // Simplify (x & a) | (y & a) to (x | y) & a
@@ -6543,6 +6551,45 @@ pub fn simplify_or<'e>(
             };
             ctx.intern(OperandType::Arithmetic(arith))
         })
+}
+
+/// Faster simplify or path if both are comparisons.
+///
+/// `cmp_a | cmp_b` is probably pretty common?
+///
+/// Assumes that `left == right` has already been checked to not be true.
+fn simplify_or_2op_compare<'e>(
+    left: Operand<'e>,
+    right: Operand<'e>,
+    ctx: OperandCtx<'e>,
+) -> Option<Operand<'e>> {
+    let _ = left.if_arithmetic_any()
+        .filter(|a| matches!(a.ty, ArithOpType::Equal | ArithOpType::GreaterThan))?;
+    let _ = right.if_arithmetic_any()
+        .filter(|a| matches!(a.ty, ArithOpType::Equal | ArithOpType::GreaterThan))?;
+    if let Some(m1) = simplify_or_check_comparison_match(left) {
+        if let Some(m2) = simplify_or_check_comparison_match(right) {
+            if let Some(result) = simplify_or_try_merge_comparison(ctx, &m1, &m2) {
+                return Some(result);
+            }
+        }
+    }
+    let result = ctx.simplify_temp_stack().alloc(|slice| {
+        let _ = slice.push(left);
+        let _ = slice.push(right);
+        simplify_demorgan(slice, ctx, ArithOpType::And);
+        if slice.len() == 1 {
+            slice[0]
+        } else {
+            // Else should just be able to intern without extra simplifications
+            let (left, right) = match left > right {
+                true => (left, right),
+                false => (right, left),
+            };
+            intern_arith(ctx, left, right, ArithOpType::Or)
+        }
+    });
+    Some(result)
 }
 
 /// Is arithmetic operand that should go through full or simplify, even when

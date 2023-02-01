@@ -12170,3 +12170,15 @@ fn incorrect_rsh_simplfiy() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn same_comparison_eq() {
+    let ctx = &OperandContext::new();
+    let cmp = ctx.gt_const(
+        ctx.register(0),
+        0x5000,
+    );
+    let op1 = ctx.or(cmp, cmp);
+    let eq1 = cmp;
+    assert_eq!(op1, eq1);
+}
