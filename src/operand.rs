@@ -1031,8 +1031,34 @@ impl<'e> OperandContext<'e> {
         result
     }
 
-    /// Interns operand on the default interner. Shouldn't be used for constants or undefined
+    /// Interns operand on the default interner. Shouldn't be used for constants,
+    /// arithmetic, or undefined
     fn intern(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+        debug_assert!(
+            match ty {
+                OperandType::Constant(..) | OperandType::Undefined(..) |
+                    OperandType::Arithmetic(..) | OperandType::Flag(..) => false,
+                OperandType::Register(r) => r > 16,
+                _ => true,
+            },
+            "General-purpose intern function called for OperandType with specialized interning",
+        );
+
+        self.interner.intern(ty)
+    }
+
+    fn intern_arith(
+        &'e self,
+        left: Operand<'e>,
+        right: Operand<'e>,
+        ty: ArithOpType,
+    ) -> Operand<'e> {
+        let arith = ArithOperand {
+            ty,
+            left,
+            right,
+        };
+        let ty = OperandType::Arithmetic(arith);
         self.interner.intern(ty)
     }
 
@@ -1043,6 +1069,8 @@ impl<'e> OperandContext<'e> {
             self.register(r)
         } else if let OperandType::Flag(f) = ty {
             self.flag(f)
+        } else if let OperandType::Arithmetic(arith) = ty {
+            self.intern_arith(arith.left, arith.right, arith.ty)
         } else {
             // Undefined has to go here since UndefInterner is just array that things get
             // pushed to and then looked up.. Maybe it would be better for copy_operand

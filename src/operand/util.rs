@@ -1,5 +1,5 @@
 use super::{ArithOperand, ArithOpType, Operand, OperandCtx, OperandType};
-use super::slice_stack;
+use super::{slice_stack};
 
 type Slice<'e> = slice_stack::Slice<'e, Operand<'e>>;
 
@@ -531,12 +531,7 @@ pub fn sorted_arith_chain_remove_one_and_join<'e>(
     }
 
     for &part in slice[..last_index].iter().rev() {
-        let arith = ArithOperand {
-            ty,
-            left: pos,
-            right: part,
-        };
-        pos = ctx.intern(OperandType::Arithmetic(arith));
+        pos = ctx.intern_arith(pos, part, ty);
     }
     pos
 }
@@ -560,12 +555,7 @@ pub fn intern_arith_ops_to_tree_with_base<'e>(
 ) -> Operand<'e> {
     let mut tree = base;
     for &op in slice.iter().rev() {
-        let arith = ArithOperand {
-            ty,
-            left: tree,
-            right: op,
-        };
-        tree = ctx.intern(OperandType::Arithmetic(arith));
+        tree = ctx.intern_arith(tree, op, ty);
     }
     tree
 }
