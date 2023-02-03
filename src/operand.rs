@@ -187,8 +187,6 @@ pub struct OperandHashByAddress<'e>(pub Operand<'e>);
 pub(crate) struct OperandBase<'e> {
     ty: OperandType<'e>,
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
-    min_zero_bit_simplify_size: u8,
-    #[cfg_attr(feature = "serde", serde(skip_serializing))]
     relevant_bits: Range<u8>,
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     flags: u8,
@@ -263,7 +261,6 @@ impl<'e> Ord for Operand<'e> {
         } else {
             let OperandBase {
                 ref ty,
-                min_zero_bit_simplify_size: _,
                 relevant_bits: _,
                 flags: _,
                 sort_order,
@@ -295,7 +292,6 @@ impl<'e> PartialOrd for Operand<'e> {
     fn lt(&self, other: &Operand<'e>) -> bool {
         let OperandBase {
             ref ty,
-            min_zero_bit_simplify_size: _,
             relevant_bits: _,
             flags: _,
             sort_order,
@@ -324,7 +320,6 @@ impl<'e> fmt::Debug for Operand<'e> {
         /*
         f.debug_struct("Operand")
             .field("ty", &self.ty)
-            .field("min_zero_bit_simplify_size", &self.min_zero_bit_simplify_size)
             .field("simplified", &self.simplified)
             .field("relevant_bits", &self.relevant_bits)
             .field("hash", &self.hash)
@@ -1648,7 +1643,6 @@ impl<'e> OperandContext<'e> {
             self.max_undefined.set(next);
             self.undef_interner.push(OperandBase {
                 ty: OperandType::Undefined(UndefinedId(id)),
-                min_zero_bit_simplify_size: 0,
                 relevant_bits: 0..64,
                 flags: FLAG_CONTAINS_UNDEFINED | FLAG_32BIT_NORMALIZED,
                 sort_order: id as u64,
@@ -1992,44 +1986,6 @@ impl InternedCounts {
 }
 
 impl<'e> OperandType<'e> {
-    /// Returns the minimum size of a zero bit range required in simplify_with_zero_bits for
-    /// anything to simplify.
-    ///
-    /// Relevant_bits argument should be acquired by calling self.relevant_bits()
-    /// (Expected to be something that would be calculated otherwise by the caller anyway)
-    fn min_zero_bit_simplify_size(&self, relevant_bits: Range<u8>) -> u8 {
-        match *self {
-            OperandType::Constant(_) => 0,
-            // Mem32 can be simplified to Mem16 if highest bits are zero, etc
-            OperandType::Memory(ref mem) => match mem.size {
-                MemAccessSize::Mem8 => 8,
-                MemAccessSize::Mem16 => 8,
-                MemAccessSize::Mem32 => 16,
-                MemAccessSize::Mem64 => 32,
-            },
-            OperandType::Register(_) | OperandType::Flag(_) | OperandType::Undefined(_) => 64,
-            OperandType::Arithmetic(ref arith) => match arith.ty {
-                ArithOpType::And | ArithOpType::Or | ArithOpType::Xor => {
-                    min(
-                        arith.left.0.min_zero_bit_simplify_size,
-                        arith.right.0.min_zero_bit_simplify_size,
-                    )
-                }
-                ArithOpType::Lsh | ArithOpType::Rsh => {
-                    let right_bits = match arith.right.if_constant() {
-                        Some(s) => 32u64.saturating_sub(s),
-                        None => 32,
-                    } as u8;
-                    arith.left.0.min_zero_bit_simplify_size.min(right_bits)
-                }
-                // Could this be better than 0?
-                ArithOpType::Add => 0,
-                _ => relevant_bits.end - relevant_bits.start,
-            }
-            _ => 0,
-        }
-    }
-
     /// Returns which bits the operand will use at most.
     fn calculate_relevant_bits(&self) -> Range<u8> {
         match *self {

@@ -78,13 +78,10 @@ impl<'e> Interner<'e> {
     fn add_operand(&'e self, ty: OperandType<'e>) -> Operand<'e> {
         let relevant_bits = ty.calculate_relevant_bits();
         debug_assert!(relevant_bits.start != relevant_bits.end, "Operand should be zero {:?}", ty);
-        let min_zero_bit_simplify_size =
-            ty.min_zero_bit_simplify_size(relevant_bits.clone());
         let flags = ty.flags(relevant_bits.clone());
         let sort_order = ty.sort_order();
         let base = OperandBase {
             ty,
-            min_zero_bit_simplify_size,
             relevant_bits,
             flags,
             sort_order,
@@ -122,11 +119,9 @@ impl<'e> ConstInterner<'e> {
 
     fn add_operand(&'e self, value: u64) -> Operand<'e> {
         let relevant_bits = OperandType::const_relevant_bits(value);
-        let min_zero_bit_simplify_size = 0;
         let flags = OperandType::const_flags(value);
         let base = OperandBase {
             ty: OperandType::Constant(value),
-            min_zero_bit_simplify_size,
             relevant_bits,
             flags,
             sort_order: value,
