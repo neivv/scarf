@@ -16,6 +16,20 @@ type Slice<'e> = slice_stack::Slice<'e, Operand<'e>>;
 type AddSlice<'e> = slice_stack::Slice<'e, (Operand<'e>, bool)>;
 type MaskedOpSlice<'e> = slice_stack::Slice<'e, (Operand<'e>, u64)>;
 
+struct MaskedOps<'a, 'e> {
+    slice: &'a mut MaskedOpSlice<'e>,
+    constant: u64,
+}
+
+impl<'a, 'e> MaskedOps<'a, 'e> {
+    fn new(slice: &'a mut MaskedOpSlice<'e>) -> MaskedOps<'a, 'e> {
+        MaskedOps {
+            slice,
+            constant: 0,
+        }
+    }
+}
+
 /// Execution limits for simplification.
 /// Currently just contains recursion limit for simplify_with_and_mask;
 /// previously used to also have recursion limit for now-removed
@@ -593,7 +607,7 @@ fn simplify_masked_xor_or_and_to_xor<'e>(
                         // they'll be kept as well.
                         let shared_mask = mask & mask2;
                         let orig_size = ops.len();
-                        let ok = collect_masked_xor_ops(
+                        let ok = collect_masked_xor_ops_no_const_separation(
                             ctx,
                             arith.left,
                             ops,
@@ -601,7 +615,7 @@ fn simplify_masked_xor_or_and_to_xor<'e>(
                             usize::MAX,
                             shared_mask,
                         ).and_then(|()| {
-                            collect_masked_xor_ops(
+                            collect_masked_xor_ops_no_const_separation(
                                 ctx,
                                 arith.right,
                                 ops,
@@ -1131,22 +1145,13 @@ fn simplify_xor_shifted_unwrap_shifts<'e>(
 }
 
 /// If there is an operand for which the
-/// operation, `(op & mask) >> shift` for (shift1, mask1) results `op1`,
+/// operation, `(op & op.relevant_bits_mask() & mask) >> shift` for (shift1, mask1) results `op1`,
 /// and same for op2, return `Some(op)`
-///
-/// Example:
-/// `(Mem16[rax] & ffff) << 0`,
-/// `(Mem8[rax + 2] & ff) << 10`,
-/// `(Mem8[rax + 3] & 34) << 18`,
-/// are all equal with each other.
-/// `(Mem16[rax] & f_ffff) << 0`,
-/// is only equal with the first and third, since the
-/// mask requires rax + 2 byte be 0.
 fn simplify_xor_base_for_shifted<'e>(
     op1: Operand<'e>,
-    s1: (u8, u64),
+    mut s1: (u8, u64),
     op2: Operand<'e>,
-    s2: (u8, u64),
+    mut s2: (u8, u64),
     ctx: OperandCtx<'e>,
     limit: &mut u32,
 ) -> Option<Operand<'e>> {
@@ -1157,6 +1162,8 @@ fn simplify_xor_base_for_shifted<'e>(
     // return anything when simplification gives up.
     // simplify_xor_with_masks7 (and other xor_with_masks tests) do test for
     // correct masking so it's probably fine to not do anything extra right now.
+    s1.1 &= op1.relevant_bits_mask();
+    s2.1 &= op2.relevant_bits_mask();
     let (op, shift) = simplify_xor_base_for_shifted_rec(op1, s1, op2, s2, ctx, limit)?;
     if shift != 0 {
         Some(ctx.lsh_const(op, shift as u64))
@@ -1165,6 +1172,22 @@ fn simplify_xor_base_for_shifted<'e>(
     }
 }
 
+/// mask specifies which bits must keep the current value,
+/// even if it is zero.
+///
+/// (mask is needed in the first place to enable simplifying
+/// additions / subtractions: `(rax + 50) & ff` `(rax + 1000) & ff00`
+/// cannot be merged, so when trying to merge parts of ff00 mask, mask
+/// must be ffff.
+///
+/// Example:
+/// `(Mem16[rax] & ffff) << 0`,
+/// `(Mem8[rax + 2] & ff) << 10`,
+/// `(Mem8[rax + 3] & 34) << 18`,
+/// are all equal with each other.
+/// `(Mem16[rax] & f_ffff) << 0`,
+/// is only equal with the first and third, since the
+/// mask requires rax + 2 byte be 0.
 fn simplify_xor_base_for_shifted_rec<'e>(
     op1: Operand<'e>,
     (shift1, mask1): (u8, u64),
@@ -1223,7 +1246,7 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                     *limit = limit.checked_sub(1)?;
                     let s1 = (shift1, mask1);
                     let s2 = (shift2, mask2);
-                    result = simplify_xor_base_for_shifted_arith_chain(a1, s1, a2, s2, ctx, limit);
+                    result = simplify_xor_base_for_shifted_arith_chain(op1, s1, op2, s2, ctx, limit);
                 } else if matches!(a1.ty, ArithOpType::Mul | ArithOpType::Add | ArithOpType::Sub) {
                     // Fill all bits below highest one to 1
                     let mask1 = mask1.wrapping_add(1).
@@ -1236,10 +1259,18 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                         .wrapping_sub(1);
                     let s1 = (shift1, mask1);
                     let s2 = (shift2, mask2);
-                    result = simplify_xor_base_for_shifted_arith_chain(a1, s1, a2, s2, ctx, limit);
+                    result = simplify_xor_base_for_shifted_arith_chain(op1, s1, op2, s2, ctx, limit);
                 }
             }
+        } else {
+            let s1 = (shift1, mask1);
+            let s2 = (shift2, mask2);
+            result = simplify_xor_base_for_shifted_1op_arith_const(a1, s1, op2, s2, ctx, limit);
         }
+    } else if let Some(a2) = op2.if_arithmetic_any() {
+        let s1 = (shift1, mask1);
+        let s2 = (shift2, mask2);
+        result = simplify_xor_base_for_shifted_1op_arith_const(a2, s2, op1, s1, ctx, limit);
     } else {
         if let Some((val, mut off1)) = is_offset_mem(op1) {
             if let Some((other_val, mut off2)) = is_offset_mem(op2) {
@@ -1280,7 +1311,7 @@ fn simplify_xor_base_for_shifted_rec<'e>(
         } else if let Some(c1) = op1.if_constant() {
             if let Some(c2) = op2.if_constant() {
                 if shift1 == shift2 {
-                    let merged = (c1 | c2) & (mask1 | mask2);
+                    let merged = (c1 & mask1) | (c2 & mask2);
                     if merged & mask1 == c1 && merged & mask2 == c2 {
                         result = Some((ctx.constant(merged), shift1));
                     }
@@ -1291,16 +1322,102 @@ fn simplify_xor_base_for_shifted_rec<'e>(
     result
 }
 
-fn simplify_xor_base_for_shifted_arith_chain<'e>(
+#[inline]
+fn simplify_xor_base_for_shifted_default_constant_for_arith(arith_ty: ArithOpType) -> u64 {
+    (match arith_ty {
+        ArithOpType::Mul => 1i8,
+        ArithOpType::And => -1i8,
+        ArithOpType::Add | ArithOpType::Sub | ArithOpType::Or | ArithOpType::Xor | _ => 0i8,
+    }) as i64 as u64
+}
+
+fn simplify_xor_base_for_shifted_merge_constant(
+    c1: u64,
+    (shift1, mask1): (u8, u64),
+    c2: u64,
+    (shift2, mask2): (u8, u64),
+) -> Option<u64> {
+    if shift1 == shift2 {
+        let merged = (c1 & mask1) | (c2 & mask2);
+        if merged & mask1 == c1 && merged & mask2 == c2 {
+            return Some(merged);
+        }
+    }
+    None
+}
+
+/// op1 is assumed to be arithmetic, if it is (x arith C) where x and op2
+/// can be merged, merge them as (x arith C) and (op2 arith default_C)
+fn simplify_xor_base_for_shifted_1op_arith_const<'e>(
     arith1: &ArithOperand<'e>,
     s1: (u8, u64),
-    arith2: &ArithOperand<'e>,
+    op2: Operand<'e>,
     s2: (u8, u64),
     ctx: OperandCtx<'e>,
     limit: &mut u32,
 ) -> Option<(Operand<'e>, u8)> {
-    util::arith_parts_to_new_slice(ctx, arith1.left, arith1.right, arith1.ty, |parts1| {
-        util::arith_parts_to_new_slice(ctx, arith2.left, arith2.right, arith2.ty, |parts2| {
+    let c = arith1.right.if_constant()?;
+    let default_const = simplify_xor_base_for_shifted_default_constant_for_arith(arith1.ty);
+    let constant = simplify_xor_base_for_shifted_merge_constant(c, s1, default_const, s2)?;
+    let (mut op, shift) =
+        if matches!(arith1.ty, ArithOpType::Xor | ArithOpType::Or | ArithOpType::And)
+    {
+        simplify_xor_base_for_shifted_rec(arith1.left, s1, op2, s2, ctx, limit)?
+    } else if matches!(arith1.ty, ArithOpType::Mul | ArithOpType::Add | ArithOpType::Sub) {
+        // Fill all bits below highest one to 1
+        let mask1 = s1.1.wrapping_add(1).
+            checked_next_power_of_two()
+            .unwrap_or(0u64)
+            .wrapping_sub(1);
+        let mask2 = s2.1.wrapping_add(1).
+            checked_next_power_of_two()
+            .unwrap_or(0u64)
+            .wrapping_sub(1);
+        let s1 = (s1.0, mask1);
+        let s2 = (s2.0, mask2);
+        simplify_xor_base_for_shifted_rec(arith1.left, s1, op2, s2, ctx, limit)?
+    } else {
+        return None;
+    };
+    if constant != default_const {
+        op = ctx.arithmetic(arith1.ty, op, ctx.constant(constant))
+    }
+    Some((op, shift))
+}
+
+fn simplify_xor_base_for_shifted_arith_chain<'e>(
+    op1: Operand<'e>,
+    s1: (u8, u64),
+    op2: Operand<'e>,
+    s2: (u8, u64),
+    ctx: OperandCtx<'e>,
+    limit: &mut u32,
+) -> Option<(Operand<'e>, u8)> {
+    // Handle constant separately, so that one side having constant and other
+    // not can be understood as other side having no-op constant
+    let mut rest1 = op1;
+    let mut rest2 = op2;
+    let arith1 = op1.if_arithmetic_any()?;
+    let arith2 = op2.if_arithmetic_any()?;
+    let default_const = simplify_xor_base_for_shifted_default_constant_for_arith(arith1.ty);
+    let constant = match (arith1.right.if_constant(), arith2.right.if_constant()) {
+        (Some(c1), Some(c2)) => {
+            rest1 = arith1.left;
+            rest2 = arith2.left;
+            simplify_xor_base_for_shifted_merge_constant(c1, s1, c2, s2)?
+        }
+        (Some(c), None) => {
+            rest1 = arith1.left;
+            simplify_xor_base_for_shifted_merge_constant(c, s1, default_const, s2)?
+        }
+        (None, Some(c)) => {
+            rest2 = arith2.left;
+            simplify_xor_base_for_shifted_merge_constant(default_const, s1, c, s2)?
+        }
+        (None, None) => default_const,
+    };
+    util::arith_op_parts_to_new_slice(ctx, rest1, arith1.ty, |parts1| {
+        util::arith_op_parts_to_new_slice(ctx, rest2, arith2.ty, |parts2| {
             if parts1.len() != parts2.len() {
                 return None;
             }
@@ -1355,7 +1472,12 @@ fn simplify_xor_base_for_shifted_arith_chain<'e>(
                             Some(next)
                         }
                     })
-                    .map(|op| (op, min_shift))
+                    .map(|mut op| {
+                        if constant != default_const {
+                            op = ctx.arithmetic(arith1.ty, op, ctx.constant(constant));
+                        }
+                        (op, min_shift)
+                    })
             })
         })
     })
@@ -1403,10 +1525,10 @@ fn simplify_xor_is_same_shifted<'e>(
 
 fn simplify_xor_ops<'e>(
     ops: &mut Slice<'e>,
+    mut const_val: u64,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Result<Operand<'e>, SizeLimitReached> {
-    let mut const_val = 0;
     loop {
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum ^ x);
@@ -1414,7 +1536,6 @@ fn simplify_xor_ops<'e>(
         if ops.len() > 1 {
             heapsort::sort(ops);
             simplify_xor_remove_reverting(ops);
-            simplify_or_merge_child_ands(ops, ctx, swzb_ctx, u64::MAX, ArithOpType::Xor)?;
             simplify_xor_merge_ands_with_same_mask(ops, false, ctx, swzb_ctx);
 
             const_val = ops.iter().flat_map(|x| x.if_constant())
@@ -1739,9 +1860,9 @@ fn simplify_and_insert_mask_to_or_xor<'e>(
         // Maybe could just rejoin the chain without rechecking simplifications?
         // This code path is probably not executed too often anyway though.
         if arith.ty == ArithOpType::Or {
-            simplify_or_ops(parts, ctx, swzb_ctx).ok()
+            simplify_or_ops(parts, 0, ctx, swzb_ctx).ok()
         } else {
-            simplify_xor_ops(parts, ctx, swzb_ctx).ok()
+            simplify_xor_ops(parts, 0, ctx, swzb_ctx).ok()
         }
     })
 }
@@ -1765,53 +1886,66 @@ fn simplify_xor_remove_reverting<'e>(ops: &mut Slice<'e>) {
     }
 }
 
-/// Assumes that `ops` is sorted by x.0 (Mask ordering not determined), and keeps it sorted.
 /// Used by xor and or
+///
+/// Returns true if any changes are made.
 fn simplify_masked_xor_or_merge_same_ops<'e>(
     ops: &mut MaskedOpSlice<'e>,
     ctx: OperandCtx<'e>,
     ty: ArithOpType,
-) {
-    let mut first_same = ops.len() as isize - 1;
-    let mut pos = first_same - 1;
-    let mut limit = 50;
-    while pos >= 0 {
-        let pos_u = pos as usize;
-        let first_u = first_same as usize;
-        let result = simplify_xor_base_for_shifted(
-            ops[pos_u].0,
-            (0u8, ops[pos_u].1),
-            ops[first_u].0,
-            (0u8, ops[first_u].1),
-            ctx,
-            &mut limit,
-        );
-        if let Some(new) = result {
-            let mask1 = ops[pos_u].0.relevant_bits_mask() & ops[pos_u].1;
-            let mask2 = ops[first_u].0.relevant_bits_mask() & ops[first_u].1;
-            let new_mask = if ty == ArithOpType::Xor {
-                mask1 ^ mask2
-            } else {
-                debug_assert_eq!(ty, ArithOpType::Or);
-                mask1 | mask2
-            };
-            let relbit_mask = new.relevant_bits_mask();
-            if new_mask & relbit_mask == 0 {
-                ops.remove(first_u);
-                ops.remove(pos_u);
-                first_same -= 2;
-                pos = first_same
-            } else {
-                ops.remove(first_u);
-                ops[pos_u].0 = new;
-                ops[pos_u].1 = new_mask;
-                first_same -= 1;
+) -> bool {
+    let mut pos = 0;
+    let mut end = ops.len() as isize - 1;
+    let mut limit = 50u32;
+    let mut any_changed = false;
+    // TODO instead of this O(n^2) loop, could only check pairs
+    // that weren't in same input operand O(l_parts * r_parts) -- so would have to do
+    // that before/during collect_masked_ops
+    'outer: while (pos as isize) < end {
+        limit = match limit.checked_sub(1) {
+            Some(s) => s,
+            None => break,
+        };
+        let (op1, mask1) = ops[pos];
+        let mut j = pos + 1;
+        'inner: while j < ops.len() {
+            let (op2, mask2) = ops[j];
+            let result = simplify_xor_base_for_shifted(
+                op1,
+                (0u8, mask1),
+                op2,
+                (0u8, mask2),
+                ctx,
+                &mut limit,
+            );
+            if let Some(new) = result {
+                any_changed = true;
+                let mask1 = op1.relevant_bits_mask() & mask1;
+                let mask2 = op2.relevant_bits_mask() & mask2;
+                let new_mask = if ty == ArithOpType::Xor {
+                    mask1 ^ mask2
+                } else {
+                    debug_assert_eq!(ty, ArithOpType::Or);
+                    mask1 | mask2
+                };
+                let relbit_mask = new.relevant_bits_mask();
+                if new_mask & relbit_mask == 0 {
+                    ops.remove(j);
+                    ops.remove(pos);
+                    end -= 2;
+                    continue 'outer;
+                } else {
+                    ops.remove(j);
+                    ops[pos] = (new, new_mask);
+                    end -= 1;
+                    continue 'inner;
+                }
             }
-        } else {
-            first_same = pos;
+            j += 1;
         }
-        pos -= 1;
+        pos += 1;
     }
+    any_changed
 }
 
 pub fn simplify_lsh<'e>(
@@ -2003,9 +2137,9 @@ pub fn simplify_lsh_const<'e>(
                                     *op = simplify_lsh_const(*op, constant, ctx, swzb_ctx);
                                 }
                                 if arith.ty == ArithOpType::Or {
-                                    simplify_or_ops(slice, ctx, swzb_ctx).ok()
+                                    simplify_or_ops(slice, 0, ctx, swzb_ctx).ok()
                                 } else {
-                                    simplify_xor_ops(slice, ctx, swzb_ctx).ok()
+                                    simplify_xor_ops(slice, 0, ctx, swzb_ctx).ok()
                                 }
                             }
                         })
@@ -2249,10 +2383,7 @@ pub fn simplify_rsh_const<'e>(
                                 for op in slice.iter_mut() {
                                     *op = simplify_rsh_const(*op, constant, ctx, swzb_ctx);
                                 }
-                                if or_const != 0 {
-                                    slice.push(ctx.constant(or_const)).ok()?;
-                                }
-                                simplify_or_ops(slice, ctx, swzb_ctx).ok()
+                                simplify_or_ops(slice, or_const, ctx, swzb_ctx).ok()
                             }
                         })
                         .unwrap_or_else(|| default())
@@ -2269,7 +2400,7 @@ pub fn simplify_rsh_const<'e>(
                                 for op in slice.iter_mut() {
                                     *op = simplify_rsh_const(*op, constant, ctx, swzb_ctx);
                                 }
-                                simplify_xor_ops(slice, ctx, swzb_ctx).ok()
+                                simplify_xor_ops(slice, 0, ctx, swzb_ctx).ok()
                             }
                         })
                         .unwrap_or_else(|| default())
@@ -3319,7 +3450,7 @@ fn try_merge_ands<'e>(
                                 for op in buf {
                                     slice.push(op)?;
                                 }
-                                simplify_xor_ops(slice, ctx, &mut SimplifyWithZeroBits::default())
+                                simplify_xor_ops(slice, 0, ctx, &mut SimplifyWithZeroBits::default())
                             }).ok();
                         return result;
                     }
@@ -4673,7 +4804,7 @@ fn simplify_demorgan_eq_zero<'e>(op: Operand<'e>, ctx: OperandCtx<'e>) -> Option
         if arith.ty == ArithOpType::Or {
             simplify_and_ops(slice, ctx, &mut SimplifyWithZeroBits::default()).ok()
         } else {
-            simplify_or_ops(slice, ctx, &mut SimplifyWithZeroBits::default()).ok()
+            simplify_or_ops(slice, 0, ctx, &mut SimplifyWithZeroBits::default()).ok()
         }
     })
 }
@@ -4747,87 +4878,6 @@ fn simplify_demorgan<'e>(
             ops[replace_pos] = ctx.eq_const(result, 0);
         }
     }
-}
-
-fn and_masked_precise<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
-    match op.ty() {
-        OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
-            arith.right.if_constant().map(|c| (c, arith.left))
-        }
-        OperandType::Memory(mem) => Some((mem.size.mask(), op)),
-        _ => {
-            let bits = op.relevant_bits();
-            if bits != (0..64) && bits.start < bits.end {
-                let low = bits.start;
-                let high = 64 - bits.end;
-                Some((!0 >> low << low << high >> high, op))
-            } else {
-                None
-            }
-        }
-    }
-}
-
-
-/// "Simplify bitwise or: merge child ands"
-/// Converts things like [x & const1, x & const2] to [x & (const1 | const2)]
-///
-/// Also used by xors with only_nonoverlapping true
-fn simplify_or_merge_child_ands<'e>(
-    ops: &mut Slice<'e>,
-    ctx: OperandCtx<'e>,
-    swzb_ctx: &mut SimplifyWithZeroBits,
-    and_mask: u64,
-    arith_ty: ArithOpType,
-) -> Result<(), SizeLimitReached> {
-    if ops.len() > 16 {
-        // The loop below is quadratic complexity, being especially bad
-        // if there are lot of masked xors, so give up if there are more
-        // ops than usual code would have.
-        #[cfg(feature = "fuzz")]
-        tls_simplification_incomplete();
-        return Ok(());
-    }
-
-    let only_nonoverlapping = arith_ty == ArithOpType::Xor;
-    let mut i = 0;
-    'outer: while i < ops.len() {
-        if let Some((constant, val)) = and_masked_precise(ops[i]) {
-            let mut j = i + 1;
-            while j < ops.len() {
-                if let Some((other_constant, other_val)) = and_masked_precise(ops[j]) {
-                    if !only_nonoverlapping || other_constant & constant == 0 {
-                        let mut buf = SmallVec::new();
-                        simplify_or_merge_ands_try_merge(
-                            &mut buf,
-                            val,
-                            other_val,
-                            constant,
-                            other_constant,
-                            arith_ty,
-                            ctx,
-                        );
-                        if !buf.is_empty() {
-                            ops.swap_remove(j);
-                            ops.swap_remove(i);
-                            for op in buf {
-                                let op = if and_mask == u64::MAX {
-                                    op
-                                } else {
-                                    simplify_with_and_mask(op, and_mask, ctx, swzb_ctx)
-                                };
-                                ops.push(op)?;
-                            }
-                            continue 'outer;
-                        }
-                    }
-                }
-                j += 1;
-            }
-        }
-        i += 1;
-    }
-    Ok(())
 }
 
 fn simplify_or_merge_ands_try_merge<'e>(
@@ -5378,14 +5428,44 @@ fn collect_xor_ops<'e>(
 fn collect_masked_or_ops<'e>(
     ctx: OperandCtx<'e>,
     s: Operand<'e>,
-    ops: &mut MaskedOpSlice<'e>,
+    ops: &mut MaskedOps<'_, 'e>,
     limit: usize,
     mask: u64,
 ) -> Result<(), SizeLimitReached> {
-    collect_masked_ops(ctx, s, ops, 0, limit, mask, ArithOpType::Or)
+    let rest = if let Some((l, r)) = s.if_or_with_const() {
+        ops.constant |= r & mask;
+        l
+    } else if let Some(c) = s.if_constant() {
+        ops.constant |= c & mask;
+        return Ok(());
+    } else {
+        s
+    };
+    collect_masked_ops(ctx, rest, ops.slice, 0, limit, mask, ArithOpType::Or)
 }
 
 fn collect_masked_xor_ops<'e>(
+    ctx: OperandCtx<'e>,
+    s: Operand<'e>,
+    ops: &mut MaskedOps<'_, 'e>,
+    sorted_start: usize,
+    limit: usize,
+    mask: u64,
+) -> Result<(), SizeLimitReached> {
+    let rest = if let Some((l, r)) = s.if_xor_with_const() {
+        ops.constant ^= r & mask;
+        l
+    } else if let Some(c) = s.if_constant() {
+        ops.constant ^= c & mask;
+        return Ok(());
+    } else {
+        s
+    };
+    collect_masked_ops(ctx, rest, ops.slice, sorted_start, limit, mask, ArithOpType::Xor)
+}
+
+// TODO: Fix callers to just use collect_masked_xor_ops
+fn collect_masked_xor_ops_no_const_separation<'e>(
     ctx: OperandCtx<'e>,
     s: Operand<'e>,
     ops: &mut MaskedOpSlice<'e>,
@@ -6526,19 +6606,20 @@ pub fn simplify_or<'e>(
 
     ctx.simplify_temp_stack()
         .alloc(|masked_ops| {
+            let masked_ops = &mut MaskedOps::new(masked_ops);
             collect_masked_or_ops(ctx, left, masked_ops, 30, u64::MAX)?;
             collect_masked_or_ops(ctx, right, masked_ops, 30, u64::MAX)?;
             simplify_masked_or_ops(masked_ops, ctx);
-            match masked_ops.len() {
-                0 => return Ok(ctx.const_0()),
-                1 => {
-                    let (op, mask) = masked_ops[0];
+            match masked_ops.slice.len() {
+                0 => return Ok(ctx.constant(masked_ops.constant)),
+                1 if masked_ops.constant == 0 => {
+                    let (op, mask) = masked_ops.slice[0];
                     return Ok(ctx.and_const(op, mask));
                 }
                 _ => {
                     ctx.simplify_temp_stack().alloc(|ops| {
-                        move_masked_ops_to_operand_slice(ctx, masked_ops, ops, swzb)?;
-                        simplify_or_ops(ops, ctx, swzb)
+                        move_masked_ops_to_operand_slice(ctx, masked_ops.slice, ops, swzb)?;
+                        simplify_or_ops(ops, masked_ops.constant, ctx, swzb)
                     })
                 }
             }
@@ -6610,24 +6691,14 @@ fn simplify_or_2op_no_overlap<'e>(
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) -> Option<Operand<'e>> {
-    // This function doesn't try to handle everything that simplify_or_merge_child_ands
-    // does; if there are child ors/xors then just go through the main simplification.
-    fn check<'e>(op: Operand<'e>) -> bool {
-        match op.ty() {
-            OperandType::Arithmetic(x) => {
-                if matches!(x.ty, ArithOpType::Xor | ArithOpType::Or) {
-                    return false;
-                }
-                if matches!(x.ty, ArithOpType::And) {
-                    return x.right.if_constant().is_none() || check(x.left);
-                }
-                true
-            }
+    // This function doesn't try to handle everything;
+    // if there are child ors/xors then just go through the main simplification.
+    #[inline]
+    fn check<'e>(ty: Option<ArithOpType>) -> bool {
+        match ty {
+            Some(ArithOpType::And) | Some(ArithOpType::Or) | Some(ArithOpType::Xor)  => false,
             _ => true,
         }
-    }
-    if !check(left) || !check(right) {
-        return None;
     }
     let (l1, c1) = match left.if_and_with_const() {
         Some((l, r)) => (l, r),
@@ -6637,6 +6708,15 @@ fn simplify_or_2op_no_overlap<'e>(
         Some((l, r)) => (l, r),
         None => (right, right.relevant_bits_mask()),
     };
+    let l1_arith = l1.if_arithmetic_any().map(|x| x.ty);
+    let l2_arith = l2.if_arithmetic_any().map(|x| x.ty);
+    if l1_arith == Some(ArithOpType::Xor) && l2_arith == Some(ArithOpType::Xor) {
+        // If both are masked xors, simplify as xor instead since no overlap
+        return Some(simplify_xor(left, right, ctx, swzb));
+    }
+    if !check(l1_arith) || !check(l2_arith) {
+        return None;
+    }
     if let Some(result) = try_merge_ands(l1, l2, c1, c2, ctx) {
         return Some(ctx.and_const(result, c1 | c2));
     }
@@ -6670,10 +6750,10 @@ fn simplify_or_2op_no_overlap<'e>(
 
 fn simplify_or_ops<'e>(
     ops: &mut Slice<'e>,
+    mut const_val: u64,
     ctx: OperandCtx<'e>,
     swzb_ctx: &mut SimplifyWithZeroBits,
 ) -> Result<Operand<'e>, SizeLimitReached> {
-    let mut const_val = 0;
     loop {
         const_val = ops.iter().flat_map(|x| x.if_constant())
             .fold(const_val, |sum, x| sum | x);
@@ -6709,7 +6789,6 @@ fn simplify_or_ops<'e>(
         }
         if ops.len() > 1 {
             simplify_or_remove_equivalent_inside_mask(ops, ctx, swzb_ctx);
-            simplify_or_merge_child_ands(ops, ctx, swzb_ctx, !const_val, ArithOpType::Or)?;
             simplify_or_merge_xors(ops, ctx, swzb_ctx);
             simplify_or_with_xor_of_op(ops, ctx);
             simplify_or_merge_comparisons(ops, ctx);
@@ -7574,9 +7653,9 @@ fn simplify_with_and_mask_or_xor<'e>(
             }
         }
         if arith.ty == ArithOpType::Or {
-            simplify_or_ops(slice, ctx, swzb_ctx).ok()
+            simplify_or_ops(slice, 0, ctx, swzb_ctx).ok()
         } else {
-            simplify_xor_ops(slice, ctx, swzb_ctx).ok()
+            simplify_xor_ops(slice, 0, ctx, swzb_ctx).ok()
         }
     }).unwrap_or(op)
 }
@@ -7624,9 +7703,9 @@ fn masked_or_xor_split_parts_not_needing_mask<'e>(
             let inner = ctx.and_const(inner, inner_mask);
             outside_ops.push(inner).ok()?;
             if arith_ty == ArithOpType::Or {
-                simplify_or_ops(outside_ops, ctx, swzb_ctx).ok()
+                simplify_or_ops(outside_ops, 0, ctx, swzb_ctx).ok()
             } else {
-                simplify_xor_ops(outside_ops, ctx, swzb_ctx).ok()
+                simplify_xor_ops(outside_ops, 0, ctx, swzb_ctx).ok()
             }
         },
     )
@@ -7806,19 +7885,20 @@ pub fn simplify_xor<'e>(
     let temp_stack = ctx.simplify_temp_stack();
     temp_stack
         .alloc(|masked_ops| {
+            let masked_ops = &mut MaskedOps::new(masked_ops);
             collect_masked_xor_ops(ctx, left, masked_ops, 0, 30, u64::MAX)?;
             collect_masked_xor_ops(ctx, right, masked_ops, 0, 30, u64::MAX)?;
             simplify_masked_xor_ops(masked_ops, ctx, swzb);
-            match masked_ops.len() {
-                0 => return Ok(ctx.const_0()),
-                1 => {
-                    let (op, mask) = masked_ops[0];
+            match masked_ops.slice.len() {
+                0 => return Ok(ctx.constant(masked_ops.constant)),
+                1 if masked_ops.constant == 0 => {
+                    let (op, mask) = masked_ops.slice[0];
                     return Ok(ctx.and_const(op, mask));
                 }
                 _ => {
                     temp_stack.alloc(|ops| {
-                        move_masked_ops_to_operand_slice(ctx, masked_ops, ops, swzb)?;
-                        simplify_xor_ops(ops, ctx, swzb)
+                        move_masked_ops_to_operand_slice(ctx, masked_ops.slice, ops, swzb)?;
+                        simplify_xor_ops(ops, masked_ops.constant, ctx, swzb)
                     })
                 }
             }
@@ -7835,14 +7915,21 @@ pub fn simplify_xor<'e>(
 /// which is guaranteed by collect_masked_ops as long as input
 /// to it is sorted.
 fn simplify_masked_xor_ops<'e>(
-    ops: &mut MaskedOpSlice<'e>,
+    ops: &mut MaskedOps<'_, 'e>,
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) {
-    if ops.len() > 1 {
-        simplify_masked_xor_or_merge_same_ops(ops, ctx, ArithOpType::Xor);
-        simplify_masked_xor_merge_or(ops, ctx, swzb);
-        simplify_masked_xor_or_and_to_xor(ops, ctx);
+    if ops.slice.len() > 1 {
+        let any_changed = simplify_masked_xor_or_merge_same_ops(ops.slice, ctx, ArithOpType::Xor);
+        if any_changed {
+            if ops.slice.len() < 2 {
+                return;
+            }
+            // simplify_masked_xor_merge_or requires sorted input
+            heapsort::sort_by(ops.slice, |a, b| a.0 < b.0);
+        }
+        simplify_masked_xor_merge_or(ops.slice, ctx, swzb);
+        simplify_masked_xor_or_and_to_xor(ops.slice, ctx);
     }
 }
 
@@ -7850,11 +7937,11 @@ fn simplify_masked_xor_ops<'e>(
 /// which is guaranteed by collect_masked_ops as long as input
 /// to it is sorted.
 fn simplify_masked_or_ops<'e>(
-    ops: &mut MaskedOpSlice<'e>,
+    ops: &mut MaskedOps<'_, 'e>,
     ctx: OperandCtx<'e>,
 ) {
-    if ops.len() > 1 {
-        simplify_masked_xor_or_merge_same_ops(ops, ctx, ArithOpType::Or);
+    if ops.slice.len() > 1 {
+        simplify_masked_xor_or_merge_same_ops(ops.slice, ctx, ArithOpType::Or);
     }
 }
 
@@ -8209,9 +8296,14 @@ fn test_simplify_xor_base_for_shifted() {
         simplify_xor_base_for_shifted(mem16, (0, 0xf_ffff), mem8_3, (0x18, 0x34), ctx, limit),
         Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0x3400_ffff)),
     );
-    // This must be none, as Mem16 with mask f_ffff requires the lower half of third byte be 0
     assert_eq!(
         simplify_xor_base_for_shifted(mem16, (0, 0xf_ffff), mem8_2, (0x10, 0x34), ctx, limit),
+        // and_const not required but allowed
+        Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0x34_ffff)),
+    );
+    // This must be none, as Mem16 with mask f_ffff requires the lower half of third byte be 0
+    assert_eq!(
+        simplify_xor_base_for_shifted_rec(mem16, (0, 0xf_ffff), mem8_2, (0x10, 0x34), ctx, limit),
         None,
     );
     assert_eq!(
@@ -8220,6 +8312,10 @@ fn test_simplify_xor_base_for_shifted() {
     );
     assert_eq!(
         simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_0, (0, 0xffff), ctx, limit),
+        Some(ctx.mem16(ctx.register(0), 0)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted_rec(mem16, (0, 0xffff), mem8_0, (0, 0xffff), ctx, limit),
         None,
     );
     assert_eq!(
@@ -8253,6 +8349,10 @@ fn test_simplify_xor_base_for_shifted() {
         simplify_xor_base_for_shifted(mem16, (0x13, 0xfff), mem8_0, (0x13, 0xf), ctx, limit),
         // and_const not required but allowed
         Some(ctx.lsh_const(ctx.and_const(ctx.mem16(ctx.register(0), 0), 0xfff), 0x13)),
+    );
+    assert_eq!(
+        simplify_xor_base_for_shifted(ctx.constant(0x33), (0, 0xfff), ctx.constant(0x56), (0, 0xffff), ctx, limit),
+        None,
     );
 }
 

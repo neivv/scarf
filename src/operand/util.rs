@@ -153,6 +153,22 @@ where F: FnOnce(&mut Slice<'e>) -> Option<T>
     })
 }
 
+pub fn arith_op_parts_to_new_slice<'e, F, T>(
+    ctx: OperandCtx<'e>,
+    op: Operand<'e>,
+    ty: ArithOpType,
+    cb: F,
+) -> Option<T>
+where F: FnOnce(&mut Slice<'e>) -> Option<T>
+{
+    ctx.simplify_temp_stack().alloc(|slice| {
+        for op in IterArithOps::new(op, ty) {
+            slice.push(op).ok()?;
+        }
+        cb(slice)
+    })
+}
+
 /// If `(l, r, ty)` operand chain is fully included in `slice`,
 /// calls `callback` with parts not in `(l, r, ty)`, and returns
 /// `Some(callback_return_value)`.
