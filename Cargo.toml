@@ -13,7 +13,7 @@ array-init = "2.0"
 byteorder = { version = "1.4", default-features = false }
 copyless = "0.1"
 fxhash = "0.2"
-hashbrown = { version = "0.12", default-features = false }
+hashbrown = { version = "0.13", default-features = false }
 lde = { git = "https://github.com/CasualX/lde", rev = "6d8e287075eae41d0c6bae4c2f3a54268e0f8b4a" }
 log = "0.4"
 quick-error = "2.0"
