@@ -1,9 +1,10 @@
 use super::*;
 
 fn check_simplification_consistency<'e>(ctx: OperandCtx<'e>, op: Operand<'e>) {
-    let config = bincode::config();
-    let bytes = config.serialize(&op).unwrap();
-    let back: Operand<'e> = config.deserialize_seed(ctx.deserialize_seed(), &bytes).unwrap();
+    use serde::de::DeserializeSeed;
+    let bytes = serde_json::to_vec(&op).unwrap();
+    let mut de = serde_json::Deserializer::from_slice(&bytes);
+    let back: Operand<'e> = ctx.deserialize_seed().deserialize(&mut de).unwrap();
     assert_eq!(op, back);
 }
 
