@@ -8686,6 +8686,25 @@ fn add_greater_or_eq_masked() {
 }
 
 #[test]
+fn add_greater_or_eq_no_change() {
+    let ctx = &OperandContext::new();
+
+    // (a > x + 400) | (a == x + 500)
+    // Won't simplify
+    let lhs = ctx.register(1);
+    let rhs = ctx.add_const(
+        ctx.mem16c(0x500),
+        0x400,
+    );
+    let gt = ctx.gt(lhs, rhs);
+    let eq = ctx.eq(lhs, ctx.add_const(ctx.mem16c(0x500), 0x500));
+    let op1 = ctx.or(gt, eq);
+    let (l, r) = op1.if_arithmetic_or()
+        .unwrap_or_else(|| panic!("{op1} is not or"));
+    assert!((l == gt && r == eq) || (l == eq && r == gt));
+}
+
+#[test]
 fn or_self() {
     let ctx = &OperandContext::new();
 
@@ -12181,5 +12200,45 @@ fn same_comparison_eq() {
     );
     let op1 = ctx.or(cmp, cmp);
     let eq1 = cmp;
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn greater_or_equal_with_add() {
+    let ctx = &OperandContext::new();
+    // (x + 777 > y) | (y - x == 777)
+    // => (x + 778 > y)
+    let op1 = ctx.or(
+        ctx.gt(
+            ctx.add_const(
+                ctx.mem64c(0x3000),
+                0x777,
+            ),
+            ctx.mul(
+                ctx.mem32(ctx.register(0), 0),
+                ctx.mem32(ctx.register(1), 0),
+            ),
+        ),
+        ctx.eq(
+            ctx.constant(0x777),
+            ctx.sub(
+                ctx.mul(
+                    ctx.mem32(ctx.register(0), 0),
+                    ctx.mem32(ctx.register(1), 0),
+                ),
+                ctx.mem64c(0x3000),
+            ),
+        ),
+    );
+    let eq1 = ctx.gt(
+        ctx.add_const(
+            ctx.mem64c(0x3000),
+            0x778,
+        ),
+        ctx.mul(
+            ctx.mem32(ctx.register(0), 0),
+            ctx.mem32(ctx.register(1), 0),
+        ),
+    );
     assert_eq!(op1, eq1);
 }

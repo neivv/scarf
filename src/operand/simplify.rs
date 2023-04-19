@@ -4880,6 +4880,15 @@ fn simplify_or_check_comparison_match<'e>(op: Operand<'e>) -> Option<ComparisonM
                                 ty: ComparisonMatchType::ConstantLess,
                             });
                         }
+                    } else if let Some((l, r)) = left.if_arithmetic_add() {
+                        if let Some(c) = r.if_constant() {
+                            return Some(ComparisonMatch {
+                                op: right,
+                                const_side_op: Some(l),
+                                constant: c,
+                                ty: ComparisonMatchType::ConstantGreater,
+                            });
+                        }
                     }
                 }
                 _ => (),
@@ -4899,18 +4908,32 @@ fn simplify_or_try_merge_comparison<'e>(
         (ComparisonMatchType::ConstantGreater, ComparisonMatchType::Equal) |
             (ComparisonMatchType::Equal, ComparisonMatchType::ConstantGreater) =>
         {
-            if m1.const_side_op.is_some() || m2.const_side_op.is_some() {
-                // May be able to do something, but not considering it now.
+            let (eq, cg) = match m1.ty == ComparisonMatchType::Equal {
+                true => (&m1, &m2),
+                false => (&m2, &m1),
+            };
+            if let Some(const_side) = cg.const_side_op {
+                if eq.constant == cg.constant {
+                    if let Some(new_c) = eq.constant.checked_add(1) {
+                        if is_eq_sub_for_gt_left_const(const_side, cg.op, eq.op) {
+                            return Some(ctx.gt(
+                                ctx.add_const(
+                                    const_side,
+                                    new_c,
+                                ),
+                                cg.op,
+                            ));
+                        }
+                    }
+                }
                 return None;
             }
 
             // (c1 > y - c2) | (c1 + c2) == y to (c1 + 1 > y - c2)
-            let (gt, c1, eq, mut eq_c) =
-                match m1.ty == ComparisonMatchType::ConstantGreater
-            {
-                true => (m1.op, m1.constant, m2.op, m2.constant),
-                false => (m2.op, m2.constant, m1.op, m1.constant),
-            };
+            let c1 = cg.constant;
+            let mut eq_c = eq.constant;
+            let gt = cg.op;
+            let eq = eq.op;
             let (gt_inner, gt_mask) = Operand::and_masked(gt);
             let (y, c2) = gt_inner.if_arithmetic_sub()
                 .and_then(|(l, r)| {
@@ -4955,20 +4978,22 @@ fn simplify_or_try_merge_comparison<'e>(
                 true => (&m1, &m2),
                 false => (&m2, &m1),
             };
-            if let Some(new_c) = eq.constant.checked_sub(1) {
-                if let Some(const_side) = cl.const_side_op {
-                    if is_eq_sub_for_gt(cl.op, const_side, eq.op) {
-                        return Some(ctx.gt(
-                            cl.op,
-                            ctx.add_const(
-                                const_side,
-                                new_c,
-                            ),
-                        ));
-                    }
-                } else {
-                    if eq.constant == cl.constant && eq.op == cl.op {
-                        return Some(ctx.gt_const(eq.op, new_c));
+            if eq.constant == cl.constant {
+                if let Some(new_c) = eq.constant.checked_sub(1) {
+                    if let Some(const_side) = cl.const_side_op {
+                        if is_eq_sub_for_gt(cl.op, const_side, eq.op) {
+                            return Some(ctx.gt(
+                                cl.op,
+                                ctx.add_const(
+                                    const_side,
+                                    new_c,
+                                ),
+                            ));
+                        }
+                    } else {
+                        if eq.op == cl.op {
+                            return Some(ctx.gt_const(eq.op, new_c));
+                        }
                     }
                 }
             }
@@ -5017,6 +5042,28 @@ fn simplify_or_merge_comparisons<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
         }
         i += 1;
     }
+}
+
+/// Assuming that there are two expressions,
+/// `(lhs + C) > rhs` and `lhs + C == rhs`,
+/// and that the equality one has been transformed to `compare == C`,
+/// verifies that `compare` can be reverted to `lhs` and `rhs`.
+///
+/// Simply put, if (rhs - lhs) == compare, return true.
+/// However, there may be and masks here,
+/// so more correct implementation would be something like
+/// simplify(`lhs == rhs + 5000`).left == compare
+///
+/// Helper for simplify_or_merge_comparisons.
+fn is_eq_sub_for_gt_left_const<'e>(
+    lhs: Operand<'e>,
+    rhs: Operand<'e>,
+    compare: Operand<'e>,
+) -> bool {
+    // Should be possible to just implement this by swapping arguments to
+    // the other function...
+    // Not super sure about the masks though.
+    is_eq_sub_for_gt(rhs, lhs, compare)
 }
 
 /// Assuming that there are two expressions,
