@@ -82,6 +82,7 @@ impl<'e> Interner<'e> {
         let sort_order = ty.sort_order();
         let base = OperandBase {
             ty,
+            type_alt_tag: ty.alt_tag(),
             relevant_bits,
             flags,
             sort_order,
@@ -122,6 +123,7 @@ impl<'e> ConstInterner<'e> {
         let flags = OperandType::const_flags(value);
         let base = OperandBase {
             ty: OperandType::Constant(value),
+            type_alt_tag: 0,
             relevant_bits,
             flags,
             sort_order: value,

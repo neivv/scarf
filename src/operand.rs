@@ -190,6 +190,12 @@ pub(crate) struct OperandBase<'e> {
     relevant_bits: Range<u8>,
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     flags: u8,
+    /// Bits that are used to avoid some comparisons when checking against OperandType
+    /// that has a subenum that gets commonly checked too.
+    /// 0xc0 = Tag; None, Memory, Arithmetic, (free space, maybe ArithmeticFloat)
+    /// 0x2f = Data; MemAccessSize for Memory, ArithOpType for Arithmetic
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
+    type_alt_tag: u8,
     /// Used to implement Ord in almost-always-constant time.
     ///
     /// - For OperandType variants that fit in u64,
@@ -215,6 +221,9 @@ pub(crate) struct OperandBase<'e> {
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     sort_order: u64,
 }
+
+const MEM_ALT_TAG: u8 = 0x40;
+const ARITH_ALT_TAG: u8 = 0x80;
 
 const FLAG_CONTAINS_UNDEFINED: u8 = 0x1;
 // For simplify_with_and_mask optimization.
@@ -263,6 +272,7 @@ impl<'e> Ord for Operand<'e> {
                 ref ty,
                 relevant_bits: _,
                 flags: _,
+                type_alt_tag: _,
                 sort_order,
             } = *self.0;
 
@@ -293,6 +303,7 @@ impl<'e> PartialOrd for Operand<'e> {
         let OperandBase {
             ref ty,
             relevant_bits: _,
+            type_alt_tag: _,
             flags: _,
             sort_order,
         } = *self.0;
@@ -526,7 +537,7 @@ pub struct ArithOperand<'e> {
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ArithOpType {
     /// Addition. Wraps on overflow.
-    Add,
+    Add = 0,
     /// Subtraction. Wraps on overflow.
     Sub,
     /// Multiplication. Wraps on overflow, though overflowing bits are accessible with `MulHigh`
@@ -1649,6 +1660,7 @@ impl<'e> OperandContext<'e> {
                 ty: OperandType::Undefined(UndefinedId(id)),
                 relevant_bits: 0..64,
                 flags: FLAG_CONTAINS_UNDEFINED | FLAG_32BIT_NORMALIZED,
+                type_alt_tag: 0,
                 sort_order: id as u64,
             })
         } else {
@@ -2492,6 +2504,16 @@ impl<'e> OperandType<'e> {
             SignExtend(_, _from, to) => to,
         }
     }
+
+    /// NOTE: Unsafe code will rely on this value to skip enum discriminant comparison
+    /// sometimes.
+    fn alt_tag(&self) -> u8 {
+        match *self {
+            OperandType::Memory(ref mem) => MEM_ALT_TAG | mem.size as u8,
+            OperandType::Arithmetic(ref arith) => ARITH_ALT_TAG | arith.ty as u8,
+            _ => 0,
+        }
+    }
 }
 
 impl<'e> Operand<'e> {
@@ -2641,121 +2663,101 @@ impl<'e> Operand<'e> {
         }
     }
 
+    #[inline]
+    fn if_mem_fast(self, size: MemAccessSize) -> Option<&'e MemAccess<'e>> {
+        if self.0.type_alt_tag == (MEM_ALT_TAG | size as u8) {
+            match *self.ty() {
+                OperandType::Memory(ref mem) => {
+                    debug_assert_eq!(mem.size, size);
+                    Some(mem)
+                }
+                _ => unsafe {
+                    debug_assert!(false, "unsafe code bug");
+                    std::hint::unreachable_unchecked();
+                }
+            }
+        } else {
+            None
+        }
+    }
+
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem64`
     #[inline]
     pub fn if_mem64(self) -> Option<&'e MemAccess<'e>> {
-        match *self.ty() {
-            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem64 {
-                true => Some(mem),
-                false => None,
-            },
-            _ => None,
-        }
+        self.if_mem_fast(MemAccessSize::Mem64)
     }
 
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem32`
     #[inline]
     pub fn if_mem32(self) -> Option<&'e MemAccess<'e>> {
-        match *self.ty() {
-            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem32 {
-                true => Some(mem),
-                false => None,
-            },
-            _ => None,
-        }
+        self.if_mem_fast(MemAccessSize::Mem32)
     }
 
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem16`
     #[inline]
     pub fn if_mem16(self) -> Option<&'e MemAccess<'e>> {
-        match *self.ty() {
-            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem16 {
-                true => Some(mem),
-                false => None,
-            },
-            _ => None,
-        }
+        self.if_mem_fast(MemAccessSize::Mem16)
     }
 
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem8`
     #[inline]
     pub fn if_mem8(self) -> Option<&'e MemAccess<'e>> {
-        match *self.ty() {
-            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem8 {
-                true => Some(mem),
-                false => None,
-            },
-            _ => None,
-        }
+        self.if_mem_fast(MemAccessSize::Mem8)
     }
 
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem64`
     #[inline]
     pub fn if_mem64_offset(self, offset: u64) -> Option<Operand<'e>> {
-        match *self.ty() {
-            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem64 {
-                true => mem.if_offset(offset),
-                false => None,
-            },
-            _ => None,
-        }
+        self.if_mem64()?.if_offset(offset)
     }
 
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem32`
     #[inline]
     pub fn if_mem32_offset(self, offset: u64) -> Option<Operand<'e>> {
-        match *self.ty() {
-            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem32 {
-                true => mem.if_offset(offset),
-                false => None,
-            },
-            _ => None,
-        }
+        self.if_mem32()?.if_offset(offset)
     }
 
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem16`
     #[inline]
     pub fn if_mem16_offset(self, offset: u64) -> Option<Operand<'e>> {
-        match *self.ty() {
-            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem16 {
-                true => mem.if_offset(offset),
-                false => None,
-            },
-            _ => None,
-        }
+        self.if_mem16()?.if_offset(offset)
     }
 
     /// Returns `Some(mem)` if `self.ty` is `OperandType::Memory(ref mem)` and
     /// `mem.size == MemAccessSize::Mem8`
     #[inline]
     pub fn if_mem8_offset(self, offset: u64) -> Option<Operand<'e>> {
-        match *self.ty() {
-            OperandType::Memory(ref mem) => match mem.size == MemAccessSize::Mem8 {
-                true => mem.if_offset(offset),
-                false => None,
-            },
-            _ => None,
-        }
+        self.if_mem8()?.if_offset(offset)
+    }
+
+    #[inline]
+    fn check_arith_tag(self, ty: ArithOpType) -> bool {
+        self.0.type_alt_tag == (ARITH_ALT_TAG | ty as u8)
     }
 
     /// Returns `Some((left, right))` if self.ty is `OperandType::Arithmetic { ty == ty }`
     #[inline]
-    pub fn if_arithmetic(
-        self,
-        ty: ArithOpType,
-    ) -> Option<(Operand<'e>, Operand<'e>)> {
-        match *self.ty() {
-            OperandType::Arithmetic(ref arith) if arith.ty == ty => {
-                Some((arith.left, arith.right))
+    pub fn if_arithmetic(self, ty: ArithOpType) -> Option<(Operand<'e>, Operand<'e>)> {
+        if self.check_arith_tag(ty) {
+            match *self.ty() {
+                OperandType::Arithmetic(ref arith) => {
+                    debug_assert_eq!(arith.ty, ty);
+                    Some((arith.left, arith.right))
+                }
+                _ => unsafe {
+                    debug_assert!(false, "unsafe code bug");
+                    std::hint::unreachable_unchecked();
+                }
             }
-            _ => None,
+        } else {
+            None
         }
     }
 
@@ -2770,14 +2772,8 @@ impl<'e> Operand<'e> {
 
     /// Returns `true` if self.ty is `OperandType::Arithmetic { ty == ty }`
     #[inline]
-    pub fn is_arithmetic(
-        self,
-        ty: ArithOpType,
-    ) -> bool {
-        match *self.ty() {
-            OperandType::Arithmetic(ref arith) => arith.ty == ty,
-            _ => false,
-        }
+    pub fn is_arithmetic(self, ty: ArithOpType) -> bool {
+        self.check_arith_tag(ty)
     }
 
     /// Returns `Some((left, right))` if `self.ty` is
@@ -3382,7 +3378,7 @@ impl<'e> MemAccess<'e> {
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Hash, Eq, PartialEq, Copy, Debug, Ord, PartialOrd)]
 pub enum MemAccessSize {
-    Mem32,
+    Mem32 = 0,
     Mem16,
     Mem8,
     Mem64,
