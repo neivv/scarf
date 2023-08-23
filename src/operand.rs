@@ -3669,6 +3669,90 @@ mod test {
         let op2: Operand<'_> = ctx.deserialize_seed().deserialize(&mut des).unwrap();
         assert_eq!(op, op2);
     }
+
+    #[test]
+    fn matching_funcs() {
+        let ctx = OperandContext::new();
+        assert_eq!(ctx.constant(5).if_constant(), Some(5));
+        assert_eq!(ctx.constant(204692).if_constant(), Some(204692));
+        assert_eq!(ctx.register(8).if_register(), Some(8));
+        assert_eq!(ctx.xmm(5, 2).if_xmm(), Some((5, 2)));
+        assert_eq!(ctx.register_fpu(5).if_fpu(), Some(5));
+        assert_eq!(ctx.custom(3).if_custom(), Some(3));
+
+        let a = ctx.register(2);
+        assert_eq!(
+            ctx.sign_extend(a, MemAccessSize::Mem8, MemAccessSize::Mem32).if_sign_extend(),
+            Some((a, MemAccessSize::Mem8, MemAccessSize::Mem32)),
+        );
+        assert_eq!(ctx.mem8(a, 8).if_mem8(), Some(&ctx.mem_access(a, 8, MemAccessSize::Mem8)));
+        assert_eq!(ctx.mem16(a, 8).if_mem16(), Some(&ctx.mem_access(a, 8, MemAccessSize::Mem16)));
+        assert_eq!(ctx.mem32(a, 8).if_mem32(), Some(&ctx.mem_access(a, 8, MemAccessSize::Mem32)));
+        assert_eq!(ctx.mem64(a, 8).if_mem64(), Some(&ctx.mem_access(a, 8, MemAccessSize::Mem64)));
+        assert_eq!(ctx.mem8(a, 8).if_mem8_offset(8), Some(a));
+        assert_eq!(ctx.mem16(a, 8).if_mem16_offset(8), Some(a));
+        assert_eq!(ctx.mem32(a, 8).if_mem32_offset(8), Some(a));
+        assert_eq!(ctx.mem64(a, 8).if_mem64_offset(8), Some(a));
+    }
+
+    #[test]
+    fn matching_funcs_arith() {
+        let ctx = OperandContext::new();
+        let a = ctx.register(5);
+        let b = ctx.custom(9);
+        let pair = Some((a, b));
+        let pair2 = Some((b, a));
+        assert!(
+            ctx.add(a, b).if_arithmetic_add() == pair ||
+            ctx.add(a, b).if_arithmetic_add() == pair2,
+        );
+        assert_eq!(ctx.sub(a, b).if_arithmetic_sub(), pair);
+        assert!(
+            ctx.mul(a, b).if_arithmetic_mul() == pair ||
+            ctx.mul(a, b).if_arithmetic_mul() == pair2,
+        );
+        assert!(
+            ctx.mul_high(a, b).if_arithmetic_mul_high() == pair ||
+            ctx.mul_high(a, b).if_arithmetic_mul_high() == pair2,
+        );
+        assert_eq!(ctx.lsh(a, b).if_arithmetic_lsh(), pair);
+        assert_eq!(ctx.rsh(a, b).if_arithmetic_rsh(), pair);
+        assert!(
+            ctx.or(a, b).if_arithmetic_or() == pair ||
+            ctx.or(a, b).if_arithmetic_or() == pair2,
+        );
+        assert!(
+            ctx.and(a, b).if_arithmetic_and() == pair ||
+            ctx.and(a, b).if_arithmetic_and() == pair2,
+        );
+        assert!(
+            ctx.xor(a, b).if_arithmetic_xor() == pair ||
+            ctx.xor(a, b).if_arithmetic_xor() == pair2,
+        );
+        assert!(
+            ctx.eq(a, b).if_arithmetic_eq() == pair ||
+            ctx.eq(a, b).if_arithmetic_eq() == pair2,
+        );
+        assert_eq!(ctx.gt(a, b).if_arithmetic_gt(), pair);
+    }
+
+    #[test]
+    fn matching_funcs_arith_const() {
+        let ctx = OperandContext::new();
+        let a = ctx.register(5);
+        let b = 17u64;
+        let pair = Some((a, b));
+        assert_eq!(ctx.add_const(a, b).if_add_with_const(), pair);
+        assert_eq!(ctx.sub_const(a, b).if_sub_with_const(), pair);
+        assert_eq!(ctx.mul_const(a, b).if_mul_with_const(), pair);
+        assert_eq!(ctx.and_const(a, b).if_and_with_const(), pair);
+        assert_eq!(ctx.or_const(a, b).if_or_with_const(), pair);
+        assert_eq!(ctx.xor_const(a, b).if_xor_with_const(), pair);
+        assert_eq!(ctx.lsh_const(a, b).if_lsh_with_const(), pair);
+        assert_eq!(ctx.rsh_const(a, b).if_rsh_with_const(), pair);
+        assert_eq!(ctx.eq_const(a, b).if_eq_with_const(), pair);
+        assert_eq!(ctx.gt_const(a, b).if_gt_with_const(), pair);
+    }
 }
 
 /// ```compile_fail
