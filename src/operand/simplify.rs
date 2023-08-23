@@ -2455,16 +2455,6 @@ fn simplify_lsh_const_inside_rsh<'e>(
 }
 
 fn simplify_add_merge_masked_reverting<'e>(ops: &mut AddSlice<'e>, ctx: OperandCtx<'e>) -> u64 {
-    // Shouldn't need as complex and_const as other places use
-    fn and_const<'e>(op: Operand<'e>) -> Option<(u64, Operand<'e>)> {
-        match op.ty() {
-            OperandType::Arithmetic(arith) if arith.ty == ArithOpType::And => {
-                arith.right.if_constant().map(|c| (c, arith.left))
-            }
-            _ => None,
-        }
-    }
-
     fn check_vals<'e>(a: Operand<'e>, b: Operand<'e>, ctx: OperandCtx<'e>) -> bool {
         if let Some((l, r)) = a.if_arithmetic_sub() {
             if l == ctx.const_0() && r == b {
@@ -2486,13 +2476,13 @@ fn simplify_add_merge_masked_reverting<'e>(ops: &mut AddSlice<'e>, ctx: OperandC
     let mut i = 0;
     'outer: while i + 1 < ops.len() {
         let op = ops[i].0;
-        if let Some((constant, val)) = and_const(op) {
+        if let Some((val, constant)) = op.if_and_with_const() {
             // Only try merging when mask's low bits are all ones and nothing else is
             if constant.wrapping_add(1).count_ones() <= 1 && ops[i].1 == false {
                 let mut j = i + 1;
                 while j < ops.len() {
                     let other_op = ops[j].0;
-                    if let Some((other_constant, other_val)) = and_const(other_op) {
+                    if let Some((other_val, other_constant)) = other_op.if_and_with_const() {
                         let ok = other_constant == constant &&
                             check_vals(val, other_val, ctx) &&
                             ops[j].1 == false;
@@ -2601,31 +2591,23 @@ fn canonicalize_masked_eq_const<'e>(
     mask_c: u64,
     eq_c: u64,
 ) -> Option<Operand<'e>> {
-    match inner.ty() {
-        OperandType::Arithmetic(arith) => {
-            // If inner is (x >> c), remove the shift
-            // and shift constants to opposite direction.
-            // so (x & mask_c_shifted) == eq_c_shifted
-            if arith.ty == ArithOpType::Rsh {
-                if let Some(c) = arith.right.if_constant() {
-                    let c = c as u32;
-                    let left = arith.left;
-                    let mask_c_shifted;
-                    let eq_c_shifted;
-                    mask_c_shifted = mask_c.wrapping_shl(c);
-                    eq_c_shifted = eq_c.wrapping_shl(c);
-                    let result = ctx.eq_const(
-                        ctx.and_const(
-                            left,
-                            mask_c_shifted,
-                        ),
-                        eq_c_shifted,
-                    );
-                    return Some(result);
-                }
-            }
-        }
-        _ => (),
+    if let Some((left, c)) = inner.if_rsh_with_const() {
+        // If inner is (x >> c), remove the shift
+        // and shift constants to opposite direction.
+        // so (x & mask_c_shifted) == eq_c_shifted
+        let c = c as u32;
+        let mask_c_shifted;
+        let eq_c_shifted;
+        mask_c_shifted = mask_c.wrapping_shl(c);
+        eq_c_shifted = eq_c.wrapping_shl(c);
+        let result = ctx.eq_const(
+            ctx.and_const(
+                left,
+                mask_c_shifted,
+            ),
+            eq_c_shifted,
+        );
+        return Some(result);
     }
     None
 }
@@ -3872,48 +3854,48 @@ fn relevant_bits_for_and_simplify_of_and_chain<'e>(op: Operand<'e>) -> u64 {
 }
 
 fn relevant_bits_for_and_simplify<'e>(op: Operand<'e>) -> u64 {
-    match *op.ty() {
-        OperandType::Constant(c) => c,
-        OperandType::Arithmetic(ref arith) if arith.ty == ArithOpType::Or => {
-            // Special case ors to extract more accurate masks than relevant_bits_mask
-            // (To not regress tests where older solution was inadequate..)
-            // Specifically gets better result for things like
-            // (rax & ff66) | ffff_0000 => ffff_ff66 instead of ffff_fffe
-            let mut relevant_bits = if let Some(c) = arith.right.if_constant() {
-                c
-            } else if let Some((_, r)) = arith.right.if_and_with_const() {
+    if let Some(c) = op.if_constant() {
+        c
+    } else if let Some((left, right)) = op.if_arithmetic_or() {
+        // Special case ors to extract more accurate masks than relevant_bits_mask
+        // (To not regress tests where older solution was inadequate..)
+        // Specifically gets better result for things like
+        // (rax & ff66) | ffff_0000 => ffff_ff66 instead of ffff_fffe
+        let mut relevant_bits = if let Some(c) = right.if_constant() {
+            c
+        } else if let Some((_, r)) = right.if_and_with_const() {
+            r
+        } else {
+            right.relevant_bits_mask()
+        };
+        // Walk through or chain, but have relatively low limit
+        // after which rest are just from relevant_bits
+        let mut pos = Some(left);
+        let mut limit = 6u32;
+        while let Some(next) = pos {
+            let part = if let Some((l, r)) = next.if_arithmetic_or() {
+                pos = Some(l);
                 r
             } else {
-                arith.right.relevant_bits_mask()
+                pos = None;
+                next
             };
-            // Walk through or chain, but have relatively low limit
-            // after which rest are just from relevant_bits
-            let mut pos = Some(arith.left);
-            let mut limit = 6u32;
-            while let Some(next) = pos {
-                let part = if let Some((l, r)) = next.if_arithmetic_or() {
-                    pos = Some(l);
-                    r
-                } else {
-                    pos = None;
-                    next
-                };
-                if let Some((_, r)) = part.if_and_with_const() {
-                    relevant_bits |= r;
-                } else {
-                    relevant_bits |= part.relevant_bits_mask();
-                };
-                limit = match limit.checked_sub(1) {
-                    Some(s) => s,
-                    None => break,
-                };
-            }
-            if let Some(rest) = pos {
-                relevant_bits |= rest.relevant_bits_mask();
-            }
-            relevant_bits
+            if let Some((_, r)) = part.if_and_with_const() {
+                relevant_bits |= r;
+            } else {
+                relevant_bits |= part.relevant_bits_mask();
+            };
+            limit = match limit.checked_sub(1) {
+                Some(s) => s,
+                None => break,
+            };
         }
-        _ => op.relevant_bits_mask(),
+        if let Some(rest) = pos {
+            relevant_bits |= rest.relevant_bits_mask();
+        }
+        relevant_bits
+    } else {
+        op.relevant_bits_mask()
     }
 }
 
@@ -4589,23 +4571,16 @@ fn simplify_or_merge_xors<'e>(
     ctx: OperandCtx<'e>,
     swzb: &mut SimplifyWithZeroBits,
 ) {
-    fn is_xor(op: Operand<'_>) -> bool {
-        match op.ty() {
-            OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Xor => true,
-            _ => false,
-        }
-    }
-
     let mut i = 0;
     while i < ops.len() {
         let op = ops[i];
-        if is_xor(op) {
+        if op.is_arithmetic(ArithOpType::Xor) {
             let mut j = i + 1;
             let mut new = op;
             let bits = op.relevant_bits();
             while j < ops.len() {
                 let other_op = ops[i];
-                if is_xor(other_op) {
+                if other_op.is_arithmetic(ArithOpType::Xor) {
                     let other_bits = other_op.relevant_bits();
                     if !bits_overlap(&bits, &other_bits) {
                         new = simplify_xor(new, other_op, ctx, swzb);
@@ -5261,15 +5236,12 @@ fn collect_arith_ops<'e>(
     // So only recursing on left is enough.
     let mut s = s;
     for _ in ops.len()..limit {
-        match s.ty() {
-            OperandType::Arithmetic(arith) if arith.ty == arith_type => {
-                s = arith.left;
-                ops.push(arith.right)?;
-            }
-            _ => {
-                ops.push(s)?;
-                return Ok(());
-            }
+        if let Some((l, r)) = s.if_arithmetic(arith_type) {
+            s = l;
+            ops.push(r)?;
+        } else {
+            ops.push(s)?;
+            return Ok(());
         }
     }
     if ops.len() >= limit {
