@@ -597,9 +597,12 @@ impl<'e> ArithOperand<'e> {
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub struct UndefinedId(#[cfg_attr(feature = "serde", serde(skip))] pub u32);
 
+const FIRST_REGISTER_OP_INDEX: usize = 0;
+const FIRST_FLAG_OP_INDEX: usize = FIRST_REGISTER_OP_INDEX + 0x10;
+const FIRST_CONSTANT_OP_INDEX: usize = FIRST_FLAG_OP_INDEX + 6;
 const SMALL_CONSTANT_COUNT: usize = 0x110;
 const SIGN_AND_MASK_NEARBY_CONSTS: usize = 0x11;
-const SIGN_AND_MASK_NEARBY_CONSTS_FIRST: usize = SMALL_CONSTANT_COUNT + 0x10 + 0x6;
+const SIGN_AND_MASK_NEARBY_CONSTS_FIRST: usize = FIRST_CONSTANT_OP_INDEX + SMALL_CONSTANT_COUNT;
 const COMMON_OPERANDS_COUNT: usize = SMALL_CONSTANT_COUNT + 0x10 + 0x6 +
     SIGN_AND_MASK_NEARBY_CONSTS * 5 + SIGN_AND_MASK_NEARBY_CONSTS / 2;
 
@@ -673,7 +676,7 @@ const fn sign_mask_const_index(group: usize) -> usize {
 pub struct OperandContext<'e> {
     next_undefined: Cell<u32>,
     max_undefined: Cell<u32>,
-    // Contains SMALL_CONSTANT_COUNT small constants, 0x10 registers, 0x6 flags
+    // Contains 0x10 registers, 0x6 flags, SMALL_CONSTANT_COUNT small constants,
     common_operands: Box<[OperandSelfRef; COMMON_OPERANDS_COUNT]>,
     // Mutable state that simplify code uses for caching.
     // Initialized to full of const_0()
@@ -822,7 +825,7 @@ macro_rules! operand_context_const_methods {
             /// Cheap access to a small constant.
             #[inline]
             pub fn $name(&$lt self) -> Operand<$lt> {
-                unsafe { self.common_operands[$val].cast() }
+                unsafe { self.common_operands[FIRST_CONSTANT_OP_INDEX + $val].cast() }
             }
         )*
     }
@@ -873,15 +876,16 @@ impl<'e> OperandContext<'e> {
         let interner: &intern::Interner<'_> = unsafe { std::mem::transmute(&result.interner) };
         let const_interner: &intern::ConstInterner<'_> =
             unsafe { std::mem::transmute(&result.const_interner) };
+        let base = FIRST_CONSTANT_OP_INDEX;
         for i in 0..SMALL_CONSTANT_COUNT {
-            common_operands[i] = const_interner.add_uninterned(i as u64).self_ref();
+            common_operands[base + i] = const_interner.add_uninterned(i as u64).self_ref();
         }
-        let base = SMALL_CONSTANT_COUNT;
+        let base = FIRST_REGISTER_OP_INDEX;
         for i in 0..0x10 {
             common_operands[base + i] =
                 interner.add_uninterned(OperandType::Register(i as u8)).self_ref();
         }
-        let base = SMALL_CONSTANT_COUNT + 0x10;
+        let base = FIRST_FLAG_OP_INDEX;
         let flags = [
             Flag::Zero, Flag::Carry, Flag::Overflow, Flag::Parity, Flag::Sign, Flag::Direction,
         ];
@@ -906,7 +910,7 @@ impl<'e> OperandContext<'e> {
                 pos += 1;
             }
         }
-        let zero = common_operands[0];
+        let zero = common_operands[FIRST_CONSTANT_OP_INDEX];
         for i in 0..SIMPLIFY_CACHE_SIZE {
             result.simplify_cache[i].set(zero);
         }
@@ -1141,7 +1145,7 @@ impl<'e> OperandContext<'e> {
 
     pub(crate) fn flag_by_index(&'e self, index: usize) -> Operand<'e> {
         assert!(index < 6);
-        unsafe { self.common_operands[SMALL_CONSTANT_COUNT + 0x10 + index as usize].cast() }
+        unsafe { self.common_operands[FIRST_FLAG_OP_INDEX + index as usize].cast() }
     }
 
     /// Returns [`OperandType::Register(num)`](OperandType) operand.
@@ -1150,7 +1154,7 @@ impl<'e> OperandContext<'e> {
     #[inline]
     pub fn register(&'e self, num: u8) -> Operand<'e> {
         if num < 0x10 {
-            unsafe { self.common_operands[SMALL_CONSTANT_COUNT + num as usize].cast() }
+            unsafe { self.common_operands[FIRST_REGISTER_OP_INDEX + num as usize].cast() }
         } else {
             self.register_slow(num)
         }
@@ -1181,7 +1185,7 @@ impl<'e> OperandContext<'e> {
     /// Returns [`OperandType::Constant(value)`](OperandType) operand.
     pub fn constant(&'e self, value: u64) -> Operand<'e> {
         if value < SMALL_CONSTANT_COUNT as u64 {
-            unsafe { self.common_operands[value as usize].cast() }
+            unsafe { self.common_operands[FIRST_CONSTANT_OP_INDEX + value as usize].cast() }
         } else {
             // Fast path for values near sign bits or word masks
             // 7ff8 ..= 8008
