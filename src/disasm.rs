@@ -1,4 +1,3 @@
-use arrayvec::ArrayVec;
 use lde::Isa;
 use quick_error::quick_error;
 
@@ -36,6 +35,7 @@ quick_error! {
 /// Used by InstructionOpsState to signal that something had failed and return with ?
 /// without making return value heavier.
 /// Error should be stored in &mut self
+#[derive(Debug)]
 struct Failed;
 
 pub type OperationVec<'e> = Vec<Operation<'e>>;
@@ -631,11 +631,7 @@ fn instruction_operations32_main(
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
         0xa4 | 0xa5 | 0xaa | 0xab => {
-            let mut arr = ArrayVec::new();
-            if arr.try_extend_from_slice(&s.full_data).is_err() {
-                return Err(Failed);
-            }
-            s.output(Operation::Special(arr));
+            s.output(special_op(&s.full_data)?);
             Ok(())
         }
         0xa8 | 0xa9 => s.eax_imm_arith(ArithOperation::Test),
@@ -908,11 +904,7 @@ fn instruction_operations64_main(
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
         // rep mov, rep stos
         0xa4 | 0xa5 | 0xaa | 0xab => {
-            let mut arr = ArrayVec::new();
-            if arr.try_extend_from_slice(&s.full_data).is_err() {
-                return Err(Failed);
-            }
-            s.output(Operation::Special(arr));
+            s.output(special_op(&s.full_data)?);
             Ok(())
         }
         0xa8 | 0xa9 => s.eax_imm_arith(ArithOperation::Test),
@@ -3306,16 +3298,12 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn fpu_push(&mut self) {
         // fdecstp
-        let mut arr = ArrayVec::new();
-        let _ = arr.try_extend_from_slice(&[0xd9, 0xf6]);
-        self.output(Operation::Special(arr));
+        self.output(special_op(&[0xd9, 0xf6]).unwrap());
     }
 
     fn fpu_pop(&mut self) {
         // fincstp
-        let mut arr = ArrayVec::new();
-        let _ = arr.try_extend_from_slice(&[0xd9, 0xf7]);
-        self.output(Operation::Special(arr));
+        self.output(special_op(&[0xd9, 0xf7]).unwrap());
     }
 
     fn various_d8(&mut self) -> Result<(), Failed> {
@@ -3353,11 +3341,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let variant = (byte >> 3) & 0x7;
         if variant == 6 && byte == 0xf6 || byte == 0xf7 {
             // Fincstp, fdecstp
-            let mut arr = ArrayVec::new();
-            if arr.try_extend_from_slice(&self.data).is_err() {
-                return Err(Failed);
-            }
-            self.output(Operation::Special(arr));
+            self.output(special_op(&self.data)?);
             return Ok(());
         }
         let (rm_parsed, _) = self.parse_modrm(MemAccessSize::Mem32);
@@ -3826,7 +3810,7 @@ pub mod operation_helpers {
 /// As `Operation` is representing CPU instructions without any external state,
 /// all [`Operand`]s and `DestOperand`s in `Operation` are always
 /// [unresolved](../exec_state/trait.ExecutionState.html#resolved-and-unresolved-operands).
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Operation<'e> {
     /// Set `DestOperand` to `Operand`.
     ///
@@ -3876,7 +3860,7 @@ pub enum Operation<'e> {
     /// is very much up to ExecutionState. `rep mov` for example, is completely
     /// ignored, but the user [`Analyzer`](crate::analysis::Analyzer) code can recognize
     /// the instruction bytes and do its own handling if deemed necessary.
-    Special(ArrayVec<u8, 8>),
+    Special(SpecialBytes),
     /// Set flags based on operation type. While Move(..) could handle this
     /// (And it does for odd cases like inc), it would mean generating 5
     /// additional operations for each instruction, so special-case flags.
@@ -4216,5 +4200,31 @@ fn dest_operand<'e>(val: Operand<'e>) -> DestOperand<'e> {
         _ => panic!("Invalid value for converting Operand -> DestOperand"),
         #[cfg(debug_assertions)]
         _ => panic!("Invalid value for converting Operand -> DestOperand {}", val),
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct SpecialBytes {
+    data: [u8; 8],
+    length: u8,
+}
+
+impl std::ops::Deref for SpecialBytes {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        &self.data[..(self.length as usize & 7)]
+    }
+}
+
+#[inline]
+fn special_op<'e>(bytes: &[u8]) -> Result<Operation<'e>, Failed> {
+    if bytes.len() >= 8 {
+        Err(Failed)
+    } else {
+        let mut data = [0u8; 8];
+        for i in 0..bytes.len() {
+            data[i] = bytes[i];
+        }
+        Ok(Operation::Special(SpecialBytes { data, length: bytes.len() as u8 }))
     }
 }
