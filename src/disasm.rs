@@ -1,6 +1,7 @@
 use lde::Isa;
 use quick_error::quick_error;
 
+use crate::disasm_cache::{DisasmArch};
 use crate::exec_state::{VirtualAddress};
 use crate::operand::{
     self, ArithOpType, Flag, MemAccess, Operand, OperandCtx, OperandType, MemAccessSize,
@@ -457,6 +458,8 @@ impl<'e> RegisterCache<'e> {
 struct InstructionOpsState<'a, 'e: 'a, Va: VirtualAddress> {
     address: Va,
     data: [u8; 16],
+    /// Equal to full_data and any following bytes (Or cut off)
+    cache_input: &'a [u8; 8],
     full_data: &'a [u8],
     prefixes: InstructionPrefixes,
     len: u8,
@@ -498,6 +501,15 @@ fn instruction_operations32<'e>(
     };
 
     let full_data = &data[..instruction_len];
+    let mut hash_buffer_for_end_of_section;
+    let cache_input: &[u8; 8] = match data.get(..8).and_then(|x| x.try_into().ok()) {
+        Some(s) => s,
+        None => {
+            hash_buffer_for_end_of_section = [0u8; 8];
+            hash_buffer_for_end_of_section[..full_data.len()].copy_from_slice(&full_data);
+            &hash_buffer_for_end_of_section
+        }
+    };
     let prefix_count = data.iter().take_while(|&&x| is_prefix_byte(x)).count();
     for &prefix in data.iter().take_while(|&&x| is_prefix_byte(x)) {
         match prefix {
@@ -530,6 +542,7 @@ fn instruction_operations32<'e>(
     let mut s = InstructionOpsState {
         address,
         data,
+        cache_input,
         full_data,
         is_ext,
         prefixes,
@@ -588,7 +601,16 @@ fn instruction_operations32_main(
     // (Or very least leave it to LLVM to decide)
     // Also represent extended commands as 0x100 ..= 0x1ff to make it even "nicer" switch.
     let first_byte = s.data[0] as u32 | ((s.is_ext as u32) << 8);
-    match first_byte {
+    let (can_cache, nop) = s.can_cache(first_byte);
+    if can_cache {
+        if nop {
+            return Ok(());
+        }
+        if ctx.disasm_cache_read(DisasmArch::X86, s.cache_input, s.len as usize, s.out) {
+            return Ok(());
+        }
+    }
+    let result = match first_byte {
         0x00 | 0x01 | 0x02 | 0x03 | 0x04 | 0x05 |
             0x08 | 0x09 | 0x0a | 0x0b | 0x0c | 0x0d |
             0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 |
@@ -763,7 +785,11 @@ fn instruction_operations32_main(
         }
         0x1f3 => s.packed_shift_left(),
         _ => Err(s.unknown_opcode()),
+    };
+    if can_cache && result.is_ok() {
+        ctx.disasm_cache_write(DisasmArch::X86, s.cache_input, s.len as usize, s.out);
     }
+    result
 }
 
 fn instruction_operations64<'e>(
@@ -794,6 +820,15 @@ fn instruction_operations64<'e>(
     };
 
     let full_data = &data[..instruction_len];
+    let mut hash_buffer_for_end_of_section;
+    let cache_input: &[u8; 8] = match data.get(..8).and_then(|x| x.try_into().ok()) {
+        Some(s) => s,
+        None => {
+            hash_buffer_for_end_of_section = [0u8; 8];
+            hash_buffer_for_end_of_section[..full_data.len()].copy_from_slice(&full_data);
+            &hash_buffer_for_end_of_section
+        }
+    };
     let prefix_count = data.iter().take_while(|&&x| is_prefix_byte(x)).count();
     for &prefix in data.iter().take_while(|&&x| is_prefix_byte(x)) {
         match prefix {
@@ -827,6 +862,7 @@ fn instruction_operations64<'e>(
     let mut s = InstructionOpsState {
         address,
         data,
+        cache_input,
         full_data,
         prefixes,
         len: instruction_len as u8,
@@ -861,7 +897,16 @@ fn instruction_operations64_main(
     // (Or very least leave it to LLVM to decide)
     // Also represent extended commands as 0x100 ..= 0x1ff to make it even "nicer" switch.
     let first_byte = s.data[0] as u32 | ((s.is_ext as u32) << 8);
-    match first_byte {
+    let (can_cache, nop) = s.can_cache(first_byte);
+    if can_cache {
+        if nop {
+            return Ok(());
+        }
+        if ctx.disasm_cache_read(DisasmArch::X86_64, s.cache_input, s.len as usize, s.out) {
+            return Ok(());
+        }
+    }
+    let result = match first_byte {
         0x00 | 0x01 | 0x02 | 0x03 | 0x04 | 0x05 |
             0x08 | 0x09 | 0x0a | 0x0b | 0x0c | 0x0d |
             0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 |
@@ -898,7 +943,6 @@ fn instruction_operations64_main(
         0x86 | 0x87 => s.xchg(),
         0x8d => s.lea(),
         0x8f => s.pop_rm(),
-        0x90 => Ok(()),
         0x98 | 0x99 => s.sign_extend(),
         0x9f => s.lahf(),
         0xa0 | 0xa1 | 0xa2 | 0xa3 => s.move_mem_eax(),
@@ -1036,6 +1080,76 @@ fn instruction_operations64_main(
         }
         0x1f3 => s.packed_shift_left(),
         _ => Err(s.unknown_opcode()),
+    };
+    if can_cache && result.is_ok() {
+        ctx.disasm_cache_write(DisasmArch::X86_64, s.cache_input, s.len as usize, s.out);
+    }
+    result
+}
+
+/// 00 = Cache, 01 = Cache unless RIP-relative R/M, 10 = Never cache, 11 = Nop
+/// Generally instructions with constants are marked as not cached.
+/// This table should work fine for both 32 and 64-bit instructions, as the changes
+/// are prefix bytes that are unused or some that won't change anyway.
+static INSTRUCTION_CACHABILITY: [u8; 0x80] = [
+    //            03 02 01 00    07 06 05 04    0b 0a 09 08    0f 0e 0d 0c
+    /* 00 */    0b01_01_01_01, 0b00_00_00_00, 0b01_01_01_01, 0b00_00_00_00,
+    /* 10 */    0b01_01_01_01, 0b00_00_10_00, 0b01_01_01_01, 0b00_00_10_00,
+    /* 20 */    0b01_01_01_01, 0b00_00_00_00, 0b01_01_01_01, 0b00_00_00_00,
+    /* 30 */    0b01_01_01_01, 0b00_00_00_00, 0b01_01_01_01, 0b00_00_00_00,
+    /* 40 */    0b00_00_00_00, 0b00_00_00_00, 0b00_00_00_00, 0b00_00_00_00,
+    /* 50 */    0b00_00_00_00, 0b00_00_00_00, 0b00_00_00_00, 0b00_00_00_00,
+    /* 60 */    0b01_00_00_00, 0b00_00_00_00, 0b01_00_01_00, 0b00_00_00_00,
+    /* 70 */    0b10_10_10_10, 0b10_10_10_10, 0b10_10_10_10, 0b10_10_10_10,
+    /* 80 */    0b01_01_10_01, 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01,
+    /* 90 */    0b00_00_00_11, 0b00_00_00_00, 0b00_00_00_00, 0b00_00_00_00,
+    /* a0 */    0b00_00_00_00, 0b00_00_00_00, 0b00_00_00_00, 0b00_00_00_00,
+    /* b0 */    0b00_00_00_00, 0b00_00_00_00, 0b10_10_10_10, 0b10_10_10_10,
+    /* c0 */    0b00_00_01_01, 0b10_01_00_00, 0b00_00_00_00, 0b00_00_00_00,
+    /* d0 */    0b01_01_01_01, 0b00_00_00_00, 0b00_00_00_00, 0b00_00_00_00,
+    /* e0 */    0b10_10_10_10, 0b00_00_00_00, 0b10_10_10_10, 0b00_00_00_00,
+    /* f0 */    0b00_00_00_00, 0b01_01_00_00, 0b00_00_00_00, 0b01_01_00_00,
+    //            03 02 01 00    07 06 05 04    0b 0a 09 08    0f 0e 0d 0c
+    /* 0f 00 */ 0b00_00_00_00, 0b00_00_00_00, 0b00_00_00_00, 0b00_00_11_00,
+    /* 0f 10 */ 0b01_01_01_01, 0b01_01_01_01, 0b11_11_11_11, 0b11_11_11_11,
+    /* 0f 20 */ 0b00_00_00_00, 0b00_00_00_00, 0b01_01_01_01, 0b01_01_01_01,
+    /* 0f 30 */ 0b00_00_00_00, 0b00_00_00_00, 0b01_01_01_01, 0b00_00_00_00,
+    /* 0f 40 */ 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01,
+    /* 0f 50 */ 0b01_01_01_00, 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01,
+    /* 0f 60 */ 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01,
+    /* 0f 70 */ 0b00_00_00_01, 0b00_01_01_01, 0b01_01_01_01, 0b01_01_01_01,
+    /* 0f 80 */ 0b10_10_10_10, 0b10_10_10_10, 0b10_10_10_10, 0b10_10_10_10,
+    /* 0f 90 */ 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01,
+    /* 0f a0 */ 0b01_00_00_00, 0b00_00_01_01, 0b01_00_00_00, 0b01_00_01_01,
+    /* 0f b0 */ 0b01_00_01_01, 0b01_01_00_00, 0b01_01_01_01, 0b01_01_01_01,
+    /* 0f c0 */ 0b01_01_01_01, 0b01_01_01_01, 0b00_00_00_00, 0b00_00_00_00,
+    /* 0f d0 */ 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01,
+    /* 0f e0 */ 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01,
+    /* 0f f0 */ 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01, 0b01_01_01_01,
+];
+
+/// opcode is in range 0x100 .. 0x200 for 0f xx instructions
+fn can_cache_instruction<Va: VirtualAddress>(
+    s: &mut InstructionOpsState<Va>,
+    opcode: u32,
+) -> (bool, bool) {
+    let index = (opcode >> 2) as usize;
+    let shift = (opcode & 3) << 1;
+    let cachability = (INSTRUCTION_CACHABILITY[index & 0x7f] >> shift) & 3;
+    if cachability == 0 || cachability == 3 {
+        (true, cachability == 3)
+    } else if cachability == 2 {
+        (false, false)
+    } else {
+        let modrm = s.read_u8(1).unwrap_or(0);
+        // Skip rip-relative and 32-bit offsets, 32-bit offsets likely
+        // have too few cache hits.
+        let is_rip_relative = Va::SIZE == 8 && modrm & 0xc7 == 5;
+        if !is_rip_relative && modrm & 0xc0 != 0x80 {
+            (true, false)
+        } else {
+            (false, false)
+        }
     }
 }
 
@@ -1057,6 +1171,14 @@ fn x87_variant<'e>(ctx: OperandCtx<'e>, op: Operand<'e>, offset: i8) -> Operand<
 impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     pub fn len(&self) -> usize {
         self.len as usize
+    }
+
+    fn can_cache(&mut self, first_byte: u32) -> (bool, bool) {
+        if self.len < 8 {
+            can_cache_instruction(self, first_byte)
+        } else {
+            (false, false)
+        }
     }
 
     /// This is a separate function mainly since SmallVec::push and SmallVec::reserve

@@ -17,7 +17,7 @@ mod deserialize;
 #[cfg(feature = "serde")]
 pub use self::deserialize::DeserializeOperand;
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, RefMut};
 use std::cmp::{max, min, Ordering};
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -32,6 +32,8 @@ use fxhash::FxHashMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::disasm::Operation;
+use crate::disasm_cache::{DisasmArch, DisasmCache};
 use crate::exec_state;
 
 use self::slice_stack::SliceStack;
@@ -707,6 +709,7 @@ pub struct OperandContext<'e> {
     // Key is usize, cast from other_op pointer.
     // Cleared after every copy_operand call.
     copy_operand_cache: RefCell<FxHashMap<usize, Operand<'e>>>,
+    disasm_cache: RefCell<Option<Box<DisasmCache<'e>>>>,
 }
 
 /// Convenience alias for [`OperandContext`] reference that avoids having to
@@ -880,6 +883,7 @@ impl<'e> OperandContext<'e> {
             simplify_temp_stack: SliceStack::new(),
             freeze_buffer: RefCell::new(Vec::new()),
             copy_operand_cache: RefCell::new(FxHashMap::default()),
+            disasm_cache: RefCell::new(None),
         };
         let common_operands = &mut result.common_operands;
         // Accessing interner here would force the invariant lifetime 'e to this stack frame.
@@ -1789,6 +1793,42 @@ impl<'e> OperandContext<'e> {
     pub(crate) fn swap_freeze_buffer(&'e self, other: &mut Vec<exec_state::FreezeOperation<'e>>) {
         let mut own = self.freeze_buffer.borrow_mut();
         std::mem::swap(&mut *own, other);
+    }
+
+    fn disasm_cache_borrow_mut(&self, arch: DisasmArch) -> RefMut<'_, DisasmCache<'e>> {
+        let val = self.disasm_cache.borrow_mut();
+        RefMut::map(val, |x| {
+            let inner = x.get_or_insert_with(|| Box::new(DisasmCache::new(arch)));
+            inner.set_arch(arch);
+            &mut **inner
+        })
+    }
+
+    pub(crate) fn disasm_cache_read(
+        &'e self,
+        arch: DisasmArch,
+        instruction: &[u8; 8],
+        length: usize,
+        out: &mut Vec<Operation<'e>>,
+    ) -> bool {
+        let cache = self.disasm_cache_borrow_mut(arch);
+        if let Some(ops) = cache.get(instruction, length) {
+            out.extend_from_slice(ops);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn disasm_cache_write(
+        &'e self,
+        arch: DisasmArch,
+        instruction: &[u8; 8],
+        length: usize,
+        data: &[Operation<'e>],
+    ) {
+        let mut cache = self.disasm_cache_borrow_mut(arch);
+        cache.set(instruction, length, data);
     }
 
     /// Returns operand limited to low `size` bits.

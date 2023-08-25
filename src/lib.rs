@@ -67,12 +67,14 @@ mod bit_misc;
 pub mod cfg;
 pub mod cfg_dot;
 mod disasm;
+mod disasm_cache;
 pub mod exec_state;
 pub mod exec_state_x86;
 pub mod exec_state_x86_64;
 mod heapsort;
 mod light_byteorder;
 pub mod operand;
+mod u64_hash;
 
 pub use crate::analysis::{Analyzer, FuncAnalysis};
 pub use crate::disasm::{DestOperand, Operation, FlagArith, FlagUpdate, operation_helpers};

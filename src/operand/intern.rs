@@ -10,6 +10,7 @@ use hashbrown::hash_map::{HashMap, RawEntryMut};
 use typed_arena::Arena;
 
 use super::{ArithOperand, MemAccess, Operand, OperandHashByAddress, OperandType, OperandBase};
+use crate::u64_hash::{ConstFxHasher};
 
 pub struct Interner<'e> {
     // Lookups are done by using raw entry api.
@@ -241,44 +242,6 @@ impl Hasher for DummyHasher {
 
     fn write_u64(&mut self, value: u64) {
         self.value = value;
-    }
-}
-
-/// Fxhash seems to be bit better for single integers when the result is xored with
-/// itself shifted.
-#[derive(Default)]
-struct ConstFxHasher {
-    hasher: FxHasher,
-}
-
-impl Hasher for ConstFxHasher {
-    fn finish(&self) -> u64 {
-        let val = self.hasher.finish();
-        val ^ (val.rotate_left(mem::size_of::<usize>() as u32 * 4))
-    }
-
-    fn write(&mut self, data: &[u8]) {
-        self.hasher.write(data);
-    }
-
-    fn write_u8(&mut self, value: u8) {
-        self.hasher.write_u8(value);
-    }
-
-    fn write_u16(&mut self, value: u16) {
-        self.hasher.write_u16(value);
-    }
-
-    fn write_u32(&mut self, value: u32) {
-        self.hasher.write_u32(value);
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.hasher.write_u64(value);
-    }
-
-    fn write_usize(&mut self, value: usize) {
-        self.hasher.write_usize(value);
     }
 }
 
