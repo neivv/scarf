@@ -46,7 +46,7 @@ impl SimplifyWithZeroBits {
 
     #[inline]
     fn with_and_mask_count_at_limit(&self) -> bool {
-        self.with_and_mask_count > 120
+        self.with_and_mask_count > 80
     }
 }
 
@@ -6841,9 +6841,7 @@ fn simplify_with_and_mask<'e>(
     if relevant_mask & mask == 0 {
         return ctx.const_0();
     }
-    // quick simplify types won't change by this (other than becoming 0 if mask zeroes them),
-    // check that early as it's cheap and ultimately at some point recursing into op they pop up.
-    if can_quick_simplify_type(op.ty()) {
+    if op.0.flags & super::FLAG_CAN_SIMPLIFY_WITH_AND_MASK == 0 {
         return op;
     }
     if relevant_mask & mask == relevant_mask {
@@ -7140,7 +7138,7 @@ fn simplify_with_and_mask_inner<'e>(
                             Some(s) => s.wrapping_sub(1),
                             None => u64::MAX,
                         };
-                        // Right sipmlify mask needs to be 000..111 so that any low bits that
+                        // Right simplify mask needs to be 000..111 so that any low bits that
                         // are currently 0 in there won't be allowed to become 1,
                         // but left can be simplified without filling with r_low_zero_mask
                         left_mask = (mask_filled_to_lowest & !r_low_zero_mask) | mask;

@@ -241,6 +241,10 @@ const FLAG_32BIT_NORMALIZED: u8 = 0x10;
 // The operand is add / sub with at least one of the terms
 // having FLAG_32BIT_NORMALIZED set
 const FLAG_PARTIAL_32BIT_NORMALIZED_ADD: u8 = 0x20;
+// Can simplify_with_and_mask ever do anything.
+// Other than when the mask makes the operand 0
+// due to no overlapping bits.
+const FLAG_CAN_SIMPLIFY_WITH_AND_MASK: u8 = 0x40;
 const ALWAYS_INHERITED_FLAGS: u8 =
     FLAG_CONTAINS_UNDEFINED | FLAG_NEEDS_RESOLVE | FLAG_CONTAINS_MEMORY;
 
@@ -2202,28 +2206,85 @@ impl<'e> OperandType<'e> {
         };
         match *self {
             Memory(ref mem) => {
+                let can_simplify_with_and = match mem.size {
+                    MemAccessSize::Mem8 => 0,
+                    _ => FLAG_CAN_SIMPLIFY_WITH_AND_MASK,
+                };
                 (mem.address().0.0.flags & ALWAYS_INHERITED_FLAGS) | FLAG_NEEDS_RESOLVE |
-                    FLAG_CONTAINS_MEMORY | default_32_bit_normalized
+                    FLAG_CONTAINS_MEMORY | default_32_bit_normalized | can_simplify_with_and
             }
             SignExtend(val, _, _) => {
-                (val.0.flags & ALWAYS_INHERITED_FLAGS) | default_32_bit_normalized
+                (val.0.flags & ALWAYS_INHERITED_FLAGS) |
+                    default_32_bit_normalized | FLAG_CAN_SIMPLIFY_WITH_AND_MASK
             }
             Arithmetic(ref arith) => {
                 let base = (arith.left.0.flags | arith.right.0.flags) & ALWAYS_INHERITED_FLAGS;
                 let could_remove_const_and = if
                     arith.ty == ArithOpType::And && arith.right.if_constant().is_some()
                 {
-                    FLAG_COULD_REMOVE_CONST_AND
+                    FLAG_COULD_REMOVE_CONST_AND | FLAG_CAN_SIMPLIFY_WITH_AND_MASK
                 } else {
                     match arith.ty {
                         ArithOpType::And | ArithOpType::Or | ArithOpType::Xor | ArithOpType::Add |
-                            ArithOpType::Sub | ArithOpType::Mul =>
+                            ArithOpType::Mul =>
                         {
-                            (arith.left.0.flags | arith.right.0.flags) &
-                                FLAG_COULD_REMOVE_CONST_AND
+                            // If relbits of left/right are not same, simplify_with_and_mask
+                            // may be able to fully zero one of the operands, so
+                            // FLAG_CAN_SIMPLIFY_WITH_AND_MASK has to be always set.
+                            // If they are same, can just set if it either of children have it.
+                            let child_flags = arith.left.0.flags | arith.right.0.flags;
+                            match arith.left.relevant_bits() == arith.right.relevant_bits() {
+                                true => {
+                                    child_flags & (
+                                        FLAG_COULD_REMOVE_CONST_AND |
+                                        FLAG_CAN_SIMPLIFY_WITH_AND_MASK
+                                    )
+                                }
+                                false => {
+                                    (child_flags & FLAG_COULD_REMOVE_CONST_AND) |
+                                        FLAG_CAN_SIMPLIFY_WITH_AND_MASK
+                                }
+                            }
                         }
-                        ArithOpType::Lsh | ArithOpType::Rsh => {
-                            arith.left.0.flags & FLAG_COULD_REMOVE_CONST_AND
+                        ArithOpType::Sub => {
+                            // If rhs of sub is value with only lowest 1 bit set, it cannot
+                            // be simplified, because mask passed for sub rhs is 000..111 mask
+                            // with all 0s below 1 bits set to 1.
+                            // (At least with current implementation?)
+                            let right_bits = arith.right.relevant_bits();
+                            let left_flags = arith.left.0.flags;
+                            if right_bits.end == 1 {
+                                (left_flags & FLAG_COULD_REMOVE_CONST_AND) |
+                                    FLAG_CAN_SIMPLIFY_WITH_AND_MASK
+                            } else {
+                                let child_flags = left_flags | arith.right.0.flags;
+                                (child_flags & FLAG_COULD_REMOVE_CONST_AND) |
+                                    FLAG_CAN_SIMPLIFY_WITH_AND_MASK
+                            }
+                        }
+                        ArithOpType::Lsh => {
+                            if arith.right.if_constant().is_none() {
+                                0
+                            } else {
+                                if arith.left.if_memory().is_some() {
+                                    (arith.left.0.flags & FLAG_COULD_REMOVE_CONST_AND) |
+                                        FLAG_CAN_SIMPLIFY_WITH_AND_MASK
+                                } else {
+                                    arith.left.0.flags &
+                                        (
+                                            FLAG_COULD_REMOVE_CONST_AND |
+                                            FLAG_CAN_SIMPLIFY_WITH_AND_MASK
+                                        )
+                                }
+                            }
+                        }
+                        ArithOpType::Rsh => {
+                            if arith.right.if_constant().is_none() {
+                                0
+                            } else {
+                                arith.left.0.flags &
+                                    (FLAG_COULD_REMOVE_CONST_AND | FLAG_CAN_SIMPLIFY_WITH_AND_MASK)
+                            }
                         }
                         _ => 0,
                     }
@@ -2435,10 +2496,16 @@ impl<'e> OperandType<'e> {
 
     #[inline]
     fn const_flags(value: u64) -> u8 {
-        if value <= u32::MAX as u64 {
-            FLAG_32BIT_NORMALIZED
-        } else {
+        // Set FLAG_CAN_SIMPLIFY_WITH_AND_MASK when the value more than a single 1 bit
+        let with_and_flag = if value.wrapping_sub(1) & value == 0 {
             0
+        } else {
+            FLAG_CAN_SIMPLIFY_WITH_AND_MASK
+        };
+        if value <= u32::MAX as u64 {
+            FLAG_32BIT_NORMALIZED | with_and_flag
+        } else {
+            with_and_flag
         }
     }
 
