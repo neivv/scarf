@@ -48,6 +48,10 @@ impl SimplifyWithZeroBits {
     fn with_and_mask_count_at_limit(&self) -> bool {
         self.with_and_mask_count > 80
     }
+
+    fn would_be_at_with_and_mask_limit_after(&self, other: u8) -> bool {
+        self.with_and_mask_count as u32 + other as u32 > 80
+    }
 }
 
 pub fn simplify_arith<'e>(
@@ -7388,6 +7392,18 @@ fn simplify_with_and_mask_or_xor<'e>(
         }
     }
     util::arith_parts_to_new_slice(ctx, arith.left, arith.right, arith_ty, |slice| {
+        if swzb_ctx.would_be_at_with_and_mask_limit_after(slice.len() as u8) {
+            // Technically not every element in the slice may count for with_and_mask
+            // limit if it can be trivially exited due to becoming 0 or not changing.
+            // Since this branch is already very cold could check for those and
+            // repeat would_be_at_with_and_mask_limit_after with the more accurate value.
+            //
+            // Ultimately this doesn't seem to usually save that much time since the
+            // loop below will exit too when hitting the limit, and only potentially
+            // expensive thing there is the simplify_with_and_mask call.
+            swzb_ctx.with_and_mask_count = u8::MAX;
+            return None;
+        }
         let mut changed = false;
         let mut any_zero = false;
         let mut current_mask = mask;
