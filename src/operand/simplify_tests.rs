@@ -12242,3 +12242,38 @@ fn greater_or_equal_with_add() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn invalid_demorgan_bug() {
+    let ctx = &OperandContext::new();
+    let left = ctx.eq_const(
+        ctx.and_const(
+            ctx.register(0),
+            0xffff_ffff,
+        ),
+        0,
+    );
+    let right = ctx.neq_const(
+        ctx.and_const(
+            ctx.register(0),
+            0x8000_0000,
+        ),
+        0,
+    );
+    let or = ctx.or(left, right);
+    assert_eq!(
+        ctx.substitute(left, ctx.register(0), ctx.constant(2), 8),
+        ctx.constant(0),
+        "{left}",
+    );
+    assert_eq!(
+        ctx.substitute(right, ctx.register(0), ctx.constant(2), 8),
+        ctx.constant(0),
+        "{right}",
+    );
+    assert_eq!(
+        ctx.substitute(or, ctx.register(0), ctx.constant(2), 8),
+        ctx.constant(0),
+        "{or}",
+    );
+}

@@ -4662,7 +4662,10 @@ fn simplify_demorgan<'e>(
         let val = ops[i];
         if val.relevant_bits().end == 1 {
             if let Some(arith) = val.if_arithmetic_any() {
-                if arith.ty == ArithOpType::Equal && arith.right == zero {
+                if arith.ty == ArithOpType::Equal &&
+                    arith.right == zero &&
+                    arith.left.relevant_bits().end == 1
+                {
                     op = Some(arith.left);
                     break;
                 } else if arith.ty == ArithOpType::Xor {
@@ -4683,7 +4686,10 @@ fn simplify_demorgan<'e>(
             let val = ops[i];
             if val.relevant_bits().end == 1 {
                 if let Some(arith) = val.if_arithmetic_any() {
-                    let new = if arith.ty == ArithOpType::Equal && arith.right == zero {
+                    let new = if arith.ty == ArithOpType::Equal &&
+                        arith.right == zero &&
+                        arith.left.relevant_bits().end == 1
+                    {
                         arith.left
                     } else if arith.ty == ArithOpType::Xor {
                         ctx.eq(arith.left, arith.right)
