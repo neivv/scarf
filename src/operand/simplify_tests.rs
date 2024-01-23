@@ -12277,3 +12277,105 @@ fn invalid_demorgan_bug() {
         "{or}",
     );
 }
+
+#[test]
+fn valid_demorgan_and_to_or() {
+    let ctx = &OperandContext::new();
+    let left = ctx.eq_const(
+        ctx.and_const(
+            ctx.register(1),
+            0xffff_ffff,
+        ),
+        0,
+    );
+    let right = ctx.neq_const(
+        ctx.and_const(
+            ctx.register(0),
+            0x8000_0000,
+        ),
+        0,
+    );
+    let and = ctx.and(left, right);
+    // Unlike invalid_demorgan_bug test, where
+    // (x_32bit == 0 | y_1bit) can't be converted to (x_32bit & !y_1bit) == 0
+    // here (x_32bit == 0 & y_1bit) can be converted to (x_32bit | !y_1bit) == 0.
+    let eq1 = ctx.eq_const(
+        ctx.or(
+            ctx.and_const(
+                ctx.register(1),
+                0xffff_ffff,
+            ),
+            ctx.eq_const(
+                ctx.and_const(
+                    ctx.register(0),
+                    0x8000_0000,
+                ),
+                0,
+            ),
+        ),
+        0,
+    );
+    assert_eq!(and, eq1);
+
+    let left2 = ctx.eq_const(
+        ctx.or(
+            ctx.or(
+                ctx.eq(
+                    ctx.flag_o(),
+                    ctx.flag_s(),
+                ),
+                ctx.flag_c(),
+            ),
+            ctx.flag_z(),
+        ),
+        0,
+    );
+    let right2 = ctx.eq_const(
+        ctx.register(0),
+        0,
+    );
+    let and2 = ctx.and(left2, right2);
+    let eq2 = ctx.eq_const(
+        ctx.or(
+            ctx.register(0),
+            ctx.or(
+                ctx.or(
+                    ctx.eq(
+                        ctx.flag_o(),
+                        ctx.flag_s(),
+                    ),
+                    ctx.flag_c(),
+                ),
+                ctx.flag_z(),
+            ),
+        ),
+        0,
+    );
+    assert_eq!(and2, eq2);
+
+    // Same but with different ordering
+    // (rax == 0) & ((o == s) == 0) & ((z | c) == 0)
+    let op3 = ctx.and(
+        ctx.and(
+            ctx.eq_const(
+                ctx.register(0),
+                0,
+            ),
+            ctx.eq_const(
+                ctx.eq(
+                    ctx.flag_o(),
+                    ctx.flag_s(),
+                ),
+                0,
+            ),
+        ),
+        ctx.eq_const(
+            ctx.or(
+                ctx.flag_c(),
+                ctx.flag_z(),
+            ),
+            0,
+        ),
+    );
+    assert_eq!(op3, eq2);
+}

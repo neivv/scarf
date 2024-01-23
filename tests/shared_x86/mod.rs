@@ -1725,3 +1725,31 @@ fn cached_low_register_merge_bug() {
          (ctx.register(3), ctx.new_undef()),
     ]);
 }
+
+#[test]
+fn annoying_constraint_merge() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0x0f, 0x31, // rdtsc
+        0x31, 0xc9, // xor ecx, ecx
+        0x85, 0xc0, // test eax, eax
+        0x7e, 0x12, // jle end
+        0x90, // nop
+        // loop:
+        0x76, 0x03, // jbe ok
+        0x77, 0x01, // ja ok
+        0xcc, // int3
+        0x83, 0xc1, 0x01, // add ecx, 1
+        0x39, 0xc1, // cmp ecx, eax
+        0xbb, 0x00, 0x00, 0x00, 0x00, // mov ebx, 0
+        0x7c, 0xef, // jl loop
+        // end:
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), mask_if_64bit(ctx, ctx.new_undef(), 0xffff_ffff)),
+         (ctx.register(1), ctx.new_undef()),
+         (ctx.register(2), mask_if_64bit(ctx, ctx.new_undef(), 0xffff_ffff)),
+         (ctx.register(3), ctx.new_undef()),
+    ]);
+}

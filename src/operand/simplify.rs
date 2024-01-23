@@ -4658,13 +4658,20 @@ fn simplify_demorgan<'e>(
     let mut op = None;
     let mut result_is_xor = false;
     let zero = ctx.const_0();
+    // transforming (x_64bit != 0) & (y_64bit != 0) => (x_64bit | y_64bit) == 0
+    // is valid, while (x_64bit != 0) | (y_64bit != 0) => (x_64bit & y_64bit) == 0
+    // is not
+    let max_eq_zero_relbit = match merge_ty {
+        ArithOpType::Or => u8::MAX,
+        _ => 1,
+    };
     while i < ops.len() {
         let val = ops[i];
         if val.relevant_bits().end == 1 {
             if let Some(arith) = val.if_arithmetic_any() {
                 if arith.ty == ArithOpType::Equal &&
                     arith.right == zero &&
-                    arith.left.relevant_bits().end == 1
+                    arith.left.relevant_bits().end <= max_eq_zero_relbit
                 {
                     op = Some(arith.left);
                     break;
@@ -4688,7 +4695,7 @@ fn simplify_demorgan<'e>(
                 if let Some(arith) = val.if_arithmetic_any() {
                     let new = if arith.ty == ArithOpType::Equal &&
                         arith.right == zero &&
-                        arith.left.relevant_bits().end == 1
+                        arith.left.relevant_bits().end <= max_eq_zero_relbit
                     {
                         arith.left
                     } else if arith.ty == ArithOpType::Xor {

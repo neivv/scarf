@@ -2254,9 +2254,12 @@ impl<'e> MergeConstraint1BitNeq<'e> {
 
 fn if_1bit_neq<'e>(ctx: OperandCtx<'e>, op: Operand<'e>) -> Option<MergeConstraint1BitNeq<'e>> {
     let arith = op.if_arithmetic_any()?;
+    // Don't have to check that arith.left is 1bit value on x == 0, since
+    // they'll be merged to (x | y) != 0;
+    // Checking that or `x` being Or anyway to hopefully avoid unnecessary work?
     if arith.ty == ArithOpType::Equal &&
         arith.right == ctx.const_0() &&
-        arith.left.relevant_bits().end == 1
+        (arith.left.relevant_bits().end == 1 || arith.left.if_arithmetic_or().is_some())
     {
         Some(MergeConstraint1BitNeq::Op(arith.left))
     } else if arith.ty == ArithOpType::Xor &&
@@ -3419,5 +3422,26 @@ mod test {
         assert_eq!(result, ctx.constant(0));
         let result = Constraint(flag_neq).apply_to(ctx, flag_neq);
         assert_eq!(result, ctx.constant(1));
+    }
+
+    #[test]
+    fn merge_constraint_with_64bit_neq_0() {
+        let ctx = &crate::operand::OperandContext::new();
+        let a = ctx.eq_const(
+            ctx.or(
+                ctx.flag_s(),
+                ctx.flag_o(),
+            ),
+            0,
+        );
+        let b = ctx.and(
+            a,
+            ctx.eq_const(
+                ctx.register(0),
+                0,
+            ),
+        );
+        let result = merge_constraint(ctx, Some(Constraint(a)), Some(Constraint(b))).unwrap();
+        assert_eq!(result.0, a);
     }
 }
