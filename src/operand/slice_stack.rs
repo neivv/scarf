@@ -77,8 +77,8 @@ impl SliceStack {
     fn alloc_nongeneric<'e>(&'e self, usize_align: usize, capacity: usize) -> Slice<'e, usize> {
         let pos = self.pos.get();
         let slice_start = if usize_align > 1 {
-            // Align start
-            (pos | usize_align - 1).wrapping_sub(usize_align - 1)
+            // Align start; each chunk is known to be aligned to 16 bytes
+            (pos.wrapping_sub(1) | usize_align - 1).wrapping_add(1)
         } else {
             pos
         };
@@ -98,7 +98,9 @@ impl SliceStack {
                 // Current chunk for slice_start hasn't been allocated,
                 // change capacity to 0 so that when slice is grown it'll allocate.
                 slice_end = slice_start;
-                slice_ptr = NonNull::dangling();
+                // Make align is 16 bytes instead of usize align.
+                // Could maybe just use u128 but is it's align guaranteed to be 16?
+                slice_ptr = NonNull::<Align16>::dangling().cast();
             }
         }
         self.pos.set(slice_end);
@@ -108,11 +110,17 @@ impl SliceStack {
             slice_len: 0,
             start_index: slice_start,
             end_index: slice_end,
-            index_per_entry: 1,
+            // Wrong, but overwritten after return
+            index_per_entry: 0,
             phantom: Default::default(),
         }
     }
 }
+
+#[repr(align(16))]
+#[allow(dead_code)]
+#[derive(Copy, Clone)]
+struct Align16(u64);
 
 #[derive(Debug)]
 pub struct SizeLimitReached;
@@ -456,5 +464,41 @@ fn test_retain() {
             assert_eq!(&slice[..], [1, 3, 5, 7, 9, 11, 13, 15]);
         });
         assert_eq!(&slice[..], [0, 2, 4, 6, 8, 10, 12, 14]);
+    });
+}
+
+#[test]
+fn test_slice_align() {
+    let ctx = &super::OperandContext::new();
+
+    ctx.simplify_temp_stack().alloc(|slice: &mut Slice<u64>| {
+        let empty: &[u64] = &[];
+        assert_eq!(&slice[..], empty);
+        for i in 0u64..7 {
+            slice.push(i).unwrap();
+        }
+        assert_eq!(&slice[..], [0, 1, 2, 3, 4, 5, 6]);
+        ctx.simplify_temp_stack().alloc(|slice: &mut Slice<Align16>| {
+            assert!(slice.is_empty());
+            for i in 0u64..7 {
+                slice.push(Align16(i)).unwrap();
+            }
+            for i in 0..7 {
+                assert_eq!(slice[i].0, i as u64);
+            }
+        });
+        assert_eq!(&slice[..], [0, 1, 2, 3, 4, 5, 6]);
+    });
+
+    // Test dangling 16 aligned pointer
+    let ctx = &super::OperandContext::new();
+    ctx.simplify_temp_stack().alloc(|slice: &mut Slice<Align16>| {
+        assert!(slice.is_empty());
+        for i in 0u64..7 {
+            slice.push(Align16(i)).unwrap();
+        }
+        for i in 0..7 {
+            assert_eq!(slice[i].0, i as u64);
+        }
     });
 }
