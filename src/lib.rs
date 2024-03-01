@@ -86,7 +86,6 @@ pub use crate::exec_state::ExecutionState;
 pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;
 pub use crate::exec_state_x86_64::ExecutionState as ExecutionStateX86_64;
 
-use std::convert::{TryFrom, TryInto};
 use std::ffi::{OsStr};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek};

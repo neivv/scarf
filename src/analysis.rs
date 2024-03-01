@@ -4,7 +4,6 @@
 //! relocations of [`BinaryFile`] are included.
 
 use std::collections::BTreeMap;
-use std::convert::TryFrom;
 use std::mem;
 
 use byteorder::{ByteOrder, LittleEndian};

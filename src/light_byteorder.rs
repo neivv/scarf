@@ -3,8 +3,6 @@
 //! Only implemented for slices since other readers may have non-eof
 //! I/O errors, so blindly discarding them isn't the best idea.
 
-use std::convert::TryInto;
-
 #[derive(Copy, Clone, Debug)]
 pub struct UnexpectedEof;
 

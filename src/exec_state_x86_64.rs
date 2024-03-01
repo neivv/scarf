@@ -1,6 +1,5 @@
 //! 64-bit x86 architechture state. Rexported as `scarf::ExecutionStateX86_64`.
 
-use std::convert::TryInto;
 use std::fmt;
 use std::rc::Rc;
 

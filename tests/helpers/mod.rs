@@ -1,8 +1,7 @@
-use std;
 use std::ffi::OsStr;
 use std::io::Read;
 
-use scarf::{self, BinaryFile, BinarySection, VirtualAddress, VirtualAddress64};
+use scarf::{BinaryFile, BinarySection, VirtualAddress, VirtualAddress64};
 
 pub fn raw_bin(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, scarf::Error> {
     let mut file = std::fs::File::open(filename)?;
