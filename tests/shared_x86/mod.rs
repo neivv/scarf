@@ -1753,3 +1753,26 @@ fn annoying_constraint_merge() {
          (ctx.register(3), ctx.new_undef()),
     ]);
 }
+
+#[test]
+fn cmpxchg_byte() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0x31, 0xc0, // xor eax, eax
+        0xf0, 0x0f, 0xb0, 0x0e, // lock cmpxchg [esi], cl
+        0x8b, 0x16, // mov edx, [esi]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.and_const(ctx.new_undef(), 0xff)),
+         (ctx.register(2),
+            ctx.or(
+                ctx.and_const(
+                    ctx.mem32(ctx.register(6), 0),
+                    0xffff_ff00,
+                ),
+                ctx.and_const(ctx.new_undef(), 0xff),
+            ),
+         ),
+    ]);
+}

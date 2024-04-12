@@ -745,14 +745,7 @@ fn instruction_operations32_main(
             }
         }
         0x1af => s.imul_normal(),
-        0x1b1 => {
-            // Cmpxchg
-            let (rm, _r) = s.parse_modrm(s.mem16_32());
-            let dest = s.rm_to_dest_operand(&rm);
-            s.output_mov(dest, ctx.new_undef());
-            s.output_mov_to_reg(0, ctx.new_undef());
-            Ok(())
-        }
+        0x1b0 | 0x1b1 => s.cmpxchg(),
         0x1b3 => s.bit_test(BitTest::Reset, false),
         0x1b6 | 0x1b7 => s.movzx(),
         0x1ba => s.various_0f_ba(),
@@ -1040,14 +1033,7 @@ fn instruction_operations64_main(
             }
         }
         0x1af => s.imul_normal(),
-        0x1b1 => {
-            // Cmpxchg
-            let (rm, _r) = s.parse_modrm(s.mem16_32());
-            let dest = s.rm_to_dest_operand(&rm);
-            s.output_mov(dest, ctx.new_undef());
-            s.output_mov_to_reg(0, ctx.new_undef());
-            Ok(())
-        }
+        0x1b0 | 0x1b1 => s.cmpxchg(),
         0x1b3 => s.bit_test(BitTest::Reset, false),
         0x1b6 | 0x1b7 => s.movzx(),
         0x1ba => s.various_0f_ba(),
@@ -3725,6 +3711,19 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         } else {
             self.output_mul(dest, rm);
         }
+        Ok(())
+    }
+
+    fn cmpxchg(&mut self) -> Result<(), Failed> {
+        let op_size = match self.read_u8(0)? & 0x1 {
+            0 => MemAccessSize::Mem8,
+            _ => self.mem16_32(),
+        };
+        let (rm, _r) = self.parse_modrm(op_size);
+        let dest = self.rm_to_dest_operand(&rm);
+        let ctx = self.ctx;
+        self.output_mov(dest, ctx.new_undef());
+        self.output_mov(DestOperand::reg_variable_size(0, op_size), ctx.new_undef());
         Ok(())
     }
 
