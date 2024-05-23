@@ -1776,3 +1776,37 @@ fn cmpxchg_byte() {
          ),
     ]);
 }
+
+#[test]
+fn cmpxchg_flags() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0x89, 0xc0, // mov eax, eax (Clear 64bit high bits)
+        0x31, 0xd2, // xor edx, edx
+        0xf0, 0x0f, 0xb0, 0x0e, // lock cmpxchg [esi], cl
+        0x0f, 0x92, 0xc2, // setb dl
+        0x74, 0x03, // je skip
+        0x83, 0xc1, 0x01, // add ecx, 1
+        // skip:
+        0xeb, 0x00, // jmp ret
+        0xc3, // ret
+    ], &[
+         (ctx.register(0),
+            ctx.or(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xffff_ff00,
+                ),
+                ctx.and_const(ctx.new_undef(), 0xff),
+            ),
+         ),
+         (ctx.register(1), ctx.new_undef()),
+         (ctx.register(2),
+            ctx.gt(
+                ctx.mem8(ctx.register(6), 0),
+                ctx.and_const(ctx.register(0), 0xff),
+            ),
+         ),
+    ]);
+}

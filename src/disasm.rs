@@ -3722,9 +3722,16 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             _ => self.mem16_32(),
         };
         let (rm, _r) = self.parse_modrm(op_size);
-        let dest = self.rm_to_dest_operand(&rm);
+        let rm = self.rm_to_dest_and_operand(&rm);
         let ctx = self.ctx;
-        self.output_mov(dest, ctx.new_undef());
+        let rax = self.register_cache.register(0, RegisterSize::from_mem_access_size(op_size));
+        self.output(Operation::SetFlags(FlagUpdate {
+            left: rax,
+            right: rm.op,
+            ty: FlagArith::Sub,
+            size: op_size,
+        }));
+        self.output_mov(rm.dest, ctx.new_undef());
         self.output_mov(DestOperand::reg_variable_size(0, op_size), ctx.new_undef());
         Ok(())
     }
