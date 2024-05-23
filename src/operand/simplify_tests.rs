@@ -12379,3 +12379,29 @@ fn valid_demorgan_and_to_or() {
     );
     assert_eq!(op3, eq2);
 }
+
+#[test]
+fn not_gt_is_le() {
+    let ctx = &OperandContext::new();
+    let a = ctx.and_const(ctx.register(0), 0xff);
+    let b = ctx.mem8(ctx.register(6), 0);
+    let op1 = ctx.or(
+        ctx.gt(a, b),
+        ctx.eq(a, b),
+    );
+    let eq1 = ctx.eq_const(
+        ctx.gt(b, a),
+        0,
+    );
+    assert_eq!(op1, eq1);
+
+    let op1 = ctx.eq_const(
+        ctx.or(
+            ctx.gt(a, b),
+            ctx.eq(a, b),
+        ),
+        0,
+    );
+    let eq1 = ctx.gt(b, a);
+    assert_eq!(op1, eq1);
+}

@@ -5108,6 +5108,63 @@ fn is_eq_sub_for_gt<'e>(
     lhs_next.is_none() && rhs_next.is_none()
 }
 
+/// Simplify or: merge greater-or-equal
+/// Converts
+/// (x > y) | (x == y) to (y > x) == 0
+/// Note that simplify_or_merge_comparisons is called right before this
+/// which has handling for similar comparisons where x or y are constants.
+fn simplify_or_merge_ge<'e>(ops: &mut Slice<'e>, ctx: OperandCtx<'e>) {
+    let mut i = 0;
+    'outer: while i < ops.len() {
+        if let Some(first) = simplify_or_merge_ge_match1(ops[i]) {
+            let mut j = i + 1;
+            while j < ops.len() {
+                if let Some(result) = simplify_or_merge_ge_try_merge(first, ops[j], ctx) {
+                    ops[i] = result;
+                    ops.swap_remove(j);
+                    continue 'outer;
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
+fn simplify_or_merge_ge_match1<'e>(op: Operand<'e>) -> Option<&'e ArithOperand<'e>> {
+    let arith1 = op.if_arithmetic_any()?;
+    if matches!(arith1.ty, ArithOpType::Equal | ArithOpType::GreaterThan) {
+        Some(arith1)
+    } else {
+        None
+    }
+}
+
+fn simplify_or_merge_ge_try_merge<'e>(
+    first: &ArithOperand<'e>,
+    second: Operand<'e>,
+    ctx: OperandCtx<'e>,
+) -> Option<Operand<'e>> {
+    let first_is_eq = first.ty == ArithOpType::Equal;
+    let cmp_arith = match first_is_eq {
+        true => ArithOpType::GreaterThan,
+        false => ArithOpType::Equal,
+    };
+    let (l2, r2) = second.if_arithmetic(cmp_arith)?;
+    let l1 = first.left;
+    let r1 = first.right;
+    if (l1 == l2 && r1 == r2) || (l1 == r2 && r1 == l2) {
+        // l, r from gt (r < l)
+        let (l, r) = match first_is_eq {
+            true => (r2, l2),
+            false => (r1, l1),
+        };
+        Some(ctx.eq_const(ctx.gt(l, r), 0))
+    } else {
+        None
+    }
+}
+
 /// Does not collect constants into ops, but returns them added together instead.
 fn collect_add_ops<'e>(
     s: Operand<'e>,
@@ -6470,6 +6527,10 @@ fn simplify_or_2op_compare<'e>(
                 return Some(result);
             }
         }
+    } else if let Some(m1) = simplify_or_merge_ge_match1(left) {
+        if let Some(result) = simplify_or_merge_ge_try_merge(m1, right, ctx) {
+            return Some(result);
+        }
     }
     let result = ctx.simplify_temp_stack().alloc(|slice| {
         let _ = slice.push(left);
@@ -6608,6 +6669,7 @@ fn simplify_or_ops<'e>(
             simplify_or_merge_xors(ops, ctx, swzb_ctx);
             simplify_or_with_xor_of_op(ops, ctx);
             simplify_or_merge_comparisons(ops, ctx);
+            simplify_or_merge_ge(ops, ctx);
             simplify_xor_merge_ands_with_same_mask(ops, true, ctx, swzb_ctx);
             simplify_demorgan(ops, ctx, ArithOpType::And);
         }
