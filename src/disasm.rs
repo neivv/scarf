@@ -2077,7 +2077,9 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 }
             }
             ArithOperation::Move => {
-                if dest.op != rhs {
+                // mov eax, eax is same as and rax, ffff_ffff on 64bit
+                // (Other register size moves are nops even there)
+                if dest.op != rhs || (Va::SIZE == 8 && size == MemAccessSize::Mem32) {
                     self.output_mov(dest.dest, rhs);
                 }
             }

@@ -989,6 +989,19 @@ fn misc_coverage() {
 }
 
 #[test]
+fn mov_eax_eax() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x89, 0xc0, // mov eax, eax
+        0x66, 0x89, 0xc9, // mov cx, cx
+        0x88, 0xd2, // mov dl, dl
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.and_const(ctx.register(0), 0xffff_ffff)),
+    ]);
+}
+
+#[test]
 fn mem_oversized_writes() {
     // Verify that memory writes values larger than the MemAccess size won't break
     // following memory.
