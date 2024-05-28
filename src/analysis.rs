@@ -1569,7 +1569,6 @@ fn try_add_branch<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
             Some(address)
         }
         None => {
-            trace!("Couldnt resolve jump dest @ {:x}: {:?}", analysis.current_branch, to);
             None
         }
     }
