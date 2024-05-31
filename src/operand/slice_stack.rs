@@ -91,9 +91,10 @@ impl SliceStack {
         let slice_ptr;
         unsafe {
             let chunks = self.chunks.get();
-            if let Some(chunk) = (*chunks).get_mut(chunk_index) {
-                slice_ptr = NonNull::new_unchecked((**chunk).as_mut_ptr()
-                    .add(slice_start % CHUNK_SIZE));
+            if let Some(&chunk) = (*chunks).get(chunk_index) {
+                slice_ptr = NonNull::new_unchecked(
+                    chunk.cast::<usize>().add(slice_start % CHUNK_SIZE)
+                );
             } else {
                 // Current chunk for slice_start hasn't been allocated,
                 // change capacity to 0 so that when slice is grown it'll allocate.
@@ -274,8 +275,7 @@ impl<'e> Slice<'e, usize> {
             let chunks = self.parent.chunks.get();
             let insert_chunk_index = last_write_index_for_next_obj / CHUNK_SIZE;
             if (*chunks).len() <= insert_chunk_index {
-                let layout = alloc::Layout::new::<[usize; CHUNK_SIZE]>();
-                let layout = alloc::Layout::from_size_align(layout.size(), 16).unwrap();
+                let layout = chunk_layout();
                 let ptr = alloc::alloc(layout);
                 if ptr.is_null() {
                     alloc::handle_alloc_error(layout);
@@ -309,6 +309,12 @@ impl<'e> Slice<'e, usize> {
     }
 }
 
+#[inline(always)]
+fn chunk_layout() -> alloc::Layout {
+    let layout = alloc::Layout::new::<[usize; CHUNK_SIZE]>();
+    alloc::Layout::from_size_align(layout.size(), 16).unwrap()
+}
+
 impl<'e, T: Copy + PartialEq> Slice<'e, T> {
     pub fn dedup(&mut self) {
         let mut in_pos = 0;
@@ -330,9 +336,8 @@ impl<'e, T: Copy + PartialEq> Slice<'e, T> {
 impl Drop for SliceStack {
     fn drop(&mut self) {
         unsafe {
+            let layout = chunk_layout();
             for &chunk in (*self.chunks.get()).iter() {
-                let layout = alloc::Layout::new::<[usize; CHUNK_SIZE]>();
-                let layout = alloc::Layout::from_size_align(layout.size(), 16).unwrap();
                 alloc::dealloc(chunk as *mut u8, layout);
             }
         }

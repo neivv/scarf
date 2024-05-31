@@ -1,9 +1,8 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
-use std::mem;
+use std::mem::{self, MaybeUninit};
 
-use arrayvec::ArrayVec;
 use copyless::BoxHelper;
 use fxhash::FxHasher;
 use hashbrown::hash_map::{HashMap, RawEntryMut};
@@ -29,7 +28,8 @@ pub struct ConstInterner<'e> {
 
 /// Interner for undefined, which can just do a by-index lookup.
 pub struct UndefInterner {
-    chunks: RefCell<Vec<Box<ArrayVec<OperandBase<'static>, UNDEF_CHUNK_SIZE>>>>,
+    chunks: RefCell<Vec<Box<[MaybeUninit<OperandBase<'static>>; UNDEF_CHUNK_SIZE]>>>,
+    current_used: Cell<usize>,
 }
 
 const UNDEF_CHUNK_SIZE: usize = 1024;
@@ -249,6 +249,7 @@ impl UndefInterner {
     pub(crate) fn new() -> UndefInterner{
         UndefInterner {
             chunks: RefCell::new(Vec::new()),
+            current_used: Cell::new(0),
         }
     }
 
@@ -257,15 +258,21 @@ impl UndefInterner {
         let mut chunks = self.chunks.borrow_mut();
         loop {
             if let Some(chunk) = chunks.last_mut() {
-                if !chunk.is_full() {
-                    chunk.push(base);
-                    let base: &OperandBase<'static> = &chunk[chunk.len() - 1];
-                    let base: &'e OperandBase<'e> = unsafe { mem::transmute(base) };
-                    return Operand(base, PhantomData);
+                let current_used = self.current_used.get();
+                if current_used < UNDEF_CHUNK_SIZE {
+                    self.current_used.set(current_used + 1);
+                    let ptr = chunk[current_used as usize].as_mut_ptr();
+                    unsafe {
+                        ptr.write(base);
+                        let base: &OperandBase<'static> = &*ptr;
+                        let base: &'e OperandBase<'e> = mem::transmute(base);
+                        return Operand(base, PhantomData);
+                    }
                 }
+                self.current_used.set(0);
             }
 
-            chunks.push(Box::alloc().init(ArrayVec::new()));
+            chunks.push(Box::alloc().init([const { MaybeUninit::uninit() }; UNDEF_CHUNK_SIZE]));
         }
     }
 
@@ -273,8 +280,20 @@ impl UndefInterner {
         let chunks = self.chunks.borrow_mut();
         let index1 = index / UNDEF_CHUNK_SIZE;
         let index2 = index % UNDEF_CHUNK_SIZE;
-        let base: &OperandBase<'static> = &chunks[index1][index2];
-        let base: &'e OperandBase<'e> = unsafe { mem::transmute(base) };
-        return Operand(base, PhantomData);
+        let chunk: &[MaybeUninit<OperandBase<'_>>; UNDEF_CHUNK_SIZE] = &chunks[index1];
+        let index2_ok = if index1 == chunks.len() - 1 {
+            index2 < self.current_used.get()
+        } else {
+            index2 < UNDEF_CHUNK_SIZE
+        };
+        if !index2_ok {
+            panic!("Unallocated UndefinedId");
+        }
+        unsafe {
+            let ptr = chunk.get_unchecked(index2).as_ptr();
+            let base: &OperandBase<'static> = &*ptr;
+            let base: &'e OperandBase<'e> = mem::transmute(base);
+            return Operand(base, PhantomData);
+        }
     }
 }
