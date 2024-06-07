@@ -3809,10 +3809,20 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             0x68 => self.mem16_32(),
             _ => MemAccessSize::Mem8,
         };
-        let constant = self.read_variable_size_32(1, imm_size)? as u32;
-        let new_esp = self.register_cache.esp_neg_word_offset();
+        let mut constant = self.read_variable_size_signed(1, imm_size)?;
+        let new_esp;
+        let dest;
+        if self.has_prefix(0x66) {
+            // 16bit prefix on pushes will push only 2 bytes to to stack
+            let ctx = self.ctx;
+            new_esp = ctx.sub_const(ctx.register(4), 2);
+            dest = DestOperand::make_memory(ctx, ctx.register(4), 0, MemAccessSize::Mem16);
+            constant &= 0xffff;
+        } else {
+            new_esp = self.register_cache.esp_neg_word_offset();
+            dest = DestOperand::Memory(self.register_cache.esp_mem());
+        }
         self.output_mov_to_reg(4, new_esp);
-        let dest = DestOperand::Memory(self.register_cache.esp_mem());
         self.output_mov(dest, self.ctx.constant(constant as u64));
         Ok(())
     }

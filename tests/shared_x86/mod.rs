@@ -1810,3 +1810,17 @@ fn cmpxchg_flags() {
          ),
     ]);
 }
+
+#[test]
+fn i8_push() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        // sign-extended to word size
+        0x6a, 0xfd, // push -3
+        0x58, // pop eax
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), mask_if_64bit(ctx, ctx.constant(0xffff_fffd), 0xffff_ffff)),
+    ]);
+}

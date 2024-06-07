@@ -1002,6 +1002,23 @@ fn mov_eax_eax() {
 }
 
 #[test]
+fn u16_push() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        // Pushes only u16 (Probs illegal in any OS ABI stack pointer requirements)
+        0x66, 0x6a, 0xfd, // push -3
+        0x66, 0x68, 0x34, 0x12, // push 1234
+        0x66, 0x68, 0x11, 0x11, // push 1111
+        0x66, 0x6a, 0xfe, // push -2
+        0x58, // pop rax
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.constant(0xfffd_1234_1111_fffe)),
+    ]);
+}
+
+#[test]
 fn mem_oversized_writes() {
     // Verify that memory writes values larger than the MemAccess size won't break
     // following memory.
