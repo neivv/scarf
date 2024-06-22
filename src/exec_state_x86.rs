@@ -59,10 +59,10 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
 
     fn write_memory(&mut self, mem: &MemAccess<'e>, value: Operand<'e>) {
         let (base, offset) = mem.address();
-        let value = if mem.size == MemAccessSize::Mem64 {
-            value
-        } else {
+        let value = if mem.size == MemAccessSize::Mem32 {
             self.ctx().normalize_32bit(value)
+        } else {
+            value
         };
         self.inner.write_memory(base, offset as u32, mem.size, value);
     }
@@ -1387,18 +1387,22 @@ impl<'e> State<'e> {
     fn move_to_dest<'s>(
         &'s mut self,
         dest: &DestOperand<'e>,
-        input_value: Operand<'e>,
+        value: Operand<'e>,
         dest_is_resolved: bool,
     ) {
         let ctx = self.ctx;
-        // Anything but 64bit memory stores will be normalized to 32bit,
-        // and 64bit stores are edge case that is only (expected to be) triggered
-        // from user code calls, so doing this work even for this is fine.
-        let value = ctx.normalize_32bit(input_value);
+        // Normalize register writes, and 32-bit memory write with ctx.normalize_32bit
+        // Fpu/xmm/flags are treated same as in 64bit (Maybe not sensible?), and any
+        // smaller memory sizes should be fine since they get masked anyway.
+        //
+        // Partial register writes are normalized after merging with the unmodified value,
+        // otherwise there would be edge cases where poking low register causes the register
+        // to contain unnormalized values.
         match *dest {
             DestOperand::Register32(reg) | DestOperand::Register64(reg) => {
                 let reg = reg & 0x7;
                 self.cached_low_registers.invalidate(reg);
+                let value = ctx.normalize_32bit(value);
                 self.state[reg as usize] = value;
             }
             DestOperand::Register16(reg) => {
@@ -1414,9 +1418,11 @@ impl<'e> State<'e> {
                 let new = if old_bits.end <= 16 {
                     masked
                 } else {
-                    ctx.or(
-                        ctx.and_const(old, 0xffff_0000),
-                        masked,
+                    ctx.normalize_32bit(
+                        ctx.or(
+                            ctx.and_const(old, 0xffff_0000),
+                            masked,
+                        )
                     )
                 };
                 self.state[index] = new;
@@ -1436,9 +1442,11 @@ impl<'e> State<'e> {
                 let new = if old_bits.start >= 8 && old_bits.end <= 16 {
                     ctx.lsh_const(masked, 8)
                 } else {
-                    ctx.or(
-                        ctx.and_const(old, 0xffff_00ff),
-                        ctx.lsh_const(masked, 8),
+                    ctx.normalize_32bit(
+                        ctx.or(
+                            ctx.and_const(old, 0xffff_00ff),
+                            ctx.lsh_const(masked, 8),
+                        )
                     )
                 };
                 self.state[index] = new;
@@ -1457,9 +1465,11 @@ impl<'e> State<'e> {
                 let new = if old_bits.end <= 8 {
                     masked
                 } else {
-                    ctx.or(
-                        ctx.and_const(old, 0xffff_ff00),
-                        masked,
+                    ctx.normalize_32bit(
+                        ctx.or(
+                            ctx.and_const(old, 0xffff_ff00),
+                            masked,
+                        )
                     )
                 };
                 self.state[index] = new;
@@ -1486,9 +1496,8 @@ impl<'e> State<'e> {
                 } else {
                     self.resolve_mem(mem).address()
                 };
-                let value = if mem.size == MemAccessSize::Mem64 {
-                    // Use actual argument and not 32bit normalized one.
-                    input_value
+                let value = if mem.size == MemAccessSize::Mem32 {
+                    ctx.normalize_32bit(value)
                 } else {
                     value
                 };

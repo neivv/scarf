@@ -992,6 +992,45 @@ fn u16_push() {
 }
 
 #[test]
+fn nop_xor_on_register_1() {
+    // xor bl, 0 should not affect mov ebx, [ebx]
+    test_inline(&[
+        0x53, // push ebx
+        0x89, 0xe3, // mov ebx, esp
+        0x85, 0xc0, // test eax, eax
+        0x74, 0x06, // je end
+        0x80, 0xf3, 0x00, // xor bl, 0
+        0x73, 0x01, // jae end
+        0xcc, // int3
+        // end:
+        0x8b, 0x1b, // mov ebx, [ebx] (Old ebx)
+        0x83, 0xc4, 0x04, // add esp, 4
+        0xc3, // ret
+    ], &[
+    ]);
+}
+
+#[test]
+fn nop_xor_on_register_2() {
+    // xor bl, 88 twice should not affect mov ebx, [ebx]
+    test_inline(&[
+        0x53, // push ebx
+        0x89, 0xe3, // mov ebx, esp
+        0x85, 0xc0, // test eax, eax
+        0x74, 0x09, // je end
+        0x80, 0xf3, 0x88, // xor bl, 88
+        0x80, 0xf3, 0x88, // xor bl, 88
+        0x73, 0x01, // jae end
+        0xcc, // int3
+        // end:
+        0x8b, 0x1b, // mov ebx, [ebx] (Old ebx)
+        0x83, 0xc4, 0x04, // add esp, 4
+        0xc3, // ret
+    ], &[
+    ]);
+}
+
+#[test]
 fn jump_conditions() {
     let ctx = &OperandContext::new();
     test(5, &[
