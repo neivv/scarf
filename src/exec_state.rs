@@ -189,7 +189,7 @@ pub trait ExecutionState<'e> : Clone + 'e {
     /// Moves an unresolved value to unresolved destination.
     ///
     /// Convenience method for the equivalent but more verbose
-    /// `update(Operation::Move(dest, value, None)`.
+    /// `update(Operation::Move(dest, value))`.
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>);
 
     /// Moves a resolved value to (resolved) destination.

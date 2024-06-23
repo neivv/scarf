@@ -437,20 +437,18 @@ impl<'e> State<'e> {
     fn update(&mut self, operation: &Operation<'e>) {
         let ctx = self.ctx;
         match *operation {
-            Operation::Move(ref dest, value, cond) => {
-                let value = value.clone();
-                if let Some(cond) = cond {
-                    match self.resolve(cond).if_constant() {
-                        Some(0) => (),
-                        Some(_) => {
-                            self.move_to(dest, value);
-                        }
-                        None => {
-                            self.move_to(dest, ctx.new_undef());
-                        }
+            Operation::Move(ref dest, value) => {
+                self.move_to(dest, value);
+            }
+            Operation::ConditionalMove(ref dest, value, cond) => {
+                match self.resolve(cond).if_constant() {
+                    Some(0) => (),
+                    Some(_) => {
+                        self.move_to(dest, value);
                     }
-                } else {
-                    self.move_to(dest, value);
+                    None => {
+                        self.move_to(dest, ctx.new_undef());
+                    }
                 }
             }
             Operation::Freeze => {

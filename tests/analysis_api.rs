@@ -61,7 +61,7 @@ impl<'e> analysis::Analyzer<'e> for ContinueAt2 {
     type Exec = scarf::ExecutionStateX86_64<'e>;
     fn operation(&mut self, ctrl: &mut Control<'e, '_, '_, Self>, op: &Operation<'e>) {
         assert!(self.0 != 3 && self.0 != 5);
-        if let Operation::Move(_, value, None) = *op {
+        if let Operation::Move(_, value) = *op {
             let value = ctrl.resolve(value);
             if value.if_constant() == Some(0x4500) {
                 assert_eq!(self.0, 0);

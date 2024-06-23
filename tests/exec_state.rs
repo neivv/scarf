@@ -1165,23 +1165,31 @@ impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
     type Exec = ExecutionState<'e>;
     fn operation(&mut self, control: &mut Control<'e, '_, '_, Self>, op: &Operation<'e>) {
         println!("@ {:x} {:#?}", control.address(), op);
-        if let Operation::Error(e) = *op {
-            panic!("Disassembly error {}", e);
-        }
-        if let Operation::Move(_, val, _) = *op {
-            let val = control.resolve(val);
-            println!("Resolved is {}", val);
-        }
-        if let Operation::Jump { condition, .. } = *op {
-            println!("Resolved cond is {}", control.resolve(condition));
-            println!(
-                "Resolved cond is {} (Constraints applied)",
-                control.resolve_apply_constraints(condition),
-            );
-        }
-        if let Operation::Return(_) = *op {
-            let state = control.exec_state();
-            self.end_state = Some(state.clone());
+        match *op {
+            Operation::Move(_, val) => {
+                let val = control.resolve(val);
+                println!("Resolved is {}", val);
+            }
+            Operation::ConditionalMove(_, val, cond) => {
+                let val = control.resolve(val);
+                let cond = control.resolve(cond);
+                println!("Resolved is {} cond {}", val, cond);
+            }
+            Operation::Jump { condition, .. } => {
+                println!("Resolved cond is {}", control.resolve(condition));
+                println!(
+                    "Resolved cond is {} (Constraints applied)",
+                    control.resolve_apply_constraints(condition),
+                );
+            }
+            Operation::Return(_) => {
+                let state = control.exec_state();
+                self.end_state = Some(state.clone());
+            }
+            Operation::Error(e) => {
+                panic!("Disassembly error {}", e);
+            }
+            _ => (),
         }
     }
 }

@@ -223,7 +223,6 @@ mod test {
                     Operation::Move(
                         DestOperand::from_oper(ctx.register(1)),
                         ctx.register(2 + i as u8),
-                        None,
                     ),
                 ]
             }
@@ -250,7 +249,7 @@ mod test {
             1..=10 => {
                 assert_eq!(out.len(), 1);
                 match out[0] {
-                    Operation::Move(dest, val, None) => {
+                    Operation::Move(dest, val) => {
                         assert_eq!(dest, DestOperand::from_oper(ctx.register(1)));
                         assert_eq!(val, ctx.register(2 + i as u8));
                     }

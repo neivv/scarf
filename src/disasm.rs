@@ -1180,12 +1180,12 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     #[inline(never)]
     fn output_mov(&mut self, dest: DestOperand<'e>, value: Operand<'e>) {
-        self.out.push(Operation::Move(dest, value, None));
+        self.out.push(Operation::Move(dest, value));
     }
 
     #[inline(never)]
     fn output_mov_to_reg(&mut self, dest: u8, value: Operand<'e>) {
-        self.out.push(Operation::Move(DestOperand::Register64(dest), value, None));
+        self.out.push(Operation::Move(DestOperand::Register64(dest), value));
     }
 
     fn output_flag_set(&mut self, flag: Flag, value: Operand<'e>) {
@@ -1763,9 +1763,9 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     fn cmov(&mut self) -> Result<(), Failed> {
         let (rm, r) = self.parse_modrm(self.mem16_32());
-        let condition = Some(self.condition()?);
+        let condition = self.condition()?;
         let rm = self.rm_to_operand(&rm);
-        self.output(Operation::Move(r.dest_operand(), rm, condition));
+        self.output(Operation::ConditionalMove(r.dest_operand(), rm, condition));
         Ok(())
     }
 
@@ -1955,7 +1955,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     MemAccessSize::Mem64 => DestOperand::Register64(0),
                 };
                 let value = ctx.memory(&mem);
-                self.out.push(Operation::Move(dest, value, None));
+                self.out.push(Operation::Move(dest, value));
             }
             false => {
                 let mut size = RegisterSize::from_mem_access_size(op_size);
@@ -2573,7 +2573,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 let rhs = self.rm_to_operand_xmm(&rm, i);
                 let (gt_l, gt_r) = if is_min { (dest.op, rhs) } else { (rhs, dest.op) };
                 let cmp = ctx.float_arithmetic(ArithOpType::GreaterThan, gt_l, gt_r, size);
-                let op = Operation::Move(dest.dest, rhs, Some(cmp));
+                let op = Operation::ConditionalMove(dest.dest, rhs, cmp);
                 self.output(op);
             }
         } else {
@@ -2590,8 +2590,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 let rhs = self.rm_to_operand_xmm_64(&rm, i);
                 let (gt_l, gt_r) = if is_min { (dest_op, rhs) } else { (rhs, dest_op) };
                 let cmp = ctx.float_arithmetic(ArithOpType::GreaterThan, gt_l, gt_r, size);
-                self.output(Operation::Move(dest1.dest, rhs1, Some(cmp)));
-                self.output(Operation::Move(dest2.dest, rhs2, Some(cmp)));
+                self.output(Operation::ConditionalMove(dest1.dest, rhs1, cmp));
+                self.output(Operation::ConditionalMove(dest2.dest, rhs2, cmp));
             }
             self.output(Operation::Unfreeze);
         }
@@ -3101,10 +3101,10 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let rm_1 = self.rm_to_operand_xmm(&rm, 1);
         let high_u32_set = ctx.neq_const(rm_1, 0);
         for i in 0..4 {
-            self.output(Operation::Move(
+            self.output(Operation::ConditionalMove(
                 dest.dest_operand_xmm(i),
                 ctx.const_0(),
-                Some(high_u32_set),
+                high_u32_set,
             ));
         }
     }
@@ -3905,7 +3905,7 @@ pub mod operation_helpers {
     use super::{DestOperand, Operation};
 
     pub fn mov_to_reg<'e>(dest: u8, from: Operand<'e>) -> Operation<'e> {
-        Operation::Move(DestOperand::Register64(dest), from, None)
+        Operation::Move(DestOperand::Register64(dest), from)
     }
 
     pub fn mov_to_reg_variable_size<'e>(
@@ -3919,7 +3919,7 @@ pub mod operation_helpers {
             MemAccessSize::Mem32 => DestOperand::Register32(dest),
             MemAccessSize::Mem64 => DestOperand::Register64(dest),
         };
-        Operation::Move(dest, from, None)
+        Operation::Move(dest, from)
     }
 }
 
@@ -3953,14 +3953,7 @@ pub mod operation_helpers {
 #[derive(Clone, Copy, Debug)]
 pub enum Operation<'e> {
     /// Set `DestOperand` to `Operand`.
-    ///
-    /// If `Option<Operand>` exists, it is taken as a condition, and `DestOperand` will only
-    /// be updated if the condition is nonzero.
-    ///
-    /// The conditional moves are generated quite rarely, and in practice they usually
-    /// cause move of [`Undefined`](../analysis/struct.FuncAnalysis.html#state-merging-and-loops)
-    /// to the `DestOperand`.
-    Move(DestOperand<'e>, Operand<'e>, Option<Operand<'e>>),
+    Move(DestOperand<'e>, Operand<'e>),
 
     /// Calls the function at `Operand`.
     ///
@@ -4005,6 +3998,12 @@ pub enum Operation<'e> {
     /// (And it does for odd cases like inc), it would mean generating 5
     /// additional operations for each instruction, so special-case flags.
     SetFlags(FlagUpdate<'e>),
+    /// Set `DestOperand` to `Operand` if the second `Operand` evaluates to nonzero.
+    ///
+    /// The conditional moves are generated quite rarely, and in practice they usually
+    /// cause move of [`Undefined`](../analysis/struct.FuncAnalysis.html#state-merging-and-loops)
+    /// to the `DestOperand`.
+    ConditionalMove(DestOperand<'e>, Operand<'e>, Operand<'e>),
     /// Makes the following `Operation`s until `Unfreeze` be buffered, resolving
     /// input `Operand`s, without mutating the state.
     ///
