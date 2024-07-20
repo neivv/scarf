@@ -1583,6 +1583,26 @@ impl<'e> OperandContext<'e> {
         }
     }
 
+    /// Shortcut for `ctx.mem_access(base, offset, MemAccessSize::Mem8)`
+    pub fn mem_access8(&'e self, base: Operand<'e>, offset: u64) -> MemAccess<'e> {
+        self.mem_access(base, offset, MemAccessSize::Mem8)
+    }
+
+    /// Shortcut for `ctx.mem_access(base, offset, MemAccessSize::Mem16)`
+    pub fn mem_access16(&'e self, base: Operand<'e>, offset: u64) -> MemAccess<'e> {
+        self.mem_access(base, offset, MemAccessSize::Mem16)
+    }
+
+    /// Shortcut for `ctx.mem_access(base, offset, MemAccessSize::Mem16)`
+    pub fn mem_access32(&'e self, base: Operand<'e>, offset: u64) -> MemAccess<'e> {
+        self.mem_access(base, offset, MemAccessSize::Mem32)
+    }
+
+    /// Shortcut for `ctx.mem_access(base, offset, MemAccessSize::Mem16)`
+    pub fn mem_access64(&'e self, base: Operand<'e>, offset: u64) -> MemAccess<'e> {
+        self.mem_access(base, offset, MemAccessSize::Mem64)
+    }
+
     /// Creates `Operand` representing `mem.address_op() + value` without creating
     /// intermediate `mem.address_op()`
     pub fn mem_add_op(&'e self, mem: &MemAccess<'e>, value: Operand<'e>) -> Operand<'e> {

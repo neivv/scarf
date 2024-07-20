@@ -1010,7 +1010,13 @@ impl<'e: 'b, 'b, 'c, A: Analyzer<'e> + 'b> Control<'e, 'b, 'c, A> {
 
     /// Either `ctx.mem32()` or `ctx.mem64()`, depending on ExecutionState word size.
     pub fn mem_word(&self, addr: Operand<'e>, offset: u64) -> Operand<'e> {
-        A::Exec::operand_mem_word(self.ctx(), addr, offset)
+        let ctx = self.ctx();
+        ctx.memory(&self.mem_access_word(addr, offset))
+    }
+
+    /// `ctx.mem_access(addr, offset, E::WORD_SIZE)`
+    pub fn mem_access_word(&self, addr: Operand<'e>, offset: u64) -> MemAccess<'e> {
+        self.ctx().mem_access(addr, offset, <A::Exec as ExecutionState<'e>>::WORD_SIZE)
     }
 
     /// Either `op.if_mem32()` or `op.if_mem64()`, depending on ExecutionState word size.
