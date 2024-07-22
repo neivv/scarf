@@ -222,6 +222,8 @@ pub(crate) struct OperandBase<'e> {
     /// large types.
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     sort_order: u64,
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
+    relevant_bits_mask: u64,
 }
 
 const MEM_ALT_TAG: u8 = 0x40;
@@ -280,6 +282,7 @@ impl<'e> Ord for Operand<'e> {
                 flags: _,
                 type_alt_tag: _,
                 sort_order,
+                relevant_bits_mask: _,
             } = *self.0;
 
             let other_ty = &other.0.ty;
@@ -312,6 +315,7 @@ impl<'e> PartialOrd for Operand<'e> {
             type_alt_tag: _,
             flags: _,
             sort_order,
+            relevant_bits_mask: _,
         } = *self.0;
 
         let other_ty = &other.0.ty;
@@ -1690,6 +1694,7 @@ impl<'e> OperandContext<'e> {
                 flags: FLAG_CONTAINS_UNDEFINED | FLAG_32BIT_NORMALIZED,
                 type_alt_tag: 0,
                 sort_order: id as u64,
+                relevant_bits_mask: u64::MAX,
             })
         } else {
             self.undef_interner.get(id as usize)
@@ -2672,59 +2677,9 @@ impl<'e> Operand<'e> {
         self.0.relevant_bits.clone()
     }
 
-    // u64 shifts on 32bit generate really iffy code,
-    // use lookup tables instead.
-    #[cfg(any(not(target_pointer_width = "64"), test))]
-    fn relevant_bits_mask_32(self) -> u64 {
-        const fn gen_masks() -> [u64; 65] {
-            let mut result = [0u64; 65];
-            let mut i = 1;
-            let mut state = 1;
-            while i < 65 {
-                // (0,) 1, 3, 7, f, ...
-                result[i] = state;
-                state = (state.wrapping_add(1) << 1).wrapping_sub(1);
-                i += 1;
-            }
-            result
-        }
-        static MASKS: [u64; 65] = gen_masks();
-        let start = self.0.relevant_bits.start;
-        let end = self.0.relevant_bits.end;
-        if end == 0 {
-            0
-        } else {
-            let mask1 = MASKS[1 + ((end as usize - 1) & 0x3f)];
-            let mask2 = MASKS[start as usize & 0x3f];
-            mask1 & !mask2
-        }
-    }
-
-    #[cfg(any(target_pointer_width = "64", test))]
-    fn relevant_bits_mask_64(self) -> u64 {
-        let start = self.0.relevant_bits.start as u32;
-        let end = self.0.relevant_bits.end as u32;
-        if end >= 64 {
-            !(1u64.wrapping_shl(start)
-                .wrapping_sub(1))
-        } else {
-            1u64.wrapping_shl(end)
-                .wrapping_sub(1)
-                .wrapping_shr(start)
-                .wrapping_shl(start)
-        }
-    }
-
-    #[cfg(not(target_pointer_width = "64"))]
     #[inline]
     pub fn relevant_bits_mask(self) -> u64 {
-        self.relevant_bits_mask_32()
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    #[inline]
-    pub fn relevant_bits_mask(self) -> u64 {
-        self.relevant_bits_mask_64()
+        self.0.relevant_bits_mask
     }
 
     /// Returns `Some(c)` if `self.ty` is `OperandType::Constant(c)`
@@ -3668,29 +3623,6 @@ mod test {
             assert!(seen.contains(&OperandHashByAddress(o)), "Didn't find {}", o);
         }
         assert_eq!(seen.len(), opers.len());
-    }
-
-    #[test]
-    fn relevant_bits_mask() {
-        fn check<'e>(op: Operand<'e>, expected: u64) {
-            assert_eq!(
-                op.relevant_bits_mask_32(), expected,
-                "32bit impl fail {op} {:x}", op.relevant_bits_mask_32()
-            );
-            assert_eq!(
-                op.relevant_bits_mask_64(), expected,
-                "64bit impl fail {op} {:x}", op.relevant_bits_mask_64()
-            );
-        }
-
-        let ctx = OperandContext::new();
-        check(ctx.const_0(), 0u64);
-        check(ctx.constant(u64::MAX), u64::MAX);
-        let op = ctx.or(
-            ctx.lsh_const(ctx.mem8(ctx.register(0), 0), 8),
-            ctx.lsh_const(ctx.mem8(ctx.register(0), 0), 0x18),
-        );
-        check(op, 0xffffff00);
     }
 
     #[test]

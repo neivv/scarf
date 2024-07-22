@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem::{self, MaybeUninit};
+use std::ops::Range;
 
 use copyless::BoxHelper;
 use fxhash::FxHasher;
@@ -79,6 +80,7 @@ impl<'e> Interner<'e> {
     fn add_operand(&'e self, ty: OperandType<'e>) -> Operand<'e> {
         let relevant_bits = ty.calculate_relevant_bits();
         debug_assert!(relevant_bits.start != relevant_bits.end, "Operand should be zero {:?}", ty);
+        let relevant_bits_mask = relevant_bits_mask(relevant_bits.clone());
         let flags = ty.flags(relevant_bits.clone());
         let sort_order = ty.sort_order();
         let base = OperandBase {
@@ -87,6 +89,7 @@ impl<'e> Interner<'e> {
             relevant_bits,
             flags,
             sort_order,
+            relevant_bits_mask,
         };
         Operand(self.arena.alloc(base), PhantomData)
     }
@@ -121,6 +124,7 @@ impl<'e> ConstInterner<'e> {
 
     fn add_operand(&'e self, value: u64) -> Operand<'e> {
         let relevant_bits = OperandType::const_relevant_bits(value);
+        let relevant_bits_mask = relevant_bits_mask(relevant_bits.clone());
         let flags = OperandType::const_flags(value);
         let base = OperandBase {
             ty: OperandType::Constant(value),
@@ -128,8 +132,64 @@ impl<'e> ConstInterner<'e> {
             relevant_bits,
             flags,
             sort_order: value,
+            relevant_bits_mask,
         };
         Operand(self.arena.alloc(base), PhantomData)
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+#[inline]
+fn relevant_bits_mask(bits: Range<u8>) -> u64 {
+    relevant_bits_mask_64(bits)
+}
+
+#[cfg(target_pointer_width = "32")]
+#[inline]
+fn relevant_bits_mask(bits: Range<u8>) -> u64 {
+    relevant_bits_mask_32(bits)
+}
+
+// u64 shifts on 32bit generate really iffy code,
+// use lookup tables instead.
+#[cfg(any(not(target_pointer_width = "64"), test))]
+fn relevant_bits_mask_32(bits: Range<u8>) -> u64 {
+    const fn gen_masks() -> [u64; 65] {
+        let mut result = [0u64; 65];
+        let mut i = 1;
+        let mut state = 1;
+        while i < 65 {
+            // (0,) 1, 3, 7, f, ...
+            result[i] = state;
+            state = (state.wrapping_add(1) << 1).wrapping_sub(1);
+            i += 1;
+        }
+        result
+    }
+    static MASKS: [u64; 65] = gen_masks();
+    let start = bits.start;
+    let end = bits.end;
+    if end == 0 {
+        0
+    } else {
+        let mask1 = MASKS[1 + ((end as usize - 1) & 0x3f)];
+        let mask2 = MASKS[start as usize & 0x3f];
+        mask1 & !mask2
+    }
+}
+
+#[cfg(any(target_pointer_width = "64", test))]
+fn relevant_bits_mask_64(bits: Range<u8>) -> u64 {
+    let start = bits.start as u32;
+    let end = bits.end as u32;
+    if end >= 64 {
+        !(1u64.wrapping_shl(start)
+            .wrapping_sub(1))
+    } else {
+        1u64.wrapping_shl(end)
+            .wrapping_sub(1)
+            .wrapping_shr(start)
+            .wrapping_shl(start)
     }
 }
 
@@ -296,4 +356,30 @@ impl UndefInterner {
             return Operand(base, PhantomData);
         }
     }
+}
+
+#[test]
+fn test_relevant_bits_mask() {
+    use crate::{OperandContext};
+
+    fn check<'e>(op: Operand<'e>, expected: u64) {
+        let bits = op.relevant_bits();
+        assert_eq!(
+            relevant_bits_mask_32(bits.clone()), expected,
+            "32bit impl fail {op} {:x}", relevant_bits_mask_32(bits.clone()),
+        );
+        assert_eq!(
+            relevant_bits_mask_64(bits.clone()), expected,
+            "64bit impl fail {op} {:x}", relevant_bits_mask_64(bits.clone()),
+        );
+    }
+
+    let ctx = OperandContext::new();
+    check(ctx.const_0(), 0u64);
+    check(ctx.constant(u64::MAX), u64::MAX);
+    let op = ctx.or(
+        ctx.lsh_const(ctx.mem8(ctx.register(0), 0), 8),
+        ctx.lsh_const(ctx.mem8(ctx.register(0), 0), 0x18),
+    );
+    check(op, 0xffffff00);
 }
