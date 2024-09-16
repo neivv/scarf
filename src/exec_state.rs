@@ -262,7 +262,9 @@ pub trait ExecutionState<'e> : Clone + 'e {
     ///
     /// Does not provide good results; user code should implement unresolve
     /// that meets the accuracy/performance requirements they have itself.
-    fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>>;
+    fn unresolve(&self, _val: Operand<'e>) -> Option<Operand<'e>> {
+        None
+    }
 
     /// Creates an `Mem[addr]` with MemAccessSize of VirtualAddress size.
     fn operand_mem_word(ctx: OperandCtx<'e>, address: Operand<'e>, offset: u64) -> Operand<'e> {
@@ -305,6 +307,32 @@ pub trait ExecutionState<'e> : Clone + 'e {
     ///
     /// Useful for avoiding unnecessary memcpys.
     unsafe fn clone_to(&self, out: *mut Self);
+}
+
+/// Resolves to (base, offset) though base itself may contain offset as well,
+/// just tries to avoid interning new constant additions
+pub fn resolve_address<'e, R>(
+    base: Operand<'e>,
+    ctx: OperandCtx<'e>,
+    resolve: &mut R,
+) -> (Operand<'e>, u64)
+where R: FnMut(Operand<'e>) -> Operand<'e>,
+{
+    if let OperandType::Arithmetic(arith) = base.ty() {
+        if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
+            let (left_base, left_offset1) = resolve_address(arith.left, ctx, resolve);
+            let (left_base, left_offset2) = ctx.extract_add_sub_offset(left_base);
+            let left_offset = left_offset1.wrapping_add(left_offset2);
+            let right = resolve(arith.right);
+            let (right_base, right_offset) = ctx.extract_add_sub_offset(right);
+            return if arith.ty == ArithOpType::Add {
+                (ctx.add(left_base, right_base), left_offset.wrapping_add(right_offset))
+            } else {
+                (ctx.sub(left_base, right_base), left_offset.wrapping_sub(right_offset))
+            };
+        }
+    }
+    (resolve(base), 0)
 }
 
 /// Splits state in two, updating the one state with condition assumed be false

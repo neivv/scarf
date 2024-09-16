@@ -543,21 +543,7 @@ impl<'e> State<'e> {
     /// just tries to avoid interning new constant additions
     fn resolve_address(&mut self, base: Operand<'e>) -> (Operand<'e>, u64) {
         let ctx = self.ctx;
-        if let OperandType::Arithmetic(arith) = base.ty() {
-            if arith.ty == ArithOpType::Add || arith.ty == ArithOpType::Sub {
-                let (left_base, left_offset1) = self.resolve_address(arith.left);
-                let (left_base, left_offset2) = ctx.extract_add_sub_offset(left_base);
-                let left_offset = left_offset1.wrapping_add(left_offset2);
-                let right = self.resolve(arith.right);
-                let (right_base, right_offset) = ctx.extract_add_sub_offset(right);
-                return if arith.ty == ArithOpType::Add {
-                    (ctx.add(left_base, right_base), left_offset.wrapping_add(right_offset))
-                } else {
-                    (ctx.sub(left_base, right_base), left_offset.wrapping_sub(right_offset))
-                };
-            }
-        }
-        (self.resolve(base), 0)
+        exec_state::resolve_address(base, ctx, &mut |x| self.resolve(x))
     }
 
     fn move_to(&mut self, dest: &DestOperand<'e>, value: Operand<'e>) {

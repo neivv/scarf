@@ -77,7 +77,10 @@ pub mod operand;
 mod u64_hash;
 
 pub use crate::analysis::{Analyzer, FuncAnalysis};
-pub use crate::disasm::{DestOperand, Operation, FlagArith, FlagUpdate, operation_helpers};
+pub use crate::disasm::{
+    DestOperand, Instruction, Operation, FlagArith, FlagUpdate, operation_helpers,
+};
+pub use crate::disasm::Error as DisasmError;
 pub use crate::operand::{
     ArithOpType, MemAccess, MemAccessSize, Operand, OperandType, OperandContext, OperandCtx,
 };

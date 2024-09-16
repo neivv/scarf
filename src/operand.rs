@@ -1060,7 +1060,7 @@ impl<'e> OperandContext<'e> {
             match ty {
                 OperandType::Constant(..) | OperandType::Undefined(..) |
                     OperandType::Arithmetic(..) | OperandType::Flag(..) => false,
-                OperandType::Register(r) => r > 16,
+                OperandType::Register(r) => r >= 16,
                 _ => true,
             },
             "General-purpose intern function called for OperandType with specialized interning",
@@ -3807,6 +3807,16 @@ mod test {
         assert_eq!(ctx.rsh_const(a, b).if_rsh_with_const(), pair);
         assert_eq!(ctx.eq_const(a, b).if_eq_with_const(), pair);
         assert_eq!(ctx.gt_const(a, b).if_gt_with_const(), pair);
+    }
+
+    #[test]
+    fn intern_registers() {
+        for i in 0..256u32 {
+            let ctx = OperandContext::new();
+            let a = ctx.register(i as u8);
+            assert_eq!(a.if_register(), Some(i as u8));
+            assert_eq!(a, ctx.register(i as u8));
+        }
     }
 }
 

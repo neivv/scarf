@@ -108,7 +108,7 @@ pub struct IterAddSubArithOps<'e> {
 }
 
 impl<'e> IterAddSubArithOps<'e> {
-    pub fn new(operand: Operand<'e>) -> IterAddSubArithOps {
+    pub fn new(operand: Operand<'e>) -> IterAddSubArithOps<'e> {
         IterAddSubArithOps {
             next: Some(operand),
         }

@@ -293,9 +293,9 @@ impl<'a> Disassembler64<'a> {
 }
 
 pub struct Instruction<'a, 'e, Va: VirtualAddress> {
-    address: Va,
-    ops: &'a [Operation<'e>],
-    length: u32,
+    pub address: Va,
+    pub ops: &'a [Operation<'e>],
+    pub length: u32,
 }
 
 impl<'a, 'e, Va: VirtualAddress> Instruction<'a, 'e, Va> {
