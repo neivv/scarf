@@ -204,8 +204,8 @@ fn read_this() {
         (ctx.register(0), ctx.constant(0x4010_00a1)),
         (ctx.register(1), ctx.constant(0xc300_4010)),
         (ctx.register(2), ctx.or(
-            ctx.constant(0x40),
-            ctx.and_const(ctx.lsh_const(ctx.mem32(ctx.const_0(), 0x401010), 0x8), 0xffff_ff00),
+            ctx.constant(0xc3_0040),
+            ctx.and_const(ctx.lsh_const(ctx.mem32(ctx.const_0(), 0x401010), 0x8), 0xff00_0000),
         )),
     ]);
 }
@@ -1154,6 +1154,30 @@ fn mem_oversized_writes() {
             0x18,
         ),
     );
+}
+
+#[test]
+fn not_binary_mem_read() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0x8b, 0x80, 0x00, 0x10, 0x40, 0x00, // mov eax, [eax + 401000]
+        0xc6, 0x81, 0x00, 0x10, 0x40, 0x00, 0x05, // mov byte [ecx + 401000], 5
+        0x8b, 0x89, 0x00, 0x10, 0x40, 0x00, // mov rcx, [ecx + 401000]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.mem32(ctx.register(0), 0x401000)),
+         (
+            ctx.register(1),
+            ctx.or(
+                ctx.and_const(
+                    ctx.mem32(ctx.register(1), 0x401000),
+                    0xffff_ff00,
+                ),
+                ctx.constant(5),
+            ),
+         ),
+    ]);
 }
 
 struct CollectEndState<'e> {

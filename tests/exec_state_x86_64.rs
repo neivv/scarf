@@ -1019,6 +1019,30 @@ fn u16_push() {
 }
 
 #[test]
+fn not_binary_mem_read() {
+    let ctx = &OperandContext::new();
+
+    test_inline(&[
+        0x48, 0x8b, 0x80, 0x00, 0x10, 0x40, 0x00, // mov rax, [rax + 401000]
+        0xc6, 0x81, 0x00, 0x10, 0x40, 0x00, 0x05, // mov byte [rcx + 401000], 5
+        0x48, 0x8b, 0x89, 0x00, 0x10, 0x40, 0x00, // mov rcx, [rcx + 401000]
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.mem64(ctx.register(0), 0x401000)),
+         (
+            ctx.register(1),
+            ctx.or(
+                ctx.and_const(
+                    ctx.mem64(ctx.register(1), 0x401000),
+                    0xffff_ffff_ffff_ff00,
+                ),
+                ctx.constant(5),
+            ),
+         ),
+    ]);
+}
+
+#[test]
 fn mem_oversized_writes() {
     // Verify that memory writes values larger than the MemAccess size won't break
     // following memory.

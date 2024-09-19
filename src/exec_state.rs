@@ -1603,6 +1603,239 @@ impl<'e> Memory<'e> {
         self.cached_value = Some(value);
     }
 
+    /// High-level memory read.
+    pub fn read(
+        &mut self,
+        ctx: OperandCtx<'e>,
+        base: Operand<'e>,
+        byte_offset: u64,
+        size: MemAccessSize,
+        word_size: MemAccessSize,
+        mut make_unwritten: impl FnMut(Operand<'e>, u64) -> Operand<'e>,
+    ) -> Option<Operand<'e>> {
+        if (byte_offset as u32) & word_size.bytes().wrapping_sub(1) != 0 {
+            self.read_unaligned(ctx, base, byte_offset, size, word_size, &mut make_unwritten)
+        } else {
+            self.read_aligned(ctx, base, byte_offset, size, word_size, &mut make_unwritten)
+        }
+    }
+
+    /// Returns None if nothing had been written to the address.
+    fn read_unaligned(
+        &mut self,
+        ctx: OperandCtx<'e>,
+        base: Operand<'e>,
+        byte_offset: u64,
+        size: MemAccessSize,
+        word_size: MemAccessSize,
+        make_unwritten: &mut impl FnMut(Operand<'e>, u64) -> Operand<'e>,
+    ) -> Option<Operand<'e>> {
+        let mask = size.mask();
+        let word_bytes = word_size.bytes();
+        let suboffset = byte_offset as u32 & word_bytes.wrapping_sub(1);
+        let offset_rest = byte_offset & !(word_bytes.wrapping_sub(1) as u64);
+        let word_offset = offset_rest >> word_size.mul_div_shift();
+        let word_byte_mask = word_size.byte_mask().get() as u32;
+        let word_mask = word_size.mask();
+
+        let read_bytes = (size.byte_mask().get() as u32) << suboffset;
+        let low = self.get(base, word_offset)
+            .filter(|x| x.written_bytes & (read_bytes & word_byte_mask) as u8 != 0);
+        let needs_high = read_bytes > word_byte_mask;
+        let high = if needs_high {
+            let high_word_offset = word_offset.wrapping_add(1) &
+                (word_mask >> word_size.mul_div_shift());
+            self.get(base, high_word_offset)
+                .filter(|x| x.written_bytes & (read_bytes >> word_bytes) as u8 != 0)
+        } else {
+            None
+        };
+        if low.is_none() && high.is_none() {
+            return None;
+        }
+        let low_shift;
+        let mut low = match low {
+            Some(ref low) => {
+                let read_bytes = (read_bytes & word_byte_mask) as u8;
+                // Note: case of reading only unwritten bytes is filtered out above
+                // right after self.get()
+                if low.written_bytes == read_bytes {
+                    if !needs_high {
+                        // Entire value is in `low`, and no other bytes are written.
+                        // Can just return the value.
+                        if low.value.is_undefined() {
+                            // Undefined from mem merge may be bigger than
+                            // written_bytes.
+                            return Some(ctx.and_const(low.value, mask));
+                        } else {
+                            return Some(low.value);
+                        }
+                    }
+                    low_shift = 0;
+                    if low.value.is_undefined() {
+                        // Must be mem merge undefined since otherwise there'd
+                        // be an and mask. Mask it to not break high.
+                        let mask2 = word_mask.wrapping_shr(suboffset << 3);
+                        ctx.and_const(low.value, mask2)
+                    } else {
+                        low.value
+                    }
+                } else if low.written_bytes | read_bytes != low.written_bytes {
+                    // Reading written bytes and unwritten bytes.
+                    low_shift = suboffset;
+                    let unwritten = make_unwritten(base, offset_rest);
+                    Self::merge_memory_read(ctx, low, unwritten)
+                } else {
+                    // Reading only written bytes, but there are other written bytes too
+                    // which may have to be shifted out
+                    let offset = low.written_bytes.trailing_zeros();
+                    low_shift = suboffset.saturating_sub(offset);
+                    if low.value.is_undefined() {
+                        // Must be mem merge undefined since otherwise there'd
+                        // be an and mask. Mask it to not break high.
+                        let mask2 = word_mask.wrapping_shr(offset << 3);
+                        ctx.and_const(low.value, mask2)
+                    } else {
+                        low.value
+                    }
+                }
+            }
+            None => {
+                low_shift = suboffset;
+                make_unwritten(base, offset_rest)
+            }
+        };
+        // For 32 bits, there is no guarantee that low is actually 32bits or less,
+        // as normalize_32bit is used to make high 32bits not matter.
+        // But since here we shift those high bits right, they must
+        // be explicitly cleared.
+        let word_bits = word_size.bits();
+        if low.relevant_bits().end > word_bits as u8 {
+            low = ctx.and_const(low, word_mask);
+        };
+        if low_shift != 0 {
+            low = ctx.rsh_const(low, (low_shift << 3) as u64);
+        }
+        let combined = if needs_high {
+            let high = match high {
+                Some(ref high) => {
+                    // Can assume offset 0 (read_bytes & 1 != 0)
+                    let read_bytes = (read_bytes >> word_bytes) as u8;
+                    if high.written_bytes | read_bytes != high.written_bytes {
+                        // Reading written bytes and unwritten bytes.
+                        let high_offset = offset_rest.wrapping_add(word_bytes as u64);
+                        let unwritten = make_unwritten(base, high_offset);
+                        Self::merge_memory_read(ctx, high, unwritten)
+                    } else {
+                        // Reading only written bytes.
+                        // Since first byte of high is always read, high.value
+                        // does not need to be shifted right like low.value may have to;
+                        // high.written_bytes & 1 != 0 always on this branch.
+                        high.value
+                    }
+                }
+                None => {
+                    let high_offset = offset_rest.wrapping_add(word_bytes as u64);
+                    make_unwritten(base, high_offset)
+                }
+            };
+            let mut high = ctx.lsh_const(
+                high,
+                (word_bytes.wrapping_sub(suboffset as u32) << 3) as u64,
+            );
+            if word_mask != u64::MAX {
+                high = ctx.and_const(high, word_mask);
+            }
+            ctx.or(low, high)
+        } else {
+            low
+        };
+        let masked = if size != word_size {
+            ctx.and_const(combined, mask)
+        } else {
+            combined
+        };
+        Some(masked)
+    }
+
+    /// Returns None if nothing had been written to the address.
+    fn read_aligned(
+        &mut self,
+        ctx: OperandCtx<'e>,
+        base: Operand<'e>,
+        byte_offset: u64,
+        size: MemAccessSize,
+        word_size: MemAccessSize,
+        make_unwritten: &mut impl FnMut(Operand<'e>, u64) -> Operand<'e>,
+    ) -> Option<Operand<'e>> {
+        // 4-Aligned address
+        let word_offset = byte_offset >> word_size.mul_div_shift();
+        let read_bytes = size.byte_mask().get() as u32;
+        let mask = size.mask();
+        self.get(base, word_offset)
+            .map(|mem_value| {
+                // Can assume offset 0 (read_bytes & 1 != 0) and
+                let read_bytes = read_bytes as u8;
+                if mem_value.written_bytes == read_bytes {
+                    // Early exit, as this is probably the common case
+                    if mem_value.value.is_undefined() && size != word_size {
+                        ctx.and_const(mem_value.value, mask)
+                    } else {
+                        mem_value.value
+                    }
+                } else {
+                    // Else the value has to be masked, maybe also merge with
+                    // unwritten value.
+                    let written_bytes = mem_value.written_bytes;
+                    let value = if written_bytes | read_bytes != written_bytes {
+                        // Merge written and unwritten.
+                        let unwritten = make_unwritten(base, byte_offset);
+                        Self::merge_memory_read(ctx, &mem_value, unwritten)
+                    } else {
+                        // Only written bytes, so written_bytes & 1 != 0
+                        // always (offset is aligned)
+                        mem_value.value
+                    };
+                    ctx.and_const(value, mask)
+                }
+            })
+    }
+
+    /// For accessing memory;
+    /// Creates Operand from MemoryValue containing both unwritten and written bytes.
+    /// (Assumes 32bit memory units)
+    ///
+    /// While this is valid to do for every MemoryValue, the callers avoid calling this and not
+    /// creating unwritten values at all by checking value.written_bytes, and this
+    /// function will only be used in hopefully rare case where the memory read accesses both
+    /// written and unwritten bytes.
+    fn merge_memory_read(
+        ctx: OperandCtx<'e>,
+        value: &MemoryValue<'e>,
+        unwritten: Operand<'e>,
+    ) -> Operand<'e> {
+        // This could technically also have param read_bytes and
+        // use that, which would possibly be faster as it masks
+        // unused bytes earlier.
+        // But ultimately merging written + unwritten should not
+        // be common case either way.
+        let mask = eight_byte_mask_to_bit_mask(value.written_bytes);
+        let value_shift = value.written_bytes.trailing_zeros() << 3;
+        ctx.or(
+            ctx.and_const(
+                ctx.lsh_const(
+                    value.value,
+                    value_shift as u64,
+                ),
+                mask,
+            ),
+            ctx.and_const(
+                unwritten,
+                !mask,
+            ),
+        )
+    }
+
     pub fn write(
         &mut self,
         ctx: OperandCtx<'e>,

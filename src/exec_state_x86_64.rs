@@ -8,7 +8,7 @@ use copyless::BoxHelper;
 use crate::analysis;
 use crate::disasm::{FlagArith, Disassembler64, DestOperand, FlagUpdate, Operation};
 use crate::exec_state::{
-    self, Constraint, FreezeOperation, Memory, MemoryValue, MergeStateCache, PendingFlags,
+    self, Constraint, FreezeOperation, Memory, MergeStateCache, PendingFlags,
 };
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::light_byteorder::ReadLittleEndian;
@@ -220,7 +220,11 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     fn read_memory(&mut self, mem: &MemAccess<'e>) -> Operand<'e> {
         let (base, offset) = mem.address();
         self.inner.read_memory_impl(base, offset, mem.size)
-            .unwrap_or_else(|| self.ctx().memory(mem))
+            .unwrap_or_else(|| {
+                let binary = self.inner.binary;
+                let ctx = self.ctx();
+                State::default_mem_value_size(binary, ctx, base, offset, mem.size)
+            })
     }
 
     fn unresolve(&self, val: Operand<'e>) -> Option<Operand<'e>> {
@@ -621,18 +625,32 @@ impl<'e> State<'e> {
         exec_state::resolve_address(base, ctx, &mut |x| self.resolve(x))
     }
 
-    /// Returns None if the value won't change.
-    fn resolve_mem_internal(&mut self, mem: &MemAccess<'e>) -> Option<Operand<'e>> {
+    /// `value` is required to be `ctx.memory(mem)` that can be used if resolving won't change
+    /// anything.
+    fn resolve_mem_internal(
+        &mut self,
+        mem: &MemAccess<'e>,
+        value: Operand<'e>,
+    ) -> Operand<'e> {
         let resolved = self.resolve_mem(mem);
         let (base, offset) = resolved.address();
-
         self.read_memory_impl(base, offset, mem.size)
-            .or_else(|| {
-                // Just copy the input value if address didn't change
+            .unwrap_or_else(|| {
+                let binary = self.binary;
+                let ctx = self.ctx;
                 if (base, offset) == mem.address() {
-                    None
+                    // May be able to use `value` to avoid interning, but check binary section
+                    // constant first.
+                    if base == ctx.const_0() {
+                        if let Some(binary_const) =
+                            Self::resolve_binary_constant_mem_merge( binary, ctx, offset, mem.size)
+                        {
+                            return binary_const;
+                        }
+                    }
+                    value
                 } else {
-                    Some(self.ctx.memory(&resolved))
+                    Self::default_mem_value_size(binary, ctx, base, offset, mem.size)
                 }
             })
     }
@@ -647,230 +665,14 @@ impl<'e> State<'e> {
         size: MemAccessSize,
     ) -> Option<Operand<'e>> {
         let ctx = self.ctx;
-        let mask = size.mask();
-
-        // Use 8-aligned addresses if there's a const offset
-        let size_bytes = size.bytes();
-        let read_bytes = size.byte_mask().get() as u32;
-        let offset_8 = offset as u32 & 7;
-        let offset_rest = offset & !7;
-        let const_base = base == ctx.const_0();
-        if offset_8 != 0 {
-            let read_bytes = read_bytes << offset_8;
-            let low = self.memory.get(base, offset_rest >> 3)
-                .filter(|x| x.written_bytes & (read_bytes & 0xff) as u8 != 0)
-                .or_else(|| {
-                    if const_base {
-                        // Avoid reading Mem64 if it's not necessary as it may go
-                        // past binary end where a smaller read wouldn't
-                        let size = match offset_8 + size_bytes {
-                            1 => MemAccessSize::Mem8,
-                            2 => MemAccessSize::Mem16,
-                            3 | 4 => MemAccessSize::Mem32,
-                            _ => MemAccessSize::Mem64,
-                        };
-                        self.resolve_binary_constant_mem(offset_rest, size)
-                            .map(|x| MemoryValue {
-                                value: x,
-                                written_bytes: 0xff,
-                            })
-                    } else {
-                        None
-                    }
-                });
-            let needs_high = read_bytes >= 0x100;
-            let high = if needs_high {
-                let high_offset = offset_rest.wrapping_add(8);
-                self.memory.get(base, high_offset >> 3)
-                    .filter(|x| x.written_bytes & (read_bytes >> 8) as u8 != 0)
-                    .or_else(|| {
-                        if const_base {
-                            let size = match (offset_8 + size_bytes) - 8 {
-                                1 => MemAccessSize::Mem8,
-                                2 => MemAccessSize::Mem16,
-                                3 | 4 => MemAccessSize::Mem32,
-                                _ => MemAccessSize::Mem64,
-                            };
-                            self.resolve_binary_constant_mem(high_offset, size)
-                                .map(|x| MemoryValue {
-                                    value: x,
-                                    written_bytes: 0xff,
-                                })
-                        } else {
-                            None
-                        }
-                    })
-            } else {
-                None
-            };
-            if low.is_none() && high.is_none() {
-                return None;
-            }
-
-            let low_shift;
-            let mut low = match low {
-                Some(ref low) => {
-                    let read_bytes = (read_bytes & 0xff) as u8;
-                    // Note: case of reading only unwritten bytes is filtered out above
-                    // right after memory.get()
-                    if low.written_bytes == read_bytes {
-                        if !needs_high {
-                            // Entire value is in `low`, and no other bytes are written.
-                            // Can just return the value.
-                            if low.value.is_undefined() {
-                                // Undefined from mem merge may be bigger than
-                                // written_bytes.
-                                return Some(ctx.and_const(low.value, mask));
-                            } else {
-                                return Some(low.value);
-                            }
-                        }
-                        low_shift = 0;
-                        if low.value.is_undefined() {
-                            // Must be mem merge undefined since otherwise there'd
-                            // be an and mask. Mask it to not break high.
-                            let u64_mask = u64::MAX >> (offset_8 << 3);
-                            ctx.and_const(low.value, u64_mask)
-                        } else {
-                            low.value
-                        }
-                    } else if low.written_bytes | read_bytes != low.written_bytes {
-                        // Reading written bytes and unwritten bytes.
-                        low_shift = offset_8;
-                        self.merge_memory_read_64(base, offset_rest, low)
-                    } else {
-                        // Reading only written bytes, but there are other written bytes too
-                        // which may have to be shifted out
-                        let offset = low.written_bytes.trailing_zeros();
-                        low_shift = offset_8.saturating_sub(offset);
-                        if low.value.is_undefined() {
-                            let u64_mask = u64::MAX >> (offset << 3);
-                            ctx.and_const(low.value, u64_mask)
-                        } else {
-                            low.value
-                        }
-                    }
-                }
-                None => {
-                    low_shift = offset_8;
-                    ctx.mem64(base, offset_rest)
-                }
-            };
-            if low_shift != 0 {
-                low = ctx.rsh_const(low, (low_shift << 3) as u64);
-            }
-
-            let combined = if needs_high {
-                let high = match high {
-                    Some(ref high) => {
-                        // Can assume offset 0 (read_bytes & 1 != 0)
-                        let read_bytes = (read_bytes >> 8) as u8;
-                        if high.written_bytes | read_bytes != high.written_bytes {
-                            // Reading written bytes and unwritten bytes.
-                            let high_offset = offset_rest.wrapping_add(8);
-                            self.merge_memory_read_64(base, high_offset, high)
-                        } else {
-                            // Reading only written bytes.
-                            // Since first byte of high is always read, high.value
-                            // does not need to be shifted right like low.value may have to;
-                            // high.written_bytes & 1 != 0 always on this branch.
-                            high.value
-                        }
-                    }
-                    None => {
-                        let high_offset = offset_rest.wrapping_add(8);
-                        ctx.mem64(base, high_offset)
-                    }
-                };
-                let high = ctx.lsh_const(
-                    high,
-                    ((8 - offset_8) << 3) as u64,
-                );
-                ctx.or(low, high)
-            } else {
-                low
-            };
-
-            let masked = if size != MemAccessSize::Mem64 {
-                ctx.and_const(combined, mask)
-            } else {
-                combined
-            };
-            return Some(masked);
-        } else {
-            // 8-Aligned address
-            self.memory.get(base, offset >> 3)
-                .map(|mem_value| {
-                    // Can assume offset 0 (read_bytes & 1 != 0) and
-                    let read_bytes = read_bytes as u8;
-                    if mem_value.written_bytes == read_bytes {
-                        // Early exit, as this is probably the common case
-                        if mem_value.value.is_undefined() && size != MemAccessSize::Mem64 {
-                            ctx.and_const(mem_value.value, mask)
-                        } else {
-                            mem_value.value
-                        }
-                    } else {
-                        // Else the value has to be masked, maybe also merge with
-                        // unwritten value.
-                        let written_bytes = mem_value.written_bytes;
-                        let value = if written_bytes | read_bytes != written_bytes {
-                            // Merge written and unwritten.
-                            self.merge_memory_read_64(base, offset, &mem_value)
-                        } else {
-                            // Only written bytes, so written_bytes & 1 != 0
-                            // always (offset is aligned)
-                            mem_value.value
-                        };
-                        ctx.and_const(value, mask)
-                    }
-                })
-                .or_else(|| {
-                    if const_base {
-                        self.resolve_binary_constant_mem(offset, size)
-                    } else {
-                        None
-                    }
-                })
-        }
-    }
-
-    /// For accessing memory;
-    /// Creates Operand from MemoryValue containing both unwritten and written bytes.
-    /// (64nits)
-    ///
-    /// While this is valid to do for every MemoryValue, the callers avoid calling this and not
-    /// creating unwritten values at all by checking value.written_bytes, and this
-    /// function will only be used in hopefully rare case where the memory read accesses both
-    /// written and unwritten bytes.
-    fn merge_memory_read_64(
-        &self,
-        mem_base: Operand<'e>,
-        mem_offset: u64,
-        value: &MemoryValue<'e>,
-    ) -> Operand<'e> {
-        let ctx = self.ctx;
-        let unwritten = self.resolve_binary_constant_mem(mem_offset, MemAccessSize::Mem64)
-            .unwrap_or_else(|| ctx.mem64(mem_base, mem_offset));
-        // This could technically also have param read_bytes and
-        // use that, which would possibly be faster as it masks
-        // unused bytes earlier.
-        // But ultimately merging written + unwritten should not
-        // be common case either way.
-        let mask = exec_state::eight_byte_mask_to_bit_mask(value.written_bytes);
-        let value_shift = value.written_bytes.trailing_zeros() << 3;
-        ctx.or(
-            ctx.and_const(
-                ctx.lsh_const(
-                    value.value,
-                    value_shift as u64,
-                ),
-                mask,
-            ),
-            ctx.and_const(
-                unwritten,
-                !mask,
-            ),
+        let binary = self.binary;
+        self.memory.read(
+            ctx,
+            base,
+            offset,
+            size,
+            MemAccessSize::Mem64,
+            move |base, offset| Self::default_mem_value(binary, ctx, base, offset),
         )
     }
 
@@ -895,31 +697,92 @@ impl<'e> State<'e> {
         self.memory.write(ctx, value, base, offset, size, MemAccessSize::Mem64);
     }
 
+    /// Returns value that represents unmodified memory at `[base + offset]`.
+    ///
+    /// Effectively just `Memx[base + offset]` unless the address is constant in binary
+    /// code section. (Wouldn't probably hurt to also accept rdata at some point, but
+    /// need to have a way for users to specify what `BinarySection`s should be used here)
+    fn default_mem_value_size(
+        binary: Option<&BinaryFile<VirtualAddress64>>,
+        ctx: OperandCtx<'e>,
+        base: Operand<'e>,
+        offset: u64,
+        size: MemAccessSize,
+    ) -> Operand<'e> {
+        if base == ctx.const_0() {
+            if let Some(val) = Self::resolve_binary_constant_mem_merge(binary, ctx, offset, size) {
+                return val;
+            }
+        }
+        ctx.mem_any(size, base, offset)
     }
 
-    fn resolve_binary_constant_mem(
-        &self,
+    fn default_mem_value(
+        binary: Option<&BinaryFile<VirtualAddress64>>,
+        ctx: OperandCtx<'e>,
+        base: Operand<'e>,
+        offset: u64,
+    ) -> Operand<'e> {
+        Self::default_mem_value_size(binary, ctx, base, offset, MemAccessSize::Mem64)
+    }
+
+    /// If `address` is in `binary`, reads that constant, handling also the
+    /// case where part of the address is outside binary data and merges
+    /// the constant with `Mem[address]` for the unknown data.
+    fn resolve_binary_constant_mem_merge(
+        binary: Option<&BinaryFile<VirtualAddress64>>,
+        ctx: OperandCtx<'e>,
         address: u64,
         size: MemAccessSize,
     ) -> Option<Operand<'e>> {
-        let size_bytes = size.bytes();
-        // Simplify constants stored in code section (constant switch jumps etc)
-        let end = address.checked_add(size_bytes as u64)?;
-        let section = self.binary.and_then(|b| {
+        let (value, mask) = Self::resolve_binary_constant_mem(binary, address)?;
+        let size_mask = size.mask();
+        if mask >= size_mask {
+            // Common case, entire value was in binary section
+            Some(ctx.constant(value & size_mask))
+        } else {
+            // Rare case, read partially past section end
+            Some(ctx.or_const(
+                ctx.and_const(
+                    ctx.mem_any(size, ctx.const_0(), address),
+                    !mask,
+                ),
+                value,
+            ))
+        }
+    }
+
+    /// Returns u64 value at `address` and mask.
+    /// Mask is usually u64::MAX, but if address is so close to section end that only
+    /// part of the u64 could be read, returns what bytes are valid (0xff, 0xffff, 0xff_ffff, ...).
+    fn resolve_binary_constant_mem(
+        binary: Option<&BinaryFile<VirtualAddress64>>,
+        address: u64,
+    ) -> Option<(u64, u64)> {
+        let section = binary.and_then(|b| {
             b.code_sections().find(|s| {
-                s.virtual_address.0 <= address &&
-                    s.virtual_address.0 + s.virtual_size as u64 >= end
+                // This checks that at least one byte at address is readable
+                s.virtual_address.0 <= address && (s.virtual_address + s.virtual_size).0 > address
             })
         })?;
-        let offset = (address - section.virtual_address.0) as usize;
+        let offset = address.wrapping_sub(section.virtual_address.0) as usize;
         let mut bytes = section.data.get(offset..)?;
-        let val = match size {
-            MemAccessSize::Mem8 => bytes.read_u8().unwrap_or(0) as u64,
-            MemAccessSize::Mem16 => bytes.read_u16().unwrap_or(0) as u64,
-            MemAccessSize::Mem32 => bytes.read_u32().unwrap_or(0) as u64,
-            MemAccessSize::Mem64 => bytes.read_u64().unwrap_or(0),
+        let val = if bytes.len() < 8 {
+            // Can know that bytes.len() != 0 as the section check above will verify
+            // that at least first byte of address is in section bounds
+            debug_assert!(bytes.len() > 0);
+            let mut buf = [0u8; 8];
+            let mut mask = 0;
+            for i in 0..bytes.len() {
+                buf[i] = bytes[i];
+                mask = (mask << 8) | 0xff;
+            }
+            let value = u64::from_le_bytes(buf);
+            (value, mask)
+        } else {
+            (bytes.read_u64().unwrap_or(0), u64::MAX)
         };
-        Some(self.ctx.constant(val))
+        Some(val)
     }
 
     fn resolve(&mut self, value: Operand<'e>) -> Operand<'e> {
@@ -987,8 +850,7 @@ impl<'e> State<'e> {
                 self.ctx.float_arithmetic(op.ty, left, right, size)
             }
             OperandType::Memory(ref mem) => {
-                self.resolve_mem_internal(mem)
-                    .unwrap_or_else(|| value)
+                self.resolve_mem_internal(mem, value)
             }
             OperandType::SignExtend(val, from, to) => {
                 let val = self.resolve(val);
