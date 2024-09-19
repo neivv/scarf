@@ -793,7 +793,7 @@ impl<'e> State<'e> {
                 return val;
             }
         }
-        ctx.mem_any(size, base, offset as u64)
+        ctx.mem_any(size, base, offset as i32 as i64 as u64)
     }
 
     fn default_mem_value(

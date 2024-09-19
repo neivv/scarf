@@ -1,5 +1,7 @@
 use scarf::analysis::{self, Control, DefaultState};
 use scarf::{BinarySection, BinaryFile, OperandContext, OperandCtx, Operation, VirtualAddress64};
+use scarf::exec_state::VirtualAddress;
+use scarf::VirtualAddress as VirtualAddress32;
 
 #[test]
 fn continue_at_1() {
@@ -131,8 +133,54 @@ impl<'e> analysis::Analyzer<'e> for AnalyzeAddress0 {
     }
 }
 
-fn make_bin(code: &[u8]) -> BinaryFile<VirtualAddress64> {
-    scarf::raw_bin(VirtualAddress64(0x00400000), vec![BinarySection {
+#[test]
+fn negative_mem32() {
+    let ctx = &OperandContext::new();
+    // Check that unmodified Mem32[x - 10] doesn't become Mem32[x + ffff_fff0]
+    // in 32bit ExecutionState.
+    let mut a = NegativeMem32(false, ctx.register(4));
+    let bin = make_bin(&[
+        0x8b, 0x44, 0xe4, 0xf0, // mov eax, [esp - 10]
+        0x8d, 0x4c, 0xe4, 0xf0, // lea ecx, [esp - 10]
+        0xc3, // ret
+    ]);
+
+    test_inline_32(&bin, ctx, &mut a);
+    assert_eq!(a.0, true);
+
+    // This move makes things go differently since it won't hit
+    // resolve(Mem[x]) == Mem[x] avoid-interning optimization path
+    let mut a = NegativeMem32(false, ctx.register(5));
+    let bin = make_bin(&[
+        0x89, 0xec, // mov esp, ebp
+        0x8b, 0x44, 0xe4, 0xf0, // mov eax, [esp - 10]
+        0x8d, 0x4c, 0xe4, 0xf0, // lea ecx, [esp - 10]
+        0xc3, // ret
+    ]);
+
+    test_inline_32(&bin, ctx, &mut a);
+    assert_eq!(a.0, true);
+}
+
+struct NegativeMem32<'e>(bool, scarf::Operand<'e>);
+impl<'e> analysis::Analyzer<'e> for NegativeMem32<'e> {
+    type State = analysis::DefaultState;
+    type Exec = scarf::ExecutionStateX86<'e>;
+    fn operation(&mut self, ctrl: &mut Control<'e, '_, '_, Self>, op: &Operation<'e>) {
+        if let Operation::Return(..) = *op {
+            let ctx = ctrl.ctx();
+            let eax = ctrl.resolve_register(0);
+            let ecx = ctrl.resolve_register(1);
+            let esp = self.1;
+            assert_eq!(eax, ctx.mem32(ctx.sub_const(esp, 0x10), 0));
+            assert_eq!(ecx, ctx.sub_const(esp, 0x10));
+            self.0 = true;
+        }
+    }
+}
+
+fn make_bin<Va: VirtualAddress>(code: &[u8]) -> BinaryFile<Va> {
+    scarf::raw_bin(Va::from_u64(0x00400000), vec![BinarySection {
         name: {
             // ugh
             let mut x = [0; 8];
@@ -141,10 +189,20 @@ fn make_bin(code: &[u8]) -> BinaryFile<VirtualAddress64> {
             }
             x
         },
-        virtual_address: VirtualAddress64(0x401000),
+        virtual_address: Va::from_u64(0x401000),
         virtual_size: code.len() as u32,
         data: code.into(),
     }])
+}
+
+fn test_inline_32<'e, A>(
+    binary: &'e BinaryFile<VirtualAddress32>,
+    ctx: OperandCtx<'e>,
+    analyzer: &mut A,
+)
+where A: analysis::Analyzer<'e, Exec = scarf::ExecutionStateX86<'e>, State = DefaultState>
+{
+    test_inner_32(binary, ctx, binary.code_section().virtual_address, analyzer);
 }
 
 fn test_inline<'e, A>(
@@ -155,6 +213,19 @@ fn test_inline<'e, A>(
 where A: analysis::Analyzer<'e, Exec = scarf::ExecutionStateX86_64<'e>, State = DefaultState>
 {
     test_inner(binary, ctx, binary.code_section().virtual_address, analyzer);
+}
+
+fn test_inner_32<'e, A>(
+    file: &'e BinaryFile<VirtualAddress32>,
+    ctx: OperandCtx<'e>,
+    func: VirtualAddress32,
+    analyzer: &mut A,
+)
+where A: analysis::Analyzer<'e, Exec = scarf::ExecutionStateX86<'e>, State = DefaultState>
+{
+    let state = scarf::ExecutionStateX86::with_binary(file, ctx);
+    let mut analysis = analysis::FuncAnalysis::with_state(file, ctx, func, state);
+    analysis.analyze(analyzer);
 }
 
 fn test_inner<'e, A>(
