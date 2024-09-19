@@ -1581,6 +1581,8 @@ impl<'e> Memory<'e> {
         }
     }
 
+    /// Low-level api to read memory that is not aware of how many bytes
+    /// one Operand represents.
     pub fn get(&mut self, base: Operand<'e>, offset: u64) -> Option<MemoryValue<'e>> {
         let address = (base, offset);
         if Some(address) == self.cached_addr {
@@ -1592,11 +1594,253 @@ impl<'e> Memory<'e> {
         result
     }
 
+    /// Low-level api to write memory that is not aware of how many bytes
+    /// one Operand represents.
     pub fn set(&mut self, base: Operand<'e>, offset: u64, value: MemoryValue<'e>) {
         let address = (base, offset);
         self.map.set((base.hash_by_address(), offset), value);
         self.cached_addr = Some(address);
         self.cached_value = Some(value);
+    }
+
+    pub fn write(
+        &mut self,
+        ctx: OperandCtx<'e>,
+        value: Operand<'e>,
+        base: Operand<'e>,
+        byte_offset: u64,
+        size: MemAccessSize,
+        word_size: MemAccessSize,
+    ) {
+        debug_assert!(size.bytes() <= word_size.bytes());
+        let word_bytes = word_size.bytes();
+        let mask = word_bytes.wrapping_sub(1);
+        let suboffset = byte_offset as u32 & mask;
+        let offset_rest = byte_offset & !(mask as u64);
+        let low_index = offset_rest >> word_size.mul_div_shift();
+        if suboffset != 0 {
+            self.write_unaligned(ctx, value, base, low_index, suboffset, size, word_size);
+        } else {
+            self.write_aligned(ctx, value, base, low_index, size, word_size);
+        }
+    }
+
+    /// Helper function to do a write where the write starts at address
+    /// that is aligned to this Memory's Operand storage.
+    /// Merges with existing value when `size < word_size`
+    ///
+    /// - `offset` is offset in `Operand`s to this memory
+    ///     (`byte_offset / 4` on x86 and `byte_offset / 8` on x86-64)
+    /// - `size` is how large value is being written.
+    /// - `word_size` is size of one such `Operand` of this memory
+    ///     (`Mem32` / `Mem64`)
+    fn write_aligned(
+        &mut self,
+        ctx: OperandCtx<'e>,
+        value: Operand<'e>,
+        base: Operand<'e>,
+        offset: u64,
+        size: MemAccessSize,
+        word_size: MemAccessSize,
+    ) {
+        let written_bytes = size.byte_mask().get();
+        let mem_value = if size == word_size {
+            MemoryValue {
+                value,
+                written_bytes,
+            }
+        } else {
+            let old = self.get(base, offset);
+            match old {
+                Some(ref old) => {
+                    if old.written_bytes & written_bytes == old.written_bytes {
+                        // Can just overwrite the value
+                        MemoryValue {
+                            value,
+                            written_bytes,
+                        }
+                    } else {
+                        // If the new bytes are at lower offset than old ones,
+                        // old value has to be shifted left.
+                        let mut old_value = old.value;
+                        if old.written_bytes & 1 == 0 {
+                            let shift = old.written_bytes.trailing_zeros() << 3;
+                            old_value = ctx.lsh_const(old_value, shift as u64);
+                        }
+                        let mask = size.mask();
+                        // If old value contains bytes that are now being written,
+                        // zero them out.
+                        if old.written_bytes & written_bytes != 0 {
+                            old_value = ctx.and_const(old_value, !mask);
+                        }
+                        MemoryValue {
+                            value: ctx.or(
+                                value,
+                                old_value,
+                            ),
+                            written_bytes: written_bytes | old.written_bytes,
+                        }
+                    }
+                }
+                None => {
+                    MemoryValue {
+                        value: value,
+                        written_bytes,
+                    }
+                }
+            }
+        };
+        self.set(base, offset as u64, mem_value);
+    }
+
+    /// Helper function to do a write where the write starts at address
+    /// that is not aligned to this Memory's Operand storage.
+    ///
+    /// - `offset` is offset in `Operand`s to this memory
+    ///     (`byte_offset / 4` on x86 and `byte_offset / 8` on x86-64)
+    /// - `suboffset` is how many bytes into the first `Operand` store happens
+    ///     (`byte_offset % 4` on x86 and `byte_offset % 8` on x86-64)
+    /// - `size` is how large value is being written.
+    /// - `word_size` is size of one such `Operand` of this memory
+    ///     (`Mem32` / `Mem64`)
+    fn write_unaligned(
+        &mut self,
+        ctx: OperandCtx<'e>,
+        value: Operand<'e>,
+        base: Operand<'e>,
+        offset: u64,
+        suboffset: u32,
+        size: MemAccessSize,
+        word_size: MemAccessSize,
+    ) {
+        let written_bytes = size.byte_mask().get() as u32;
+        let written_bytes = written_bytes.wrapping_shl(suboffset);
+        let word_byte_mask = word_size.byte_mask().get() as u32;
+        let needs_high = written_bytes > word_byte_mask;
+        let word_mask = word_size.mask();
+
+        // Low:
+        {
+            let low_index = offset;
+            let low_old = self.get(base, low_index);
+            let written_bytes = (written_bytes & word_byte_mask) as u8;
+            // Part of the value that is written to low word
+            let value = match needs_high {
+                false => value,
+                true => {
+                    let mask = word_mask.wrapping_shr(suboffset << 3);
+                    ctx.and_const(value, mask as u64)
+                }
+            };
+            let low_value = match low_old {
+                Some(ref old) => {
+                    if old.written_bytes & written_bytes == old.written_bytes {
+                        // Can just overwrite the value
+                        MemoryValue {
+                            value,
+                            written_bytes,
+                        }
+                    } else {
+                        let mut old_value = old.value;
+                        let mut new_value = value;
+                        let old_offset = old.written_bytes.trailing_zeros();
+                        // If old value contains bytes that are now being written,
+                        // zero them out.
+                        if old.written_bytes & written_bytes != 0 {
+                            let shared_mask = eight_byte_mask_to_bit_mask(
+                                old.written_bytes & written_bytes
+                            ).wrapping_shr(old_offset << 3);
+                            old_value = ctx.and_const(old_value, !shared_mask);
+                        }
+                        // The value that is located at higher offset
+                        // (More trailing zeros)
+                        // will have to be shifted left.
+                        let shift = old_offset.wrapping_sub(suboffset) as i8;
+                        if shift > 0 {
+                            old_value = ctx.lsh_const(
+                                old_value,
+                                ((shift as u8) << 3) as u64,
+                            );
+                        } else if shift < 0 {
+                            new_value = ctx.lsh_const(
+                                new_value,
+                                ((0i8.wrapping_sub(shift) as u8) << 3) as u64,
+                            );
+                        }
+                        MemoryValue {
+                            value: ctx.or(
+                                new_value,
+                                old_value,
+                            ),
+                            written_bytes: written_bytes | old.written_bytes,
+                        }
+                    }
+                }
+                None => {
+                    MemoryValue {
+                        value,
+                        written_bytes,
+                    }
+                }
+            };
+            self.set(base, low_index, low_value);
+        }
+        // High:
+        if needs_high {
+            let high_index = offset.wrapping_add(1) & (word_mask >> word_size.mul_div_shift());
+            let high_old = self.get(base, high_index);
+            let word_bytes = word_size.bytes();
+            let written_bytes = (written_bytes >> word_bytes) as u8;
+            // Mask value by ffff_ffff if writing 32bit words and value is larger than that
+            // (In aligned stores it will be allowed to roundtrip without a mask)
+            let value = if value.relevant_bits().end > word_size.bits() as u8 {
+                ctx.and_const(value, word_mask)
+            } else {
+                value
+            };
+            let value = ctx.rsh_const(value, (word_bytes.wrapping_sub(suboffset) << 3) as u64);
+            let high_value = match high_old {
+                Some(ref old) => {
+                    if old.written_bytes == written_bytes {
+                        // Can just overwrite the value
+                        MemoryValue {
+                            value,
+                            written_bytes,
+                        }
+                    } else {
+                        let mut old_value = old.value;
+                        // If old value contains bytes that are now being written,
+                        // zero them out.
+                        if old.written_bytes & written_bytes != 0 {
+                            let shared_mask = eight_byte_mask_to_bit_mask(
+                                old.written_bytes & written_bytes
+                            );
+                            old_value = ctx.and_const(old_value, !shared_mask);
+                        }
+                        // If the new bytes are at lower offset than old ones,
+                        // old value has to be shifted left.
+                        if old.written_bytes & 1 == 0 {
+                            let shift = old.written_bytes.trailing_zeros() << 3;
+                            old_value = ctx.lsh_const(old_value, shift as u64);
+                        }
+                        MemoryValue {
+                            value: ctx.or(
+                                value,
+                                old_value,
+                            ),
+                            written_bytes: written_bytes | old.written_bytes,
+                        }
+                    }
+                }
+                None => {
+                    MemoryValue {
+                        value,
+                        written_bytes,
+                    }
+                }
+            };
+            self.set(base, high_index, high_value);
+        }
     }
 
     /// Does a reverse lookup on last accessed memory address.

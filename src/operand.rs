@@ -3505,6 +3505,25 @@ impl MemAccessSize {
         }) as u32
     }
 
+    /// Returns `self.bytes().trailing_bits()`
+    ///
+    /// ```rust
+    /// use scarf::MemAccessSize;
+    /// assert_eq!(MemAccessSize::Mem8.mul_div_shift(), 0);
+    /// assert_eq!(MemAccessSize::Mem16.mul_div_shift(), 1);
+    /// assert_eq!(MemAccessSize::Mem32.mul_div_shift(), 2);
+    /// assert_eq!(MemAccessSize::Mem64.mul_div_shift(), 3);
+    /// ```
+    #[inline]
+    pub fn mul_div_shift(self) -> u8 {
+        match self {
+            MemAccessSize::Mem64 => 3u8,
+            MemAccessSize::Mem32 => 2,
+            MemAccessSize::Mem16 => 1,
+            MemAccessSize::Mem8 => 0,
+        }
+    }
+
     /// Returns the bitwise AND mask of `MemAccessSize`.
     ///
     /// ```rust
