@@ -16,10 +16,10 @@ use crate::light_byteorder::{ReadLittleEndian};
 use crate::operand::{
     Flag, MemAccess, MemAccessSize, Operand, OperandCtx, OperandType, ArithOpType,
 };
-use crate::{BinaryFile, VirtualAddress};
+use crate::{BinaryFile, VirtualAddress32};
 
 impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
-    type VirtualAddress = VirtualAddress;
+    type VirtualAddress = VirtualAddress32;
     type Disassembler = Disassembler32<'e>;
     const WORD_SIZE: MemAccessSize = MemAccessSize::Mem32;
 
@@ -134,7 +134,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
         merge_states(&mut old.inner, &mut new.inner, cache)
     }
 
-    fn apply_call(&mut self, ret: VirtualAddress) {
+    fn apply_call(&mut self, ret: VirtualAddress32) {
         let ctx = self.ctx();
         let new_esp = ctx.sub_const(self.resolve_register(4), 4);
         self.set_register(4, new_esp);
@@ -146,7 +146,7 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
 
     fn initial_state(
         ctx: OperandCtx<'e>,
-        binary: &'e BinaryFile<VirtualAddress>,
+        binary: &'e BinaryFile<VirtualAddress32>,
     ) -> ExecutionState<'e> {
         let mut state = ExecutionState::with_binary(binary, ctx);
 
@@ -243,7 +243,7 @@ struct State<'e> {
     unresolved_constraint: Option<Constraint<'e>>,
     memory_constraint: Option<Constraint<'e>>,
     ctx: OperandCtx<'e>,
-    binary: Option<&'e BinaryFile<VirtualAddress>>,
+    binary: Option<&'e BinaryFile<VirtualAddress32>>,
     pending_flags: PendingFlags<'e>,
     freeze_buffer: Vec<FreezeOperation<'e>>,
     frozen: bool,
@@ -367,7 +367,7 @@ impl<'e> ExecutionState<'e> {
     }
 
     pub fn with_binary<'b>(
-        binary: &'b crate::BinaryFile<VirtualAddress>,
+        binary: &'b BinaryFile<VirtualAddress32>,
         ctx: OperandCtx<'b>,
     ) -> ExecutionState<'b> {
         let mut result = ExecutionState::new(ctx);
@@ -782,7 +782,7 @@ impl<'e> State<'e> {
     /// code section. (Wouldn't probably hurt to also accept rdata at some point, but
     /// need to have a way for users to specify what `BinarySection`s should be used here)
     fn default_mem_value_size(
-        binary: Option<&BinaryFile<VirtualAddress>>,
+        binary: Option<&BinaryFile<VirtualAddress32>>,
         ctx: OperandCtx<'e>,
         base: Operand<'e>,
         offset: u32,
@@ -797,7 +797,7 @@ impl<'e> State<'e> {
     }
 
     fn default_mem_value(
-        binary: Option<&BinaryFile<VirtualAddress>>,
+        binary: Option<&BinaryFile<VirtualAddress32>>,
         ctx: OperandCtx<'e>,
         base: Operand<'e>,
         offset: u32,
@@ -809,7 +809,7 @@ impl<'e> State<'e> {
     /// case where part of the address is outside binary data and merges
     /// the constant with `Mem[address]` for the unknown data.
     fn resolve_binary_constant_mem_merge(
-        binary: Option<&BinaryFile<VirtualAddress>>,
+        binary: Option<&BinaryFile<VirtualAddress32>>,
         ctx: OperandCtx<'e>,
         address: u32,
         size: MemAccessSize,
@@ -835,7 +835,7 @@ impl<'e> State<'e> {
     /// Mask is usually u32::MAX, but if address is so close to section end that only
     /// part of the u32 could be read, returns what bytes are valid (0xff, 0xffff, 0xff_ffff).
     fn resolve_binary_constant_mem(
-        binary: Option<&BinaryFile<VirtualAddress>>,
+        binary: Option<&BinaryFile<VirtualAddress32>>,
         address: u32,
     ) -> Option<(u32, u32)> {
         let section = binary.and_then(|b| {

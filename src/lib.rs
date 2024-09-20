@@ -47,7 +47,7 @@
 //!     ways to query and manipulate analysis state.
 //! - [`BinaryFile`] - Contains sections of the binary, including code that is to be simulated.
 //!     - [`BinarySection`] - A single section, practically just `Vec<u8>` and a base address.
-//! - [`VirtualAddress`] / [`VirtualAddress64`] - Integer newtype representing a constant
+//! - [`VirtualAddress32`] / [`VirtualAddress64`] - Integer newtype representing a constant
 //!     address, usually in `BinaryFile`
 //!     - [`trait exec_state::VirtualAddress`](exec_state::VirtualAddress) - A trait allowing
 //!     handling both address sizes generically.
@@ -88,6 +88,10 @@ pub use crate::exec_state::ExecutionState;
 
 pub use crate::exec_state_x86::ExecutionState as ExecutionStateX86;
 pub use crate::exec_state_x86_64::ExecutionState as ExecutionStateX86_64;
+
+/// Old name for `VirtualAddress32`, confusable with `exec_state::VirtualAddress` trait.
+// (Note that making this type alias instead would break code that does VirtualAddress(x))
+pub use crate::VirtualAddress32 as VirtualAddress;
 
 use std::ffi::{OsStr};
 use std::fs::File;
@@ -130,12 +134,11 @@ impl std::fmt::Debug for Rva64 {
     }
 }
 
-/// `VirtualAddress` represents a constant 32-bit memory address.
+/// `VirtualAddress32` represents a constant 32-bit memory address.
 ///
 /// See also [`exec_state::VirtualAddress`] trait for the trait
 /// is used by generic code to operate on either this type or
-/// 64-bit [`VirtualAddress64`]. Due to legacy naming decisions, this type
-/// confusingly has same name as the trait, instead of `VirtualAddress32`.
+/// 64-bit [`VirtualAddress64`].
 ///
 /// Most of scarf does not require memory addresses be a integer constant,
 /// using [`Operand`s](Operand) instead. `VirtualAddress` is mainly used when
@@ -144,17 +147,17 @@ impl std::fmt::Debug for Rva64 {
 /// The only notable difference from a plain `u32` is that
 /// addition and subtraction(*) are defined to wrap on overflow.
 ///
-/// (*) Subtracting `VirtualAddress - VirtualAddress` does panic on overflow,
-/// Subtracting `VirtualAddress - u32` wraps.
+/// (*) Subtracting `VirtualAddress32 - VirtualAddress32` does panic on overflow if
+/// overflow checks are enabled, while subtracting `VirtualAddress32 - u32` wraps.
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct VirtualAddress(pub u32);
+pub struct VirtualAddress32(pub u32);
 
 /// `VirtualAddress64` represents a constant 64-bit memory address.
 ///
 /// See also [`exec_state::VirtualAddress`] trait for the trait
 /// is used by generic code to operate on either this type or
-/// 32-bit [`VirtualAddress`].
+/// 32-bit [`VirtualAddress32`].
 ///
 /// Most of scarf does not require memory addresses be a integer constant,
 /// using [`Operands`](Operand) instead. `VirtualAddress` is mainly used when
@@ -163,19 +166,19 @@ pub struct VirtualAddress(pub u32);
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct VirtualAddress64(pub u64);
 
-impl std::fmt::Debug for VirtualAddress {
+impl std::fmt::Debug for VirtualAddress32 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "VirtualAddress({:08x})", self.0)
+        write!(f, "VirtualAddress32({:08x})", self.0)
     }
 }
 
 impl std::fmt::Debug for VirtualAddress64 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "VirtualAddress({:08x})", self.0)
+        write!(f, "VirtualAddress32({:08x})", self.0)
     }
 }
 
-impl std::fmt::LowerHex for VirtualAddress {
+impl std::fmt::LowerHex for VirtualAddress32 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{:08x}", self.0)
     }
@@ -187,7 +190,7 @@ impl std::fmt::LowerHex for VirtualAddress64 {
     }
 }
 
-impl std::fmt::UpperHex for VirtualAddress {
+impl std::fmt::UpperHex for VirtualAddress32 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{:08X}", self.0)
     }
@@ -199,10 +202,10 @@ impl std::fmt::UpperHex for VirtualAddress64 {
     }
 }
 
-impl std::ops::Add<Rva> for VirtualAddress {
-    type Output = VirtualAddress;
+impl std::ops::Add<Rva> for VirtualAddress32 {
+    type Output = VirtualAddress32;
     #[inline]
-    fn add(self, rhs: Rva) -> VirtualAddress {
+    fn add(self, rhs: Rva) -> VirtualAddress32 {
         self + rhs.0
     }
 }
@@ -215,11 +218,11 @@ impl std::ops::Add<Rva> for VirtualAddress64 {
     }
 }
 
-impl std::ops::Add<u32> for VirtualAddress {
-    type Output = VirtualAddress;
+impl std::ops::Add<u32> for VirtualAddress32 {
+    type Output = VirtualAddress32;
     #[inline]
-    fn add(self, rhs: u32) -> VirtualAddress {
-        VirtualAddress(self.0.wrapping_add(rhs))
+    fn add(self, rhs: u32) -> VirtualAddress32 {
+        VirtualAddress32(self.0.wrapping_add(rhs))
     }
 }
 
@@ -231,11 +234,11 @@ impl std::ops::Add<u32> for VirtualAddress64 {
     }
 }
 
-impl std::ops::Sub<u32> for VirtualAddress {
-    type Output = VirtualAddress;
+impl std::ops::Sub<u32> for VirtualAddress32 {
+    type Output = VirtualAddress32;
     #[inline]
-    fn sub(self, rhs: u32) -> VirtualAddress {
-        VirtualAddress(self.0.wrapping_sub(rhs))
+    fn sub(self, rhs: u32) -> VirtualAddress32 {
+        VirtualAddress32(self.0.wrapping_sub(rhs))
     }
 }
 
@@ -247,10 +250,10 @@ impl std::ops::Sub<u32> for VirtualAddress64 {
     }
 }
 
-impl std::ops::Sub<VirtualAddress> for VirtualAddress {
+impl std::ops::Sub<VirtualAddress32> for VirtualAddress32 {
     type Output = Rva;
     #[inline]
-    fn sub(self, rhs: VirtualAddress) -> Rva {
+    fn sub(self, rhs: VirtualAddress32) -> Rva {
         Rva(self.0 - rhs.0)
     }
 }
@@ -662,7 +665,7 @@ pub fn raw_bin<Va: exec_state::VirtualAddress>(
 }
 
 /// Creates a `BinaryFile` from 32-bit Windows executable at `filename`.
-pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
+pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress32>, Error> {
     use byteorder::{ByteOrder, LittleEndian};
     use crate::Error::*;
     let mut file = BufReader::new(File::open(filename)?);
@@ -684,7 +687,7 @@ pub fn parse(filename: &OsStr) -> Result<BinaryFile<VirtualAddress>, Error> {
     }
 
     let section_count = LittleEndian::read_u16(&buffer[0x6..]);
-    let base = VirtualAddress(LittleEndian::read_u32(&buffer[0x34..]));
+    let base = VirtualAddress32(LittleEndian::read_u32(&buffer[0x34..]));
     let header_block_size = LittleEndian::read_u32(&buffer[0x54..]);
 
     let mut sections = Vec::with_capacity(section_count as usize + 1);

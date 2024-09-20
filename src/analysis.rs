@@ -14,7 +14,7 @@ use crate::exec_state::{self, Constraint, Disassembler, ExecutionState, MergeSta
 use crate::exec_state::VirtualAddress as VaTrait;
 use crate::light_byteorder::ReadLittleEndian;
 use crate::operand::{Flag, MemAccess, MemAccessSize, Operand, OperandCtx};
-use crate::{BinaryFile, BinarySection, Rva, VirtualAddress, VirtualAddress64};
+use crate::{BinaryFile, BinarySection, Rva, VirtualAddress32, VirtualAddress64};
 
 pub use crate::disasm::Error;
 
@@ -71,8 +71,8 @@ pub fn find_functions_with_callers<'a, E: ExecutionState<'a>>(
 }
 
 pub fn find_functions_with_callers_x86(
-    file: &BinaryFile<VirtualAddress>,
-) -> Vec<FuncCallPair<VirtualAddress>> {
+    file: &BinaryFile<VirtualAddress32>,
+) -> Vec<FuncCallPair<VirtualAddress32>> {
     let mut out = Vec::with_capacity(800);
     for code in file.code_sections() {
         let data = &code.data;
@@ -83,7 +83,7 @@ pub fn find_functions_with_callers_x86(
                     data.get(idx + 1..).and_then(|mut x| x.read_u32().ok())
                         .map(|relative| FuncCallPair {
                             caller: code.virtual_address + idx as u32,
-                            callee: VirtualAddress(
+                            callee: VirtualAddress32(
                                 code.virtual_address.0
                                     .wrapping_add((idx as u32 + 5).wrapping_add(relative))
                             ),
@@ -139,8 +139,8 @@ fn find_functions_from_calls<'a, E: ExecutionState<'a>>(
 
 pub(crate) fn find_functions_from_calls_x86(
     code: &[u8],
-    section_base: VirtualAddress,
-    out: &mut Vec<VirtualAddress>,
+    section_base: VirtualAddress32,
+    out: &mut Vec<VirtualAddress32>,
 ) {
     out.extend({
         code.iter().enumerate()
@@ -370,7 +370,9 @@ pub fn find_relocs<'a, E: ExecutionState<'a>>(
     E::find_relocs(file)
 }
 
-pub fn find_relocs_x86(file: &BinaryFile<VirtualAddress>) -> Result<Vec<VirtualAddress>, crate::OutOfBounds> {
+pub fn find_relocs_x86(
+    file: &BinaryFile<VirtualAddress32>,
+) -> Result<Vec<VirtualAddress32>, crate::OutOfBounds> {
     let pe_header = file.base + file.read_u32(file.base + 0x3c)?;
     let reloc_offset = file.read_u32(pe_header + 0xa0)?;
     let reloc_len = file.read_u32(pe_header + 0xa4)?;
@@ -1918,36 +1920,36 @@ mod test {
 
     #[test]
     fn test_x86_calls() {
-        use crate::VirtualAddress;
+        use crate::VirtualAddress32;
         use crate::exec_state_x86::ExecutionState;
 
         let mut result = Vec::new();
         super::find_functions_from_calls::<ExecutionState>(
             X86_CALL_TEST_DATA,
-            VirtualAddress(0x1000),
+            VirtualAddress32(0x1000),
             &mut result,
         );
         assert_eq!(result.len(), 5);
         result.sort();
         result.dedup();
         assert_eq!(result.len(), 4);
-        assert_eq!(result[0], VirtualAddress(0x1005));
-        assert_eq!(result[1], VirtualAddress(0x1010));
-        assert_eq!(result[2], VirtualAddress(0x1018));
-        assert_eq!(result[3], VirtualAddress(0x1033));
+        assert_eq!(result[0], VirtualAddress32(0x1005));
+        assert_eq!(result[1], VirtualAddress32(0x1010));
+        assert_eq!(result[2], VirtualAddress32(0x1018));
+        assert_eq!(result[3], VirtualAddress32(0x1033));
     }
 
     #[test]
     fn test_x86_calls_callers() {
-        use crate::VirtualAddress;
+        use crate::VirtualAddress32;
         use crate::exec_state_x86::ExecutionState;
 
         let file = crate::raw_bin(
-            VirtualAddress(0x1000),
+            VirtualAddress32(0x1000),
             vec![
                 crate::BinarySection {
                     name: *b".text\0\0\0",
-                    virtual_address: VirtualAddress(0x1000),
+                    virtual_address: VirtualAddress32(0x1000),
                     virtual_size: 0x100,
                     data: X86_CALL_TEST_DATA.into(),
                 },
@@ -1955,14 +1957,14 @@ mod test {
         );
         let result = super::find_functions_with_callers::<ExecutionState>(&file);
         assert_eq!(result.len(), 5);
-        assert_eq!(result[0].callee, VirtualAddress(0x1005));
-        assert_eq!(result[0].caller, VirtualAddress(0x1024));
-        assert_eq!(result[1].callee, VirtualAddress(0x1010));
-        assert_eq!(result[2].callee, VirtualAddress(0x1010));
-        assert_eq!(result[3].callee, VirtualAddress(0x1018));
-        assert_eq!(result[3].caller, VirtualAddress(0x1008));
-        assert_eq!(result[4].callee, VirtualAddress(0x1033));
-        assert_eq!(result[4].caller, VirtualAddress(0x1029));
+        assert_eq!(result[0].callee, VirtualAddress32(0x1005));
+        assert_eq!(result[0].caller, VirtualAddress32(0x1024));
+        assert_eq!(result[1].callee, VirtualAddress32(0x1010));
+        assert_eq!(result[2].callee, VirtualAddress32(0x1010));
+        assert_eq!(result[3].callee, VirtualAddress32(0x1018));
+        assert_eq!(result[3].caller, VirtualAddress32(0x1008));
+        assert_eq!(result[4].callee, VirtualAddress32(0x1033));
+        assert_eq!(result[4].caller, VirtualAddress32(0x1029));
     }
 
     #[test]

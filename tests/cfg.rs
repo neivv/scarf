@@ -9,7 +9,7 @@ use byteorder::{ReadBytesExt, LittleEndian};
 
 use scarf::analysis::{self, Control};
 use scarf::cfg::CfgOutEdges;
-use scarf::{BinaryFile, Operation, VirtualAddress};
+use scarf::{BinaryFile, Operation, VirtualAddress32};
 
 type Analysis<'a> =
     analysis::FuncAnalysis<'a, scarf::ExecutionStateX86<'a>, analysis::DefaultState>;
@@ -62,7 +62,7 @@ fn switch_but_constant_case() {
     }
 }
 
-fn load_test(idx: usize) -> (BinaryFile<VirtualAddress>, VirtualAddress) {
+fn load_test(idx: usize) -> (BinaryFile<VirtualAddress32>, VirtualAddress32) {
     let mut binary = helpers::raw_bin(OsStr::new("test_inputs/cfg.bin")).unwrap();
     let code_section = binary.code_section();
     let offset = (&code_section.data[idx * 4..]).read_u32::<LittleEndian>().unwrap();

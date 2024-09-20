@@ -6,8 +6,7 @@ use crate::exec_state::{VirtualAddress};
 use crate::operand::{
     self, ArithOpType, Flag, MemAccess, Operand, OperandCtx, OperandType, MemAccessSize,
 };
-use crate::VirtualAddress as VirtualAddress32;
-use crate::{BinaryFile, VirtualAddress64};
+use crate::{BinaryFile, VirtualAddress32, VirtualAddress64};
 
 quick_error! {
     // NOTE: Try avoid making this have a destructor

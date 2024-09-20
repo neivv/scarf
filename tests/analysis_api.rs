@@ -1,7 +1,7 @@
 use scarf::analysis::{self, Control, DefaultState};
 use scarf::{BinarySection, BinaryFile, OperandContext, OperandCtx, Operation, VirtualAddress64};
 use scarf::exec_state::VirtualAddress;
-use scarf::VirtualAddress as VirtualAddress32;
+use scarf::VirtualAddress32;
 
 #[test]
 fn continue_at_1() {

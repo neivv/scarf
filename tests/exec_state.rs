@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use byteorder::{ReadBytesExt, LittleEndian};
 
 use scarf::{
-    BinaryFile, BinarySection, DestOperand, Operand, Operation, OperandContext, VirtualAddress,
+    BinaryFile, BinarySection, DestOperand, Operand, Operation, OperandContext, VirtualAddress32,
     MemAccessSize,
 };
 use scarf::analysis::{self, Control};
@@ -1219,8 +1219,8 @@ impl<'e> analysis::Analyzer<'e> for CollectEndState<'e> {
 }
 
 fn test_inner<'e, 'b>(
-    file: &'e BinaryFile<VirtualAddress>,
-    func: VirtualAddress,
+    file: &'e BinaryFile<VirtualAddress32>,
+    func: VirtualAddress32,
     changes: &[(Operand<'b>, Operand<'b>)],
     init: &[(Operand<'b>, Operand<'b>)],
     xmm: bool,
@@ -1279,16 +1279,16 @@ fn test_inner<'e, 'b>(
     }
 }
 
-fn make_binary_with_virtual_size(code: &[u8], virtual_size: u32) -> BinaryFile<VirtualAddress> {
-    scarf::raw_bin(VirtualAddress(0x00400000), vec![BinarySection {
+fn make_binary_with_virtual_size(code: &[u8], virtual_size: u32) -> BinaryFile<VirtualAddress32> {
+    scarf::raw_bin(VirtualAddress32(0x00400000), vec![BinarySection {
         name: *b".text\0\0\0",
-        virtual_address: VirtualAddress(0x401000),
+        virtual_address: VirtualAddress32(0x401000),
         virtual_size,
         data: code.into(),
     }])
 }
 
-fn make_binary(code: &[u8]) -> BinaryFile<VirtualAddress> {
+fn make_binary(code: &[u8]) -> BinaryFile<VirtualAddress32> {
     make_binary_with_virtual_size(code, code.len() as u32)
 }
 
@@ -1306,7 +1306,7 @@ fn test_inline_with_init<'e>(
     changes: &[(Operand<'e>, Operand<'e>)],
     init: &[(Operand<'e>, Operand<'e>)],
 ) {
-    let binary = scarf::raw_bin(VirtualAddress(0x00400000), vec![BinarySection {
+    let binary = scarf::raw_bin(VirtualAddress32(0x00400000), vec![BinarySection {
         name: {
             // ugh
             let mut x = [0; 8];
@@ -1315,7 +1315,7 @@ fn test_inline_with_init<'e>(
             }
             x
         },
-        virtual_address: VirtualAddress(0x401000),
+        virtual_address: VirtualAddress32(0x401000),
         virtual_size: code.len() as u32,
         data: code.into(),
     }]);
@@ -1325,6 +1325,6 @@ fn test_inline_with_init<'e>(
 fn test<'b>(idx: usize, changes: &[(Operand<'b>, Operand<'b>)]) {
     let binary = helpers::raw_bin(OsStr::new("test_inputs/exec_state.bin")).unwrap();
     let offset = (&binary.code_section().data[idx * 4..]).read_u32::<LittleEndian>().unwrap();
-    let func = VirtualAddress(offset);
+    let func = VirtualAddress32(offset);
     test_inner(&binary, func, changes, &[], false);
 }
