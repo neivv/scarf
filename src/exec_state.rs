@@ -393,7 +393,7 @@ where E: ExecutionState<'e>,
 
 /// Either `scarf::VirtualAddress` in 32-bit or `scarf::VirtualAddress64` in 64-bit
 pub trait VirtualAddress: Eq + PartialEq + Ord + PartialOrd + Copy + Clone + std::hash::Hash +
-    fmt::LowerHex + fmt::UpperHex + fmt::Debug + Add<u32, Output = Self> +
+    fmt::LowerHex + fmt::UpperHex + fmt::Debug + fmt::Display + Add<u32, Output = Self> +
     Sub<u32, Output = Self> +
     'static
 {

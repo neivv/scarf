@@ -166,6 +166,18 @@ pub struct VirtualAddress32(pub u32);
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct VirtualAddress64(pub u64);
 
+impl std::fmt::Display for VirtualAddress32 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:08x}", self.0)
+    }
+}
+
+impl std::fmt::Display for VirtualAddress64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:08x}", self.0)
+    }
+}
+
 impl std::fmt::Debug for VirtualAddress32 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "VirtualAddress32({:08x})", self.0)
@@ -174,7 +186,7 @@ impl std::fmt::Debug for VirtualAddress32 {
 
 impl std::fmt::Debug for VirtualAddress64 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "VirtualAddress32({:08x})", self.0)
+        write!(f, "VirtualAddress64({:08x})", self.0)
     }
 }
 
