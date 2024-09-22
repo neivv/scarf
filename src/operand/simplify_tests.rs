@@ -12405,3 +12405,36 @@ fn not_gt_is_le() {
     let eq1 = ctx.gt(b, a);
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn select_same() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.select(
+        ctx.register(1),
+        ctx.register(2),
+        ctx.register(2),
+    );
+    let eq1 = ctx.register(2);
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn asr_to_shr() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.and_const(
+        ctx.rsh_const(
+            ctx.register(1),
+            1,
+        ),
+        0x7fff_ffff,
+    );
+    let eq1 = ctx.and_const(
+        ctx.arithmetic_right_shift(
+            ctx.register(1),
+            ctx.constant(1),
+            MemAccessSize::Mem32,
+        ),
+        0x7fff_ffff,
+    );
+    assert_eq!(op1, eq1);
+}

@@ -1001,6 +1001,18 @@ impl<'e> State<'e> {
                 let val = self.resolve(val);
                 self.ctx.sign_extend(val, from, to)
             }
+            OperandType::Select(condition, b, c) => {
+                let condition = self.resolve(condition);
+                match condition.is_known_bool() {
+                    Some(true) => self.resolve(b),
+                    Some(false) => self.resolve(c),
+                    None => {
+                        let b = self.resolve(b);
+                        let c = self.resolve(c);
+                        self.ctx.select(condition, b, c)
+                    }
+                }
+            }
             OperandType::Undefined(_) | OperandType::Constant(_) | OperandType::Custom(_) |
                 OperandType::Register(_) =>
             {

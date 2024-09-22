@@ -7343,6 +7343,16 @@ fn simplify_with_and_mask_inner<'e>(
                 op
             }
         }
+        OperandType::Select(condition, if_true, if_false) => {
+            let new_if_true = simplify_with_and_mask(if_true, mask, ctx, swzb_ctx);
+            let new_if_false = simplify_with_and_mask(if_false, mask, ctx, swzb_ctx);
+            if new_if_true != if_true || new_if_false != if_false {
+                // Condition doesn't change here so it doesn't have to be checked again.
+                simplify_select_condition_checked(ctx, condition, new_if_true, new_if_false)
+            } else {
+                op
+            }
+        }
         _ => op,
     }
 }
@@ -8119,6 +8129,34 @@ fn simplify_gt_sext_const<'e>(
     } else {
         ctx.gt_const(value, new_const)
     }
+}
+
+pub fn simplify_select<'e>(
+    ctx: OperandCtx<'e>,
+    condition: Operand<'e>,
+    val_true: Operand<'e>,
+    val_false: Operand<'e>,
+) -> Operand<'e> {
+    if let Some(is_true) = condition.is_known_bool() {
+        if is_true {
+            return val_true;
+        } else {
+            return val_false;
+        }
+    }
+    simplify_select_condition_checked(ctx, condition, val_true, val_false)
+}
+
+fn simplify_select_condition_checked<'e>(
+    ctx: OperandCtx<'e>,
+    condition: Operand<'e>,
+    val_true: Operand<'e>,
+    val_false: Operand<'e>,
+) -> Operand<'e> {
+    if val_true == val_false {
+        return val_true;
+    }
+    ctx.intern_select(condition, val_true, val_false)
 }
 
 #[test]

@@ -369,6 +369,9 @@ impl<'e> fmt::Debug for OperandType<'e> {
             SignExtend(a, b, c) => {
                 f.debug_tuple("SignExtend").field(a).field(b).field(c).finish()
             }
+            Select(a, b, c) => {
+                f.debug_tuple("Select").field(a).field(b).field(c).finish()
+            }
         }
     }
 }
@@ -384,7 +387,8 @@ fn display_operand<'e>(f: &mut fmt::Formatter, op: Operand<'e>, recurse: u8) -> 
     if recurse >= 20 {
         match *op.ty() {
             OperandType::Memory(..) | OperandType::Arithmetic(..) |
-                OperandType::ArithmeticFloat(..) | OperandType::SignExtend(..) =>
+                OperandType::ArithmeticFloat(..) | OperandType::SignExtend(..) |
+                OperandType::Select(..) =>
             {
                 return write!(f, "(...)");
             }
@@ -475,6 +479,19 @@ fn display_operand<'e>(f: &mut fmt::Formatter, op: Operand<'e>, recurse: u8) -> 
             display_operand(f, val, recurse + 1)?;
             write!(f, ")")
         }
+        OperandType::Select(condition, yes, no) => {
+            // select(condition ? yes : no)
+            write!(f, "select(")?;
+            for pair in [
+                (condition, " ? "),
+                (yes, " : "),
+                (no, ")"),
+            ] {
+                display_operand(f, pair.0, recurse + 1)?;
+                write!(f, "{}", pair.1)?;
+            }
+            Ok(())
+        }
         OperandType::Custom(val) => {
             write!(f, "Custom_{:x}", val)
         }
@@ -525,6 +542,10 @@ pub enum OperandType<'e> {
     Undefined(UndefinedId),
     /// Sign extends the input `Operand` from first `MemAccessSize` to second `MemAccessSize`.
     SignExtend(Operand<'e>, MemAccessSize, MemAccessSize),
+    /// If-else / ternary operator: `if .0 != 0 { .1 } else { .2 }`.
+    /// Note: Any nonzero value for condition is considered true, no limitation that
+    /// condition has to be 0/1.
+    Select(Operand<'e>, Operand<'e>, Operand<'e>),
     /// Arbitrary user-defined variable.
     ///
     /// This is never created by scarf itself, and the user code may assign any meaning
@@ -797,6 +818,12 @@ fn iter_variant_next<'e, T: IterVariant<'e>>(s: &mut T) -> Option<Operand<'e>> {
         SignExtend(val, _, _) => {
             inner.pos = val;
         }
+        Select(a, b, c) => {
+            inner.pos = a;
+            inner.stack.reserve(2);
+            inner.stack.push(b);
+            inner.stack.push(c);
+        }
         _ => {
             match inner.stack.pop() {
                 Some(s) => inner.pos = s,
@@ -1000,6 +1027,13 @@ impl<'e> OperandContext<'e> {
             OperandType::SignExtend(a, b, c) => {
                 OperandType::SignExtend(self.copy_operand_small(a, recurse_limit), b, c)
             }
+            OperandType::Select(a, b, c) => {
+                OperandType::Select(
+                    self.copy_operand_small(a, recurse_limit),
+                    self.copy_operand_small(b, recurse_limit),
+                    self.copy_operand_small(c, recurse_limit),
+                )
+            }
         };
         self.intern_any(ty)
     }
@@ -1047,6 +1081,13 @@ impl<'e> OperandContext<'e> {
             OperandType::SignExtend(a, b, c) => {
                 OperandType::SignExtend(self.copy_operand_large(a, cache), b, c)
             }
+            OperandType::Select(a, b, c) => {
+                OperandType::Select(
+                    self.copy_operand_large(a, cache),
+                    self.copy_operand_large(b, cache),
+                    self.copy_operand_large(c, cache),
+                )
+            }
         };
         let result = self.intern_any(ty);
         cache.insert(key, result);
@@ -1081,6 +1122,16 @@ impl<'e> OperandContext<'e> {
             right,
         };
         let ty = OperandType::Arithmetic(arith);
+        self.interner.intern(ty)
+    }
+
+    fn intern_select(
+        &'e self,
+        condition: Operand<'e>,
+        val_true: Operand<'e>,
+        val_false: Operand<'e>,
+    ) -> Operand<'e> {
+        let ty = OperandType::Select(condition, val_true, val_false);
         self.interner.intern(ty)
     }
 
@@ -1346,6 +1397,48 @@ impl<'e> OperandContext<'e> {
     pub fn rsh(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
         let mut simplify = simplify::SimplifyWithZeroBits::default();
         simplify::simplify_rsh(left, right, self, &mut simplify)
+    }
+
+    pub fn arithmetic_right_shift(
+        &'e self,
+        left: Operand<'e>,
+        right: Operand<'e>,
+        size: MemAccessSize,
+    ) -> Operand<'e> {
+        // Arithmetic shift shifts in the value of sign bit,
+        // that can be represented as bitwise or of
+        // `not(ffff...ffff << rhs >> rhs)`
+        let sign_bit = 1u64 << (size.bits() - 1);
+        let logical_rsh = self.rsh(left, right);
+        let mask = (sign_bit << 1).wrapping_sub(1);
+        let negative_shift_in_bits = if let Some(right) = right.if_constant() {
+            let c = if right >= 64 {
+                u64::MAX
+            } else {
+                (((mask << right) & mask) >> right) ^ mask
+            };
+            self.constant(c)
+        } else {
+            self.xor_const(
+                self.rsh(
+                    self.and_const(
+                        self.lsh(
+                            self.constant(mask),
+                            right,
+                        ),
+                        mask,
+                    ),
+                    right,
+                ),
+                mask,
+            )
+        };
+        let sign_bit_set = self.and_const(left, sign_bit);
+        // Doing it as `(lhs >> rhs) | select(is_negative, sign_bit_shifted, 0)`
+        self.or(
+            self.select(sign_bit_set, negative_shift_in_bits, self.const_0()),
+            logical_rsh,
+        )
     }
 
     /// Returns `Operand` for `left == right`.
@@ -1674,6 +1767,17 @@ impl<'e> OperandContext<'e> {
         simplify::simplify_sign_extend(val, from, to, self)
     }
 
+    /// Creates an [`OperandType::Select`] `Operand.`
+    /// `if condition != 0 { val_true } else { val_false }
+    pub fn select(
+        &'e self,
+        condition: Operand<'e>,
+        val_true: Operand<'e>,
+        val_false: Operand<'e>,
+    ) -> Operand<'e> {
+        simplify::simplify_select(self, condition, val_true, val_false)
+    }
+
     /// Creates a new `OperandType::Undefined(id)` `Operand`, where the `id` is
     /// unique until all currently ongoing
     /// [`FuncAnalysis::analyze`](crate::analysis::FuncAnalysis::analyze) calls have returned.
@@ -1748,6 +1852,16 @@ impl<'e> OperandContext<'e> {
                     oper
                 } else {
                     self.sign_extend(new_val, from, to)
+                }
+            }
+            OperandType::Select(a, b, c) => {
+                let new_a = self.transform_internal(a, depth_limit - 1, f);
+                let new_b = self.transform_internal(b, depth_limit - 1, f);
+                let new_c = self.transform_internal(c, depth_limit - 1, f);
+                if a == new_a && b == new_b && c == new_c {
+                    oper
+                } else {
+                    self.select(a, b, c)
                 }
             }
             _ => oper,
@@ -2205,6 +2319,11 @@ impl<'e> OperandType<'e> {
                 _ => 0..(size.bits() as u8),
             }
             OperandType::Flag(..) => 0..1,
+            OperandType::Select(_, a, b) => {
+                let a_bits = a.relevant_bits();
+                let b_bits = b.relevant_bits();
+                min(a_bits.start, b_bits.start)..max(a_bits.end, b_bits.end)
+            }
             // Note: constants not handled here; const_relevant_bits instead
             _ => 0..(self.expr_size().bits() as u8),
         }
@@ -2241,6 +2360,15 @@ impl<'e> OperandType<'e> {
             SignExtend(val, _, _) => {
                 (val.0.flags & ALWAYS_INHERITED_FLAGS) |
                     default_32_bit_normalized | FLAG_CAN_SIMPLIFY_WITH_AND_MASK
+            }
+            Select(a, b, c) => {
+                // Have to always set FLAG_CAN_SIMPLIFY_WITH_AND_MASK since
+                // one of the inner values may be fully simplifiable to 0 by a mask.
+                //
+                // (Or could set it only when inner value relevant_bits aren't 0..0 or 0..64)
+                ((a.0.flags | b.0.flags | c.0.flags) & ALWAYS_INHERITED_FLAGS) |
+                    FLAG_CAN_SIMPLIFY_WITH_AND_MASK |
+                    default_32_bit_normalized
             }
             Arithmetic(ref arith) => {
                 let base = (arith.left.0.flags | arith.right.0.flags) & ALWAYS_INHERITED_FLAGS;
@@ -2546,6 +2674,11 @@ impl<'e> OperandType<'e> {
                 let base_discriminant = base.ty().discriminant();
                 ((base_discriminant as u64) << 59) | (base.0.sort_order >> 5)
             }
+            Select(a, b, c) => {
+                // Can this be anything useful? Maybe sort by a/b/c discriminants
+                let hash = fxhash::hash64(&(a.0.sort_order, b.0.sort_order, c.0.sort_order));
+                hash
+            }
             Arithmetic(ref arith) | ArithmeticFloat(ref arith, _) => {
                 let ty = arith.ty as u8;
                 let hash = fxhash::hash64(&(arith.left.0.sort_order, arith.right.0.sort_order));
@@ -2599,6 +2732,10 @@ impl<'e> OperandType<'e> {
                 let sizes2 = ((from2 as u8) << 4) | (to2 as u8);
                 return sizes.cmp(&sizes2);
             }
+        } else if let OperandType::Select(a, b, c) = *self {
+            if let OperandType::Select(a2, b2, c2) = *other {
+                return (a, b, c).cmp(&(a2, b2, c2));
+            }
         }
         debug_assert!(false, "supposed to be unreachable");
         Ordering::Equal
@@ -2619,7 +2756,8 @@ impl<'e> OperandType<'e> {
             OperandType::ArithmeticFloat(..) => 7,
             OperandType::Undefined(..) => 8,
             OperandType::SignExtend(..) => 9,
-            OperandType::Custom(..) => 10,
+            OperandType::Select(..) => 10,
+            OperandType::Custom(..) => 11,
         }
     }
 
@@ -2632,7 +2770,7 @@ impl<'e> OperandType<'e> {
             Memory(ref mem) => mem.size,
             Xmm(..) | Flag(..) | Fpu(..) => MemAccessSize::Mem32,
             Register(..) | Constant(..) | Arithmetic(..) | Undefined(..) |
-                Custom(..) | ArithmeticFloat(..) => MemAccessSize::Mem64,
+                Custom(..) | ArithmeticFloat(..) | Select(..) => MemAccessSize::Mem64,
             SignExtend(_, _from, to) => to,
         }
     }
@@ -3029,6 +3167,16 @@ impl<'e> Operand<'e> {
         }
     }
 
+    /// Returns `Some((condition, val_true, val_false))` if `self.ty` is
+    /// `OperandType::Select(condition, val_true, val_false)`
+    #[inline]
+    pub fn if_select(self) -> Option<(Operand<'e>, Operand<'e>, Operand<'e>)> {
+        match *self.ty() {
+            OperandType::Select(a, b, c) => Some((a, b, c)),
+            _ => None,
+        }
+    }
+
     /// Returns `Some((register, constant))` if operand is an and mask of register
     /// with constant.
     ///
@@ -3064,6 +3212,21 @@ impl<'e> Operand<'e> {
     #[inline]
     fn is_32bit_normalized(self) -> bool {
         self.0.flags & FLAG_32BIT_NORMALIZED != 0
+    }
+
+    /// If this value is known to be zero or known to be nonzero, returns Some(true/false)
+    ///
+    /// Used for select simplification / resolve fast path.
+    pub(crate) fn is_known_bool(self) -> Option<bool> {
+        if let Some(c) = self.if_constant() {
+            Some(c != 0)
+        } else {
+            // Could have something smarter here but probably such trivially true selects won't
+            // be generated.
+            // self.if_or_with_const() would be always Some(true) but not really sure
+            // why that would end up in a select.
+            None
+        }
     }
 
     /// Returns `(other, constant)` if operand is an and mask with constant,

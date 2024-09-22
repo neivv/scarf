@@ -256,6 +256,11 @@ fn operand_type_hash(ty: &OperandType<'_>) -> usize {
             from.hash(&mut hasher);
             to.hash(&mut hasher);
         }
+        OperandType::Select(a, b, c) => {
+            OperandHashByAddress(a).hash(&mut hasher);
+            OperandHashByAddress(b).hash(&mut hasher);
+            OperandHashByAddress(c).hash(&mut hasher);
+        }
     }
     hasher.finish() as usize
 }

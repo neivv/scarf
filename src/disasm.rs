@@ -2089,53 +2089,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 self.output_rsh(dest, rhs);
             }
             ArithOperation::RightShiftArithmetic => {
-                // Arithmetic shift shifts in the value of sign bit,
-                // that can be represented as bitwise or of
-                // `not(ffff...ffff << rhs >> rhs) & ((sign_bit == 0) - 1)`
-                // with logical right shift
-                // (sign_bit == 0) - 1 is 0 if sign_bit is clear, ffff...ffff if sign_bit is set
-                let sign_bit = 1u64 << (size.bits() - 1);
-                let logical_rsh = ctx.rsh(dest.op, rhs);
-                let mask = (sign_bit << 1).wrapping_sub(1);
-                let negative_shift_in_bits = if let Some(rhs) = rhs.if_constant() {
-                    let c = if rhs >= 64 {
-                        u64::MAX
-                    } else {
-                        (((mask << rhs) & mask) >> rhs) ^ mask
-                    };
-                    ctx.constant(c)
-                } else {
-                    ctx.xor_const(
-                        ctx.rsh(
-                            ctx.and_const(
-                                ctx.lsh(
-                                    ctx.constant(mask),
-                                    rhs,
-                                ),
-                                mask,
-                            ),
-                            rhs,
-                        ),
-                        mask,
-                    )
-                };
-                let sign_bit_set_mask = ctx.sub_const(
-                    ctx.eq_const(
-                        ctx.and_const(
-                            dest.op,
-                            sign_bit,
-                        ),
-                        0,
-                    ),
-                    1,
-                );
-                let result = ctx.or(
-                    logical_rsh,
-                    ctx.and(
-                        negative_shift_in_bits,
-                        sign_bit_set_mask,
-                    ),
-                );
+                let result = ctx.arithmetic_right_shift(dest.op, rhs, size);
                 self.output_mov(dest.dest, result);
             }
             ArithOperation::RotateLeft | ArithOperation::RotateRight => {
@@ -2235,30 +2189,27 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
             let src = self.rm_to_operand(&src);
             let mut input = dest_op;
+            let zero = ctx.const_0();
+            let constant = ctx.constant(0x82f63b78);
             for i in 0..in_size.bits() {
                 let result = ctx.xor(
                     ctx.rsh_const(
                         input,
                         1,
                     ),
-                    ctx.and_const(
-                        ctx.sub_const(
-                            ctx.eq_const(
-                                ctx.and_const(
-                                    ctx.xor(
-                                        ctx.rsh_const(
-                                            src,
-                                            i as u64,
-                                        ),
-                                        input,
-                                    ),
-                                    1,
+                    ctx.select(
+                        ctx.and_const(
+                            ctx.xor(
+                                ctx.rsh_const(
+                                    src,
+                                    i as u64,
                                 ),
-                                0,
+                                input,
                             ),
                             1,
                         ),
-                        0x82f63b78,
+                        constant,
+                        zero,
                     ),
                 );
                 // Ideally split the crc calucation to one move per bit so that the megaoperand
