@@ -88,15 +88,13 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         const VARIANTS: &[&str] = &[
-            "Register", "Xmm", "Fpu", "Flag", "Constant", "Memory", "Arithmetic", "ArithmeticFloat",
+            "Register", "Flag", "Constant", "Memory", "Arithmetic", "ArithmeticFloat",
             "Undefined", "SignExtend", "Custom",
         ];
 
         #[derive(Copy, Clone)]
         enum Variant {
-            Register,
-            Xmm,
-            Fpu,
+            Arch,
             Flag,
             Constant,
             Memory,
@@ -124,9 +122,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                         where E: de::Error
                     {
                         match value {
-                            0 => Ok(Variant::Register),
-                            1 => Ok(Variant::Xmm),
-                            2 => Ok(Variant::Fpu),
+                            0 => Ok(Variant::Arch),
                             3 => Ok(Variant::Flag),
                             4 => Ok(Variant::Constant),
                             5 => Ok(Variant::Memory),
@@ -146,9 +142,7 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                         where E: de::Error
                     {
                         match value {
-                            "Register" => Ok(Variant::Register),
-                            "Xmm" => Ok(Variant::Xmm),
-                            "Fpu" => Ok(Variant::Fpu),
+                            "Register" => Ok(Variant::Arch),
                             "Flag" => Ok(Variant::Flag),
                             "Constant" => Ok(Variant::Constant),
                             "Memory" => Ok(Variant::Memory),
@@ -162,25 +156,6 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                     }
                 }
                 deserializer.deserialize_identifier(VariantVisitor)
-            }
-        }
-
-        struct XmmVisitor;
-
-        impl<'de> Visitor<'de> for XmmVisitor {
-            type Value = (u8, u8);
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("(u8, u8)")
-            }
-
-            fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error>
-                where V: SeqAccess<'de>
-            {
-                Ok((
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?,
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?,
-                ))
             }
         }
 
@@ -239,13 +214,9 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
             {
                 let (variant, v) = e.variant()?;
                 match variant {
-                    Variant::Register => {
-                        let r: u8 = v.newtype_variant()?;
-                        Ok(self.0.register(r))
-                    }
-                    Variant::Fpu => {
-                        let r: u8 = v.newtype_variant()?;
-                        Ok(self.0.register_fpu(r))
+                    Variant::Arch => {
+                        let r: u32 = v.newtype_variant()?;
+                        Ok(self.0.arch(r))
                     }
                     Variant::Flag => {
                         let flag = v.newtype_variant()?;
@@ -267,10 +238,6 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                     Variant::Custom => {
                         let c = v.newtype_variant()?;
                         Ok(self.0.custom(c))
-                    }
-                    Variant::Xmm => {
-                        let (a, b) = v.tuple_variant(2, XmmVisitor)?;
-                        Ok(self.0.xmm(a, b))
                     }
                     Variant::Memory => {
                         let mem = v.newtype_variant_seed(DeserializeMemory(self.0))?;

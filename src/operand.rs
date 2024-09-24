@@ -32,7 +32,7 @@ use fxhash::FxHashMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::disasm::Operation;
+use crate::disasm::{self, Operation};
 use crate::disasm_cache::{DisasmArch, DisasmCache};
 use crate::exec_state;
 
@@ -45,8 +45,7 @@ use self::slice_stack::SliceStack;
 /// Different types of `Operand`s are listed in [`OperandType`] enum.
 /// The main types of interest are:
 ///
-/// - Single variables, such as `OperandType::Register`, `OperandType::Xmm`,
-/// `OperandType::Custom`.
+/// - Single variables, such as `OperandType::Arch`, `OperandType::Custom`.
 /// - Constant integers, `OperandType::Constant`.
 /// - Expressions, `OperandType::Arithmetic`, using `Operand` as inputs for the expression,
 /// and as such, able to have arbitrarily deep tree of subexpressions making up the `Operand`.
@@ -354,10 +353,7 @@ impl<'e> fmt::Debug for OperandType<'e> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::OperandType::*;
         match self {
-            Register(r) => write!(f, "Register({})", r),
-            Xmm(r, x) => write!(f, "Xmm({}.{})", r, x),
-            Fpu(r) => write!(f, "Fpu({})", r),
-            Flag(r) => write!(f, "Flag({:?})", r),
+            Arch(r) => write!(f, "Arch({})", r.value()),
             Constant(r) => write!(f, "Constant({:x})", r),
             Custom(r) => write!(f, "Custom({:x})", r),
             Undefined(r) => write!(f, "Undefined_{:x}", r.0),
@@ -396,27 +392,13 @@ fn display_operand<'e>(f: &mut fmt::Formatter, op: Operand<'e>, recurse: u8) -> 
         }
     }
     match *op.ty() {
-        OperandType::Register(r) => match r {
-            0 => write!(f, "rax"),
-            1 => write!(f, "rcx"),
-            2 => write!(f, "rdx"),
-            3 => write!(f, "rbx"),
-            4 => write!(f, "rsp"),
-            5 => write!(f, "rbp"),
-            6 => write!(f, "rsi"),
-            7 => write!(f, "rdi"),
-            x => write!(f, "r{}", x),
-        },
-        OperandType::Xmm(reg, subword) => write!(f, "xmm{}.{}", reg, subword),
-        OperandType::Fpu(reg) => write!(f, "fpu{}", reg),
-        OperandType::Flag(flag) => match flag {
-            Flag::Zero => write!(f, "z"),
-            Flag::Carry => write!(f, "c"),
-            Flag::Overflow => write!(f, "o"),
-            Flag::Parity => write!(f, "p"),
-            Flag::Sign => write!(f, "s"),
-            Flag::Direction => write!(f, "d"),
-        },
+        OperandType::Arch(r) => {
+            if let Some(fmt) = r.arch_def.fmt {
+                fmt(f, r.value())
+            } else {
+                write!(f, "Arch({:x})", r.value())
+            }
+        }
         OperandType::Constant(c) => write!(f, "{:x}", c),
         OperandType::Memory(ref mem) => {
             let (base, offset) = mem.address();
@@ -502,25 +484,9 @@ fn display_operand<'e>(f: &mut fmt::Formatter, op: Operand<'e>, recurse: u8) -> 
 #[cfg_attr(feature = "serde", derive(Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum OperandType<'e> {
-    /// A variable representing single general-purpose-register of a CPU.
-    Register(u8),
-    /// A variable representing single **32-bit word** of the SIMD register of a CPU.
-    ///
-    /// First `u8` is register number, second is word index (0 = lowest word).
-    ///
-    /// Scarf currently does not implement AVX, so no YMM or ZMM words, but they likely
-    /// would just appear as word index 4 or greater.
-    Xmm(u8, u8),
-    /// A variable representing a FPU register, only implemented in 32-bit x86 at the moment.
-    Fpu(u8),
-    /// A variable representing a single flag of x86 EFLAGS. Currently this can hold a
-    /// 32-bit value for some reason?? Scarf may be changed to assume that this can only
-    /// be 1-bit value later on.
-    ///
-    /// In practice whenever [`ExecutionState`](crate::exec_state::ExecutionState) implementations
-    /// write to a flag, they use either [`Eq`](ArithOpType) or [`GreaterThan`](ArithOpType)
-    /// `Operand`s, or combinations of them resulting in 1-bit value anyway.
-    Flag(Flag),
+    /// A variable representing some CPU state, such as a register or a flag.
+    #[cfg_attr(feature = "serde", serde(rename = "Register"))]
+    Arch(ArchId<'e>),
     /// A constant integer.
     Constant(u64),
     /// A variable representing memory read. Scarf currently assumes memory to always be
@@ -632,6 +598,52 @@ impl<'e> ArithOperand<'e> {
     }
 }
 
+/// Represents architecture (`ExecutionState`) -specific state.
+///
+/// The first 256 values are defined to be general purpose registers, from
+/// `OperandCtx::register`. What state other values map (As well as what registers
+/// map to what state) can vary between `ExecutionState` implementations.
+#[cfg_attr(feature = "serde", derive(Serialize), serde(transparent))]
+#[derive(Clone, Copy)]
+pub struct ArchId<'e> {
+    value: u32,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    arch_def: &'e ArchDefinition<'e>,
+}
+
+impl<'e> ArchId<'e> {
+    /// Gets the actual value. Values 0-255 represent registers that can
+    /// be also created through `OperandCtx::register` and accessed with
+    /// `Operand::if_register`
+    #[inline]
+    pub fn value(self) -> u32 {
+        self.value
+    }
+
+    /// Gets the value if it represents a register. (That is, the value is less than 256)
+    #[inline]
+    pub fn if_register(self) -> Option<u8> {
+        u8::try_from(self.value).ok()
+    }
+
+    pub fn if_x86_flag(self) -> Option<Flag> {
+        if disasm::x86_arch_tag(self.value) == disasm::X86_FLAG_TAG {
+            Some(Flag::x86_from_arch(self.value as u8))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'e> Eq for ArchId<'e> { }
+
+impl<'e> PartialEq for ArchId<'e> {
+    #[inline]
+    fn eq(&self, other: &ArchId<'e>) -> bool {
+        self.value == other.value
+    }
+}
+
 /// Newtype to distinguish each [`OperandType::Undefined`] from each other.
 ///
 /// User code should rarely have need to use this.
@@ -704,8 +716,7 @@ const fn sign_mask_const_index(group: usize) -> usize {
 ///
 /// The `Operand`s which are guaranteed to be cached are:
 ///
-/// - `OperandType::Register(n)`, for `n < 16`
-/// - `OperandType::Flag`
+/// - `OperandType::Arch(n)`, for `n.value() < 16`
 /// - `OperandType::Constant(n)`, for 0, 1, 2, 4, 8, through [`ctx.const_0()`](Self::const_0)
 ///     and other functions.
 ///
@@ -739,6 +750,24 @@ pub struct OperandContext<'e> {
     // Cleared after every copy_operand call.
     copy_operand_cache: RefCell<FxHashMap<usize, Operand<'e>>>,
     disasm_cache: RefCell<Option<Box<DisasmCache<'e>>>>,
+    arch_def: &'e ArchDefinition<'e>,
+}
+
+pub struct ArchDefinition<'a> {
+    /// Allows specifying different variable sizes for 65536-sized blocks
+    /// of [`ArchId`]. So key is `arch_id.value() >> 16`. `ArchId` values that map to a larger
+    /// key than this list is will get default treatment of 64 bit size.
+    pub tag_definitions: &'a [ArchTagDefinition],
+    /// Allows specifying custom `fmt::Display` for `ArchId` values.
+    pub fmt: Option<fn(&mut fmt::Formatter, u32) -> fmt::Result>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ArchTagDefinition {
+    /// How many bits large `Operand` with this `ArchId` tag is.
+    /// Default is 64, but flags can use 1, and smaller registers may use 32 and such.
+    /// 0 or values larger than 64 are not allowed.
+    pub size: u8,
 }
 
 /// Convenience alias for [`OperandContext`] reference that avoids having to
@@ -903,7 +932,16 @@ impl<'e> OperandContext<'e> {
     /// of scarf. See [docs on guarantees](./struct.OperandContext.html#cheap-to-access-operands)
     /// for `Operand`s that are guaranteed to be cheap to access afterwards.
     pub fn new() -> OperandContext<'e> {
+        Self::new_with_arch(&crate::exec_state::X86_64_ARCH_DEFINITION)
+    }
+
+    pub fn new_with_arch(arch_def: &'e ArchDefinition<'e>) -> OperandContext<'e> {
         use std::ptr::null_mut;
+        for tag_def in arch_def.tag_definitions.iter() {
+            if tag_def.size == 0 || tag_def.size > 64 {
+                panic!("Invalid arch definition tag size {}", tag_def.size);
+            }
+        }
         let common_operands =
             Box::alloc().init([OperandSelfRef(null_mut()); COMMON_OPERANDS_COUNT]);
         let mut result: OperandContext<'e> = OperandContext {
@@ -919,6 +957,7 @@ impl<'e> OperandContext<'e> {
             freeze_buffer: RefCell::new(Vec::new()),
             copy_operand_cache: RefCell::new(FxHashMap::default()),
             disasm_cache: RefCell::new(None),
+            arch_def,
         };
         let common_operands = &mut result.common_operands;
         // Accessing interner here would force the invariant lifetime 'e to this stack frame.
@@ -932,15 +971,24 @@ impl<'e> OperandContext<'e> {
         }
         let base = FIRST_REGISTER_OP_INDEX;
         for i in 0..0x10 {
+            let arch_id = ArchId {
+                value: i as u32,
+                arch_def,
+            };
             common_operands[base + i] =
-                interner.add_uninterned(OperandType::Register(i as u8)).self_ref();
+                interner.add_uninterned(OperandType::Arch(arch_id)).self_ref();
         }
         let base = FIRST_FLAG_OP_INDEX;
         let flags = [
-            Flag::Zero, Flag::Carry, Flag::Overflow, Flag::Parity, Flag::Sign, Flag::Direction,
+            Flag::Zero, Flag::Carry, Flag::Overflow, Flag::Sign, Flag::Parity, Flag::Direction,
         ];
         for (i, &f) in flags.iter().enumerate() {
-            common_operands[base + i] = interner.add_uninterned(OperandType::Flag(f)).self_ref();
+            let arch_id = ArchId {
+                value: f as u32 | disasm::make_x86_arch_tag(disasm::X86_FLAG_TAG),
+                arch_def,
+            };
+            common_operands[base + i] =
+                interner.add_uninterned(OperandType::Arch(arch_id)).self_ref();
         }
         let sign_mask_consts = [
             0x7fffu64, 0xffff, 0x7fff_ffff, 0xffff_ffff, 0x7fff_ffff_ffff_ffff,
@@ -977,33 +1025,47 @@ impl<'e> OperandContext<'e> {
     /// Copies an operand referring to some other OperandContext to this OperandContext
     /// and returns the copied reference.
     pub fn copy_operand<'other>(&'e self, op: Operand<'other>) -> Operand<'e> {
-        self.copy_operand_small(op, &mut 32)
+        let self_arch_def = self.arch_def as *const _ as *const ();
+        let mut ctx = CopyOperandCtx {
+            arch_def: self_arch_def,
+            recurse_limit: 32,
+        };
+        let ret = self.copy_operand_small(op, &mut ctx);
+        if cfg!(debug_assertions) && !std::ptr::eq(ctx.arch_def, self_arch_def) {
+            // Just a debug assertion since this is just similarly weird as Undefined copying.
+            // Could allow cases where arch operand sizes are same though.
+            panic!("Copied operand {op} to OperandCtx with different arch definition");
+        }
+        ret
     }
 
-    fn copy_operand_small<'other>(
+    fn copy_operand_small<'a: 'e + 'other, 'other>(
         &'e self,
         op: Operand<'other>,
-        recurse_limit: &mut u32,
+        ctx: &mut CopyOperandCtx,
     ) -> Operand<'e> {
-        if *recurse_limit <= 1 {
+        if ctx.recurse_limit <= 1 {
             let mut map = self.copy_operand_cache.borrow_mut();
-            if *recurse_limit == 1 {
+            if ctx.recurse_limit == 1 {
                 map.clear();
-                *recurse_limit = 0;
+                ctx.recurse_limit = 0;
             }
-            return self.copy_operand_large(op, &mut map)
+            return self.copy_operand_large(op, &mut map, ctx)
         }
-        *recurse_limit -= 1;
+        ctx.recurse_limit -= 1;
         let ty = match *op.ty() {
-            OperandType::Register(reg) => OperandType::Register(reg),
-            OperandType::Xmm(a, b) => OperandType::Xmm(a, b),
-            OperandType::Flag(f) => OperandType::Flag(f),
-            OperandType::Fpu(f) => OperandType::Fpu(f),
+            OperandType::Arch(arch) => {
+                ctx.arch_def = arch.arch_def as *const ArchDefinition<'_> as *const ();
+                OperandType::Arch(ArchId {
+                    value: arch.value,
+                    arch_def: self.arch_def,
+                })
+            }
             OperandType::Constant(c) => OperandType::Constant(c),
             OperandType::Undefined(c) => OperandType::Undefined(c),
             OperandType::Custom(c) => OperandType::Custom(c),
             OperandType::Memory(ref mem) => OperandType::Memory(MemAccess {
-                base: self.copy_operand_small(mem.base, recurse_limit),
+                base: self.copy_operand_small(mem.base, ctx),
                 offset: mem.offset,
                 size: mem.size,
                 const_base: mem.const_base,
@@ -1011,37 +1073,38 @@ impl<'e> OperandContext<'e> {
             OperandType::Arithmetic(ref arith) => {
                 let arith = ArithOperand {
                     ty: arith.ty,
-                    left: self.copy_operand_small(arith.left, recurse_limit),
-                    right: self.copy_operand_small(arith.right, recurse_limit),
+                    left: self.copy_operand_small(arith.left, ctx),
+                    right: self.copy_operand_small(arith.right, ctx),
                 };
                 OperandType::Arithmetic(arith)
             }
             OperandType::ArithmeticFloat(ref arith, size) => {
                 let arith = ArithOperand {
                     ty: arith.ty,
-                    left: self.copy_operand_small(arith.left, recurse_limit),
-                    right: self.copy_operand_small(arith.right, recurse_limit),
+                    left: self.copy_operand_small(arith.left, ctx),
+                    right: self.copy_operand_small(arith.right, ctx),
                 };
                 OperandType::ArithmeticFloat(arith, size)
             }
             OperandType::SignExtend(a, b, c) => {
-                OperandType::SignExtend(self.copy_operand_small(a, recurse_limit), b, c)
+                OperandType::SignExtend(self.copy_operand_small(a, ctx), b, c)
             }
             OperandType::Select(a, b, c) => {
                 OperandType::Select(
-                    self.copy_operand_small(a, recurse_limit),
-                    self.copy_operand_small(b, recurse_limit),
-                    self.copy_operand_small(c, recurse_limit),
+                    self.copy_operand_small(a, ctx),
+                    self.copy_operand_small(b, ctx),
+                    self.copy_operand_small(c, ctx),
                 )
             }
         };
         self.intern_any(ty)
     }
 
-    fn copy_operand_large<'other>(
+    fn copy_operand_large<'a: 'e + 'other, 'other>(
         &'e self,
         op: Operand<'other>,
-        cache: &mut FxHashMap<usize, Operand<'e>>
+        cache: &mut FxHashMap<usize, Operand<'e>>,
+        ctx: &mut CopyOperandCtx,
     ) -> Operand<'e> {
         let key = op.0 as *const OperandBase<'other> as usize;
         if let Some(&result) = cache.get(&key) {
@@ -1049,15 +1112,18 @@ impl<'e> OperandContext<'e> {
         }
 
         let ty = match *op.ty() {
-            OperandType::Register(reg) => OperandType::Register(reg),
-            OperandType::Xmm(a, b) => OperandType::Xmm(a, b),
-            OperandType::Flag(f) => OperandType::Flag(f),
-            OperandType::Fpu(f) => OperandType::Fpu(f),
+            OperandType::Arch(arch) => {
+                ctx.arch_def = arch.arch_def as *const ArchDefinition<'_> as *const ();
+                OperandType::Arch(ArchId {
+                    value: arch.value,
+                    arch_def: self.arch_def,
+                })
+            }
             OperandType::Constant(c) => OperandType::Constant(c),
             OperandType::Undefined(c) => OperandType::Undefined(c),
             OperandType::Custom(c) => OperandType::Custom(c),
             OperandType::Memory(ref mem) => OperandType::Memory(MemAccess {
-                base: self.copy_operand_large(mem.base, cache),
+                base: self.copy_operand_large(mem.base, cache, ctx),
                 offset: mem.offset,
                 size: mem.size,
                 const_base: mem.const_base,
@@ -1065,27 +1131,27 @@ impl<'e> OperandContext<'e> {
             OperandType::Arithmetic(ref arith) => {
                 let arith = ArithOperand {
                     ty: arith.ty,
-                    left: self.copy_operand_large(arith.left, cache),
-                    right: self.copy_operand_large(arith.right, cache),
+                    left: self.copy_operand_large(arith.left, cache, ctx),
+                    right: self.copy_operand_large(arith.right, cache, ctx),
                 };
                 OperandType::Arithmetic(arith)
             }
             OperandType::ArithmeticFloat(ref arith, size) => {
                 let arith = ArithOperand {
                     ty: arith.ty,
-                    left: self.copy_operand_large(arith.left, cache),
-                    right: self.copy_operand_large(arith.right, cache),
+                    left: self.copy_operand_large(arith.left, cache, ctx),
+                    right: self.copy_operand_large(arith.right, cache, ctx),
                 };
                 OperandType::ArithmeticFloat(arith, size)
             }
             OperandType::SignExtend(a, b, c) => {
-                OperandType::SignExtend(self.copy_operand_large(a, cache), b, c)
+                OperandType::SignExtend(self.copy_operand_large(a, cache, ctx), b, c)
             }
             OperandType::Select(a, b, c) => {
                 OperandType::Select(
-                    self.copy_operand_large(a, cache),
-                    self.copy_operand_large(b, cache),
-                    self.copy_operand_large(c, cache),
+                    self.copy_operand_large(a, cache, ctx),
+                    self.copy_operand_large(b, cache, ctx),
+                    self.copy_operand_large(c, cache, ctx),
                 )
             }
         };
@@ -1100,8 +1166,8 @@ impl<'e> OperandContext<'e> {
         debug_assert!(
             match ty {
                 OperandType::Constant(..) | OperandType::Undefined(..) |
-                    OperandType::Arithmetic(..) | OperandType::Flag(..) => false,
-                OperandType::Register(r) => r >= 16,
+                    OperandType::Arithmetic(..) => false,
+                OperandType::Arch(r) => r.value() >= 16 && r.if_x86_flag().is_none(),
                 _ => true,
             },
             "General-purpose intern function called for OperandType with specialized interning",
@@ -1138,10 +1204,8 @@ impl<'e> OperandContext<'e> {
     fn intern_any(&'e self, ty: OperandType<'e>) -> Operand<'e> {
         if let OperandType::Constant(c) = ty {
             self.constant(c)
-        } else if let OperandType::Register(r) = ty {
-            self.register(r)
-        } else if let OperandType::Flag(f) = ty {
-            self.flag(f)
+        } else if let OperandType::Arch(r) = ty {
+            self.arch(r.value())
         } else if let OperandType::Arithmetic(arith) = ty {
             self.intern_arith(arith.left, arith.right, arith.ty)
         } else {
@@ -1222,30 +1286,36 @@ impl<'e> OperandContext<'e> {
         unsafe { self.common_operands[FIRST_FLAG_OP_INDEX + index as usize].cast() }
     }
 
-    /// Returns [`OperandType::Register(num)`](OperandType) operand.
+    /// Returns [`OperandType::Arch(num)`](OperandType) operand.
     ///
     /// If `num` is less than 16, the access is guaranteed to be cheap.
     #[inline]
     pub fn register(&'e self, num: u8) -> Operand<'e> {
+        self.arch(num as u32)
+    }
+
+    #[inline]
+    pub fn arch(&'e self, num: u32) -> Operand<'e> {
         if num < 0x10 {
             unsafe { self.common_operands[FIRST_REGISTER_OP_INDEX + num as usize].cast() }
         } else {
-            self.register_slow(num)
+            self.arch_slow(num)
         }
     }
 
-    fn register_slow(&'e self, num: u8) -> Operand<'e> {
-        self.intern(OperandType::Register(num))
-    }
-
-    /// Returns [`OperandType::Fpu(index)`](OperandType) operand.
-    pub fn register_fpu(&'e self, index: u8) -> Operand<'e> {
-        self.intern(OperandType::Fpu(index))
-    }
-
-    /// Returns [`OperandType::Xmm(num, word)`](OperandType) operand.
-    pub fn xmm(&'e self, num: u8, word: u8) -> Operand<'e> {
-        self.intern(OperandType::Xmm(num, word))
+    /// Returns [`OperandType::Arch(id)`](OperandType) operand.
+    fn arch_slow(&'e self, id: u32) -> Operand<'e> {
+        const FIRST_COMMON_FLAG: u32 = disasm::make_x86_arch_tag(disasm::X86_FLAG_TAG);
+        const LAST_COMMON_FLAG: u32 = FIRST_COMMON_FLAG + 6;
+        if id >= FIRST_COMMON_FLAG && id < LAST_COMMON_FLAG {
+            let index = FIRST_FLAG_OP_INDEX + (id - FIRST_COMMON_FLAG) as usize;
+            unsafe { self.common_operands[index].cast() }
+        } else {
+            self.intern(OperandType::Arch(ArchId {
+                value: id,
+                arch_def: self.arch_def,
+            }))
+        }
     }
 
     /// Returns [`OperandType::Custom(value)`](OperandType) operand.
@@ -1999,7 +2069,7 @@ impl<'e> OperandContext<'e> {
     /// for which scarf can prove low 32 bits be always zero will become zero though, even
     /// if they would otherwise be included in the rules below. (E.g. `Mem32[x] << 0x20`)
     ///
-    /// - Any 'pure 64-bit variable'; `Register`, `Undefined`, `Custom`
+    /// - Any 'pure 64-bit variable'; `Arch`, `Undefined`, `Custom`
     /// - Additions, subtractions, consisting only 32-bit normalized
     ///     `Operand`s
     /// - Multiplications, left shifts consisting 32-bit normalized `Operand` and a constant
@@ -2163,6 +2233,12 @@ impl<'e> OperandContext<'e> {
     }
 }
 
+struct CopyOperandCtx {
+    recurse_limit: u32,
+    // *const ArchDefinition<'any>
+    arch_def: *const (),
+}
+
 /// Contains counts of [`Operand`]s interned by a single [`OperandContext`].
 ///
 /// May be useful for measuring performance / memory use of different approaches.
@@ -2318,11 +2394,18 @@ impl<'e> OperandType<'e> {
                 ArithOpType::Equal | ArithOpType::GreaterThan => 0..1,
                 _ => 0..(size.bits() as u8),
             }
-            OperandType::Flag(..) => 0..1,
             OperandType::Select(_, a, b) => {
                 let a_bits = a.relevant_bits();
                 let b_bits = b.relevant_bits();
                 min(a_bits.start, b_bits.start)..max(a_bits.end, b_bits.end)
+            }
+            OperandType::Arch(arch) => {
+                let tag = arch.value() >> 16;
+                if let Some(tag_def) = arch.arch_def.tag_definitions.get(tag as usize) {
+                    0..tag_def.size
+                } else {
+                    0..64
+                }
             }
             // Note: constants not handled here; const_relevant_bits instead
             _ => 0..(self.expr_size().bits() as u8),
@@ -2454,7 +2537,7 @@ impl<'e> OperandType<'e> {
                     (arith.left.0.flags | arith.right.0.flags) & ALWAYS_INHERITED_FLAGS
                 ) | FLAG_32BIT_NORMALIZED
             }
-            Xmm(..) | Flag(..) | Fpu(..) | Register(..) => {
+            Arch(..) => {
                 FLAG_NEEDS_RESOLVE | FLAG_32BIT_NORMALIZED
             }
             Custom(..) => FLAG_32BIT_NORMALIZED,
@@ -2687,10 +2770,8 @@ impl<'e> OperandType<'e> {
             // Shift these left so that Arithmetic / Memory sort_order won't
             // shift these out. Shifting left by 32 may compile on 32bit host to
             // just zeroing the low half without actually doing 64-bit shifts?
-            Register(a) | Fpu(a) => (a as u64) << 32,
-            Flag(a) => (a as u64) << 32,
+            Arch(a) => (a.value() as u64) << 32,
             Custom(a) => (a as u64) << 32,
-            Xmm(a, b) => (((a as u64) << 8) | (b as u64)) << 32,
             // Note: constants / undefined not handled here
             Constant(..) | Undefined(..) => 0,
         }
@@ -2746,18 +2827,15 @@ impl<'e> OperandType<'e> {
         // This gets optimized to just Mem8[x] read as long
         // as ordering matches OperandType definition
         match *self {
-            OperandType::Register(..) => 0,
-            OperandType::Xmm(..) => 1,
-            OperandType::Fpu(..) => 2,
-            OperandType::Flag(..) => 3,
-            OperandType::Constant(..) => 4,
-            OperandType::Memory(..) => 5,
-            OperandType::Arithmetic(..) => 6,
-            OperandType::ArithmeticFloat(..) => 7,
-            OperandType::Undefined(..) => 8,
-            OperandType::SignExtend(..) => 9,
-            OperandType::Select(..) => 10,
-            OperandType::Custom(..) => 11,
+            OperandType::Arch(..) => 0,
+            OperandType::Constant(..) => 1,
+            OperandType::Memory(..) => 2,
+            OperandType::Arithmetic(..) => 3,
+            OperandType::ArithmeticFloat(..) => 4,
+            OperandType::Undefined(..) => 5,
+            OperandType::SignExtend(..) => 6,
+            OperandType::Select(..) => 7,
+            OperandType::Custom(..) => 8,
         }
     }
 
@@ -2768,8 +2846,7 @@ impl<'e> OperandType<'e> {
         use self::OperandType::*;
         match *self {
             Memory(ref mem) => mem.size,
-            Xmm(..) | Flag(..) | Fpu(..) => MemAccessSize::Mem32,
-            Register(..) | Constant(..) | Arithmetic(..) | Undefined(..) |
+            Arch(..) | Constant(..) | Arithmetic(..) | Undefined(..) |
                 Custom(..) | ArithmeticFloat(..) | Select(..) => MemAccessSize::Mem64,
             SignExtend(_, _from, to) => to,
         }
@@ -2838,39 +2915,31 @@ impl<'e> Operand<'e> {
         }
     }
 
-    /// Returns `Some(r)` if `self.ty` is `OperandType::Register(r)`
+    /// Returns `Some(r)` if `self.ty` is `OperandType::Arch(r)` with
+    /// `r.value()` being less than 256.
     #[inline]
     pub fn if_register(self) -> Option<u8> {
+        match self.if_arch_id() {
+            Some(s) => u8::try_from(s).ok(),
+            None => None,
+        }
+    }
+
+    #[inline]
+    pub fn if_arch_id(self) -> Option<u32> {
         match *self.ty() {
-            OperandType::Register(r) => Some(r),
+            OperandType::Arch(a) => Some(a.value()),
             _ => None,
         }
     }
 
     /// Returns `Some(f)` if `self.ty` is `OperandType::Flag(f)`
-    #[inline]
-    pub fn if_flag(self) -> Option<Flag> {
-        match *self.ty() {
-            OperandType::Flag(f) => Some(f),
-            _ => None,
-        }
-    }
-
-    /// Returns `Some(r)` if `self.ty` is `OperandType::Fpu(r)`
-    #[inline]
-    pub fn if_fpu(self) -> Option<u8> {
-        match *self.ty() {
-            OperandType::Fpu(r) => Some(r),
-            _ => None,
-        }
-    }
-
-    /// Returns `Some(reg, index)` if `self.ty` is `OperandType::Xmm(reg, index)`
-    #[inline]
-    pub fn if_xmm(self) -> Option<(u8, u8)> {
-        match *self.ty() {
-            OperandType::Xmm(a, b) => Some((a, b)),
-            _ => None,
+    pub fn x86_if_flag(self) -> Option<Flag> {
+        let arch = self.if_arch_id()?;
+        if disasm::x86_arch_tag(arch) == disasm::X86_FLAG_TAG {
+            Some(Flag::x86_from_arch(arch as u8))
+        } else {
+            None
         }
     }
 
@@ -3760,11 +3829,25 @@ impl MemAccessSize {
 #[repr(u8)]
 pub enum Flag {
     Zero = 0,
-    Carry,
-    Overflow,
-    Parity,
-    Sign,
-    Direction,
+    Carry = 1,
+    Overflow = 2,
+    Sign = 3,
+    Parity = 4,
+    Direction = 5,
+}
+
+impl Flag {
+    pub(crate) fn x86_from_arch(arch: u8) -> Flag {
+        match arch & 7 {
+            0 => Flag::Zero,
+            1 => Flag::Carry,
+            2 => Flag::Overflow,
+            3 => Flag::Sign,
+            4 => Flag::Parity,
+            5 => Flag::Direction,
+            _ => Flag::Zero,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3913,8 +3996,6 @@ mod test {
         assert_eq!(ctx.constant(5).if_constant(), Some(5));
         assert_eq!(ctx.constant(204692).if_constant(), Some(204692));
         assert_eq!(ctx.register(8).if_register(), Some(8));
-        assert_eq!(ctx.xmm(5, 2).if_xmm(), Some((5, 2)));
-        assert_eq!(ctx.register_fpu(5).if_fpu(), Some(5));
         assert_eq!(ctx.custom(3).if_custom(), Some(3));
 
         let a = ctx.register(2);

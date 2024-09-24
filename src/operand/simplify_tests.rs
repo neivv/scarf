@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::exec_state::{OperandCtxExtX86};
+
 fn check_simplification_consistency<'e>(ctx: OperandCtx<'e>, op: Operand<'e>) {
     use serde::de::DeserializeSeed;
     let bytes = serde_json::to_vec(&op).unwrap();
@@ -9719,20 +9721,20 @@ fn and_unnecesary_const_mask() {
     let op1 = ctx.and(
         ctx.or(
             ctx.register(1),
-            ctx.xmm(1, 0),
+            ctx.mem32(ctx.register(2), 0),
         ),
-        ctx.xmm(1, 1),
+        ctx.mem32(ctx.register(3), 0),
     );
     // Check that there are no constant ffff_ffff mask added uselessly
     let (l, r) = op1.if_arithmetic_and().unwrap_or_else(|| panic!("Incorrect op {op1}"));
-    let ((), other) = Operand::either(l, r, |x| match x.ty() {
-        OperandType::Xmm(..) => Some(()),
+    let ((), other) = Operand::either(l, r, |x| match x.if_mem32() {
+        Some(..) => Some(()),
         _ => None,
     }).unwrap_or_else(|| panic!("Incorrect op {op1}"));
     let (l, r) = other.if_arithmetic_or().unwrap_or_else(|| panic!("Incorrect op {op1}"));
     let (_, other) = Operand::either(l, r, |x| x.if_register())
         .unwrap_or_else(|| panic!("Incorrect op {op1}"));
-    assert_eq!(other, ctx.xmm(1, 0));
+    assert_eq!(other, ctx.mem32(ctx.register(2), 0));
 }
 
 #[test]

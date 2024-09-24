@@ -6,9 +6,10 @@ use std::rc::Rc;
 use copyless::BoxHelper;
 
 use crate::analysis;
-use crate::disasm::{FlagArith, Disassembler32, DestOperand, FlagUpdate, Operation};
+use crate::disasm::{self, FlagArith, Disassembler32, DestOperand, FlagUpdate, Operation};
 use crate::exec_state::{
-    self, Constraint, FreezeOperation, Memory, MergeStateCache, PendingFlags
+    self, Constraint, FreezeOperation, Memory, MergeStateCache, PendingFlags, OperandExtX86,
+    OperandCtxExtX86,
 };
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::exec_state::VirtualAddress as VirtualAddressTrait;
@@ -867,11 +868,11 @@ impl<'e> State<'e> {
     /// Checks cached/caches `reg & ff` masks.
     fn try_resolve_partial_register(
         &mut self,
-        left: Operand<'e>,
-        right: Operand<'e>,
+        left: u8,
+        right: u64,
     ) -> Option<Operand<'e>> {
-        let c = right.if_constant()?;
-        let reg = left.if_register()? & 0xf;
+        let c = right;
+        let reg = left & 0x7;
         let ctx = self.ctx;
         if c <= 0xff {
             let op = match self.cached_low_registers.get_low8(reg) {
@@ -916,38 +917,72 @@ impl<'e> State<'e> {
         if !value.needs_resolve() {
             return value;
         }
-        if let OperandType::Register(reg) = *value.ty() {
-            return self.state[(reg & 0x7) as usize];
+        if let Some(reg) = value.if_register() {
+            return self.state[(reg & 7) as usize];
         }
         match *value.ty() {
-            OperandType::Xmm(reg, word) => {
-                match self.xmm_fpu {
-                    Some(ref s) => {
-                        s[XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize]
+            OperandType::Arch(arch) => {
+                let arch = arch.value();
+                let tag = disasm::x86_arch_tag(arch);
+                let ctx = self.ctx;
+                match tag {
+                    disasm::X86_REGISTER32_TAG => {
+                        let reg = (arch & 0xf) as u8;
+                        self.resolve_register(reg)
                     }
-                    None => value,
+                    disasm::X86_REGISTER16_TAG | disasm::X86_REGISTER8_LOW_TAG =>
+                    {
+                        let reg = (arch & 0xf) as u8;
+                        let mask = match tag {
+                            disasm::X86_REGISTER16_TAG => 0xffff,
+                            _ => 0xff,
+                        };
+                        if let Some(reg) = self.try_resolve_partial_register(reg, mask) {
+                            return reg;
+                        }
+                        let value = ctx.and_const(self.resolve_register(reg), mask);
+                        value
+                    }
+                    disasm::X86_REGISTER8_HIGH_TAG => {
+                        let reg = (arch & 0xf) as u8;
+                        let value = ctx.and_const(self.resolve_register(reg), 0xff00);
+                        ctx.rsh_const(value, 8)
+                    }
+                    disasm::X86_FLAG_TAG => {
+                        let flag = Flag::x86_from_arch(arch as u8);
+                        self.resolve_flag(flag)
+                    }
+                    disasm::X86_XMM_FPU_TAG => {
+                        match self.xmm_fpu {
+                            Some(ref s) => {
+                                let id = arch as u8;
+                                if id < 128 {
+                                    // xmm, this ExecState has 8 * 4 registers
+                                    s[XMM_REGISTER_INDEX + (id & 0x1f) as usize]
+                                } else {
+                                    // Fpu
+                                    s[FPU_REGISTER_INDEX + (id & 7) as usize]
+                                }
+                            }
+                            None => value,
+                        }
+                    }
+                    _ => value,
                 }
             }
-            OperandType::Fpu(id) => {
-                match self.xmm_fpu {
-                    Some(ref s) => {
-                        s[FPU_REGISTER_INDEX + (id & 7) as usize]
-                    }
-                    None => value,
-                }
-            }
-            OperandType::Flag(flag) => self.resolve_flag(flag),
             OperandType::Arithmetic(ref op) => {
                 let left = op.left;
                 let right = op.right;
                 let ctx = self.ctx;
                 if op.ty == ArithOpType::And {
-                    let r = self.try_resolve_partial_register(left, right);
-                    if let Some(r) = r {
-                        return r;
-                    }
-                    // Check for (x op y) & const_mask
                     if let Some(c) = right.if_constant() {
+                        if let Some(left) = left.if_register() {
+                            let r = self.try_resolve_partial_register(left, c);
+                            if let Some(r) = r {
+                                return r;
+                            }
+                        }
+                        // Check for (x op y) & const_mask
                         if let OperandType::Arithmetic(ref inner) = left.ty() {
                             let left = self.resolve(inner.left);
                             let right = self.resolve(inner.right);
@@ -969,7 +1004,7 @@ impl<'e> State<'e> {
                 }
                 // Right is often a constant so predict that case before calling resolve
                 let mut left = self.resolve(left);
-                if op.left.if_flag().is_some() && left.relevant_bits().end > 1 {
+                if op.left.x86_if_flag().is_some() && left.relevant_bits().end > 1 {
                     // Flag operands may contain larger than 1bit values
                     // (Especially undefined), but treat the high bits as unimportant.
                     // Though leave x == 0 untouched.
@@ -980,7 +1015,7 @@ impl<'e> State<'e> {
 
                 let right = if right.needs_resolve() {
                     let mut right = self.resolve(right);
-                    if op.right.if_flag().is_some() && right.relevant_bits().end > 1 {
+                    if op.right.x86_if_flag().is_some() && right.relevant_bits().end > 1 {
                         right = ctx.and_const(right, 1);
                     }
                     right
@@ -1013,8 +1048,7 @@ impl<'e> State<'e> {
                     }
                 }
             }
-            OperandType::Undefined(_) | OperandType::Constant(_) | OperandType::Custom(_) |
-                OperandType::Register(_) =>
+            OperandType::Undefined(_) | OperandType::Constant(_) | OperandType::Custom(_) =>
             {
                 debug_assert!(false, "Should be unreachable due to needs_resolve check");
                 value
@@ -1055,7 +1089,7 @@ impl<'e> State<'e> {
     ) {
         let ctx = self.ctx();
         self.unresolved_constraint = match self.unresolved_constraint {
-            Some(ref s) => s.invalidate_dest_operand(ctx, dest),
+            Some(ref s) => s.x86_invalidate_dest_operand(ctx, dest),
             None => None,
         };
         if let DestOperand::Memory(_) = dest {
@@ -1084,96 +1118,104 @@ impl<'e> State<'e> {
         // otherwise there would be edge cases where poking low register causes the register
         // to contain unnormalized values.
         match *dest {
-            DestOperand::Register32(reg) | DestOperand::Register64(reg) => {
-                let reg = reg & 0x7;
-                self.cached_low_registers.invalidate(reg);
-                let value = ctx.normalize_32bit(value);
-                self.state[reg as usize] = value;
-            }
-            DestOperand::Register16(reg) => {
-                let reg = reg & 0x7;
-                let index = reg as usize;
-                let old = self.state[index];
-                let masked = if value.relevant_bits().end > 16 {
-                    ctx.and_const(value, 0xffff)
-                } else {
-                    value
-                };
-                let old_bits = old.relevant_bits();
-                let new = if old_bits.end <= 16 {
-                    masked
-                } else {
-                    ctx.normalize_32bit(
-                        ctx.or(
-                            ctx.and_const(old, 0xffff_0000),
-                            masked,
-                        )
-                    )
-                };
-                self.state[index] = new;
-                self.cached_low_registers.invalidate(reg);
-                self.cached_low_registers.set_16(reg, masked);
-            }
-            DestOperand::Register8High(reg) => {
-                let reg = reg & 0x7;
-                let index = reg as usize;
-                let old = self.state[index];
-                let masked = if value.relevant_bits().end > 8 {
-                    ctx.and_const(value, 0xff)
-                } else {
-                    value
-                };
-                let old_bits = old.relevant_bits();
-                let new = if old_bits.start >= 8 && old_bits.end <= 16 {
-                    ctx.lsh_const(masked, 8)
-                } else {
-                    ctx.normalize_32bit(
-                        ctx.or(
-                            ctx.and_const(old, 0xffff_00ff),
-                            ctx.lsh_const(masked, 8),
-                        )
-                    )
-                };
-                self.state[index] = new;
-                self.cached_low_registers.invalidate_for_8high(reg);
-            }
-            DestOperand::Register8Low(reg) => {
-                let reg = reg & 0x7;
-                let index = reg as usize;
-                let old = self.state[index];
-                let masked = if value.relevant_bits().end > 8 {
-                    ctx.and_const(value, 0xff)
-                } else {
-                    value
-                };
-                let old_bits = old.relevant_bits();
-                let new = if old_bits.end <= 8 {
-                    masked
-                } else {
-                    ctx.normalize_32bit(
-                        ctx.or(
-                            ctx.and_const(old, 0xffff_ff00),
-                            masked,
-                        )
-                    )
-                };
-                self.state[index] = new;
-                self.cached_low_registers.invalidate(reg);
-                self.cached_low_registers.set_low8(reg, masked);
-            }
-            DestOperand::Fpu(id) => {
-                let xmm_fpu = self.xmm_fpu_mut();
-                xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize] = value;
-            }
-            DestOperand::Xmm(reg, word) => {
-                let xmm_fpu = self.xmm_fpu_mut();
-                xmm_fpu[
-                    XMM_REGISTER_INDEX + (reg & 7) as usize * 4 + (word & 3) as usize
-                ] = value;
-            }
-            DestOperand::Flag(flag) => {
-                self.pending_flags.make_non_pending(flag);
-                self.state[FLAGS_INDEX + flag as usize] = value;
+            DestOperand::Arch(arch_) => {
+                let arch = arch_.value();
+                match arch_.x86_tag() {
+                    0 | disasm::X86_REGISTER32_TAG => {
+                        let reg = (arch & 0x7) as u8;
+                        self.cached_low_registers.invalidate(reg);
+                        let value = ctx.normalize_32bit(value);
+                        self.state[reg as usize] = value;
+                    }
+                    disasm::X86_REGISTER16_TAG => {
+                        let reg = (arch & 0x7) as u8;
+                        let index = reg as usize;
+                        let old = self.state[index];
+                        let masked = if value.relevant_bits().end > 16 {
+                            ctx.and_const(value, 0xffff)
+                        } else {
+                            value
+                        };
+                        let old_bits = old.relevant_bits();
+                        let new = if old_bits.end <= 16 {
+                            masked
+                        } else {
+                            ctx.normalize_32bit(
+                                ctx.or(
+                                    ctx.and_const(old, 0xffff_0000),
+                                    masked,
+                                )
+                            )
+                        };
+                        self.state[index] = new;
+                        self.cached_low_registers.invalidate(reg);
+                        self.cached_low_registers.set_16(reg, masked);
+                    }
+                    disasm::X86_REGISTER8_LOW_TAG => {
+                        let reg = (arch & 0x7) as u8;
+                        let index = reg as usize;
+                        let old = self.state[index];
+                        let masked = if value.relevant_bits().end > 8 {
+                            ctx.and_const(value, 0xff)
+                        } else {
+                            value
+                        };
+                        let old_bits = old.relevant_bits();
+                        let new = if old_bits.end <= 8 {
+                            masked
+                        } else {
+                            ctx.normalize_32bit(
+                                ctx.or(
+                                    ctx.and_const(old, 0xffff_ff00),
+                                    masked,
+                                )
+                            )
+                        };
+                        self.state[index] = new;
+                        self.cached_low_registers.invalidate(reg);
+                        self.cached_low_registers.set_low8(reg, masked);
+                    }
+                    disasm::X86_REGISTER8_HIGH_TAG => {
+                        let reg = (arch & 0x7) as u8;
+                        let index = reg as usize;
+                        let old = self.state[index];
+                        let masked = if value.relevant_bits().end > 8 {
+                            ctx.and_const(value, 0xff)
+                        } else {
+                            value
+                        };
+                        let old_bits = old.relevant_bits();
+                        let new = if old_bits.start >= 8 && old_bits.end <= 16 {
+                            ctx.lsh_const(masked, 8)
+                        } else {
+                            ctx.normalize_32bit(
+                                ctx.or(
+                                    ctx.and_const(old, 0xffff_00ff),
+                                    ctx.lsh_const(masked, 8),
+                                )
+                            )
+                        };
+                        self.state[index] = new;
+                        self.cached_low_registers.invalidate_for_8high(reg);
+                    }
+                    disasm::X86_FLAG_TAG => {
+                        let flag = Flag::x86_from_arch(arch as u8);
+                        self.pending_flags.make_non_pending(flag);
+                        self.state[FLAGS_INDEX + flag as usize] = value;
+                    }
+                    disasm::X86_XMM_FPU_TAG => {
+                        let xmm_fpu = self.xmm_fpu_mut();
+                        let id = arch as u8;
+                        if id < 128 {
+                            // Xmm
+                            xmm_fpu[XMM_REGISTER_INDEX + (id & 0x1f) as usize] = value;
+                        } else {
+                            // Fpu
+                            xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize] = value;
+                        };
+                    }
+                    _ => (),
+                }
             }
             DestOperand::Memory(ref mem) => {
                 let (base, offset) = if dest_is_resolved {

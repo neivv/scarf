@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::exec_state::{OperandCtxExtX86};
+
 trait CtxExt<'e> {
     fn normalize(&'e self, op: Operand<'e>) -> Operand<'e>;
 }

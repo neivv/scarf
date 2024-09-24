@@ -2,9 +2,9 @@ use lde::Isa;
 use quick_error::quick_error;
 
 use crate::disasm_cache::{DisasmArch};
-use crate::exec_state::{VirtualAddress};
+use crate::exec_state::{VirtualAddress, OperandCtxExtX86};
 use crate::operand::{
-    self, ArithOpType, Flag, MemAccess, Operand, OperandCtx, OperandType, MemAccessSize,
+    self, ArithOpType, Flag, MemAccess, Operand, OperandCtx, MemAccessSize,
 };
 use crate::{BinaryFile, VirtualAddress32, VirtualAddress64};
 
@@ -39,6 +39,18 @@ quick_error! {
 struct Failed;
 
 pub type OperationVec<'e> = Vec<Operation<'e>>;
+
+/// Arch values for ExecutionStateX86 and ExecutionStateX86_64 are defined with
+/// `tag = value >> 16`, `id = value & 0xff`
+pub(crate) const X86_REGISTER32_TAG: u32 = 1;
+pub(crate) const X86_REGISTER16_TAG: u32 = 2;
+pub(crate) const X86_REGISTER8_LOW_TAG: u32 = 3;
+pub(crate) const X86_REGISTER8_HIGH_TAG: u32 = 4;
+pub(crate) const X86_FLAG_TAG: u32 = 5;
+/// Currently (16 * 4) ids starting from 0 are xmm, and 8 ids afterwards fpu,
+/// but may be replaced with Mem32[X86_XMM_FPU_TAG << 16 + reg_id] representation instead
+/// And/or have ids not be same across x86 and x86-64.
+pub(crate) const X86_XMM_FPU_TAG: u32 = 6;
 
 pub struct Disassembler32<'e> {
     buf: &'e [u8],
@@ -993,7 +1005,7 @@ fn instruction_operations64_main(
         // rdtsc
         0x131 => {
             for &reg in &[0, 2] {
-                s.output_mov(DestOperand::Register32(reg), s.ctx.new_undef());
+                s.output_mov(DestOperand::x86_register_32(reg), s.ctx.new_undef());
             }
             Ok(())
         }
@@ -1147,9 +1159,10 @@ enum BitTest {
 }
 
 fn x87_variant<'e>(ctx: OperandCtx<'e>, op: Operand<'e>, offset: i8) -> Operand<'e> {
-    match *op.ty() {
-        OperandType::Register(r) => ctx.register_fpu((r as i8 + offset) as u8 & 7),
-        _ => op,
+    if let Some(reg) = op.if_register() {
+        ctx.register_fpu((reg as i8 + offset) as u8 & 7)
+    } else {
+        op
     }
 }
 
@@ -1184,11 +1197,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
 
     #[inline(never)]
     fn output_mov_to_reg(&mut self, dest: u8, value: Operand<'e>) {
-        self.out.push(Operation::Move(DestOperand::Register64(dest), value));
+        self.out.push(Operation::Move(DestOperand::register(dest), value));
     }
 
     fn output_flag_set(&mut self, flag: Flag, value: Operand<'e>) {
-        self.output_mov(DestOperand::Flag(flag), value)
+        self.output_mov(DestOperand::x86_flag(flag), value)
     }
 
     fn output_arith(
@@ -1353,11 +1366,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
     /// recalculating address twice with this.
     fn r_to_dest_and_operand(&mut self, r: ModRm_R) -> DestAndOperand<'e> {
         let dest = match r.1 {
-            RegisterSize::R64 => DestOperand::Register64(r.0),
-            RegisterSize::R32 => DestOperand::Register32(r.0),
-            RegisterSize::R16 => DestOperand::Register16(r.0),
-            RegisterSize::Low8 => DestOperand::Register8Low(r.0),
-            RegisterSize::High8 => DestOperand::Register8High(r.0),
+            RegisterSize::R64 => DestOperand::register(r.0),
+            RegisterSize::R32 => DestOperand::x86_register_32(r.0),
+            RegisterSize::R16 => DestOperand::x86_register_16(r.0),
+            RegisterSize::Low8 => DestOperand::x86_register_8_low(r.0),
+            RegisterSize::High8 => DestOperand::x86_register_8_high(r.0),
         };
         let op = self.register_cache.register(r.0, r.1);
         DestAndOperand {
@@ -1443,7 +1456,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             offset = offset.wrapping_add(i as u64 * 4);
             DestOperand::Memory(self.ctx.mem_access(base, offset, MemAccessSize::Mem32))
         } else {
-            DestOperand::Xmm(rm.base, i)
+            DestOperand::x86_xmm(rm.base, i)
         }
     }
 
@@ -1926,7 +1939,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             value = ctx.or(value, ctx.lsh_const(ctx.flag(flag), shift.into()));
         }
         self.output_mov(
-            DestOperand::Register8High(0),
+            DestOperand::x86_register_8_high(0),
             value,
         );
         Ok(())
@@ -1948,10 +1961,10 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         match eax_left {
             true => {
                 let dest = match op_size {
-                    MemAccessSize::Mem8 => DestOperand::Register8Low(0),
-                    MemAccessSize::Mem16 => DestOperand::Register16(0),
-                    MemAccessSize::Mem32 => DestOperand::Register32(0),
-                    MemAccessSize::Mem64 => DestOperand::Register64(0),
+                    MemAccessSize::Mem8 => DestOperand::x86_register_8_low(0),
+                    MemAccessSize::Mem16 => DestOperand::x86_register_16(0),
+                    MemAccessSize::Mem32 => DestOperand::x86_register_32(0),
+                    MemAccessSize::Mem64 => DestOperand::register(0),
                 };
                 let value = ctx.memory(&mem);
                 self.out.push(Operation::Move(dest, value));
@@ -2185,7 +2198,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             let (src, dest) = self.parse_modrm(in_size);
             let src_eq_dest = dest.equal_to_rm(&src);
             let dest_op = ctx.register(dest.0);
-            let dest = DestOperand::Register32(dest.0);
+            let dest = DestOperand::x86_register_32(dest.0);
 
             let src = self.rm_to_operand(&src);
             let mut input = dest_op;
@@ -2359,27 +2372,29 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             }
             4 | 5 => {
                 // TODO signed mul
-                let eax = self.reg_variable_size(0, op_size);
-                let edx = self.reg_variable_size(2, op_size);
-                let multiply = ctx.mul(eax, rm.op);
+                let op_size_reg = RegisterSize::from_mem_access_size(op_size);
+                let eax = ModRm_R(0, op_size_reg);
+                let edx = ModRm_R(2, op_size_reg);
+                let eax_op = self.r_to_operand(eax);
+                let multiply = ctx.mul(eax_op, rm.op);
                 self.output(Operation::Freeze);
                 if op_size == MemAccessSize::Mem64 {
                     self.output_mov(
-                        DestOperand::from_oper(edx),
-                        ctx.mul_high(eax, rm.op),
+                        edx.dest_operand(),
+                        ctx.mul_high(eax_op, rm.op),
                     );
                     self.output_mov(
-                        DestOperand::from_oper(eax),
+                        eax.dest_operand(),
                         multiply,
                     );
                 } else {
                     let size = op_size.bits() as u64;
                     self.output_mov(
-                        DestOperand::from_oper(edx),
+                        edx.dest_operand(),
                         ctx.rsh_const(multiply, size),
                     );
                     self.output_mov(
-                        DestOperand::from_oper(eax),
+                        eax.dest_operand(),
                         multiply,
                     );
                 }
@@ -2388,8 +2403,9 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             // Div, idiv
             6 | 7 => {
                 // edx = edx:eax % rm, eax = edx:eax / rm
-                let eax = self.reg_variable_size(0, op_size);
-                let edx = self.reg_variable_size(2, op_size);
+                let op_size_reg = RegisterSize::from_mem_access_size(op_size);
+                let eax = ModRm_R(0, op_size_reg);
+                let edx = ModRm_R(2, op_size_reg);
                 let div;
                 let modulo;
                 if op_size == MemAccessSize::Mem64 || variant == 7 {
@@ -2400,15 +2416,15 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 } else {
                     let size = op_size.bits() as u64;
                     let pair = ctx.or(
-                        ctx.lsh_const(edx, size),
-                        eax,
+                        ctx.lsh_const(self.r_to_operand(edx), size),
+                        self.r_to_operand(eax),
                     );
                     div = ctx.div(pair, rm.op);
                     modulo = ctx.modulo(pair, rm.op);
                 }
                 self.output(Operation::Freeze);
-                self.output_mov(DestOperand::from_oper(edx), modulo);
-                self.output_mov(DestOperand::from_oper(eax), div);
+                self.output_mov(edx.dest_operand(), modulo);
+                self.output_mov(eax.dest_operand(), div);
                 self.output(Operation::Unfreeze);
             }
             _ => return Err(self.unknown_opcode()),
@@ -2668,11 +2684,11 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             ctx.float_arithmetic(ArithOpType::GreaterThan, rm, r, MemAccessSize::Mem32),
         );
 
-        self.output_mov(DestOperand::Flag(Flag::Zero), zero);
-        self.output_mov(DestOperand::Flag(Flag::Carry), carry);
-        self.output_mov(DestOperand::Flag(Flag::Parity), unordered);
+        self.output_mov(DestOperand::x86_flag(Flag::Zero), zero);
+        self.output_mov(DestOperand::x86_flag(Flag::Carry), carry);
+        self.output_mov(DestOperand::x86_flag(Flag::Parity), unordered);
         for &flag in &[Flag::Overflow, Flag::Sign] {
-            self.output_mov(DestOperand::Flag(flag), zero);
+            self.output_mov(DestOperand::x86_flag(flag), zero);
         }
         Ok(())
     }
@@ -3152,7 +3168,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                         result = ctx.or(result, ctx.and_const(was_signed, u64::from(!keep_mask)));
                     }
                 }
-                self.output_mov(DestOperand::Xmm(register, i), result);
+                self.output_mov(DestOperand::x86_xmm(register, i), result);
             }
         }
         Ok(())
@@ -3385,7 +3401,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             .ok_or_else(|| self.unknown_opcode())?;
         let rm = self.rm_to_operand(&rm);
         let st0 = self.ctx.register_fpu(0);
-        let dest = DestOperand::Fpu(0);
+        let dest = DestOperand::x86_fpu(0);
         let (lhs, rhs) = if variant == 5 || variant == 7 {
             (rm, st0)
         } else {
@@ -3411,7 +3427,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             // Fld
             0 => {
                 self.fpu_push();
-                self.output_mov(DestOperand::Fpu(0), x87_variant(ctx, rm.op, 1));
+                self.output_mov(DestOperand::x86_fpu(0), x87_variant(ctx, rm.op, 1));
                 Ok(())
             }
             // Fst/Fstp, as long as rm is mem
@@ -3471,7 +3487,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     ctx.const_0(),
                     MemAccessSize::Mem64,
                 );
-                self.output_mov(DestOperand::Fpu(0), op);
+                self.output_mov(DestOperand::x86_fpu(0), op);
                 Ok(())
             }
             // Fst/Fstp f64, as long as rm is mem
@@ -3855,7 +3871,7 @@ pub mod operation_helpers {
     use super::{DestOperand, Operation};
 
     pub fn mov_to_reg<'e>(dest: u8, from: Operand<'e>) -> Operation<'e> {
-        Operation::Move(DestOperand::Register64(dest), from)
+        Operation::Move(DestOperand::register(dest), from)
     }
 
     pub fn mov_to_reg_variable_size<'e>(
@@ -3864,10 +3880,10 @@ pub mod operation_helpers {
         from: Operand<'e>,
     ) -> Operation<'e> {
         let dest = match size {
-            MemAccessSize::Mem8 => DestOperand::Register8Low(dest),
-            MemAccessSize::Mem16 => DestOperand::Register16(dest),
-            MemAccessSize::Mem32 => DestOperand::Register32(dest),
-            MemAccessSize::Mem64 => DestOperand::Register64(dest),
+            MemAccessSize::Mem8 => DestOperand::x86_register_8_low(dest),
+            MemAccessSize::Mem16 => DestOperand::x86_register_16(dest),
+            MemAccessSize::Mem32 => DestOperand::x86_register_32(dest),
+            MemAccessSize::Mem64 => DestOperand::register(dest),
         };
         Operation::Move(dest, from)
     }
@@ -4088,20 +4104,19 @@ impl RegisterSize {
 }
 
 impl ModRm_R {
-    #[inline(never)]
     fn dest_operand<'e>(self) -> DestOperand<'e> {
-        let reg = self.0;
-        [
-            DestOperand::Register8Low(reg),
-            DestOperand::Register8High(reg),
-            DestOperand::Register16(reg),
-            DestOperand::Register32(reg),
-            DestOperand::Register64(reg),
-        ][self.1 as usize]
+        static ARRAY: [u32; 5] = [
+            make_x86_arch_tag(X86_REGISTER8_LOW_TAG),
+            make_x86_arch_tag(X86_REGISTER8_HIGH_TAG),
+            make_x86_arch_tag(X86_REGISTER16_TAG),
+            make_x86_arch_tag(X86_REGISTER32_TAG),
+            0,
+        ];
+        DestOperand::Arch(DestArchId(ARRAY[self.1 as usize] | (self.0 as u32)))
     }
 
     fn dest_operand_xmm<'e>(self, i: u8) -> DestOperand<'e> {
-        DestOperand::Xmm(self.0, i)
+        DestOperand::x86_xmm(self.0, i)
     }
 
     fn equal_to_rm(self, rm: &ModRm_Rm) -> bool {
@@ -4160,29 +4175,151 @@ impl<'e> Clone for DestAndOperand<'e> {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DestOperand<'e> {
-    Register64(u8),
-    Register32(u8),
-    Register16(u8),
-    Register8High(u8),
-    Register8Low(u8),
-    Xmm(u8, u8),
-    Fpu(u8),
-    Flag(Flag),
+    Arch(DestArchId),
     Memory(MemAccess<'e>),
+}
+
+/// [`DestOperand`] version of [`ArchId`], public API is similarly
+/// just new with u32, get u32, though this is not tied to [`OperandCtx`]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct DestArchId(u32);
+
+#[inline]
+pub(crate) const fn x86_arch_tag(value: u32) -> u32 {
+    value >> 16
+}
+
+#[inline]
+pub(crate) const fn make_x86_arch_tag(tag: u32) -> u32 {
+    tag << 16
+}
+
+impl DestArchId {
+    pub fn new(value: u32) -> DestArchId {
+        DestArchId(value)
+    }
+
+    #[inline]
+    pub fn value(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    pub(crate) fn x86_tag(self) -> u32 {
+        x86_arch_tag(self.value())
+    }
+
+    fn if_u8_tagged(self, tag: u32) -> Option<u8> {
+        if self.x86_tag() == tag {
+            Some(self.value() as u8)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn if_register(self) -> Option<u8> {
+        self.if_u8_tagged(0)
+    }
+
+    #[inline]
+    pub fn if_x86_register_32(self) -> Option<u8> {
+        self.if_u8_tagged(X86_REGISTER32_TAG)
+    }
+
+    #[inline]
+    pub fn if_x86_register_16(self) -> Option<u8> {
+        self.if_u8_tagged(X86_REGISTER16_TAG)
+    }
+
+    #[inline]
+    pub fn if_x86_register_8_low(self) -> Option<u8> {
+        self.if_u8_tagged(X86_REGISTER8_LOW_TAG)
+    }
+
+    #[inline]
+    pub fn if_x86_register_8_high(self) -> Option<u8> {
+        self.if_u8_tagged(X86_REGISTER8_HIGH_TAG)
+    }
+
+    #[inline]
+    pub fn if_x86_flag(self) -> Option<Flag> {
+        Some(Flag::x86_from_arch(self.if_u8_tagged(X86_FLAG_TAG)?))
+    }
 }
 
 impl<'e> DestOperand<'e> {
     pub fn reg_variable_size(reg: u8, size: MemAccessSize) -> DestOperand<'e> {
         match size {
-            MemAccessSize::Mem8 => DestOperand::Register8Low(reg),
-            MemAccessSize::Mem16 => DestOperand::Register16(reg),
-            MemAccessSize::Mem32 => DestOperand::Register32(reg),
-            MemAccessSize::Mem64 => DestOperand::Register64(reg),
+            MemAccessSize::Mem8 => DestOperand::x86_register_8_low(reg),
+            MemAccessSize::Mem16 => DestOperand::x86_register_16(reg),
+            MemAccessSize::Mem32 => DestOperand::x86_register_32(reg),
+            MemAccessSize::Mem64 => DestOperand::register(reg),
         }
     }
 
     pub fn from_oper(val: Operand<'e>) -> DestOperand<'e> {
-        dest_operand(val)
+        use crate::operand::OperandType::*;
+        match *val.ty() {
+            Arch(x) => DestOperand::arch(x.value()),
+            Memory(ref x) => DestOperand::Memory(x.clone()),
+            // Avoid adding operand formatting code in binary for this if it isn't needed
+            // elsewhere.
+            #[cfg(not(debug_assertions))]
+            _ => panic!("Invalid value for converting Operand -> DestOperand"),
+            #[cfg(debug_assertions)]
+            _ => panic!("Invalid value for converting Operand -> DestOperand {}", val),
+        }
+    }
+
+    #[inline]
+    pub fn arch(value: u32) -> DestOperand<'e> {
+        DestOperand::Arch(DestArchId(value))
+    }
+
+    #[inline]
+    pub fn register(reg: u8) -> DestOperand<'e> {
+        DestOperand::arch(reg as u32)
+    }
+
+    #[inline]
+    fn x86_tagged(low: u8, tag: u32) -> DestOperand<'e> {
+        Self::arch((low as u32) | ((tag << 16) as u32))
+    }
+
+    #[inline]
+    pub fn x86_register_32(reg: u8) -> DestOperand<'e> {
+        Self::x86_tagged(reg, X86_REGISTER32_TAG)
+    }
+
+    #[inline]
+    pub fn x86_register_16(reg: u8) -> DestOperand<'e> {
+        Self::x86_tagged(reg, X86_REGISTER16_TAG)
+    }
+
+    #[inline]
+    pub fn x86_register_8_low(reg: u8) -> DestOperand<'e> {
+        Self::x86_tagged(reg, X86_REGISTER8_LOW_TAG)
+    }
+
+    #[inline]
+    pub fn x86_register_8_high(reg: u8) -> DestOperand<'e> {
+        Self::x86_tagged(reg, X86_REGISTER8_HIGH_TAG)
+    }
+
+    #[inline]
+    pub fn x86_flag(flag: Flag) -> DestOperand<'e> {
+        Self::x86_tagged(flag as u8, X86_FLAG_TAG)
+    }
+
+    #[inline]
+    pub fn x86_fpu(reg: u8) -> DestOperand<'e> {
+        Self::x86_tagged(reg | 0x80, X86_XMM_FPU_TAG)
+    }
+
+    #[inline]
+    pub fn x86_xmm(reg: u8, part: u8) -> DestOperand<'e> {
+        Self::x86_tagged((reg << 2) | (part & 3), X86_XMM_FPU_TAG)
     }
 
     /// Creates `DestOperand` referring to memory specified by `mem`.
@@ -4202,93 +4339,53 @@ impl<'e> DestOperand<'e> {
         Self::memory(&ctx.mem_access(base, offset, size))
     }
 
+    #[inline]
+    pub fn if_memory(&self) -> Option<&MemAccess<'e>> {
+        match self {
+            DestOperand::Memory(mem) => Some(mem),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn if_arch(&self) -> Option<DestArchId> {
+        match *self {
+            DestOperand::Arch(arch) => Some(arch),
+            _ => None,
+        }
+    }
+
+    pub fn if_register(&self) -> Option<u8> {
+        self.if_arch()?.if_register()
+    }
+
     pub fn as_operand(&self, ctx: OperandCtx<'e>) -> Operand<'e> {
         match *self {
-            DestOperand::Register32(x) => ctx.and_const(ctx.register(x), 0xffff_ffff),
-            DestOperand::Register16(x) => ctx.and_const(ctx.register(x), 0xffff),
-            DestOperand::Register8High(x) => ctx.rsh_const(
-                ctx.and_const(ctx.register(x), 0xffff),
-                8,
-            ),
-            DestOperand::Register8Low(x) => ctx.and_const(ctx.register(x), 0xff),
-            DestOperand::Register64(x) => ctx.register(x),
-            DestOperand::Xmm(x, y) => ctx.xmm(x, y),
-            DestOperand::Fpu(x) => ctx.register_fpu(x),
-            DestOperand::Flag(x) => ctx.flag(x).clone(),
+            DestOperand::Arch(x) => ctx.arch(x.value()),
             DestOperand::Memory(ref x) => ctx.memory(x),
         }
     }
 
     /// Returns MemAccessSize that any assignments to this DestOperand will be masked to.
-    pub(crate) fn size(&self) -> MemAccessSize {
+    pub(crate) fn x86_size(&self) -> MemAccessSize {
         if let DestOperand::Memory(ref mem) = *self {
             mem.size
         } else {
             match *self {
-                DestOperand::Register32(..) | DestOperand::Xmm(..) |
-                    DestOperand::Fpu(..) => MemAccessSize::Mem32,
-                DestOperand::Register16(..) => MemAccessSize::Mem16,
-                DestOperand::Register8High(..) |
-                    DestOperand::Register8Low(..) => MemAccessSize::Mem8,
-                // Flag maybe could be Mem8? But currently assignments to flags aren't masked so
-                DestOperand::Register64(..) | DestOperand::Flag(..) |
-                    DestOperand::Memory(..) => MemAccessSize::Mem64,
-            }
-        }
-    }
-}
-
-fn dest_operand<'e>(val: Operand<'e>) -> DestOperand<'e> {
-    use crate::operand::OperandType::*;
-    match *val.ty() {
-        Register(x) => DestOperand::Register64(x),
-        Xmm(x, y) => DestOperand::Xmm(x, y),
-        Fpu(x) => DestOperand::Fpu(x),
-        Flag(x) => DestOperand::Flag(x),
-        Memory(ref x) => DestOperand::Memory(x.clone()),
-        Arithmetic(ref arith) => {
-            match arith.ty {
-                ArithOpType::And => {
-                    let result = arith.right.if_constant()
-                        .and_then(|c| {
-                            let reg = arith.left.if_register()?;
-                            match c {
-                                0xff => Some(DestOperand::Register8Low(reg)),
-                                0xffff => Some(DestOperand::Register16(reg)),
-                                0xffff_ffff => Some(DestOperand::Register32(reg)),
-                                _ => None,
-                            }
-                        });
-                    if let Some(result) = result {
-                        return result;
+                DestOperand::Arch(value) => {
+                    match value.x86_tag() {
+                        0 => MemAccessSize::Mem64,
+                        X86_REGISTER32_TAG | X86_XMM_FPU_TAG => MemAccessSize::Mem32,
+                        X86_REGISTER16_TAG => MemAccessSize::Mem16,
+                        X86_REGISTER8_HIGH_TAG | X86_REGISTER8_LOW_TAG => MemAccessSize::Mem8,
+                        // Flag maybe could be Mem8? But currently assignments to flags aren't masked so
+                        X86_FLAG_TAG => MemAccessSize::Mem64,
+                        _ => MemAccessSize::Mem64,
                     }
                 }
-                ArithOpType::Rsh => {
-                    if arith.right.if_constant() == Some(8) {
-                        let reg = arith.left.if_arithmetic_and()
-                            .and_then(|(l, r)| {
-                                r.if_constant()
-                                    .filter(|&c| c == 0xff00)?;
-                                l.if_register()
-                            });
-                        if let Some(reg) = reg {
-                            return DestOperand::Register8High(reg);
-                        }
-                    }
-                }
-                _ => (),
+                DestOperand::Memory(..) => MemAccessSize::Mem64,
             }
-            // Avoid adding operand formatting code in binary for this if it isn't needed
-            // elsewhere.
-            #[cfg(not(debug_assertions))]
-            panic!("Invalid value for converting Operand -> DestOperand");
-            #[cfg(debug_assertions)]
-            panic!("Invalid value for converting Operand -> DestOperand {}", val);
         }
-        #[cfg(not(debug_assertions))]
-        _ => panic!("Invalid value for converting Operand -> DestOperand"),
-        #[cfg(debug_assertions)]
-        _ => panic!("Invalid value for converting Operand -> DestOperand {}", val),
     }
 }
 

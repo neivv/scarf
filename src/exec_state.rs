@@ -16,9 +16,9 @@ use arrayvec::ArrayVec;
 use fxhash::FxBuildHasher;
 
 use crate::analysis;
-use crate::disasm::{FlagArith, DestOperand, FlagUpdate, Instruction, Operation};
+use crate::disasm::{self, FlagArith, DestOperand, FlagUpdate, Instruction, Operation};
 use crate::operand::{
-    ArithOperand, ArithOpType, Flag, Operand, OperandType, OperandCtx, OperandHashByAddress,
+    self, ArithOperand, ArithOpType, Flag, Operand, OperandType, OperandCtx, OperandHashByAddress,
     MemAccessSize, MemAccess,
 };
 use crate::operand::slice_stack::Slice;
@@ -309,6 +309,113 @@ pub trait ExecutionState<'e> : Clone + 'e {
     unsafe fn clone_to(&self, out: *mut Self);
 }
 
+pub static X86_64_ARCH_DEFINITION: operand::ArchDefinition<'static> = operand::ArchDefinition {
+    tag_definitions: &x86_64_tag_definitions(),
+    fmt: Some(x86_64_operand_fmt)
+};
+
+const fn x86_64_tag_definitions() -> [operand::ArchTagDefinition; 7] {
+    let mut ret = [
+        operand::ArchTagDefinition {
+            size: 64,
+        }; 7
+    ];
+    ret[disasm::X86_REGISTER32_TAG as usize].size = 32;
+    ret[disasm::X86_REGISTER16_TAG as usize].size = 16;
+    ret[disasm::X86_REGISTER8_LOW_TAG as usize].size = 8;
+    ret[disasm::X86_REGISTER8_HIGH_TAG as usize].size = 8;
+    ret[disasm::X86_FLAG_TAG as usize].size = 1;
+    ret[disasm::X86_XMM_FPU_TAG as usize].size = 32;
+    ret
+}
+
+fn x86_64_operand_fmt(f: &mut fmt::Formatter, value: u32) -> fmt::Result {
+    static REGISTER64: [&str; 8] = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"];
+    static REGISTER32: [&str; 8] = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
+    static REGISTER16: [&str; 8] = ["ax", "cx", "dx", "bx", "sp", "bp", "si", "di"];
+    static REGISTER8_LOW: [&str; 8] = ["al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil"];
+    static REGISTER8_HIGH: [&str; 4] = ["ah", "ch", "dh", "bh"];
+    static FLAG: [&str; 6] = ["z", "c", "o", "s", "p", "d"];
+    let tag = disasm::x86_arch_tag(value);
+    let table = match tag {
+        0 => &REGISTER64[..],
+        disasm::X86_REGISTER32_TAG => &REGISTER32[..],
+        disasm::X86_REGISTER16_TAG => &REGISTER16[..],
+        disasm::X86_REGISTER8_LOW_TAG => &REGISTER8_LOW[..],
+        disasm::X86_REGISTER8_HIGH_TAG => &REGISTER8_HIGH[..],
+        disasm::X86_FLAG_TAG => &FLAG[..],
+        _ => &[],
+    };
+    let i = value as u16;
+    if let Some(name) = table.get(i as usize) {
+        f.write_str(name)
+    } else {
+        match tag {
+            0 => write!(f, "r{}", i),
+            disasm::X86_REGISTER32_TAG => write!(f, "r{}d", i),
+            disasm::X86_REGISTER16_TAG => write!(f, "r{}w", i),
+            disasm::X86_REGISTER8_LOW_TAG => write!(f, "r{}h", i),
+            disasm::X86_REGISTER8_HIGH_TAG => write!(f, "r{}l", i),
+            disasm::X86_XMM_FPU_TAG => {
+                if i < 0x80 {
+                    write!(f, "xmm{}.{}", i >> 2, i & 3)
+                } else {
+                    write!(f, "fpu{}", i - 0x80)
+                }
+            }
+            _ => write!(f, "Arch({:x})", value)
+        }
+    }
+}
+
+pub trait OperandCtxExtX86<'e> {
+    fn register_fpu(&'e self, register: u8) -> Operand<'e>;
+    fn xmm(&'e self, register: u8, part: u8) -> Operand<'e>;
+}
+
+impl<'e> OperandCtxExtX86<'e> for crate::OperandContext<'e> {
+    fn register_fpu(&'e self, register: u8) -> Operand<'e> {
+        self.arch(
+            disasm::make_x86_arch_tag(disasm::X86_XMM_FPU_TAG) |
+            (register as u32) |
+            0x80
+        )
+    }
+
+    fn xmm(&'e self, register: u8, part: u8) -> Operand<'e> {
+        self.arch(
+            disasm::make_x86_arch_tag(disasm::X86_XMM_FPU_TAG) |
+            ((register as u32) << 2) |
+            ((part as u32) & 3)
+        )
+    }
+}
+
+pub trait OperandExtX86<'e> {
+    fn if_fpu(self) -> Option<u8>;
+    fn if_xmm(self) -> Option<(u8, u8)>;
+}
+
+impl<'e> OperandExtX86<'e> for crate::Operand<'e> {
+    fn if_fpu(self) -> Option<u8> {
+        let id = self.if_arch_id()?;
+        if disasm::x86_arch_tag(id) == disasm::X86_XMM_FPU_TAG && id & 0x80 != 0 {
+            Some((id & 0x7f) as u8)
+        } else {
+            None
+        }
+    }
+
+    fn if_xmm(self) -> Option<(u8, u8)> {
+        let id = self.if_arch_id()?;
+        if disasm::x86_arch_tag(id) == disasm::X86_XMM_FPU_TAG && id & 0x80 == 0 {
+            Some(((id >> 2) as u8, (id & 3) as u8))
+        } else {
+            None
+        }
+    }
+}
+
 /// Resolves to (base, offset) though base itself may contain offset as well,
 /// just tries to avoid interning new constant additions
 pub fn resolve_address<'e, R>(
@@ -366,7 +473,7 @@ where E: ExecutionState<'e>,
             let mut do_unresolved_constraint = true;
             if arith.ty == ArithOpType::Equal {
                 // Update relevant flag to 0/1 if reasonable, if not, then add constraint.
-                if let Some(flag) = arith.left.if_flag() {
+                if let Some(flag) = arith.left.x86_if_flag() {
                     if arith.right == ctx.const_0() {
                         jump_state.set_flag(flag, ctx.const_0());
                         no_jump_state.set_flag(flag, ctx.const_1());
@@ -380,7 +487,7 @@ where E: ExecutionState<'e>,
                 no_jump_state.add_unresolved_constraint(Constraint::new(unresolved_no_jump));
             }
         }
-    } else if let OperandType::Flag(flag) = *ty {
+    } else if let Some(flag) = condition.x86_if_flag() {
         let ctx = jump_state.ctx();
         let resolved_no_jump = ctx.eq_const(condition_resolved, 0);
         jump_state.add_resolved_constraint(Constraint::new(condition_resolved));
@@ -950,27 +1057,27 @@ impl<'e> Constraint<'e> {
     }
 
     /// Invalidates any parts of the constraint that depend on unresolved dest.
-    pub(crate) fn invalidate_dest_operand(
+    pub(crate) fn x86_invalidate_dest_operand(
         self,
         ctx: OperandCtx<'e>,
         dest: &DestOperand<'e>,
     ) -> Option<Constraint<'e>> {
         match *dest {
-            DestOperand::Register32(reg) | DestOperand::Register16(reg) |
-                DestOperand::Register8High(reg) | DestOperand::Register8Low(reg) |
-                DestOperand::Register64(reg) =>
-            {
-                remove_matching_ands(ctx, self.0, ctx.register(reg))
+            DestOperand::Arch(arch) => {
+                match arch.x86_tag() {
+                    0 | disasm::X86_REGISTER32_TAG | disasm::X86_REGISTER16_TAG |
+                        disasm::X86_REGISTER8_LOW_TAG | disasm::X86_REGISTER8_HIGH_TAG =>
+                    {
+                        let reg = arch.value() as u8;
+                        remove_matching_ands(ctx, self.0, ctx.register(reg))
+                    }
+                    disasm::X86_FLAG_TAG => {
+                        let flag = Flag::x86_from_arch(arch.value() as u8);
+                        remove_matching_ands(ctx, self.0, ctx.flag(flag))
+                    }
+                    _ => None,
+                }
             }
-            DestOperand::Xmm(_, _) => {
-                None
-            }
-            DestOperand::Fpu(_) => {
-                None
-            }
-            DestOperand::Flag(flag) => {
-                remove_matching_ands(ctx, self.0, ctx.flag(flag))
-            },
             DestOperand::Memory(_) => {
                 // Assuming that everything may alias with memory
                 remove_matching_ands_memory(ctx, self.0)
@@ -1303,11 +1410,11 @@ pub fn is_flag_const_constraint<'e>(
     ctx: OperandCtx<'e>,
     constraint: Operand<'e>,
 ) -> Option<(Flag, Operand<'e>)> {
-    if let Some(flag) = constraint.if_flag() {
+    if let Some(flag) = constraint.x86_if_flag() {
         return Some((flag, ctx.const_1()));
     }
     let (l, r) = constraint.if_arithmetic_eq()?;
-    if let Some(flag) = l.if_flag() {
+    if let Some(flag) = l.x86_if_flag() {
         if r == ctx.const_0() {
             return Some((flag, r));
         }
@@ -3948,5 +4055,21 @@ mod test {
         );
         let result = merge_constraint(ctx, Some(Constraint(a)), Some(Constraint(b))).unwrap();
         assert_eq!(result.0, a);
+    }
+
+    #[test]
+    fn x86_fmt() {
+        let ctx = &crate::OperandContext::new();
+        assert_eq!(ctx.register(0).to_string(), "rax");
+        assert_eq!(ctx.register(8).to_string(), "r8");
+        assert_eq!(ctx.register(4).to_string(), "rsp");
+        assert_eq!(ctx.xmm(4, 2).to_string(), "xmm4.2");
+        assert_eq!(ctx.register_fpu(3).to_string(), "fpu3");
+        assert_eq!(ctx.flag(Flag::Zero).to_string(), "z");
+        assert_eq!(ctx.flag(Flag::Carry).to_string(), "c");
+        assert_eq!(ctx.flag(Flag::Overflow).to_string(), "o");
+        assert_eq!(ctx.flag(Flag::Sign).to_string(), "s");
+        assert_eq!(ctx.flag(Flag::Parity).to_string(), "p");
+        assert_eq!(ctx.flag(Flag::Direction).to_string(), "d");
     }
 }

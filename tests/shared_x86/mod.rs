@@ -3,6 +3,7 @@
 use super::{test_inline, test_inline_xmm, test_inline_with_init};
 
 use scarf::{OperandCtx, OperandContext, Operand};
+use scarf::exec_state::{OperandCtxExtX86};
 
 fn is_64bit() -> bool {
     use scarf::exec_state::VirtualAddress;
@@ -1822,5 +1823,41 @@ fn i8_push() {
         0xc3, // ret
     ], &[
          (ctx.register(0), mask_if_64bit(ctx, ctx.constant(0xffff_fffd), 0xffff_ffff)),
+    ]);
+}
+
+#[test]
+fn mul() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0xf7, 0xe1, // mul ecx
+        0xc3, //ret
+    ], &[
+        (ctx.register(0), ctx.and_const(
+            ctx.mul(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xffff_ffff,
+                ),
+                ctx.and_const(
+                    ctx.register(1),
+                    0xffff_ffff,
+                ),
+            ),
+            0xffff_ffff,
+        )),
+        (ctx.register(2), ctx.rsh_const(
+            ctx.mul(
+                ctx.and_const(
+                    ctx.register(0),
+                    0xffff_ffff,
+                ),
+                ctx.and_const(
+                    ctx.register(1),
+                    0xffff_ffff,
+                ),
+            ),
+            0x20,
+        )),
     ]);
 }

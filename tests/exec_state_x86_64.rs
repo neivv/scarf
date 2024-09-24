@@ -15,6 +15,7 @@ use scarf::{
 use scarf::analysis::{self, Control};
 use scarf::ExecutionStateX86_64 as ExecutionState;
 use scarf::exec_state::ExecutionState as _;
+use scarf::exec_state::{OperandCtxExtX86};
 
 #[test]
 fn test_basic() {

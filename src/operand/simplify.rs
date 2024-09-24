@@ -2162,7 +2162,7 @@ pub fn simplify_lsh_const<'e>(
                         fn is_simple<'e>(op: Operand<'e>) -> Option<Operand<'e>> {
                             use super::OperandType::*;
                             match *op.ty() {
-                                Register(..) | Fpu(..) | Xmm(..) | Custom(..) |
+                                Arch(..) | Custom(..) |
                                     Undefined(..) => Some(op),
                                 _ => None,
                             }
@@ -3414,8 +3414,7 @@ fn try_merge_ands<'e>(
 
 fn can_quick_simplify_type(ty: &OperandType) -> bool {
     match ty {
-        OperandType::Register(_) | OperandType::Xmm(_, _) | OperandType::Fpu(_) |
-            OperandType::Flag(_) | OperandType::Undefined(_) | OperandType::Custom(_) |
+        OperandType::Arch(_) | OperandType::Undefined(_) | OperandType::Custom(_) |
             OperandType::ArithmeticFloat(..) => true,
         _ => false,
     }
@@ -6051,8 +6050,7 @@ pub fn simplify_mul<'e>(
 
 fn can_quick_mul_simplify<'e>(left: Operand<'e>, right: u64) -> bool {
     match left.ty() {
-        OperandType::Register(_) | OperandType::Xmm(_, _) | OperandType::Fpu(_) |
-            OperandType::Flag(_) | OperandType::Undefined(_) | OperandType::Custom(_) => true,
+        OperandType::Arch(_) | OperandType::Undefined(_) | OperandType::Custom(_) => true,
         OperandType::Arithmetic(arith) => {
             match arith.ty {
                 ArithOpType::And | ArithOpType::Or | ArithOpType::Xor => {

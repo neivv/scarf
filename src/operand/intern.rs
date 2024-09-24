@@ -203,13 +203,7 @@ fn operand_type_hash(ty: &OperandType<'_>) -> usize {
         // interned by this -- even if it doesn't behave too well for comparisons.
         OperandType::Undefined(s) => s.0.hash(&mut hasher),
         OperandType::Custom(c) => c.hash(&mut hasher),
-        OperandType::Flag(f) => (f as u8).hash(&mut hasher),
-        OperandType::Fpu(f) => f.hash(&mut hasher),
-        OperandType::Xmm(a, b) => {
-            a.hash(&mut hasher);
-            b.hash(&mut hasher);
-        }
-        OperandType::Register(r) => r.hash(&mut hasher),
+        OperandType::Arch(r) => r.value().hash(&mut hasher),
         OperandType::Memory(ref mem) => {
             match *mem {
                 MemAccess {
