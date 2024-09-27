@@ -616,17 +616,45 @@ impl<'e> ArchId<'e> {
     /// be also created through `OperandCtx::register` and accessed with
     /// `Operand::if_register`
     #[inline]
-    pub fn value(self) -> u32 {
+    pub fn value(&self) -> u32 {
         self.value
     }
 
     /// Gets the value if it represents a register. (That is, the value is less than 256)
     #[inline]
-    pub fn if_register(self) -> Option<u8> {
+    pub fn if_register(&self) -> Option<u8> {
         u8::try_from(self.value).ok()
     }
 
-    pub fn if_x86_flag(self) -> Option<Flag> {
+    fn if_tag_u8(&self, tag: u32) -> Option<u8> {
+        if disasm::x86_arch_tag(self.value) == tag {
+            Some(self.value as u8)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn if_x86_register_32(&self) -> Option<u8> {
+        self.if_tag_u8(disasm::X86_REGISTER32_TAG)
+    }
+
+    #[inline]
+    pub fn if_x86_register_16(&self) -> Option<u8> {
+        self.if_tag_u8(disasm::X86_REGISTER16_TAG)
+    }
+
+    #[inline]
+    pub fn if_x86_register_8_low(&self) -> Option<u8> {
+        self.if_tag_u8(disasm::X86_REGISTER8_LOW_TAG)
+    }
+
+    #[inline]
+    pub fn if_x86_register_8_high(&self) -> Option<u8> {
+        self.if_tag_u8(disasm::X86_REGISTER8_HIGH_TAG)
+    }
+
+    pub fn if_x86_flag(&self) -> Option<Flag> {
         if disasm::x86_arch_tag(self.value) == disasm::X86_FLAG_TAG {
             Some(Flag::x86_from_arch(self.value as u8))
         } else {

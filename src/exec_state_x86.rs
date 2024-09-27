@@ -927,12 +927,23 @@ impl<'e> State<'e> {
                 let ctx = self.ctx;
                 match tag {
                     disasm::X86_REGISTER32_TAG => {
-                        let reg = (arch & 0xf) as u8;
-                        self.resolve_register(reg)
+                        let reg = (arch & 0x7) as u8;
+                        // disasm will currently generate this (only) when it wants to
+                        // mask input due to high 32 bits affecting the low bits, so
+                        // this needs to explicitly have the 0xffff_ffff mask even
+                        // if 32-bit ExecutionState should not usually have registers
+                        // store higher values.
+                        // Maybe worth changing disasm to use explicit mask on full register when
+                        // it needs them, but it's probably not worth it? It's been written to
+                        // eagerly use full registers wherever it can already.
+                        ctx.and_const(
+                            self.resolve_register(reg),
+                            0xffff_ffff,
+                        )
                     }
                     disasm::X86_REGISTER16_TAG | disasm::X86_REGISTER8_LOW_TAG =>
                     {
-                        let reg = (arch & 0xf) as u8;
+                        let reg = (arch & 0x7) as u8;
                         let mask = match tag {
                             disasm::X86_REGISTER16_TAG => 0xffff,
                             _ => 0xff,
@@ -944,7 +955,7 @@ impl<'e> State<'e> {
                         value
                     }
                     disasm::X86_REGISTER8_HIGH_TAG => {
-                        let reg = (arch & 0xf) as u8;
+                        let reg = (arch & 0x7) as u8;
                         let value = ctx.and_const(self.resolve_register(reg), 0xff00);
                         ctx.rsh_const(value, 8)
                     }

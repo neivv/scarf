@@ -1861,3 +1861,18 @@ fn mul() {
         )),
     ]);
 }
+
+#[test]
+fn shift_to_zero() {
+    let ctx = &OperandContext::new();
+    test_inline(&[
+        0x89, 0xc8, // mov eax, ecx
+        0xb9, 0x10, 0x00, 0x00, 0x00, // mov ecx, 10
+        0xd3, 0xe8, // shr eax, cl
+        0xd3, 0xe8, // shr eax, cl
+        0xc3, // ret
+    ], &[
+         (ctx.register(0), ctx.const_0()),
+         (ctx.register(1), ctx.constant(0x10)),
+    ]);
+}

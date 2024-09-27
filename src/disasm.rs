@@ -390,19 +390,16 @@ impl<'e> RegisterCache<'e> {
 
     #[cold]
     fn gen_register_cold(&mut self, i: u8, index: usize, size: RegisterSize) -> Operand<'e> {
-        let mask = match size {
-            RegisterSize::Low8 => 0xffu32,
-            RegisterSize::High8 => 0xff00,
-            RegisterSize::R16 => 0xffff,
-            RegisterSize::R32 => 0xffff_ffff,
+        let tag = match size {
+            RegisterSize::Low8 => X86_REGISTER8_LOW_TAG,
+            RegisterSize::High8 => X86_REGISTER8_HIGH_TAG,
+            RegisterSize::R16 => X86_REGISTER16_TAG,
+            RegisterSize::R32 => X86_REGISTER32_TAG,
             // Unreachable
             RegisterSize::R64 => 0,
         };
-        let ctx = self.ctx;
-        let mut op = ctx.and_const(ctx.register(i as u8), mask as u64);
-        if size == RegisterSize::High8 {
-            op = ctx.rsh_const(op, 8);
-        }
+        let id = make_x86_arch_tag(tag) | (i as u32);
+        let op = self.ctx.arch(id);
         self.registers[index] = Some(op);
         op
     }
@@ -2200,7 +2197,15 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             let dest_op = ctx.register(dest.0);
             let dest = DestOperand::x86_register_32(dest.0);
 
-            let src = self.rm_to_operand(&src);
+            // rm_to_operand will expand to Arch(x) and simplification
+            // won't realize that `eax == rax & ffff_ffff`, which
+            // is important to keep runtime reasonable when src_eq_dest
+            // (As stated in the comment below)
+            let src = if !src_eq_dest || src.size == RegisterSize::High8 {
+                self.rm_to_operand(&src)
+            } else {
+                ctx.and_const(dest_op, src.size.to_mem_access_size().mask())
+            };
             let mut input = dest_op;
             let zero = ctx.const_0();
             let constant = ctx.constant(0x82f63b78);
@@ -2227,10 +2232,10 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 );
                 // Ideally split the crc calucation to one move per bit so that the megaoperand
                 // doesn't slow things down too much, but that obviously won't work when src
-                // equals dest. Luckily scarf does realize that this is equivalent to just
-                // right shift (Unless doing crc32 eax, ah), so that won't be too unreasonable
-                // either. Not worth special casing crc32 with self explicitly to right
-                // shift here though.
+                // equals dest. Luckily, as long as the arch alias is not being used, scarf does
+                // realize that this is equivalent to just right shift (Unless doing crc32 eax,
+                // ah), so that won't be too unreasonable either. Not worth special casing crc32
+                // with self explicitly to right shift here though.
                 if !src_eq_dest {
                     self.output_mov(dest, result);
                 } else {

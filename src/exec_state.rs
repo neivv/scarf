@@ -394,6 +394,12 @@ impl<'e> OperandCtxExtX86<'e> for crate::OperandContext<'e> {
 pub trait OperandExtX86<'e> {
     fn if_fpu(self) -> Option<u8>;
     fn if_xmm(self) -> Option<(u8, u8)>;
+    /// Returns Some for al/ax/eax/rax, not for ah.
+    fn if_any_sized_register(self) -> Option<(u8, MemAccessSize)>;
+    fn if_register_32(self) -> Option<u8>;
+    fn if_register_16(self) -> Option<u8>;
+    fn if_register_8_low(self) -> Option<u8>;
+    fn if_register_8_high(self) -> Option<u8>;
 }
 
 impl<'e> OperandExtX86<'e> for crate::Operand<'e> {
@@ -413,6 +419,43 @@ impl<'e> OperandExtX86<'e> for crate::Operand<'e> {
         } else {
             None
         }
+    }
+
+    fn if_any_sized_register(self) -> Option<(u8, MemAccessSize)> {
+        let id = self.if_arch_id()?;
+        let size = match disasm::x86_arch_tag(id) {
+            0 => MemAccessSize::Mem64,
+            disasm::X86_REGISTER32_TAG => MemAccessSize::Mem32,
+            disasm::X86_REGISTER16_TAG => MemAccessSize::Mem16,
+            disasm::X86_REGISTER8_LOW_TAG => MemAccessSize::Mem8,
+            _ => return None,
+        };
+        Some((id as u8, size))
+    }
+
+    fn if_register_32(self) -> Option<u8> {
+        if_arch_id_tagged(self, disasm::X86_REGISTER32_TAG)
+    }
+
+    fn if_register_16(self) -> Option<u8> {
+        if_arch_id_tagged(self, disasm::X86_REGISTER16_TAG)
+    }
+
+    fn if_register_8_low(self) -> Option<u8> {
+        if_arch_id_tagged(self, disasm::X86_REGISTER8_LOW_TAG)
+    }
+
+    fn if_register_8_high(self) -> Option<u8> {
+        if_arch_id_tagged(self, disasm::X86_REGISTER8_HIGH_TAG)
+    }
+}
+
+fn if_arch_id_tagged<'e>(op: Operand<'e>, tag: u32) -> Option<u8> {
+    let id = op.if_arch_id()?;
+    if disasm::x86_arch_tag(id) == tag {
+        Some(id as u8)
+    } else {
+        None
     }
 }
 
