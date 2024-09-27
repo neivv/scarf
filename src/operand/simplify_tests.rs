@@ -12440,3 +12440,26 @@ fn asr_to_shr() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn and_shifted_memory() {
+    let ctx = &OperandContext::new();
+    let op1 = ctx.rsh_const(
+        ctx.and(
+            ctx.lsh_const(
+                ctx.mem32(ctx.register(0), 0x100),
+                0x20,
+            ),
+            ctx.lsh_const(
+                ctx.mem32(ctx.register(0), 0x200),
+                0x20,
+            ),
+        ),
+        0x20,
+    );
+    let eq1 = ctx.and(
+        ctx.mem32(ctx.register(0), 0x100),
+        ctx.mem32(ctx.register(0), 0x200),
+    );
+    assert_eq!(op1, eq1);
+}

@@ -2293,7 +2293,23 @@ pub fn simplify_rsh_const<'e>(
                         let new = simplify_and_const(new, c >> constant, ctx, swzb_ctx);
                         return new;
                     }
-                    intern_arith_const(ctx, left, constant as u64, ArithOpType::Rsh)
+
+                    // Try to simplify any parts of the and separately.
+                    ctx.simplify_temp_stack()
+                        .alloc(|slice| {
+                            slice.push(arith.right).ok()?;
+                            collect_arith_ops(arith.left, slice, ArithOpType::And, 8).ok()?;
+                            if simplify_shift_is_too_long_xor(slice) {
+                                // Give up
+                                None
+                            } else {
+                                for op in slice.iter_mut() {
+                                    *op = simplify_rsh_const(*op, constant, ctx, swzb_ctx);
+                                }
+                                simplify_and_ops(slice, ctx, swzb_ctx).ok()
+                            }
+                        })
+                        .unwrap_or_else(|| default())
                 }
                 ArithOpType::Or => {
                     // Try to simplify any parts of the or separately.
