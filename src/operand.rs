@@ -193,10 +193,10 @@ pub(crate) struct OperandBase<'e> {
     flags: u8,
     /// Bits that are used to avoid some comparisons when checking against OperandType
     /// that has a subenum that gets commonly checked too.
-    /// 0xc0 = Tag; None, Memory, Arithmetic, (free space, maybe ArithmeticFloat)
-    /// 0x2f = Data; MemAccessSize for Memory, ArithOpType for Arithmetic
+    /// 0xff00 = Tag; None, Memory, Arithmetic, Register
+    /// 0xff = Data; MemAccessSize for Memory, ArithOpType for Arithmetic
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
-    type_alt_tag: u8,
+    type_alt_tag: u16,
     /// Used to implement Ord in almost-always-constant time.
     ///
     /// - For OperandType variants that fit in u64,
@@ -225,8 +225,10 @@ pub(crate) struct OperandBase<'e> {
     relevant_bits_mask: u64,
 }
 
-const MEM_ALT_TAG: u8 = 0x40;
-const ARITH_ALT_TAG: u8 = 0x80;
+const TYPE_ALT_TAG_MASK: u16 = 0xff00;
+const REGISTER_ALT_TAG: u16 = 0x100;
+const MEM_ALT_TAG: u16 = 0x200;
+const ARITH_ALT_TAG: u16 = 0x300;
 
 const FLAG_CONTAINS_UNDEFINED: u8 = 0x1;
 // For simplify_with_and_mask optimization.
@@ -2882,10 +2884,17 @@ impl<'e> OperandType<'e> {
 
     /// NOTE: Unsafe code will rely on this value to skip enum discriminant comparison
     /// sometimes.
-    fn alt_tag(&self) -> u8 {
+    fn alt_tag(&self) -> u16 {
         match *self {
-            OperandType::Memory(ref mem) => MEM_ALT_TAG | mem.size as u8,
-            OperandType::Arithmetic(ref arith) => ARITH_ALT_TAG | arith.ty as u8,
+            OperandType::Memory(ref mem) => MEM_ALT_TAG | mem.size as u16,
+            OperandType::Arithmetic(ref arith) => ARITH_ALT_TAG | arith.ty as u16,
+            OperandType::Arch(ref id) => {
+                if id.value() < 256 {
+                    REGISTER_ALT_TAG | (id.value() as u16)
+                } else {
+                    0
+                }
+            }
             _ => 0,
         }
     }
@@ -2947,9 +2956,10 @@ impl<'e> Operand<'e> {
     /// `r.value()` being less than 256.
     #[inline]
     pub fn if_register(self) -> Option<u8> {
-        match self.if_arch_id() {
-            Some(s) => u8::try_from(s).ok(),
-            None => None,
+        if self.0.type_alt_tag & TYPE_ALT_TAG_MASK == REGISTER_ALT_TAG {
+            Some(self.0.type_alt_tag as u8)
+        } else {
+            None
         }
     }
 
@@ -2982,7 +2992,7 @@ impl<'e> Operand<'e> {
 
     #[inline]
     fn if_mem_fast(self, size: MemAccessSize) -> Option<&'e MemAccess<'e>> {
-        if self.0.type_alt_tag == (MEM_ALT_TAG | size as u8) {
+        if self.0.type_alt_tag == (MEM_ALT_TAG | size as u16) {
             match *self.ty() {
                 OperandType::Memory(ref mem) => {
                     debug_assert_eq!(mem.size, size);
@@ -3056,7 +3066,7 @@ impl<'e> Operand<'e> {
 
     #[inline]
     fn check_arith_tag(self, ty: ArithOpType) -> bool {
-        self.0.type_alt_tag == (ARITH_ALT_TAG | ty as u8)
+        self.0.type_alt_tag == (ARITH_ALT_TAG | ty as u16)
     }
 
     /// Returns `Some((left, right))` if self.ty is `OperandType::Arithmetic { ty == ty }`
