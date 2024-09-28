@@ -47,9 +47,9 @@ pub(crate) const X86_REGISTER16_TAG: u32 = 2;
 pub(crate) const X86_REGISTER8_LOW_TAG: u32 = 3;
 pub(crate) const X86_REGISTER8_HIGH_TAG: u32 = 4;
 pub(crate) const X86_FLAG_TAG: u32 = 5;
-/// Currently (16 * 4) ids starting from 0 are xmm, and 8 ids afterwards fpu,
-/// but may be replaced with Mem32[X86_XMM_FPU_TAG << 16 + reg_id] representation instead
-/// And/or have ids not be same across x86 and x86-64.
+/// Xmm / fpu registers are in "memory" location Mem32[X86_XMM_FPU_TAG + reg_n], with
+/// one 8-byte slot per 4-byte register so that x86_64 memory merging works still at 4 byte
+/// granularity without having to special case X86_XMM_FPU_TAG addresses.
 pub(crate) const X86_XMM_FPU_TAG: u32 = 6;
 
 pub struct Disassembler32<'e> {
@@ -339,6 +339,7 @@ struct RegisterCache<'e> {
     esp_mem_word: Operand<'e>,
     esp_pos_word_offset: Operand<'e>,
     esp_neg_word_offset: Operand<'e>,
+    xmm_arch: Operand<'e>,
     esp_mem: MemAccess<'e>,
     ctx: OperandCtx<'e>,
 }
@@ -362,6 +363,7 @@ impl<'e> RegisterCache<'e> {
             esp_mem,
             esp_pos_word_offset,
             esp_neg_word_offset,
+            xmm_arch: ctx.arch(make_x86_arch_tag(X86_XMM_FPU_TAG)),
         }
     }
 
@@ -402,6 +404,10 @@ impl<'e> RegisterCache<'e> {
         let op = self.ctx.arch(id);
         self.registers[index] = Some(op);
         op
+    }
+
+    fn xmm_arch(&mut self) -> Operand<'e> {
+        self.xmm_arch
     }
 
     fn condition(&mut self, i: u8) -> Operand<'e> {
@@ -1342,13 +1348,13 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         self.register_cache.register(r.0, r.1)
     }
 
-    fn r_to_operand_xmm(&self, r: ModRm_R, i: u8) -> Operand<'e> {
-        self.ctx.xmm(r.0, i)
+    fn r_to_operand_xmm(&mut self, r: ModRm_R, i: u8) -> Operand<'e> {
+        self.xmm(r.0, i)
     }
 
     fn r_to_operand_xmm_64(&mut self, r: ModRm_R, i: u8) -> Operand<'e> {
-        let low = self.ctx.xmm(r.0, i * 2);
-        let high = self.ctx.xmm(r.0, i * 2 + 1);
+        let low = self.xmm(r.0, i * 2);
+        let high = self.xmm(r.0, i * 2 + 1);
         self.ctx.or(
             low,
             self.ctx.lsh_const(
@@ -1376,11 +1382,35 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         }
     }
 
-    fn r_to_dest_and_operand_xmm(&self, r: ModRm_R, i: u8) -> DestAndOperand<'e> {
+    fn r_to_dest_and_operand_xmm(&mut self, r: ModRm_R, i: u8) -> DestAndOperand<'e> {
         DestAndOperand {
             op: self.r_to_operand_xmm(r, i),
-            dest: r.dest_operand_xmm(i),
+            dest: self.r_to_dest_operand_xmm(r, i),
         }
+    }
+
+    fn r_to_dest_operand_xmm(&mut self, r: ModRm_R, i: u8) -> DestOperand<'e> {
+        self.xmm_dest(r.0, i)
+    }
+
+    fn xmm(&mut self, r: u8, i: u8) -> Operand<'e> {
+        let offset_u32 = ((r as u64) << 2) | ((i as u64) & 3);
+        let ctx = self.ctx;
+        ctx.memory(&ctx.mem_access(
+            self.register_cache.xmm_arch(),
+            offset_u32 << 3,
+            MemAccessSize::Mem32,
+        ))
+    }
+
+    fn xmm_dest(&mut self, r: u8, i: u8) -> DestOperand<'e> {
+        let offset_u32 = ((r as u64) << 2) | ((i as u64) & 3);
+        let ctx = self.ctx;
+        DestOperand::memory(&ctx.mem_access(
+            self.register_cache.xmm_arch(),
+            offset_u32 << 3,
+            MemAccessSize::Mem32,
+        ))
     }
 
     /// Assumes rm.is_memory() == true.
@@ -1453,7 +1483,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             offset = offset.wrapping_add(i as u64 * 4);
             DestOperand::Memory(self.ctx.mem_access(base, offset, MemAccessSize::Mem32))
         } else {
-            DestOperand::x86_xmm(rm.base, i)
+            self.xmm_dest(rm.base, i)
         }
     }
 
@@ -1479,7 +1509,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     MemAccessSize::Mem32 => 0,
                     MemAccessSize::Mem64 => 0,
                 };
-                let xmm_word = ctx.xmm(rm.base, i >> shift);
+                let xmm_word = self.xmm(rm.base, i >> shift);
                 if shift != 0 {
                     let shift = if size == MemAccessSize::Mem8 {
                         (u64::from(i) & 3) << 3
@@ -1503,7 +1533,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             offset = offset.wrapping_add(i as u64 * 4);
             self.ctx.mem_any(MemAccessSize::Mem32, base, offset)
         } else {
-            self.ctx.xmm(rm.base, i)
+            self.xmm(rm.base, i)
         }
     }
 
@@ -2260,7 +2290,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             let mut in_pos = 0;
             let mut out_xmm_word = 0;
             while out_xmm_word < 4 {
-                let dest_op = dest.dest_operand_xmm(out_xmm_word);
+                let dest_op = self.r_to_dest_operand_xmm(dest, out_xmm_word);
                 let in_value = self.rm_to_operand_xmm_size(&src, in_pos, in_size);
                 in_pos += 1;
                 let mut value = ctx.sign_extend(in_value, in_size, out_size);
@@ -2279,8 +2309,9 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     out_xmm_word += 1;
                 } else {
                     self.output_mov(dest_op, ctx.and_const(value, 0xffff_ffff));
+                    let dest_op = self.r_to_dest_operand_xmm(dest, out_xmm_word + 1);
                     self.output_mov(
-                        dest.dest_operand_xmm(out_xmm_word + 1),
+                        dest_op,
                         ctx.rsh_const(value, 32),
                     );
                     out_xmm_word += 2;
@@ -2501,8 +2532,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let zero = ctx.const_0();
         if src_size == MemAccessSize::Mem32 {
             for i in (0..amt).rev() {
-                let dest1 = dest.dest_operand_xmm(i * 2);
-                let dest2 = dest.dest_operand_xmm(i * 2 + 1);
+                let dest1 = self.r_to_dest_operand_xmm(dest, i * 2);
+                let dest2 = self.r_to_dest_operand_xmm(dest, i * 2 + 1);
                 let val = self.rm_to_operand_xmm(&rm, i);
                 let arith = ctx.float_arithmetic(ArithOpType::ToDouble, val, zero, src_size);
                 let op = ctx.rsh_const(arith, 0x20);
@@ -2512,13 +2543,13 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             }
         } else {
             for i in 0..amt {
-                let dest = dest.dest_operand_xmm(i);
+                let dest = self.r_to_dest_operand_xmm(dest, i);
                 let val = self.rm_to_operand_xmm_64(&rm, i);
                 let arith = ctx.float_arithmetic(ArithOpType::ToDouble, val, zero, src_size);
                 self.output_mov(dest, arith);
             }
             for i in amt..4 {
-                let dest = dest.dest_operand_xmm(i);
+                let dest = self.r_to_dest_operand_xmm(dest, i);
                 self.output_mov(dest, zero);
             }
         }
@@ -2716,16 +2747,18 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             rm = ctx.sign_extend(rm, MemAccessSize::Mem32, MemAccessSize::Mem64);
         }
         let arith = ctx.arithmetic(arith_type, rm, ctx.const_0());
+        let dest = self.r_to_dest_operand_xmm(r, 0);
         self.output_mov(
-            r.dest_operand_xmm(0),
+            dest,
             ctx.and_const(
                 arith,
                 0xffff_ffff,
             ),
         );
         if arith_type == ArithOpType::ToDouble {
+            let dest = self.r_to_dest_operand_xmm(r, 1);
             self.output_mov(
-                r.dest_operand_xmm(1),
+                dest,
                 ctx.rsh_const(
                     arith,
                     0x20,
@@ -2749,21 +2782,25 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     zero,
                 );
                 let high = ctx.rsh_const(result_f64, 0x20);
-                self.output_mov(r.dest_operand_xmm(i * 2 + 1), high);
+                let dest = self.r_to_dest_operand_xmm(r, i * 2 + 1);
+                self.output_mov(dest, high);
                 let low = ctx.and_const(result_f64, 0xffff_ffff);
-                self.output_mov(r.dest_operand_xmm(i * 2), low);
+                let dest = self.r_to_dest_operand_xmm(r, i * 2);
+                self.output_mov(dest, low);
             }
         } else if self.has_prefix(0xf2) {
             // 2 f64 to 2 i32
             for i in 0..2 {
                 let op = self.rm_to_operand_xmm_64(&rm, i);
+                let dest = self.r_to_dest_operand_xmm(r, i);
                 self.output_mov(
-                    r.dest_operand_xmm(i),
+                    dest,
                     ctx.float_arithmetic(ArithOpType::ToInt, op, zero, MemAccessSize::Mem64),
                 );
             }
             for i in 2..4 {
-                self.output_mov(r.dest_operand_xmm(i), zero);
+                let dest = self.r_to_dest_operand_xmm(r, i);
+                self.output_mov(dest, zero);
             }
         } else {
             return Err(self.unknown_opcode());
@@ -2804,7 +2841,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let ctx = self.ctx;
         let zero = ctx.const_0();
         for i in 0..4 {
-            let dest = r.dest_operand_xmm(i);
+            let dest = self.r_to_dest_operand_xmm(r, i);
             let rm = ctx.sign_extend(
                 self.rm_to_operand_xmm(&rm, i),
                 MemAccessSize::Mem32,
@@ -2907,7 +2944,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     std::mem::swap(&mut first, &mut second);
                 }
             }
-            self.output_mov(r.dest_operand_xmm(xmm_word), val);
+            let dest = self.r_to_dest_operand_xmm(r, xmm_word);
+            self.output_mov(dest, val);
         }
         self.output(Operation::Unfreeze);
         Ok(())
@@ -2924,16 +2962,20 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let (rm, r) = self.parse_modrm(op_size);
         let rm_op = self.rm_to_operand(&rm);
         let ctx = self.ctx;
-        self.output_mov(r.dest_operand_xmm(0), ctx.and_const(rm_op, 0xffff_ffff));
+        let dest = self.r_to_dest_operand_xmm(r, 0);
+        self.output_mov(dest, ctx.and_const(rm_op, 0xffff_ffff));
         let zero = ctx.const_0();
+        let dest = self.r_to_dest_operand_xmm(r, 1);
         if op_size == MemAccessSize::Mem64 {
             let rm_high = ctx.rsh_const(rm_op, 0x20);
-            self.output_mov(r.dest_operand_xmm(1), rm_high);
+            self.output_mov(dest, rm_high);
         } else {
-            self.output_mov(r.dest_operand_xmm(1), zero);
+            self.output_mov(dest, zero);
         }
-        self.output_mov(r.dest_operand_xmm(2), zero);
-        self.output_mov(r.dest_operand_xmm(3), zero);
+        let dest = self.r_to_dest_operand_xmm(r, 2);
+        self.output_mov(dest, zero);
+        let dest = self.r_to_dest_operand_xmm(r, 3);
+        self.output_mov(dest, zero);
         Ok(())
     }
 
@@ -3072,8 +3114,9 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         let rm_1 = self.rm_to_operand_xmm(&rm, 1);
         let high_u32_set = ctx.neq_const(rm_1, 0);
         for i in 0..4 {
+            let dest = self.r_to_dest_operand_xmm(dest, i);
             self.output(Operation::ConditionalMove(
-                dest.dest_operand_xmm(i),
+                dest,
                 ctx.const_0(),
                 high_u32_set,
             ));
@@ -3142,7 +3185,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             }
 
             for i in 0..4 {
-                let input = ctx.xmm(register, i);
+                let input = self.xmm(register, i);
                 let mut result = if is_right {
                     ctx.rsh_const(input, constant.into())
                 } else {
@@ -3173,7 +3216,8 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                         result = ctx.or(result, ctx.and_const(was_signed, u64::from(!keep_mask)));
                     }
                 }
-                self.output_mov(DestOperand::x86_xmm(register, i), result);
+                let dest = self.xmm_dest(register, i);
+                self.output_mov(dest, result);
             }
         }
         Ok(())
@@ -3201,13 +3245,15 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 let high_id = low_id + 1;
                 let low = self.r_to_operand_xmm(dest, low_id);
                 let high = self.r_to_operand_xmm(dest, high_id);
+                let dest_op = self.r_to_dest_operand_xmm(dest, high_id);
                 self.output_arith(
-                    dest.dest_operand_xmm(high_id),
+                    dest_op,
                     ArithOpType::Or,
                     ctx.lsh(high, x),
                     ctx.rsh(low, ctx.sub_const_left(0x20, x)),
                 );
-                self.output_lsh(self.r_to_dest_and_operand_xmm(dest, low_id), x);
+                let dest_op = self.r_to_dest_and_operand_xmm(dest, low_id);
+                self.output_lsh(dest_op, x);
             }
         }
     }
@@ -3237,7 +3283,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
         ];
         let dest_zero = self.r_to_dest_and_operand_xmm(dest, 0);
         let dests: [_; 3] = array_init::array_init(|i| {
-            dest.dest_operand_xmm((i as u8).wrapping_add(1))
+            self.r_to_dest_operand_xmm(dest, (i as u8).wrapping_add(1))
         });
         let ops: [_; 4] = array_init::array_init(|i| self.r_to_operand_xmm(dest, i as u8));
         for &x in &x_arr {
@@ -3288,13 +3334,15 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                 let high_id = low_id + 1;
                 let low = self.r_to_operand_xmm(dest, low_id);
                 let high = self.r_to_operand_xmm(dest, high_id);
+                let dest_op = self.r_to_dest_operand_xmm(dest, low_id);
                 self.output_arith(
-                    dest.dest_operand_xmm(low_id),
+                    dest_op,
                     ArithOpType::Or,
                     ctx.rsh(low, x),
                     ctx.lsh(high, ctx.sub_const_left(0x20, x)),
                 );
-                self.output_rsh(self.r_to_dest_and_operand_xmm(dest, high_id), x);
+                let dest_op = self.r_to_dest_and_operand_xmm(dest, high_id);
+                self.output_rsh(dest_op, x);
             }
         }
     }
@@ -3314,7 +3362,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             (with & !0x3f) >> 1,
         ];
         let dest_three = self.r_to_dest_and_operand_xmm(dest, 3);
-        let dests: [_; 3] = array_init::array_init(|i| dest.dest_operand_xmm(i as u8));
+        let dests: [_; 3] = array_init::array_init(|i| self.r_to_dest_operand_xmm(dest, i as u8));
         let ops: [_; 4] = array_init::array_init(|i| self.r_to_operand_xmm(dest, i as u8));
         for &x in &x_arr {
             for i in 0..3 {
@@ -3406,7 +3454,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             .ok_or_else(|| self.unknown_opcode())?;
         let rm = self.rm_to_operand(&rm);
         let st0 = self.ctx.register_fpu(0);
-        let dest = DestOperand::x86_fpu(0);
+        let dest = DestOperand::x86_fpu(self.ctx, 0);
         let (lhs, rhs) = if variant == 5 || variant == 7 {
             (rm, st0)
         } else {
@@ -3432,7 +3480,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
             // Fld
             0 => {
                 self.fpu_push();
-                self.output_mov(DestOperand::x86_fpu(0), x87_variant(ctx, rm.op, 1));
+                self.output_mov(DestOperand::x86_fpu(ctx, 0), x87_variant(ctx, rm.op, 1));
                 Ok(())
             }
             // Fst/Fstp, as long as rm is mem
@@ -3492,7 +3540,7 @@ impl<'a, 'e: 'a, Va: VirtualAddress> InstructionOpsState<'a, 'e, Va> {
                     ctx.const_0(),
                     MemAccessSize::Mem64,
                 );
-                self.output_mov(DestOperand::x86_fpu(0), op);
+                self.output_mov(DestOperand::x86_fpu(ctx, 0), op);
                 Ok(())
             }
             // Fst/Fstp f64, as long as rm is mem
@@ -4120,10 +4168,6 @@ impl ModRm_R {
         DestOperand::Arch(DestArchId(ARRAY[self.1 as usize] | (self.0 as u32)))
     }
 
-    fn dest_operand_xmm<'e>(self, i: u8) -> DestOperand<'e> {
-        DestOperand::x86_xmm(self.0, i)
-    }
-
     fn equal_to_rm(self, rm: &ModRm_Rm) -> bool {
         self.0 == rm.base && !rm.is_memory()
     }
@@ -4197,6 +4241,22 @@ pub(crate) const fn x86_arch_tag(value: u32) -> u32 {
 #[inline]
 pub(crate) const fn make_x86_arch_tag(tag: u32) -> u32 {
     tag << 16
+}
+
+pub(crate) fn make_x86_xmm_mem_access<'e>(
+    ctx: OperandCtx<'e>,
+    register: u8,
+    part: u8,
+) -> MemAccess<'e> {
+    let base = ctx.arch(make_x86_arch_tag(X86_XMM_FPU_TAG));
+    let offset = (((register as u64) << 2) | ((part as u64) & 3)) << 3;
+    ctx.mem_access(base, offset, MemAccessSize::Mem32)
+}
+
+pub(crate) fn make_x86_fpu_mem_access<'e>(ctx: OperandCtx<'e>, register: u8) -> MemAccess<'e> {
+    let base = ctx.arch(make_x86_arch_tag(X86_XMM_FPU_TAG));
+    let offset = 0x1000 + ((register as u64) << 3);
+    ctx.mem_access(base, offset, MemAccessSize::Mem32)
 }
 
 impl DestArchId {
@@ -4318,13 +4378,22 @@ impl<'e> DestOperand<'e> {
     }
 
     #[inline]
-    pub fn x86_fpu(reg: u8) -> DestOperand<'e> {
-        Self::x86_tagged(reg | 0x80, X86_XMM_FPU_TAG)
+    pub fn x86_fpu(ctx: OperandCtx<'e>, reg: u8) -> DestOperand<'e> {
+        Self::memory(&ctx.mem_access(
+            ctx.arch(make_x86_arch_tag(X86_XMM_FPU_TAG)),
+            0x1000 | ((reg as u64) << 3),
+            MemAccessSize::Mem32,
+        ))
     }
 
     #[inline]
-    pub fn x86_xmm(reg: u8, part: u8) -> DestOperand<'e> {
-        Self::x86_tagged((reg << 2) | (part & 3), X86_XMM_FPU_TAG)
+    pub fn x86_xmm(ctx: OperandCtx<'e>, reg: u8, part: u8) -> DestOperand<'e> {
+        let offset_u32 = ((reg as u64) << 2) | ((part as u64) & 3);
+        Self::memory(&ctx.mem_access(
+            ctx.arch(make_x86_arch_tag(X86_XMM_FPU_TAG)),
+            offset_u32 << 3,
+            MemAccessSize::Mem32,
+        ))
     }
 
     /// Creates `DestOperand` referring to memory specified by `mem`.
@@ -4380,7 +4449,7 @@ impl<'e> DestOperand<'e> {
                 DestOperand::Arch(value) => {
                     match value.x86_tag() {
                         0 => MemAccessSize::Mem64,
-                        X86_REGISTER32_TAG | X86_XMM_FPU_TAG => MemAccessSize::Mem32,
+                        X86_REGISTER32_TAG => MemAccessSize::Mem32,
                         X86_REGISTER16_TAG => MemAccessSize::Mem16,
                         X86_REGISTER8_HIGH_TAG | X86_REGISTER8_LOW_TAG => MemAccessSize::Mem8,
                         // Flag maybe could be Mem8? But currently assignments to flags aren't masked so

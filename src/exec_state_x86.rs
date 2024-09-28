@@ -1,15 +1,13 @@
 //! 32-bit x86 architechture state. Rexported as `scarf::ExecutionStateX86`.
 
 use std::fmt;
-use std::rc::Rc;
 
 use copyless::BoxHelper;
 
 use crate::analysis;
 use crate::disasm::{self, FlagArith, Disassembler32, DestOperand, FlagUpdate, Operation};
 use crate::exec_state::{
-    self, Constraint, FreezeOperation, Memory, MergeStateCache, PendingFlags, OperandExtX86,
-    OperandCtxExtX86,
+    self, Constraint, FreezeOperation, Memory, MergeStateCache, PendingFlags, OperandCtxExtX86,
 };
 use crate::exec_state::ExecutionState as ExecutionStateTrait;
 use crate::exec_state::VirtualAddress as VirtualAddressTrait;
@@ -222,8 +220,6 @@ impl<'e> ExecutionStateTrait<'e> for ExecutionState<'e> {
     }
 }
 
-const FPU_REGISTER_INDEX: usize = 0;
-const XMM_REGISTER_INDEX: usize = FPU_REGISTER_INDEX + 8;
 const FLAGS_INDEX: usize = 8;
 const STATE_OPERANDS: usize = FLAGS_INDEX + 6;
 
@@ -235,9 +231,8 @@ pub struct ExecutionState<'e> {
 }
 
 struct State<'e> {
-    // 8 registers, 8 fpu registers, 8 xmm registers with 4 parts each, 6 flags
+    // 8 registers, 6 flags
     state: [Operand<'e>; 0x8 + 0x6],
-    xmm_fpu: Option<Rc<[Operand<'e>; 0x8 + 0x8 * 4]>>,
     cached_low_registers: CachedLowRegisters<'e>,
     memory: Memory<'e>,
     resolved_constraint: Option<Constraint<'e>>,
@@ -258,14 +253,12 @@ impl<'e> Clone for ExecutionState<'e> {
         // doing all memcpys at the end, after other function calls
         // or branching code generally avoids temporaries.
         let memory = s.memory.clone();
-        let xmm_fpu = s.xmm_fpu.clone();
         // Not cloning freeze_buffer, it is always expected to be empty anyway.
         // Operation::Freeze now also documents that freezes will be discarded on clone.
         let freeze_buffer = Vec::new();
         ExecutionState {
             inner: Box::alloc().init(State {
                 memory,
-                xmm_fpu,
                 freeze_buffer,
                 cached_low_registers: s.cached_low_registers,
                 state: s.state,
@@ -350,7 +343,6 @@ impl<'e> ExecutionState<'e> {
         state[FLAGS_INDEX + 5] = ctx.const_0();
         let inner = Box::alloc().init(State {
             state,
-            xmm_fpu: None,
             cached_low_registers: CachedLowRegisters::new(),
             memory: Memory::new(),
             resolved_constraint: None,
@@ -413,23 +405,6 @@ impl<'e> State<'e> {
 
     fn registers(&self) -> &[Operand<'e>; 0x8] {
         (&self.state[..8]).try_into().unwrap()
-    }
-
-    fn xmm_fpu_mut(&mut self) -> &mut [Operand<'e>; 0x8 + 0x8 * 4] {
-        let rc = self.xmm_fpu.get_or_insert_with(|| {
-            let ctx = self.ctx;
-            let zero = ctx.const_0();
-            let mut rc = Rc::new([zero; 0x8 + 0x8 * 4]);
-            let out = Rc::make_mut(&mut rc);
-            for i in 0..8 {
-                for j in 0..4 {
-                    out[XMM_REGISTER_INDEX + i * 4 + j] = ctx.xmm(i as u8, j as u8);
-                }
-                out[FPU_REGISTER_INDEX + i] = ctx.register_fpu(i as u8);
-            }
-            rc
-        });
-        Rc::make_mut(rc)
     }
 
     fn flag_state<'a>(&'a mut self) -> exec_state::FlagState<'a, 'e> {
@@ -499,13 +474,25 @@ impl<'e> State<'e> {
             }
             Operation::Special(ref code) => {
                 if &code[..] == &[0xd9, 0xf6] || &code[..] == &[0xd9, 0xf7] {
-                    let xmm_fpu = self.xmm_fpu_mut();
+                    let mut fpu_state: [_; 8] = array_init::array_init(|i| {
+                        self.resolve(ctx.register_fpu(i as u8))
+                    });
                     if &code[..] == &[0xd9, 0xf6] {
                         // fdecstp
-                        (&mut xmm_fpu[FPU_REGISTER_INDEX..][..8]).rotate_left(1);
+                        fpu_state.rotate_left(1);
                     } else {
                         // fincstp
-                        (&mut xmm_fpu[FPU_REGISTER_INDEX..][..8]).rotate_right(1);
+                        fpu_state.rotate_right(1);
+                    }
+                    for i in 0..8 {
+                        let mem = disasm::make_x86_fpu_mem_access(ctx, i);
+                        let (base, offset) = mem.address();
+                        self.write_memory(
+                            base,
+                            offset as u32,
+                            mem.size,
+                            fpu_state[i as usize],
+                        );
                     }
                 }
             }
@@ -963,21 +950,6 @@ impl<'e> State<'e> {
                         let flag = Flag::x86_from_arch(arch as u8);
                         self.resolve_flag(flag)
                     }
-                    disasm::X86_XMM_FPU_TAG => {
-                        match self.xmm_fpu {
-                            Some(ref s) => {
-                                let id = arch as u8;
-                                if id < 128 {
-                                    // xmm, this ExecState has 8 * 4 registers
-                                    s[XMM_REGISTER_INDEX + (id & 0x1f) as usize]
-                                } else {
-                                    // Fpu
-                                    s[FPU_REGISTER_INDEX + (id & 7) as usize]
-                                }
-                            }
-                            None => value,
-                        }
-                    }
                     _ => value,
                 }
             }
@@ -1214,17 +1186,6 @@ impl<'e> State<'e> {
                         self.pending_flags.make_non_pending(flag);
                         self.state[FLAGS_INDEX + flag as usize] = value;
                     }
-                    disasm::X86_XMM_FPU_TAG => {
-                        let xmm_fpu = self.xmm_fpu_mut();
-                        let id = arch as u8;
-                        if id < 128 {
-                            // Xmm
-                            xmm_fpu[XMM_REGISTER_INDEX + (id & 0x1f) as usize] = value;
-                        } else {
-                            // Fpu
-                            xmm_fpu[FPU_REGISTER_INDEX + (id & 7) as usize] = value;
-                        };
-                    }
                     _ => (),
                 }
             }
@@ -1350,105 +1311,6 @@ fn merge_op<'e>(ctx: OperandCtx<'e>, a: Operand<'e>, b: Operand<'e>) -> Operand<
     }
 }
 
-fn xmm_fpu_merge_changed<'e>(
-    old: Option<&Rc<[Operand<'e>; 0x8 * 4 + 0x8]>>,
-    new: Option<&Rc<[Operand<'e>; 0x8 * 4 + 0x8]>>,
-) -> bool {
-    if let Some(old) = old {
-        if let Some(new) = new {
-            if Rc::ptr_eq(old, new) {
-                return false;
-            } else {
-                return old.iter().zip(new.iter())
-                    .any(|(&a, &b)| !check_merge_eq(a, b));
-            }
-        } else {
-            // Merge changed if not all (old are initial values or undef)
-            for i in 0..8 {
-                let val = old[FPU_REGISTER_INDEX + i as usize];
-                if !val.is_undefined() {
-                    if val.if_fpu() != Some(i) {
-                        return true;
-                    }
-                }
-            }
-            for i in 0..(8 * 4) {
-                let val = old[XMM_REGISTER_INDEX + i as usize];
-                if !val.is_undefined() {
-                    if val.if_xmm() != Some((i >> 2, i & 3)) {
-                        return true;
-                    }
-                }
-            }
-        }
-    } else if let Some(new) = new {
-        // Merge changed if not all new are initial values
-        for i in 0..8 {
-            let val = new[FPU_REGISTER_INDEX + i as usize];
-            if val.if_fpu() != Some(i) {
-                return true;
-            }
-        }
-        for i in 0..(8 * 4) {
-            let val = new[XMM_REGISTER_INDEX + i as usize];
-            if val.if_xmm() != Some((i >> 2, i & 3)) {
-                return true;
-            }
-        }
-    } else {
-        // Both none, never merge changed
-    }
-    false
-}
-
-fn merge_xmm_fpu_to_old<'e>(
-    // Out is assumed to be also "old" values
-    out: &mut Option<Rc<[Operand<'e>; 0x8 * 4 + 0x8]>>,
-    new: Option<&Rc<[Operand<'e>; 0x8 * 4 + 0x8]>>,
-    ctx: OperandCtx<'e>,
-) {
-    if let Some(out) = out {
-        let result = Rc::make_mut(out);
-        if let Some(new) = new {
-            for i in 0..result.len() {
-                result[i] = merge_op(ctx, result[i], new[i]);
-            }
-        } else {
-            // Anything in out that is not undef and differs from default value becomes undef
-            for i in 0..8 {
-                let val = &mut result[FPU_REGISTER_INDEX + i as usize];
-                if !val.is_undefined() && val.if_fpu() != Some(i) {
-                    *val = ctx.new_undef();
-                }
-            }
-            for i in 0..(8 * 4) {
-                let val = &mut result[XMM_REGISTER_INDEX + i as usize];
-                if !val.is_undefined() && val.if_xmm() != Some((i >> 2, i & 3)) {
-                    *val = ctx.new_undef();
-                }
-            }
-        }
-    } else {
-        if let Some(new) = new {
-            let result_rc = out.insert(new.clone());
-            let result = Rc::make_mut(result_rc);
-            // Anything differing from default value becomes undef
-            for i in 0..8 {
-                let val = &mut result[FPU_REGISTER_INDEX + i as usize];
-                if val.if_fpu() != Some(i) {
-                    *val = ctx.new_undef();
-                }
-            }
-            for i in 0..(8 * 4) {
-                let val = &mut result[XMM_REGISTER_INDEX + i as usize];
-                if val.if_xmm() != Some((i >> 2, i & 3)) {
-                    *val = ctx.new_undef();
-                }
-            }
-        }
-    }
-}
-
 /// If `old` and `new` have different fields, and the old field is not undefined,
 /// return `ExecutionState` which has the differing fields replaced with (a separate) undefined.
 fn merge_states<'a: 'r, 'r>(
@@ -1458,7 +1320,6 @@ fn merge_states<'a: 'r, 'r>(
 ) -> Option<ExecutionState<'a>> {
     let ctx = old.ctx;
 
-    let xmm_fpu_changed = xmm_fpu_merge_changed(old.xmm_fpu.as_ref(), new.xmm_fpu.as_ref());
     let unresolved_constraint =
         exec_state::merge_constraint(ctx, old.unresolved_constraint, new.unresolved_constraint);
     let resolved_constraint =
@@ -1482,7 +1343,6 @@ fn merge_states<'a: 'r, 'r>(
                 }
             }
         ) ||
-        xmm_fpu_changed ||
         unresolved_constraint != old.unresolved_constraint ||
         resolved_constraint != old.resolved_constraint ||
         memory_constraint != old.memory_constraint ||
@@ -1515,14 +1375,9 @@ fn merge_states<'a: 'r, 'r>(
                 }
             }
         }
-        let mut xmm_fpu = old.xmm_fpu.clone();
-        if xmm_fpu_changed {
-            merge_xmm_fpu_to_old(&mut xmm_fpu, new.xmm_fpu.as_ref(), ctx);
-        }
         let memory = cache.merge_memory(&old.memory, &new.memory, ctx);
         let inner = Box::alloc().init(State {
             state,
-            xmm_fpu,
             cached_low_registers,
             memory,
             unresolved_constraint,

@@ -644,7 +644,7 @@ fn xmm_u128_left_shift2() {
         (ctx.register(2), ctx.lsh_const(ctx.register(0), 0x10)),
         (ctx.register(3), ctx.and_const(
             ctx.or(
-                ctx.rsh_const(ctx.register(0), 0x10),
+                ctx.and_const(ctx.rsh_const(ctx.register(0), 0x10), 0x0000_ffff),
                 ctx.and_const(ctx.lsh_const(ctx.register(1), 0x10), 0xffff_0000),
             ),
             0xffff_ffff,
@@ -671,14 +671,14 @@ fn xmm_u128_right_shift2() {
     ], &[
         (ctx.register(0), ctx.and_const(
             ctx.or(
-                ctx.rsh_const(ctx.register(2), 0x10),
+                ctx.and_const(ctx.rsh_const(ctx.register(2), 0x10), 0x0000_ffff),
                 ctx.and_const(ctx.lsh_const(ctx.register(3), 0x10), 0xffff_0000),
             ),
             0xffff_ffff,
         )),
         (ctx.register(1), ctx.and_const(
             ctx.rsh_const(ctx.register(3), 0x10),
-            0xffff_ffff,
+            0xffff,
         )),
         (ctx.register(2), ctx.constant(0)),
         (ctx.register(3), ctx.constant(0)),

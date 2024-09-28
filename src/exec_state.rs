@@ -314,18 +314,17 @@ pub static X86_64_ARCH_DEFINITION: operand::ArchDefinition<'static> = operand::A
     fmt: Some(x86_64_operand_fmt)
 };
 
-const fn x86_64_tag_definitions() -> [operand::ArchTagDefinition; 7] {
+const fn x86_64_tag_definitions() -> [operand::ArchTagDefinition; 6] {
     let mut ret = [
         operand::ArchTagDefinition {
             size: 64,
-        }; 7
+        }; 6
     ];
     ret[disasm::X86_REGISTER32_TAG as usize].size = 32;
     ret[disasm::X86_REGISTER16_TAG as usize].size = 16;
     ret[disasm::X86_REGISTER8_LOW_TAG as usize].size = 8;
     ret[disasm::X86_REGISTER8_HIGH_TAG as usize].size = 8;
     ret[disasm::X86_FLAG_TAG as usize].size = 1;
-    ret[disasm::X86_XMM_FPU_TAG as usize].size = 32;
     ret
 }
 
@@ -336,6 +335,7 @@ fn x86_64_operand_fmt(f: &mut fmt::Formatter, value: u32) -> fmt::Result {
     static REGISTER8_LOW: [&str; 8] = ["al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil"];
     static REGISTER8_HIGH: [&str; 4] = ["ah", "ch", "dh", "bh"];
     static FLAG: [&str; 6] = ["z", "c", "o", "s", "p", "d"];
+    static XMM: [&str; 1] = ["xmm~fpu"];
     let tag = disasm::x86_arch_tag(value);
     let table = match tag {
         0 => &REGISTER64[..],
@@ -344,6 +344,7 @@ fn x86_64_operand_fmt(f: &mut fmt::Formatter, value: u32) -> fmt::Result {
         disasm::X86_REGISTER8_LOW_TAG => &REGISTER8_LOW[..],
         disasm::X86_REGISTER8_HIGH_TAG => &REGISTER8_HIGH[..],
         disasm::X86_FLAG_TAG => &FLAG[..],
+        disasm::X86_XMM_FPU_TAG => &XMM[..],
         _ => &[],
     };
     let i = value as u16;
@@ -356,13 +357,6 @@ fn x86_64_operand_fmt(f: &mut fmt::Formatter, value: u32) -> fmt::Result {
             disasm::X86_REGISTER16_TAG => write!(f, "r{}w", i),
             disasm::X86_REGISTER8_LOW_TAG => write!(f, "r{}h", i),
             disasm::X86_REGISTER8_HIGH_TAG => write!(f, "r{}l", i),
-            disasm::X86_XMM_FPU_TAG => {
-                if i < 0x80 {
-                    write!(f, "xmm{}.{}", i >> 2, i & 3)
-                } else {
-                    write!(f, "fpu{}", i - 0x80)
-                }
-            }
             _ => write!(f, "Arch({:x})", value)
         }
     }
@@ -371,23 +365,35 @@ fn x86_64_operand_fmt(f: &mut fmt::Formatter, value: u32) -> fmt::Result {
 pub trait OperandCtxExtX86<'e> {
     fn register_fpu(&'e self, register: u8) -> Operand<'e>;
     fn xmm(&'e self, register: u8, part: u8) -> Operand<'e>;
+    fn register_32(&'e self, register: u8) -> Operand<'e>;
+    fn register_16(&'e self, register: u8) -> Operand<'e>;
+    fn register_8_low(&'e self, register: u8) -> Operand<'e>;
+    fn register_8_high(&'e self, register: u8) -> Operand<'e>;
 }
 
 impl<'e> OperandCtxExtX86<'e> for crate::OperandContext<'e> {
     fn register_fpu(&'e self, register: u8) -> Operand<'e> {
-        self.arch(
-            disasm::make_x86_arch_tag(disasm::X86_XMM_FPU_TAG) |
-            (register as u32) |
-            0x80
-        )
+        self.memory(&disasm::make_x86_fpu_mem_access(self, register))
     }
 
     fn xmm(&'e self, register: u8, part: u8) -> Operand<'e> {
-        self.arch(
-            disasm::make_x86_arch_tag(disasm::X86_XMM_FPU_TAG) |
-            ((register as u32) << 2) |
-            ((part as u32) & 3)
-        )
+        self.memory(&disasm::make_x86_xmm_mem_access(self, register, part))
+    }
+
+    fn register_32(&'e self, register: u8) -> Operand<'e> {
+        self.arch(disasm::make_x86_arch_tag(disasm::X86_REGISTER32_TAG) | (register as u32))
+    }
+
+    fn register_16(&'e self, register: u8) -> Operand<'e> {
+        self.arch(disasm::make_x86_arch_tag(disasm::X86_REGISTER16_TAG) | (register as u32))
+    }
+
+    fn register_8_low(&'e self, register: u8) -> Operand<'e> {
+        self.arch(disasm::make_x86_arch_tag(disasm::X86_REGISTER8_LOW_TAG) | (register as u32))
+    }
+
+    fn register_8_high(&'e self, register: u8) -> Operand<'e> {
+        self.arch(disasm::make_x86_arch_tag(disasm::X86_REGISTER8_HIGH_TAG) | (register as u32))
     }
 }
 
@@ -404,17 +410,26 @@ pub trait OperandExtX86<'e> {
 
 impl<'e> OperandExtX86<'e> for crate::Operand<'e> {
     fn if_fpu(self) -> Option<u8> {
-        let id = self.if_arch_id()?;
-        if disasm::x86_arch_tag(id) == disasm::X86_XMM_FPU_TAG && id & 0x80 != 0 {
-            Some((id & 0x7f) as u8)
+        let mem = self.if_mem32()?;
+        let (base, offset) = mem.address();
+        if base.if_arch_id()? == disasm::make_x86_arch_tag(disasm::X86_XMM_FPU_TAG) &&
+            offset >= 0x1000 &&
+            offset & 3 == 0
+        {
+            Some((offset as u8) >> 3)
         } else {
             None
         }
     }
 
     fn if_xmm(self) -> Option<(u8, u8)> {
-        let id = self.if_arch_id()?;
-        if disasm::x86_arch_tag(id) == disasm::X86_XMM_FPU_TAG && id & 0x80 == 0 {
+        let mem = self.if_mem32()?;
+        let (base, offset) = mem.address();
+        if base.if_arch_id()? == disasm::make_x86_arch_tag(disasm::X86_XMM_FPU_TAG) &&
+            offset < 0x1000 &&
+            offset & 3 == 0
+        {
+            let id = (offset & 0xfff) >> 3;
             Some(((id >> 2) as u8, (id & 3) as u8))
         } else {
             None
@@ -4106,8 +4121,6 @@ mod test {
         assert_eq!(ctx.register(0).to_string(), "rax");
         assert_eq!(ctx.register(8).to_string(), "r8");
         assert_eq!(ctx.register(4).to_string(), "rsp");
-        assert_eq!(ctx.xmm(4, 2).to_string(), "xmm4.2");
-        assert_eq!(ctx.register_fpu(3).to_string(), "fpu3");
         assert_eq!(ctx.flag(Flag::Zero).to_string(), "z");
         assert_eq!(ctx.flag(Flag::Carry).to_string(), "c");
         assert_eq!(ctx.flag(Flag::Overflow).to_string(), "o");

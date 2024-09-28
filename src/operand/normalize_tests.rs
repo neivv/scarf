@@ -160,7 +160,7 @@ fn normalize_32bit_complex_multiply_add() {
 
     let op = ctx.lsh_const(
         ctx.add(
-            ctx.xmm(0, 0),
+            ctx.register_32(2),
             ctx.mul_const(
                 ctx.register(0),
                 2,
@@ -169,7 +169,7 @@ fn normalize_32bit_complex_multiply_add() {
         0x1f,
     );
     let expected = ctx.lsh_const(
-        ctx.xmm(0, 0),
+        ctx.register_32(2),
         0x1f,
     );
     assert_eq!(ctx.normalize(op), expected);
@@ -709,7 +709,7 @@ fn normalize_shifted_mul2() {
                 2,
             ),
             ctx.mul_const(
-                ctx.xmm(0, 0),
+                ctx.register_32(2),
                 2,
             ),
         ),
