@@ -7412,11 +7412,17 @@ fn simplify_with_and_mask_add_sub_try_extract_inner_mask<'e>(
         if is_continuous_mask(c) && c & mask == c && !c & mask < c {
             if arith.right.relevant_bits().start >= arith.left.relevant_bits().start {
                 let new = ctx.arithmetic(arith.ty, inner, arith.right);
-                let masked = simplify_and_const(new, c, ctx, swzb_ctx);
-                // Should this do simplify_with_and_mask again?
-                // Feels like it's not possible for it to do anything
-                // but I could be wrong there.
-                return Some(masked);
+                if c != mask {
+                    let masked = simplify_and_const(new, c, ctx, swzb_ctx);
+                    // Should this do simplify_with_and_mask again?
+                    // Feels like it's not possible for it to do anything
+                    // now that `c != mask` was checked but I could be wrong there.
+                    return Some(masked);
+                } else {
+                    // Should be no reason to add the mask by calling simplify_and_const that
+                    // simplify_with_and_mask will remove again.
+                    return Some(new);
+                }
             }
         }
     }
@@ -8348,4 +8354,22 @@ fn simplify_with_and_mask_can_remove_shifts() {
         0xffff_0000,
     );
     assert_eq!(eq1, simplified);
+}
+
+#[test]
+fn simplify_with_and_mask_sub_consistency() {
+    let ctx = &super::OperandContext::new();
+
+    let op1 = ctx.sub(
+        ctx.and_const(
+            ctx.register(0),
+            0xffff_ffff,
+        ),
+        ctx.mem32(ctx.register(1), 0),
+    );
+    let simplified =
+        simplify_with_and_mask(op1, 0xffff_ffff, ctx, &mut SimplifyWithZeroBits::default());
+    let simplified2 =
+        simplify_with_and_mask(simplified, 0xffff_ffff, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(simplified, simplified2);
 }
