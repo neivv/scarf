@@ -7335,7 +7335,7 @@ fn simplify_with_and_mask_inner<'e>(
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op
                     } else {
-                        let op = if arith.ty != ArithOpType::Mul {
+                        let result = if arith.ty != ArithOpType::Mul {
                             let is_sub = arith.ty == ArithOpType::Sub;
                             simplify_add_sub(
                                 simplified_left,
@@ -7347,7 +7347,7 @@ fn simplify_with_and_mask_inner<'e>(
                         } else {
                             simplify_mul(simplified_left, simplified_right, ctx)
                         };
-                        op
+                        result
                     }
                 }
                 _ => op,
@@ -7418,12 +7418,22 @@ fn simplify_with_and_mask_add_sub_try_extract_inner_mask<'e>(
     if !matches!(arith.ty, ArithOpType::Add | ArithOpType::Sub) {
         return None;
     }
+    let is_sub = arith.ty == ArithOpType::Sub;
     if let Some((inner, c)) = arith.left.if_and_with_const() {
         // !c & mask < c to make sure to not simplify in case such as
         // ((x & fff0) - y) & ffff_ffff
         if is_continuous_mask(c) && c & mask == c && !c & mask < c {
             if arith.right.relevant_bits().start >= arith.left.relevant_bits().start {
-                let new = ctx.arithmetic(arith.ty, inner, arith.right);
+                // Can do fill-to-right like this since c is continuous mask.
+                // Not sure if could use better mask than that? Like main
+                // simplify_with_and_mask for add does.
+                let mask_filled_to_right = ((c << 1) & !c).wrapping_sub(1);
+                // Doing simplify_with_and_mask for the other operand here improves results;
+                // In theory changing simplify_add_sub to do that when collecting operands
+                // (as it knows the mask) could be fine too, but it may end up being too slow?
+                let right =
+                    simplify_with_and_mask(arith.right, mask_filled_to_right, ctx, swzb_ctx);
+                let new = simplify_add_sub(inner, right, is_sub, mask, ctx);
                 if c != mask {
                     let masked = simplify_and_const(new, c, ctx, swzb_ctx);
                     // Should this do simplify_with_and_mask again?
@@ -7438,12 +7448,18 @@ fn simplify_with_and_mask_add_sub_try_extract_inner_mask<'e>(
             }
         }
     }
-    if arith.ty == ArithOpType::Add {
+    if !is_sub {
         // Addition can (obviously) be done with left/right swapped
         if let Some((inner, c)) = arith.right.if_and_with_const() {
             if is_continuous_mask(c) && c & mask == c && !c & mask < c {
                 if arith.left.relevant_bits().start >= arith.right.relevant_bits().start {
-                    let new = ctx.arithmetic(ArithOpType::Add, inner, arith.left);
+                    // Can do fill-to-right like this since c is continuous mask.
+                    // Not sure if could use better mask than that? Like main
+                    // simplify_with_and_mask for add does.
+                    let mask_filled_to_right = ((c << 1) & !c).wrapping_sub(1);
+                    let left =
+                        simplify_with_and_mask(arith.left, mask_filled_to_right, ctx, swzb_ctx);
+                    let new = simplify_add_sub(left, inner, is_sub, mask, ctx);
                     if c != mask {
                         let masked = simplify_and_const(new, c, ctx, swzb_ctx);
                         return Some(masked);
@@ -8394,11 +8410,9 @@ fn simplify_with_and_mask_sub_consistency() {
         ),
         ctx.mem32(ctx.register(1), 0),
     );
-    let simplified =
-        simplify_with_and_mask(op1, 0xffff_ffff, ctx, &mut SimplifyWithZeroBits::default());
-    let simplified2 =
-        simplify_with_and_mask(simplified, 0xffff_ffff, ctx, &mut SimplifyWithZeroBits::default());
-    assert_eq!(simplified, simplified2);
+    let s1 = simplify_with_and_mask(op1, 0xffff_ffff, ctx, &mut SimplifyWithZeroBits::default());
+    let s2 = simplify_with_and_mask(s1, 0xffff_ffff, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(s1, s2);
 }
 
 #[test]
@@ -8413,11 +8427,9 @@ fn simplify_with_and_mask_mul_consistency() {
         ),
         ctx.mem8(ctx.register(0), 0),
     );
-    let simplified =
-        simplify_with_and_mask(op1, 0x1, ctx, &mut SimplifyWithZeroBits::default());
-    let simplified2 =
-        simplify_with_and_mask(simplified, 0x1, ctx, &mut SimplifyWithZeroBits::default());
-    assert_eq!(simplified, simplified2);
+    let s1 = simplify_with_and_mask(op1, 0x1, ctx, &mut SimplifyWithZeroBits::default());
+    let s2 = simplify_with_and_mask(s1, 0x1, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(s1, s2);
 }
 
 #[test]
@@ -8431,9 +8443,91 @@ fn simplify_with_and_mask_masked_add_consistency() {
             0xff,
         ),
     );
-    let simplified =
-        simplify_with_and_mask(op1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
-    let simplified2 =
-        simplify_with_and_mask(simplified, 0xff, ctx, &mut SimplifyWithZeroBits::default());
-    assert_eq!(simplified, simplified2);
+    let s1 = simplify_with_and_mask(op1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    let s2 = simplify_with_and_mask(s1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(s1, s2);
+}
+
+#[test]
+fn simplify_with_and_mask_masked_add_consistency2() {
+    let ctx = &super::OperandContext::new();
+
+    let op1 = ctx.add(
+        ctx.and_const(
+            ctx.register(1),
+            0xff,
+        ),
+        ctx.and_const(
+            ctx.add(
+                ctx.register(2),
+                ctx.register(3),
+            ),
+            0xff,
+        ),
+    );
+    let s1 = simplify_with_and_mask(op1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    let s2 = simplify_with_and_mask(s1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(s1, s2);
+
+    let op1 = ctx.add(
+        ctx.and_const(
+            ctx.register(1),
+            0xff,
+        ),
+        ctx.and_const(
+            ctx.add(
+                ctx.register(1),
+                ctx.register(3),
+            ),
+            0xff,
+        ),
+    );
+    let s1 = simplify_with_and_mask(op1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    let s2 = simplify_with_and_mask(s1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(s1, s2);
+}
+
+#[test]
+fn simplify_with_and_mask_masked_add_consistency3() {
+    let ctx = &super::OperandContext::new();
+
+    let op1 = ctx.add(
+        ctx.mul_const(
+            ctx.and_const(
+                ctx.register(1),
+                0xff,
+            ),
+            2,
+        ),
+        ctx.and_const(
+            ctx.add(
+                ctx.register(2),
+                ctx.register(3),
+            ),
+            0xff,
+        ),
+    );
+    let s1 = simplify_with_and_mask(op1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    let s2 = simplify_with_and_mask(s1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(s1, s2);
+
+    let op1 = ctx.add(
+        ctx.mul_const(
+            ctx.and_const(
+                ctx.register(1),
+                0xff,
+            ),
+            2,
+        ),
+        ctx.and_const(
+            ctx.add(
+                ctx.register(1),
+                ctx.register(3),
+            ),
+            0xff,
+        ),
+    );
+    let s1 = simplify_with_and_mask(op1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    let s2 = simplify_with_and_mask(s1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(s1, s2);
 }
