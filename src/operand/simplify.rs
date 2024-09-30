@@ -7444,8 +7444,12 @@ fn simplify_with_and_mask_add_sub_try_extract_inner_mask<'e>(
             if is_continuous_mask(c) && c & mask == c && !c & mask < c {
                 if arith.left.relevant_bits().start >= arith.right.relevant_bits().start {
                     let new = ctx.arithmetic(ArithOpType::Add, inner, arith.left);
-                    let masked = simplify_and_const(new, c, ctx, swzb_ctx);
-                    return Some(masked);
+                    if c != mask {
+                        let masked = simplify_and_const(new, c, ctx, swzb_ctx);
+                        return Some(masked);
+                    } else {
+                        return Some(new);
+                    }
                 }
             }
         }
@@ -8413,5 +8417,23 @@ fn simplify_with_and_mask_mul_consistency() {
         simplify_with_and_mask(op1, 0x1, ctx, &mut SimplifyWithZeroBits::default());
     let simplified2 =
         simplify_with_and_mask(simplified, 0x1, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(simplified, simplified2);
+}
+
+#[test]
+fn simplify_with_and_mask_masked_add_consistency() {
+    let ctx = &super::OperandContext::new();
+
+    let op1 = ctx.add(
+        ctx.register(1),
+        ctx.and_const(
+            ctx.register(2),
+            0xff,
+        ),
+    );
+    let simplified =
+        simplify_with_and_mask(op1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    let simplified2 =
+        simplify_with_and_mask(simplified, 0xff, ctx, &mut SimplifyWithZeroBits::default());
     assert_eq!(simplified, simplified2);
 }
