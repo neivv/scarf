@@ -7153,8 +7153,8 @@ fn simplify_with_and_mask_inner<'e>(
                         // Then, invert the result and add in 1,1 (l & r) to get A,C to 1,
                         // and clear any bits that were 0,0 originally (As the ones left
                         // of A and C ranges become 1 when carry propagation stops there.
-                        let l = arith.left.relevant_bits_mask();
-                        let r = arith.right.relevant_bits_mask();
+                        let l = relevant_bits_for_and_simplify(arith.left);
+                        let r = relevant_bits_for_and_simplify(arith.right);
                         let z = (!(l.wrapping_add(r)) | (l & r)) & (l | r);
                         // So now z is marking the A,C ranges, e.g.
                         // z = 0011110000011111111111000000
@@ -8529,5 +8529,18 @@ fn simplify_with_and_mask_masked_add_consistency3() {
     );
     let s1 = simplify_with_and_mask(op1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
     let s2 = simplify_with_and_mask(s1, 0xff, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(s1, s2);
+}
+
+#[test]
+fn simplify_with_and_mask_add_const_with_holes() {
+    let ctx = &super::OperandContext::new();
+
+    let op1 = ctx.add_const(
+        ctx.mem16(ctx.register(0), 0),
+        0x16_0005_0200,
+    );
+    let s1 = simplify_with_and_mask(op1, 0x1_0763_c700, ctx, &mut SimplifyWithZeroBits::default());
+    let s2 = simplify_with_and_mask(s1, 0x1_0763_c700, ctx, &mut SimplifyWithZeroBits::default());
     assert_eq!(s1, s2);
 }
