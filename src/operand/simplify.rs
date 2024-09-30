@@ -67,7 +67,7 @@ pub fn simplify_arith<'e>(
     match ty {
         ArithOpType::Add | ArithOpType::Sub => {
             let is_sub = ty == ArithOpType::Sub;
-            simplify_add_sub(left, right, is_sub, ctx)
+            simplify_add_sub(left, right, is_sub, u64::MAX, ctx)
         }
         ArithOpType::Mul => simplify_mul(left, right, ctx),
         ArithOpType::MulHigh => simplify_mul_high(left, right, ctx),
@@ -5790,7 +5790,7 @@ fn simplify_add_sub_const_with_lhs_const<'e>(
     ctx.simplify_temp_stack()
         .alloc(|ops| {
             let c1 = collect_add_ops_no_mask(left, ops, false)?;
-            simplify_collected_add_sub_ops(ops, ctx, right.wrapping_add(c1))?;
+            simplify_collected_add_sub_ops(ops, ctx, u64::MAX, right.wrapping_add(c1))?;
             Ok(add_sub_ops_to_tree(ops, ctx))
         }).unwrap_or_else(|SizeLimitReached| {
             intern_arith_const(ctx, left, right, ty)
@@ -5924,10 +5924,14 @@ fn simplify_sub_const_op<'e>(
     }
 }
 
+/// `mask` is a mask that can be assumed to be applied to the result
+/// after simplification, but will not be applied by this function.
+/// (Same as the mask in simplify_with_and_mask)
 pub fn simplify_add_sub<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
     is_sub: bool,
+    mask: u64,
     ctx: OperandCtx<'e>,
 ) -> Operand<'e> {
     if !is_sub {
@@ -5943,7 +5947,7 @@ pub fn simplify_add_sub<'e>(
         }
     }
     ctx.simplify_temp_stack().alloc(|ops| {
-        simplify_add_sub_ops(ops, left, right, is_sub, u64::MAX, ctx)?;
+        simplify_add_sub_ops(ops, left, right, is_sub, mask, ctx)?;
         Ok(add_sub_ops_to_tree(ops, ctx))
     }).unwrap_or_else(|SizeLimitReached| {
         let ty = if is_sub { ArithOpType::Sub } else { ArithOpType::Add };
@@ -6339,17 +6343,21 @@ fn simplify_add_sub_ops<'e>(
     let const1 = collect_add_ops(left, ops, mask, false)?;
     let const2 = collect_add_ops(right, ops, mask, is_sub)?;
     let const_sum = const1.wrapping_add(const2);
-    simplify_collected_add_sub_ops(ops, ctx, const_sum)?;
+    simplify_collected_add_sub_ops(ops, ctx, mask, const_sum)?;
     Ok(())
 }
 
+/// `mask` is a mask that can be assumed to be applied to the result
+/// after simplification, but will not be applied by this function.
+/// (Same as the mask in simplify_with_and_mask)
 fn simplify_collected_add_sub_ops<'e>(
     ops: &mut AddSlice<'e>,
     ctx: OperandCtx<'e>,
+    mask: u64,
     const_sum: u64,
 ) -> Result<(), SizeLimitReached> {
     heapsort::sort(ops);
-    simplify_add_merge_muls(ops, ctx);
+    simplify_add_merge_muls(ops, ctx, mask);
     let new_consts = simplify_add_merge_masked_reverting(ops, ctx);
     let const_sum = const_sum.wrapping_add(new_consts);
     if ops.is_empty() {
@@ -7154,7 +7162,8 @@ fn simplify_with_and_mask_inner<'e>(
                         // propagate left will rely on bits of r being 0 there.
                         // Therefore r may only be simplified with mask that doesn't
                         // guarantee zeroing of the following ranges marked with *,
-                        // that is, right_mask must have 1 for * bits too.
+                        // that is, right_mask must have 1 for * bits too (simplify_with_and_mask
+                        // would be allowed to change 0 to 1 for a bit outside the mask).
                         // Similarly left_mask would need to include set-to-one bit chunk
                         // on r that are right of a z chunk.
                         // l = 0011111100011111000111111100
@@ -7326,16 +7335,19 @@ fn simplify_with_and_mask_inner<'e>(
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op
                     } else {
-                        let op = ctx.arithmetic(arith.ty, simplified_left, simplified_right);
-                        // The result may simplify again, for example with mask 0x1
-                        // Mem16[x] + Mem32[x] + Mem8[x] => 3 * Mem8[x] => 1 * Mem8[x]
-                        // But assuming for now that this only happens when non-mul was
-                        // converted to mul to save some time in other cases.
-                        if arith.ty != ArithOpType::Mul && op.if_arithmetic_mul().is_some() {
-                            simplify_with_and_mask(op, orig_mask, ctx, swzb_ctx)
+                        let op = if arith.ty != ArithOpType::Mul {
+                            let is_sub = arith.ty == ArithOpType::Sub;
+                            simplify_add_sub(
+                                simplified_left,
+                                simplified_right,
+                                is_sub,
+                                orig_mask,
+                                ctx,
+                            )
                         } else {
-                            op
-                        }
+                            simplify_mul(simplified_left, simplified_right, ctx)
+                        };
+                        op
                     }
                 }
                 _ => op,
@@ -7670,12 +7682,12 @@ fn simplify_with_and_mask_mem_dont_apply_shift<'e>(
 fn simplify_add_merge_muls<'e>(
     ops: &mut AddSlice<'e>,
     ctx: OperandCtx<'e>,
+    mask: u64,
 ) {
     fn count_equivalent_opers<'e>(ops: &[(Operand<'e>, bool)], equiv: Operand<'e>) -> Option<u64> {
         ops.iter().map(|&(o, neg)| {
-            let (mul, val) = o.if_arithmetic_mul()
-                .and_then(|(l, r)| r.if_constant().map(|c| (c, l)))
-                .unwrap_or_else(|| (1, o));
+            let (val, mul) = o.if_mul_with_const()
+                .unwrap_or_else(|| (o, 1));
             match equiv == val {
                 true => if neg { 0u64.wrapping_sub(mul) } else { mul },
                 false => 0,
@@ -7687,17 +7699,28 @@ fn simplify_add_merge_muls<'e>(
         })
     }
 
+    // Fill mask to lowest bit, as it will be used with multiplications
+    let mask = if mask.wrapping_add(1) & mask != 0 {
+        let mask_end_bit = 64 - mask.leading_zeros() as u8;
+        match 1u64.checked_shl(mask_end_bit as u32) {
+            Some(s) => s.wrapping_sub(1),
+            None => u64::MAX,
+        }
+    } else {
+        mask
+    };
+
+    // TODO all of this should probably handle x << C as mul too
     let mut pos = 0;
     while pos < ops.len() {
         let merged = {
-            let (self_mul, op) = ops[pos].0.if_arithmetic_mul()
-                .and_then(|(l, r)| r.if_constant().map(|c| (c, l)))
-                .unwrap_or_else(|| (1, ops[pos].0));
+            let (op, self_mul) = ops[pos].0.if_mul_with_const()
+                .unwrap_or_else(|| (ops[pos].0, 1));
 
             let others = count_equivalent_opers(&ops[pos + 1..], op);
             if let Some(others) = others {
                 let self_mul = if ops[pos].1 { 0u64.wrapping_sub(self_mul) } else { self_mul };
-                let sum = self_mul.wrapping_add(others);
+                let sum = self_mul.wrapping_add(others) & mask;
                 if sum == 0 {
                     Some(None)
                 } else {
@@ -8371,5 +8394,24 @@ fn simplify_with_and_mask_sub_consistency() {
         simplify_with_and_mask(op1, 0xffff_ffff, ctx, &mut SimplifyWithZeroBits::default());
     let simplified2 =
         simplify_with_and_mask(simplified, 0xffff_ffff, ctx, &mut SimplifyWithZeroBits::default());
+    assert_eq!(simplified, simplified2);
+}
+
+#[test]
+fn simplify_with_and_mask_mul_consistency() {
+    let ctx = &super::OperandContext::new();
+
+    // Mem16[x] + Mem32[x] + Mem8[x] => 3 * Mem8[x] => 1 * Mem8[x]
+    let op1 = ctx.add(
+        ctx.add(
+            ctx.mem32(ctx.register(0), 0),
+            ctx.mem16(ctx.register(0), 0),
+        ),
+        ctx.mem8(ctx.register(0), 0),
+    );
+    let simplified =
+        simplify_with_and_mask(op1, 0x1, ctx, &mut SimplifyWithZeroBits::default());
+    let simplified2 =
+        simplify_with_and_mask(simplified, 0x1, ctx, &mut SimplifyWithZeroBits::default());
     assert_eq!(simplified, simplified2);
 }

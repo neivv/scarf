@@ -1430,12 +1430,12 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left + right`.
     pub fn add(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        simplify::simplify_add_sub(left, right, false, self)
+        simplify::simplify_add_sub(left, right, false, u64::MAX, self)
     }
 
     /// Returns `Operand` for `left - right`.
     pub fn sub(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        simplify::simplify_add_sub(left, right, true, self)
+        simplify::simplify_add_sub(left, right, true, u64::MAX, self)
     }
 
     /// Returns `Operand` for `left * right`.
@@ -1610,7 +1610,7 @@ impl<'e> OperandContext<'e> {
     /// Returns `Operand` for `left - right`.
     pub fn sub_const_left(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
         let left = self.constant(left);
-        simplify::simplify_add_sub(left, right, true, self)
+        simplify::simplify_add_sub(left, right, true, u64::MAX, self)
     }
 
     /// Returns `Operand` for `left * right`.
