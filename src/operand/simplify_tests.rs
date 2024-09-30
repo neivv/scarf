@@ -12463,3 +12463,38 @@ fn and_shifted_memory() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn masked_and_add_to_mul() {
+    let ctx = &OperandContext::new();
+    let dh = ctx.and_const(
+        ctx.register(2),
+        0xff00,
+    );
+    let op1 = ctx.and_const(
+        ctx.add(
+            ctx.and_const(
+                ctx.add(
+                    ctx.register(1),
+                    dh,
+                ),
+                0xffff,
+            ),
+            dh,
+        ),
+        0xffff,
+    );
+    let eq1 = ctx.arithmetic_masked(
+        ArithOpType::Add,
+        ctx.and_const(
+            ctx.add(
+                ctx.register(1),
+                dh,
+            ),
+            0xffff,
+        ),
+        dh,
+        0xffff,
+    );
+    assert_eq!(op1, eq1);
+}
