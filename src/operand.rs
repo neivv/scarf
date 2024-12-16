@@ -1396,8 +1396,8 @@ impl<'e> OperandContext<'e> {
         left: Operand<'e>,
         right: Operand<'e>,
     ) -> Operand<'e> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_arith(left, right, ty, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_arith(left, right, ty, &mut simplify)
     }
 
     /// Returns `Operand` for any arithmetic operation, which will be then
@@ -1413,8 +1413,8 @@ impl<'e> OperandContext<'e> {
         right: Operand<'e>,
         mask: u64,
     ) -> Operand<'e> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_arith_masked(left, right, ty, mask, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_arith_masked(left, right, ty, mask, &mut simplify)
     }
 
     /// Returns `Operand` for a float arithmetic of any operation.
@@ -1471,32 +1471,32 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left & right`.
     pub fn and(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_and(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_and(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left | right`.
     pub fn or(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_or(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_or(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left ^ right`.
     pub fn xor(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_xor(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_xor(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left << right`.
     pub fn lsh(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_lsh(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_lsh(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left >> right`.
     pub fn rsh(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_rsh(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_rsh(left, right, &mut simplify)
     }
 
     pub fn arithmetic_right_shift(
@@ -1557,8 +1557,8 @@ impl<'e> OperandContext<'e> {
     ///
     /// Greater than or equal can be implemented by using `ctx.or(ctx.gt(a, b), ctx.eq(a, b))`
     pub fn gt(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_gt(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_gt(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for signed `left > right`.
@@ -1625,22 +1625,22 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left & right`.
     pub fn and_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_and_const(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_and_const(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left | right`.
     pub fn or_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_or(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_or(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left ^ right`.
     pub fn xor_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let right = self.constant(right);
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_xor(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_xor(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left << right`.
@@ -1648,16 +1648,16 @@ impl<'e> OperandContext<'e> {
         if right >= 64 {
             self.const_0()
         } else {
-            let mut simplify = simplify::SimplifyWithZeroBits::default();
-            simplify::simplify_lsh_const(left, right as u8, self, &mut simplify)
+            let mut simplify = simplify::SimplifyCtx::new(self);
+            simplify::simplify_lsh_const(left, right as u8, &mut simplify)
         }
     }
 
     /// Returns `Operand` for `left << right`.
     pub fn lsh_const_left(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
         let left = self.constant(left);
-        let mut simplify = simplify::SimplifyWithZeroBits::default();
-        simplify::simplify_lsh(left, right, self, &mut simplify)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_lsh(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left >> right`.
@@ -1665,8 +1665,8 @@ impl<'e> OperandContext<'e> {
         if right >= 64 {
             self.const_0()
         } else {
-            let mut simplify = simplify::SimplifyWithZeroBits::default();
-            simplify::simplify_rsh_const(left, right as u8, self, &mut simplify)
+            let mut simplify = simplify::SimplifyCtx::new(self);
+            simplify::simplify_rsh_const(left, right as u8, &mut simplify)
         }
     }
 
