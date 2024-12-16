@@ -1430,17 +1430,20 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left + right`.
     pub fn add(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        simplify::simplify_add_sub(left, right, false, u64::MAX, self)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_add_sub(left, right, false, u64::MAX, &mut simplify)
     }
 
     /// Returns `Operand` for `left - right`.
     pub fn sub(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        simplify::simplify_add_sub(left, right, true, u64::MAX, self)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_add_sub(left, right, true, u64::MAX, &mut simplify)
     }
 
     /// Returns `Operand` for `left * right`.
     pub fn mul(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        simplify::simplify_mul(left, right, self)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_mul(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for high 64 bits of 128-bit result of `left * right`.
@@ -1456,7 +1459,8 @@ impl<'e> OperandContext<'e> {
         _size: MemAccessSize,
     ) -> Operand<'e> {
         // TODO
-        simplify::simplify_mul(left, right, self)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_mul(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left / right`.
@@ -1543,7 +1547,8 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left == right`.
     pub fn eq(&'e self, left: Operand<'e>, right: Operand<'e>) -> Operand<'e> {
-        simplify::simplify_eq(left, right, self)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_eq(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left != right`.
@@ -1599,18 +1604,21 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left + right`.
     pub fn add_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        simplify::simplify_add_const(left, right, self)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_add_const(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left - right`.
     pub fn sub_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        simplify::simplify_sub_const(left, right, self)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_sub_const(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left - right`.
     pub fn sub_const_left(&'e self, left: u64, right: Operand<'e>) -> Operand<'e> {
         let left = self.constant(left);
-        simplify::simplify_add_sub(left, right, true, u64::MAX, self)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_add_sub(left, right, true, u64::MAX, &mut simplify)
     }
 
     /// Returns `Operand` for `left * right`.
@@ -1619,7 +1627,8 @@ impl<'e> OperandContext<'e> {
             self.lsh_const(left, right.trailing_zeros() as u64)
         } else {
             let right = self.constant(right);
-            simplify::simplify_mul(left, right, self)
+            let mut simplify = simplify::SimplifyCtx::new(self);
+            simplify::simplify_mul(left, right, &mut simplify)
         }
     }
 
@@ -1672,7 +1681,8 @@ impl<'e> OperandContext<'e> {
 
     /// Returns `Operand` for `left == right`.
     pub fn eq_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
-        simplify::simplify_eq_const(left, right, self)
+        let mut simplify = simplify::SimplifyCtx::new(self);
+        simplify::simplify_eq_const(left, right, &mut simplify)
     }
 
     /// Returns `Operand` for `left != right`.

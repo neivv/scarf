@@ -73,16 +73,16 @@ pub fn simplify_arith<'e>(
     match ty {
         ArithOpType::Add | ArithOpType::Sub => {
             let is_sub = ty == ArithOpType::Sub;
-            simplify_add_sub(left, right, is_sub, u64::MAX, ctx)
+            simplify_add_sub(left, right, is_sub, u64::MAX, sctx)
         }
-        ArithOpType::Mul => simplify_mul(left, right, ctx),
+        ArithOpType::Mul => simplify_mul(left, right, sctx),
         ArithOpType::MulHigh => simplify_mul_high(left, right, ctx),
         ArithOpType::And => simplify_and(left, right, sctx),
         ArithOpType::Or => simplify_or(left, right, sctx),
         ArithOpType::Xor => simplify_xor(left, right, sctx),
         ArithOpType::Lsh => simplify_lsh(left, right, sctx),
         ArithOpType::Rsh => simplify_rsh(left, right, sctx),
-        ArithOpType::Equal => simplify_eq(left, right, ctx),
+        ArithOpType::Equal => simplify_eq(left, right, sctx),
         ArithOpType::GreaterThan => simplify_gt(left, right, sctx),
         ArithOpType::Div | ArithOpType::Modulo => {
             if let Some(r) = right.if_constant() {
@@ -1133,11 +1133,11 @@ fn simplify_xor_shifted_unwrap_shifts<'e>(
 /// operation, `(op & op.relevant_bits_mask() & mask) >> shift` for (shift1, mask1) results `op1`,
 /// and same for op2, return `Some(op)`
 fn simplify_xor_base_for_shifted<'e>(
+    sctx: &mut SimplifyCtx<'e>,
     op1: Operand<'e>,
     mut s1: (u8, u64),
     op2: Operand<'e>,
     mut s2: (u8, u64),
-    ctx: OperandCtx<'e>,
     limit: &mut u32,
 ) -> Option<Operand<'e>> {
     // This maybe should also return and mask if it is being limited by
@@ -1149,9 +1149,9 @@ fn simplify_xor_base_for_shifted<'e>(
     // correct masking so it's probably fine to not do anything extra right now.
     s1.1 &= op1.relevant_bits_mask();
     s2.1 &= op2.relevant_bits_mask();
-    let (op, shift) = simplify_xor_base_for_shifted_rec(op1, s1, op2, s2, ctx, limit)?;
+    let (op, shift) = simplify_xor_base_for_shifted_rec(sctx, op1, s1, op2, s2, limit)?;
     if shift != 0 {
-        Some(ctx.lsh_const(op, shift as u64))
+        Some(sctx.ctx.lsh_const(op, shift as u64))
     } else {
         Some(op)
     }
@@ -1174,11 +1174,11 @@ fn simplify_xor_base_for_shifted<'e>(
 /// is only equal with the first and third, since the
 /// mask requires rax + 2 byte be 0.
 fn simplify_xor_base_for_shifted_rec<'e>(
+    sctx: &mut SimplifyCtx<'e>,
     op1: Operand<'e>,
     (shift1, mask1): (u8, u64),
     op2: Operand<'e>,
     (shift2, mask2): (u8, u64),
-    ctx: OperandCtx<'e>,
     limit: &mut u32,
 ) -> Option<(Operand<'e>, u8)> {
     if shift1 >= 64 || shift2 >= 64 {
@@ -1201,18 +1201,17 @@ fn simplify_xor_base_for_shifted_rec<'e>(
         if shift1 == shift2 {
             let shift_abs = (shift1 as i8).unsigned_abs();
             let result = simplify_xor_base_for_shifted_rec(
+                sctx,
                 op1,
                 (0, mask1 << shift_abs),
                 op2,
                 (0, mask2 << shift_abs),
-                ctx,
                 limit,
             );
             if let Some((op, shift)) = result {
                 if shift >= shift_abs {
                     return Some((op, shift - shift_abs));
                 } else {
-                    let sctx = &mut SimplifyCtx::new(ctx);
                     let op = simplify_rsh_const(op, shift_abs - shift, sctx);
                     return Some((op, 0));
                 }
@@ -1231,7 +1230,7 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                     *limit = limit.checked_sub(1)?;
                     let s1 = (shift1, mask1);
                     let s2 = (shift2, mask2);
-                    result = simplify_xor_base_for_shifted_arith_chain(op1, s1, op2, s2, ctx, limit);
+                    result = simplify_xor_base_for_shifted_arith_chain(sctx, op1, s1, op2, s2, limit);
                 } else if matches!(a1.ty, ArithOpType::Mul | ArithOpType::Add | ArithOpType::Sub) {
                     // Fill all bits below highest one to 1
                     let mask1 = mask1.wrapping_add(1).
@@ -1244,18 +1243,18 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                         .wrapping_sub(1);
                     let s1 = (shift1, mask1);
                     let s2 = (shift2, mask2);
-                    result = simplify_xor_base_for_shifted_arith_chain(op1, s1, op2, s2, ctx, limit);
+                    result = simplify_xor_base_for_shifted_arith_chain(sctx, op1, s1, op2, s2, limit);
                 }
             }
         } else {
             let s1 = (shift1, mask1);
             let s2 = (shift2, mask2);
-            result = simplify_xor_base_for_shifted_1op_arith_const(a1, s1, op2, s2, ctx, limit);
+            result = simplify_xor_base_for_shifted_1op_arith_const(sctx, a1, s1, op2, s2, limit);
         }
     } else if let Some(a2) = op2.if_arithmetic_any() {
         let s1 = (shift1, mask1);
         let s2 = (shift2, mask2);
-        result = simplify_xor_base_for_shifted_1op_arith_const(a2, s2, op1, s1, ctx, limit);
+        result = simplify_xor_base_for_shifted_1op_arith_const(sctx, a2, s2, op1, s1, limit);
     } else {
         if let Some((val, mut off1)) = is_offset_mem(op1) {
             if let Some((other_val, mut off2)) = is_offset_mem(op2) {
@@ -1276,6 +1275,7 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                     {
                         return None;
                     }
+                    let ctx = sctx.ctx;
                     if let Some((merged, shift)) =
                         try_merge_memory_no_shift(val, off1, off2, ctx)
                     {
@@ -1298,7 +1298,7 @@ fn simplify_xor_base_for_shifted_rec<'e>(
                 if shift1 == shift2 {
                     let merged = (c1 & mask1) | (c2 & mask2);
                     if merged & mask1 == c1 && merged & mask2 == c2 {
-                        result = Some((ctx.constant(merged), shift1));
+                        result = Some((sctx.ctx.constant(merged), shift1));
                     }
                 }
             }
@@ -1334,11 +1334,11 @@ fn simplify_xor_base_for_shifted_merge_constant(
 /// op1 is assumed to be arithmetic, if it is (x arith C) where x and op2
 /// can be merged, merge them as (x arith C) and (op2 arith default_C)
 fn simplify_xor_base_for_shifted_1op_arith_const<'e>(
+    sctx: &mut SimplifyCtx<'e>,
     arith1: &ArithOperand<'e>,
     s1: (u8, u64),
     op2: Operand<'e>,
     s2: (u8, u64),
-    ctx: OperandCtx<'e>,
     limit: &mut u32,
 ) -> Option<(Operand<'e>, u8)> {
     let c = arith1.right.if_constant()?;
@@ -1347,7 +1347,7 @@ fn simplify_xor_base_for_shifted_1op_arith_const<'e>(
     let (mut op, shift) =
         if matches!(arith1.ty, ArithOpType::Xor | ArithOpType::Or | ArithOpType::And)
     {
-        simplify_xor_base_for_shifted_rec(arith1.left, s1, op2, s2, ctx, limit)?
+        simplify_xor_base_for_shifted_rec(sctx, arith1.left, s1, op2, s2, limit)?
     } else if matches!(arith1.ty, ArithOpType::Mul | ArithOpType::Add | ArithOpType::Sub) {
         // Fill all bits below highest one to 1
         let mask1 = s1.1.wrapping_add(1).
@@ -1360,22 +1360,23 @@ fn simplify_xor_base_for_shifted_1op_arith_const<'e>(
             .wrapping_sub(1);
         let s1 = (s1.0, mask1);
         let s2 = (s2.0, mask2);
-        simplify_xor_base_for_shifted_rec(arith1.left, s1, op2, s2, ctx, limit)?
+        simplify_xor_base_for_shifted_rec(sctx, arith1.left, s1, op2, s2, limit)?
     } else {
         return None;
     };
     if constant != default_const {
+        let ctx = sctx.ctx;
         op = ctx.arithmetic(arith1.ty, op, ctx.constant(constant))
     }
     Some((op, shift))
 }
 
 fn simplify_xor_base_for_shifted_arith_chain<'e>(
+    sctx: &mut SimplifyCtx<'e>,
     op1: Operand<'e>,
     s1: (u8, u64),
     op2: Operand<'e>,
     s2: (u8, u64),
-    ctx: OperandCtx<'e>,
     limit: &mut u32,
 ) -> Option<(Operand<'e>, u8)> {
     // Handle constant separately, so that one side having constant and other
@@ -1401,6 +1402,7 @@ fn simplify_xor_base_for_shifted_arith_chain<'e>(
         }
         (None, None) => default_const,
     };
+    let ctx = sctx.ctx;
     util::arith_op_parts_to_new_slice(ctx, rest1, arith1.ty, |parts1| {
         util::arith_op_parts_to_new_slice(ctx, rest2, arith2.ty, |parts2| {
             if parts1.len() != parts2.len() {
@@ -1413,7 +1415,7 @@ fn simplify_xor_base_for_shifted_arith_chain<'e>(
                     if let Some(&part1) = parts1.last() {
                         if let Some(&part2) = parts2.last() {
                             let result =
-                                simplify_xor_base_for_shifted_rec(part1, s1, part2, s2, ctx, limit);
+                                simplify_xor_base_for_shifted_rec(sctx, part1, s1, part2, s2, limit);
                             if let Some(result) = result {
                                 result_parts.push(result).ok()?;
                                 parts2.pop();
@@ -1432,7 +1434,7 @@ fn simplify_xor_base_for_shifted_arith_chain<'e>(
                             None => return None,
                         };
                         let result =
-                            simplify_xor_base_for_shifted_rec(part1, s1, part2, s2, ctx, limit);
+                            simplify_xor_base_for_shifted_rec(sctx, part1, s1, part2, s2, limit);
                         if let Some(result) = result {
                             result_parts.push(result).ok()?;
                             parts2.swap_remove(j);
@@ -1859,7 +1861,7 @@ fn simplify_xor_remove_reverting<'e>(ops: &mut Slice<'e>) {
 /// Returns true if any changes are made.
 fn simplify_masked_xor_or_merge_same_ops<'e>(
     ops: &mut MaskedOpSlice<'e>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
     ty: ArithOpType,
 ) -> bool {
     let mut pos = 0;
@@ -1879,11 +1881,11 @@ fn simplify_masked_xor_or_merge_same_ops<'e>(
         'inner: while j < ops.len() {
             let (op2, mask2) = ops[j];
             let result = simplify_xor_base_for_shifted(
+                sctx,
                 op1,
                 (0u8, mask1),
                 op2,
                 (0u8, mask2),
-                ctx,
                 &mut limit,
             );
             if let Some(new) = result {
@@ -2149,7 +2151,7 @@ pub fn simplify_lsh_const<'e>(
                 ArithOpType::Mul => {
                     if let Some(mul_const) = arith.right.if_constant() {
                         let new_const = ctx.constant(mul_const.wrapping_mul(1 << constant));
-                        simplify_mul(arith.left, new_const, ctx)
+                        simplify_mul(arith.left, new_const, sctx)
                     } else {
                         // Try to apply lsh to one part of the mul which may simplify,
                         // if it changes then keep it as is.
@@ -2172,7 +2174,7 @@ pub fn simplify_lsh_const<'e>(
                             if unchanged {
                                 default()
                             } else {
-                                simplify_mul(inner, simple, ctx)
+                                simplify_mul(inner, simple, sctx)
                             }
                         } else {
                             default()
@@ -2182,7 +2184,7 @@ pub fn simplify_lsh_const<'e>(
                 ArithOpType::Add => {
                     if let Some(add_const) = arith.right.if_constant() {
                         let left = simplify_lsh_const(arith.left, constant, sctx);
-                        simplify_add_const(left, add_const << constant, ctx)
+                        simplify_add_const(left, add_const << constant, sctx)
                     } else {
                         default()
                     }
@@ -2191,7 +2193,7 @@ pub fn simplify_lsh_const<'e>(
                     if let Some(sub_const) = arith.right.if_constant() {
                         let left = simplify_lsh_const(arith.left, constant, sctx);
                         let add_const = 0u64.wrapping_sub(sub_const);
-                        simplify_add_const(left, add_const << constant, ctx)
+                        simplify_add_const(left, add_const << constant, sctx)
                     } else {
                         default()
                     }
@@ -2394,7 +2396,7 @@ pub fn simplify_rsh_const<'e>(
                     if ok {
                         if let Some(add_const) = arith.right.if_constant() {
                             let left = ctx.rsh_const(arith.left, constant.into());
-                            return simplify_add_const(left, add_const >> constant, ctx);
+                            return simplify_add_const(left, add_const >> constant, sctx);
                         }
                     }
                     default()
@@ -2405,7 +2407,7 @@ pub fn simplify_rsh_const<'e>(
                             let add_const = 0u64.wrapping_sub(sub_const);
                             if add_const >> constant << constant == add_const {
                                 let left = ctx.rsh_const(arith.left, constant.into());
-                                return simplify_add_const(left, add_const >> constant, ctx);
+                                return simplify_add_const(left, add_const >> constant, sctx);
                             }
                         }
                     }
@@ -2608,7 +2610,7 @@ fn canonicalize_masked_eq_const<'e>(
 fn simplify_eq_1op_const<'e>(
     left: Operand<'e>,
     right: u64,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
     if right == 1 {
         // Simplify x == 1 to x if x is just the lowest bit
@@ -2616,6 +2618,7 @@ fn simplify_eq_1op_const<'e>(
             return left;
         }
     }
+    let ctx = sctx.ctx;
     if right != 0 {
         let relbits = left.relevant_bits_mask();
         if relbits & right != right {
@@ -2646,7 +2649,7 @@ fn simplify_eq_1op_const<'e>(
         if right < to_mask - from_mask / 2 && right > from_mask / 2 {
             return ctx.const_0();
         } else {
-            return simplify_eq_const(val, right & from_mask, ctx);
+            return simplify_eq_const(val, right & from_mask, sctx);
         }
     }
     intern_arith_const(ctx, left, right, ArithOpType::Equal)
@@ -2667,10 +2670,11 @@ fn and_mask_to_shift_in_eq_zero<'e>(op: Operand<'e>) -> Option<(Operand<'e>, u8)
 pub fn simplify_eq_const<'e>(
     left: Operand<'e>,
     right: u64,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
+    let ctx = sctx.ctx;
     if right == 0 {
-        if let Some(result) = simplify_demorgan_eq_zero(left, ctx) {
+        if let Some(result) = simplify_demorgan_eq_zero(left, sctx) {
             return result;
         }
         if let OperandType::Arithmetic(ref arith) = left.ty() {
@@ -2681,28 +2685,20 @@ pub fn simplify_eq_const<'e>(
                         return arith.left;
                     }
                     if let Some((inner, shift)) = and_mask_to_shift_in_eq_zero(arith.left) {
-                        return simplify_rsh_const(
-                            inner,
-                            shift,
-                            &mut SimplifyCtx::new(ctx),
-                        );
+                        return simplify_rsh_const(inner, shift, sctx);
                     }
                 }
                 // Also 1bit (x == y) == 0 => x ^ y
                 if arith.left.relevant_bits().end == 1 {
                     if arith.right.relevant_bits().end == 1 && arith.right != ctx.const_1() {
-                        return simplify_xor(
-                            arith.left,
-                            arith.right,
-                            &mut SimplifyCtx::new(ctx),
-                        );
+                        return simplify_xor(arith.left, arith.right, sctx);
                     }
                 }
             } else if arith.ty == ArithOpType::Sub {
                 // Simplify x - y == 0 as x == y
-                return simplify_eq(arith.left, arith.right, ctx);
+                return simplify_eq(arith.left, arith.right, sctx);
             } else if arith.ty == ArithOpType::GreaterThan {
-                if let Some(result) = simplify_eq_zero_with_gt(arith.left, arith.right, ctx) {
+                if let Some(result) = simplify_eq_zero_with_gt(arith.left, arith.right, sctx) {
                     return result;
                 }
             }
@@ -2770,7 +2766,7 @@ pub fn simplify_eq_const<'e>(
     if can_quick_simplify {
         return ctx.intern_arith(left, right, ArithOpType::Equal);
     }
-    simplify_eq_main(left, right, ctx)
+    simplify_eq_main(left, right, sctx)
 }
 
 /// Special cases for simplifying `(left > right) == 0`
@@ -2778,20 +2774,20 @@ pub fn simplify_eq_const<'e>(
 fn simplify_eq_zero_with_gt<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Option<Operand<'e>> {
     if let Some(c) = left.if_constant() {
         return Some(simplify_gt(
             right,
-            ctx.constant(c.wrapping_sub(1)),
-            &mut SimplifyCtx::new(ctx),
+            sctx.ctx.constant(c.wrapping_sub(1)),
+            sctx,
         ));
     }
     if let Some(c) = right.if_constant() {
         return Some(simplify_gt(
-            ctx.constant(c.wrapping_add(1)),
+            sctx.ctx.constant(c.wrapping_add(1)),
             left,
-            &mut SimplifyCtx::new(ctx),
+            sctx,
         ));
     }
     None
@@ -2800,16 +2796,16 @@ fn simplify_eq_zero_with_gt<'e>(
 pub fn simplify_eq<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
     // Possibly common enough to be worth the early exit
     if left == right {
-        return ctx.const_1();
+        return sctx.ctx.const_1();
     }
     if let Some((c, other)) = Operand::either(left, right, |x| x.if_constant()) {
-        simplify_eq_const(other, c, ctx)
+        simplify_eq_const(other, c, sctx)
     } else {
-        simplify_eq_main(left, right, ctx)
+        simplify_eq_main(left, right, sctx)
     }
 }
 
@@ -2849,7 +2845,7 @@ fn eq_sort_order<'e>(a: Operand<'e>, b: Operand<'e>) -> bool {
 fn simplify_eq_main<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
     // Equality is just bit comparison without overflow semantics, even though
     // this also uses x == y => x - y == 0 property to simplify it.
@@ -2861,6 +2857,7 @@ fn simplify_eq_main<'e>(
     };
     let simple = is_simple_eq(left, add_sub_mask) &&
         is_simple_eq(right, add_sub_mask);
+    let ctx = sctx.ctx;
     if simple {
         let (left, right) = match eq_sort_order(left, right) {
             true => (left, right),
@@ -2869,8 +2866,8 @@ fn simplify_eq_main<'e>(
         return simplify_eq_2_ops(left, right, ctx);
     }
     ctx.simplify_temp_stack().alloc(|ops| {
-        simplify_add_sub_ops(ops, left, right, true, add_sub_mask, ctx)?;
-        Ok(simplify_eq_ops(ops, add_sub_mask, ctx))
+        simplify_add_sub_ops(ops, left, right, true, add_sub_mask, sctx)?;
+        Ok(simplify_eq_ops(ops, add_sub_mask, sctx))
     }).unwrap_or_else(|SizeLimitReached| {
         ctx.intern_arith(left, right, ArithOpType::Equal)
     })
@@ -2879,8 +2876,9 @@ fn simplify_eq_main<'e>(
 fn simplify_eq_ops<'e>(
     ops: &mut AddSlice<'e>,
     add_sub_mask: u64,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
+    let ctx = sctx.ctx;
     if ops.is_empty() {
         return ctx.const_1();
     }
@@ -2934,7 +2932,6 @@ fn simplify_eq_ops<'e>(
     }
     match ops.len() {
         1 => {
-            let sctx = &mut SimplifyCtx::new(ctx);
             if constant != 0 {
                 let (mut op, neg) = ops[0];
                 let constant = if neg {
@@ -2946,7 +2943,7 @@ fn simplify_eq_ops<'e>(
                 if add_sub_mask & relbits != relbits {
                     op = simplify_and_const(op, add_sub_mask, sctx);
                 }
-                simplify_eq_1op_const(op, constant, ctx)
+                simplify_eq_1op_const(op, constant, sctx)
             } else {
                 // constant == 0 so ops[0] == 0 comparison
                 if let Some((left, right)) = ops[0].0.if_arithmetic_eq() {
@@ -2968,7 +2965,7 @@ fn simplify_eq_ops<'e>(
                 // Wouldn't be valid for (0 > x) but it should never be created.
                 // Same for (x > c) == 0 to c + 1 > x
                 if let Some((l, r)) = ops[0].0.if_arithmetic_gt() {
-                    if let Some(result) = simplify_eq_zero_with_gt(l, r, ctx) {
+                    if let Some(result) = simplify_eq_zero_with_gt(l, r, sctx) {
                         return result;
                     }
                 }
@@ -2986,7 +2983,7 @@ fn simplify_eq_ops<'e>(
                                 mask.wrapping_shr(c2 as u32),
                                 sctx,
                             );
-                            return simplify_eq(new, ctx.const_0(), ctx);
+                            return simplify_eq_const(new, 0, sctx);
                         }
                     }
                     OperandType::Arithmetic(arith) if arith.ty == ArithOpType::Mul => {
@@ -2999,7 +2996,7 @@ fn simplify_eq_ops<'e>(
                                     mask.wrapping_shr(shift),
                                     sctx,
                                 );
-                                return simplify_eq(new, ctx.const_0(), ctx);
+                                return simplify_eq_const(new, 0, sctx);
                             }
                         }
                     }
@@ -3010,7 +3007,7 @@ fn simplify_eq_ops<'e>(
                                 mask.wrapping_shl(c2 as u32),
                                 sctx,
                             );
-                            return simplify_eq(new, ctx.const_0(), ctx);
+                            return simplify_eq_const(new, 0, sctx);
                         }
                     }
                     _ => ()
@@ -3032,12 +3029,11 @@ fn simplify_eq_ops<'e>(
             };
             let mask = add_sub_mask;
             fn make_op<'e>(
-                ctx: OperandCtx<'e>,
+                sctx: &mut SimplifyCtx<'e>,
                 op: Operand<'e>,
                 mask: u64,
                 negate: bool,
             ) -> Operand<'e> {
-                let sctx = &mut SimplifyCtx::new(ctx);
                 match negate {
                     false => {
                         let relbit_mask = op.relevant_bits_mask();
@@ -3048,7 +3044,7 @@ fn simplify_eq_ops<'e>(
                         }
                     }
                     true => {
-                        let op = ctx.sub_const_left(0, op);
+                        let op = sctx.ctx.sub_const_left(0, op);
                         if mask != u64::MAX {
                             simplify_and_const(op, mask, sctx)
                         } else {
@@ -3057,8 +3053,8 @@ fn simplify_eq_ops<'e>(
                     }
                 }
             }
-            let left = make_op(ctx, left.0, mask, !left.1);
-            let right = make_op(ctx, right.0, mask, right.1);
+            let left = make_op(sctx, left.0, mask, !left.1);
+            let right = make_op(sctx, right.0, mask, right.1);
             simplify_eq_2_ops(left, right, ctx)
         },
         _ => {
@@ -3088,14 +3084,14 @@ fn simplify_eq_ops<'e>(
                     left_tree = simplify_and_const(
                         left_tree,
                         add_sub_mask,
-                        &mut SimplifyCtx::new(ctx),
+                        sctx,
                     );
                 }
                 if add_sub_mask & right_rel_bits != right_rel_bits {
                     right_tree = simplify_and_const(
                         right_tree,
                         add_sub_mask,
-                        &mut SimplifyCtx::new(ctx),
+                        sctx,
                     );
                 }
             } else {
@@ -3110,7 +3106,7 @@ fn simplify_eq_ops<'e>(
                     left_tree = simplify_and_const(
                         left_tree,
                         add_sub_mask,
-                        &mut SimplifyCtx::new(ctx),
+                        sctx,
                     );
                 }
                 right_tree = ctx.constant(constant);
@@ -3276,11 +3272,12 @@ fn try_merge_ands<'e>(
     b: Operand<'e>,
     a_mask: u64,
     b_mask: u64,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Option<Operand<'e>> {
     if a == b {
         return Some(a);
     }
+    let ctx = sctx.ctx;
     if let Some(a) = a.if_constant() {
         if let Some(b) = b.if_constant() {
             return Some(ctx.constant(a | b));
@@ -3289,7 +3286,7 @@ fn try_merge_ands<'e>(
     if let Some((val, shift)) = is_offset_mem(a) {
         if let Some((other_val, other_shift)) = is_offset_mem(b) {
             if val == other_val {
-                let result = try_merge_memory(val, other_shift, shift, ctx);
+                let result = try_merge_memory(val, other_shift, shift, sctx);
                 if let Some(merged) = result {
                     return Some(merged);
                 }
@@ -3302,7 +3299,7 @@ fn try_merge_ands<'e>(
                 if c.ty == ArithOpType::Xor {
                     let mut buf = SmallVec::new();
                     simplify_or_merge_ands_try_merge(
-                        &mut buf, a, b, a_mask, b_mask, ArithOpType::Xor, ctx,
+                        &mut buf, a, b, a_mask, b_mask, ArithOpType::Xor, sctx,
                     );
                     if !buf.is_empty() {
                         let result = ctx.simplify_temp_stack()
@@ -3310,7 +3307,7 @@ fn try_merge_ands<'e>(
                                 for op in buf {
                                     slice.push(op)?;
                                 }
-                                simplify_xor_ops(slice, 0, &mut SimplifyCtx::new(ctx))
+                                simplify_xor_ops(slice, 0, sctx)
                             }).ok();
                         return result;
                     }
@@ -3320,7 +3317,7 @@ fn try_merge_ands<'e>(
                             let c_mask = a_mask.wrapping_shr(shift as u32);
                             let d_mask = b_mask.wrapping_shr(shift as u32);
                             if let Some(result) =
-                                try_merge_ands(c.left, d.left, c_mask, d_mask, ctx)
+                                try_merge_ands(c.left, d.left, c_mask, d_mask, sctx)
                             {
                                 return Some(ctx.lsh_const(result, shift));
                             }
@@ -3330,7 +3327,7 @@ fn try_merge_ands<'e>(
                     if let Some(c_mask) = c.right.if_constant() {
                         if let Some(d_mask) = d.right.if_constant() {
                             if let Some(result) =
-                                try_merge_ands(c.left, d.left, c_mask, d_mask, ctx)
+                                try_merge_ands(c.left, d.left, c_mask, d_mask, sctx)
                             {
                                 if c_mask | d_mask != a_mask | b_mask {
                                     return Some(ctx.and_const(result, c_mask | d_mask));
@@ -3354,7 +3351,7 @@ fn try_merge_ands<'e>(
             if matches!(arith.ty, ArithOpType::Add | ArithOpType::Sub | ArithOpType::Mul) {
                 if arith_mask & other_mask == 0 && arith_mask > other_mask {
                     if let Some(result) =
-                        try_merge_ands(arith.left, other, arith_mask, other_mask, ctx)
+                        try_merge_ands(arith.left, other, arith_mask, other_mask, sctx)
                     {
                         return Some(ctx.arithmetic(arith.ty, result, arith.right));
                     }
@@ -4572,13 +4569,17 @@ fn simplify_or_merge_xors<'e>(
 /// `((x == y) & (1bit_op == 0)) == 0`
 /// That is, and/or chain with only 1bit parts, and at least one == 0
 /// that can be removed, switches or/and and applies == 0 to each part.
-fn simplify_demorgan_eq_zero<'e>(op: Operand<'e>, ctx: OperandCtx<'e>) -> Option<Operand<'e>> {
+fn simplify_demorgan_eq_zero<'e>(
+    op: Operand<'e>,
+    sctx: &mut SimplifyCtx<'e>,
+) -> Option<Operand<'e>> {
     let arith = op.if_arithmetic_any()?;
     if matches!(arith.ty, ArithOpType::And | ArithOpType::Or) == false {
         return None;
     }
+    let ctx = sctx.ctx;
     util::arith_parts_to_new_slice(ctx, arith.left, arith.right, arith.ty, |slice| {
-        let zero = ctx.const_0();
+        let zero = sctx.ctx.const_0();
         let mut removable_eq_zero_seen = false;
         for &part in slice.iter() {
             if part.relevant_bits().end != 1 {
@@ -4602,12 +4603,12 @@ fn simplify_demorgan_eq_zero<'e>(op: Operand<'e>, ctx: OperandCtx<'e>) -> Option
             return None;
         }
         for part in slice.iter_mut() {
-            *part = simplify_eq_const(*part, 0, ctx);
+            *part = simplify_eq_const(*part, 0, sctx);
         }
         if arith.ty == ArithOpType::Or {
-            simplify_and_ops(slice, &mut SimplifyCtx::new(ctx)).ok()
+            simplify_and_ops(slice, sctx).ok()
         } else {
-            simplify_or_ops(slice, 0, &mut SimplifyCtx::new(ctx)).ok()
+            simplify_or_ops(slice, 0, sctx).ok()
         }
     })
 }
@@ -4703,8 +4704,9 @@ fn simplify_or_merge_ands_try_merge<'e>(
     first_c: u64,
     second_c: u64,
     arith_ty: ArithOpType,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) {
+    let ctx = sctx.ctx;
     let _ = ctx.simplify_temp_stack().alloc(|slice| {
         collect_arith_ops(first, slice, arith_ty, 16)?;
         ctx.simplify_temp_stack().alloc(|other_slice| {
@@ -4715,7 +4717,7 @@ fn simplify_or_merge_ands_try_merge<'e>(
                 while j < other_slice.len() {
                     let a = slice[i];
                     let b = other_slice[j];
-                    if let Some(result) = try_merge_ands(a, b, first_c, second_c, ctx) {
+                    if let Some(result) = try_merge_ands(a, b, first_c, second_c, sctx) {
                         out.push(ctx.and_const(result, first_c | second_c));
                         slice.swap_remove(i);
                         other_slice.swap_remove(j);
@@ -5715,11 +5717,11 @@ fn try_merge_memory<'e>(
     val: Operand<'e>,
     shift: (u64, u32, u32, u64),
     other_shift: (u64, u32, u32, u64),
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Option<Operand<'e>> {
-    let (result, shift) = try_merge_memory_no_shift(val, shift, other_shift, ctx)?;
+    let (result, shift) = try_merge_memory_no_shift(val, shift, other_shift, sctx.ctx)?;
     if shift != 0 {
-        Some(simplify_lsh_const(result, shift, &mut SimplifyCtx::new(ctx)))
+        Some(simplify_lsh_const(result, shift, sctx))
     } else {
         Some(result)
     }
@@ -5737,12 +5739,13 @@ fn simplify_add_sub_const_with_lhs_const<'e>(
     left: Operand<'e>,
     right: u64,
     ty: ArithOpType,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
+    let ctx = sctx.ctx;
     ctx.simplify_temp_stack()
         .alloc(|ops| {
             let c1 = collect_add_ops_no_mask(left, ops, false)?;
-            simplify_collected_add_sub_ops(ops, ctx, u64::MAX, right.wrapping_add(c1))?;
+            simplify_collected_add_sub_ops(ops, sctx, u64::MAX, right.wrapping_add(c1))?;
             Ok(add_sub_ops_to_tree(ops, ctx))
         }).unwrap_or_else(|SizeLimitReached| {
             intern_arith_const(ctx, left, right, ty)
@@ -5752,9 +5755,9 @@ fn simplify_add_sub_const_with_lhs_const<'e>(
 pub fn simplify_add_const<'e>(
     left: Operand<'e>,
     right: u64,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
-    simplify_add_const_op(left, right, None, ctx)
+    simplify_add_const_op(left, right, None, sctx)
 }
 
 /// Allows providing `right_op` if `ctx.constant(right)` is already known.
@@ -5764,7 +5767,7 @@ fn simplify_add_const_op<'e>(
     mut left: Operand<'e>,
     mut right: u64,
     mut right_op: Option<Operand<'e>>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
     if right == 0 {
         return left;
@@ -5788,7 +5791,7 @@ fn simplify_add_const_op<'e>(
                 }
             }
         }
-        OperandType::Constant(c) => return ctx.constant(c.wrapping_add(right)),
+        OperandType::Constant(c) => return sctx.ctx.constant(c.wrapping_add(right)),
         _ => (),
     }
     if right == 0 {
@@ -5799,10 +5802,11 @@ fn simplify_add_const_op<'e>(
     if right == init_right || !negate_right {
         if let Some(lhs_const) = is_sub_with_lhs_const(left) {
             if !negate_right || lhs_const != 0 {
-                return simplify_add_sub_const_with_lhs_const(left, right, ArithOpType::Add, ctx);
+                return simplify_add_sub_const_with_lhs_const(left, right, ArithOpType::Add, sctx);
             }
         }
     }
+    let ctx = sctx.ctx;
     if negate_right {
         let right = 0u64.wrapping_sub(right);
         intern_arith_const(ctx, left, right, ArithOpType::Sub)
@@ -5815,9 +5819,9 @@ fn simplify_add_const_op<'e>(
 pub fn simplify_sub_const<'e>(
     left: Operand<'e>,
     right: u64,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
-    simplify_sub_const_op(left, right, None, ctx)
+    simplify_sub_const_op(left, right, None, sctx)
 }
 
 /// Allows providing `right_op` if `ctx.constant(right)` is already known.
@@ -5827,7 +5831,7 @@ fn simplify_sub_const_op<'e>(
     mut left: Operand<'e>,
     mut right: u64,
     mut right_op: Option<Operand<'e>>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
     if right == 0 {
         return left;
@@ -5851,7 +5855,7 @@ fn simplify_sub_const_op<'e>(
                 }
             }
         }
-        OperandType::Constant(c) => return ctx.constant(c.wrapping_sub(right)),
+        OperandType::Constant(c) => return sctx.ctx.constant(c.wrapping_sub(right)),
         _ => (),
     }
     if right == 0 {
@@ -5863,10 +5867,11 @@ fn simplify_sub_const_op<'e>(
         if let Some(lhs_const) = is_sub_with_lhs_const(left) {
             if !negate_right || lhs_const != 0 {
                 let right = 0u64.wrapping_sub(right);
-                return simplify_add_sub_const_with_lhs_const(left, right, ArithOpType::Sub, ctx);
+                return simplify_add_sub_const_with_lhs_const(left, right, ArithOpType::Sub, sctx);
             }
         }
     }
+    let ctx = sctx.ctx;
     if !negate_right {
         let right = 0u64.wrapping_sub(right);
         intern_arith_const(ctx, left, right, ArithOpType::Add)
@@ -5884,22 +5889,23 @@ pub fn simplify_add_sub<'e>(
     right: Operand<'e>,
     is_sub: bool,
     mask: u64,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
     if !is_sub {
         if let Some(c) = left.if_constant() {
-            return simplify_add_const_op(right, c, Some(left), ctx);
+            return simplify_add_const_op(right, c, Some(left), sctx);
         }
     }
     if let Some(c) = right.if_constant() {
         if is_sub {
-            return simplify_sub_const_op(left, c, Some(right), ctx);
+            return simplify_sub_const_op(left, c, Some(right), sctx);
         } else {
-            return simplify_add_const_op(left, c, Some(right), ctx);
+            return simplify_add_const_op(left, c, Some(right), sctx);
         }
     }
+    let ctx = sctx.ctx;
     ctx.simplify_temp_stack().alloc(|ops| {
-        simplify_add_sub_ops(ops, left, right, is_sub, mask, ctx)?;
+        simplify_add_sub_ops(ops, left, right, is_sub, mask, sctx)?;
         Ok(add_sub_ops_to_tree(ops, ctx))
     }).unwrap_or_else(|SizeLimitReached| {
         let ty = if is_sub { ArithOpType::Sub } else { ArithOpType::Add };
@@ -5959,10 +5965,11 @@ fn add_sub_ops_to_tree<'e>(
 pub fn simplify_mul<'e>(
     left: Operand<'e>,
     right: Operand<'e>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
     let left_rel = left.relevant_bits();
     let right_rel = right.relevant_bits();
+    let ctx = sctx.ctx;
     // Guaranteed to overflow to 0
     if left_rel.start.wrapping_add(right_rel.start) >= 64 {
         return ctx.const_0();
@@ -5979,7 +5986,6 @@ pub fn simplify_mul<'e>(
         // if the shift is small enough.
         if c.wrapping_sub(1) & c == 0 {
             let shift = c.trailing_zeros() as u8;
-            let sctx = &mut SimplifyCtx::new(ctx);
             return simplify_lsh_const(other, shift, sctx);
         }
         match c {
@@ -6013,7 +6019,7 @@ pub fn simplify_mul<'e>(
     ctx.simplify_temp_stack().alloc(|slice| {
         collect_mul_ops(ctx, left, slice)
             .and_then(|()| collect_mul_ops(ctx, right, slice))
-            .and_then(|()| simplify_mul_ops(ctx, slice))
+            .and_then(|()| simplify_mul_ops(sctx, slice))
             .unwrap_or_else(|_| {
                 ctx.intern_arith(left, right, ArithOpType::Mul)
             })
@@ -6134,11 +6140,12 @@ pub fn simplify_mul_high<'e>(
 }
 
 fn simplify_mul_ops<'e>(
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
     ops: &mut Slice<'e>,
 ) -> Result<Operand<'e>, SizeLimitReached> {
     let mut const_product = ops.iter().flat_map(|x| x.if_constant())
         .fold(1u64, |product, x| product.wrapping_mul(x));
+    let ctx = sctx.ctx;
     if const_product == 0 {
         return Ok(ctx.const_0());
     }
@@ -6199,7 +6206,6 @@ fn simplify_mul_ops<'e>(
         // if the shift is small enough.
         if const_product.wrapping_sub(1) & const_product == 0 {
             let shift = const_product.trailing_zeros() as u8;
-            let sctx = &mut SimplifyCtx::new(ctx);
             return Ok(simplify_lsh_const(tree, shift, sctx));
         }
         tree = intern_arith_const(ctx, tree, const_product, ArithOpType::Mul);
@@ -6290,12 +6296,12 @@ fn simplify_add_sub_ops<'e>(
     right: Operand<'e>,
     is_sub: bool,
     mask: u64,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) -> Result<(), SizeLimitReached> {
     let const1 = collect_add_ops(left, ops, mask, false)?;
     let const2 = collect_add_ops(right, ops, mask, is_sub)?;
     let const_sum = const1.wrapping_add(const2);
-    simplify_collected_add_sub_ops(ops, ctx, mask, const_sum)?;
+    simplify_collected_add_sub_ops(ops, sctx, mask, const_sum)?;
     Ok(())
 }
 
@@ -6304,12 +6310,13 @@ fn simplify_add_sub_ops<'e>(
 /// (Same as the mask in simplify_with_and_mask)
 fn simplify_collected_add_sub_ops<'e>(
     ops: &mut AddSlice<'e>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
     mask: u64,
     const_sum: u64,
 ) -> Result<(), SizeLimitReached> {
     heapsort::sort(ops);
-    simplify_add_merge_muls(ops, ctx, mask);
+    simplify_add_merge_muls(ops, sctx, mask);
+    let ctx = sctx.ctx;
     let new_consts = simplify_add_merge_masked_reverting(ops, ctx);
     let const_sum = const_sum.wrapping_add(new_consts);
     if ops.is_empty() {
@@ -6461,7 +6468,7 @@ pub fn simplify_or<'e>(
             let masked_ops = &mut MaskedOps::new(masked_ops);
             collect_masked_or_ops(ctx, left, masked_ops, 30, u64::MAX)?;
             collect_masked_or_ops(ctx, right, masked_ops, 30, u64::MAX)?;
-            simplify_masked_or_ops(masked_ops, ctx);
+            simplify_masked_or_ops(masked_ops, sctx);
             match masked_ops.slice.len() {
                 0 => return Ok(ctx.constant(masked_ops.constant)),
                 1 if masked_ops.constant == 0 => {
@@ -6568,15 +6575,15 @@ fn simplify_or_2op_no_overlap<'e>(
         return None;
     }
     let ctx = sctx.ctx;
-    if let Some(result) = try_merge_ands(l1, l2, c1, c2, ctx) {
+    if let Some(result) = try_merge_ands(l1, l2, c1, c2, sctx) {
         return Some(ctx.and_const(result, c1 | c2));
     }
     let result = simplify_xor_base_for_shifted(
+        sctx,
         l1,
         (0u8, c1),
         l2,
         (0u8, c2),
-        ctx,
         &mut 50,
     );
     if let Some(result) = result {
@@ -7281,7 +7288,6 @@ fn simplify_with_and_mask_inner<'e>(
                     if simplified_left == arith.left && simplified_right == arith.right {
                         op
                     } else {
-                        let ctx = sctx.ctx;
                         let result = if arith.ty != ArithOpType::Mul {
                             let is_sub = arith.ty == ArithOpType::Sub;
                             simplify_add_sub(
@@ -7289,10 +7295,10 @@ fn simplify_with_and_mask_inner<'e>(
                                 simplified_right,
                                 is_sub,
                                 orig_mask,
-                                ctx,
+                                sctx,
                             )
                         } else {
-                            simplify_mul(simplified_left, simplified_right, ctx)
+                            simplify_mul(simplified_left, simplified_right, sctx)
                         };
                         result
                     }
@@ -7380,7 +7386,7 @@ fn simplify_with_and_mask_add_sub_try_extract_inner_mask<'e>(
                 // (as it knows the mask) could be fine too, but it may end up being too slow?
                 let right =
                     simplify_with_and_mask(arith.right, mask_filled_to_right, sctx);
-                let new = simplify_add_sub(inner, right, is_sub, mask, sctx.ctx);
+                let new = simplify_add_sub(inner, right, is_sub, mask, sctx);
                 if c != mask {
                     let masked = simplify_and_const(new, c, sctx);
                     // Should this do simplify_with_and_mask again?
@@ -7406,7 +7412,7 @@ fn simplify_with_and_mask_add_sub_try_extract_inner_mask<'e>(
                     let mask_filled_to_right = ((c << 1) & !c).wrapping_sub(1);
                     let left =
                         simplify_with_and_mask(arith.left, mask_filled_to_right, sctx);
-                    let new = simplify_add_sub(left, inner, is_sub, mask, sctx.ctx);
+                    let new = simplify_add_sub(left, inner, is_sub, mask, sctx);
                     if c != mask {
                         let masked = simplify_and_const(new, c, sctx);
                         return Some(masked);
@@ -7647,7 +7653,7 @@ fn simplify_with_and_mask_mem_dont_apply_shift<'e>(
 /// Merges things like [2 * b, a, c, b, c] to [a, 3 * b, 2 * c]
 fn simplify_add_merge_muls<'e>(
     ops: &mut AddSlice<'e>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
     mask: u64,
 ) {
     fn count_equivalent_opers<'e>(ops: &[(Operand<'e>, bool)], equiv: Operand<'e>) -> Option<u64> {
@@ -7713,7 +7719,7 @@ fn simplify_add_merge_muls<'e>(
                 }
                 let negate = sum > 0x8000_0000_0000_0000;
                 let sum = if negate { (!sum).wrapping_add(1) } else { sum };
-                ops[pos].0 = simplify_mul(equiv, ctx.constant(sum), ctx);
+                ops[pos].0 = simplify_mul(equiv, sctx.ctx.constant(sum), sctx);
                 ops[pos].1 = negate;
                 pos += 1;
             }
@@ -7814,8 +7820,7 @@ fn simplify_masked_xor_ops<'e>(
     sctx: &mut SimplifyCtx<'e>,
 ) {
     if ops.slice.len() > 1 {
-        let ctx = sctx.ctx;
-        let any_changed = simplify_masked_xor_or_merge_same_ops(ops.slice, ctx, ArithOpType::Xor);
+        let any_changed = simplify_masked_xor_or_merge_same_ops(ops.slice, sctx, ArithOpType::Xor);
         if any_changed {
             if ops.slice.len() < 2 {
                 return;
@@ -7824,7 +7829,7 @@ fn simplify_masked_xor_ops<'e>(
             heapsort::sort_by(ops.slice, |a, b| a.0 < b.0);
         }
         simplify_masked_xor_merge_or(ops.slice, sctx);
-        simplify_masked_xor_or_and_to_xor(ops.slice, ctx);
+        simplify_masked_xor_or_and_to_xor(ops.slice, sctx.ctx);
     }
 }
 
@@ -7833,10 +7838,10 @@ fn simplify_masked_xor_ops<'e>(
 /// to it is sorted.
 fn simplify_masked_or_ops<'e>(
     ops: &mut MaskedOps<'_, 'e>,
-    ctx: OperandCtx<'e>,
+    sctx: &mut SimplifyCtx<'e>,
 ) {
     if ops.slice.len() > 1 {
-        simplify_masked_xor_or_merge_same_ops(ops.slice, ctx, ArithOpType::Or);
+        simplify_masked_xor_or_merge_same_ops(ops.slice, sctx, ArithOpType::Or);
     }
 }
 
@@ -8194,80 +8199,81 @@ fn test_simplify_xor_base_for_shifted() {
     let mem8_2 = ctx.mem32(ctx.register(0), 2);
     let mem8_3 = ctx.mem32(ctx.register(0), 3);
     let limit = &mut 500000;
+    let sctx = &mut SimplifyCtx::new(ctx);
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_2, (0x10, 0xff), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0, 0xffff), mem8_2, (0x10, 0xff), limit),
         // and_const wouldn't be exactly required by the function's contract
         // but is a valid return value.
         Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0xffffff)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_3, (0x18, 0x34), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0, 0xffff), mem8_3, (0x18, 0x34), limit),
         Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0x3400ffff)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem16, (0, 0xf_ffff), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0, 0xffff), mem16, (0, 0xf_ffff), limit),
         Some(ctx.mem16(ctx.register(0), 0)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0, 0xf_ffff), mem8_3, (0x18, 0x34), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0, 0xf_ffff), mem8_3, (0x18, 0x34), limit),
         Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0x3400_ffff)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0, 0xf_ffff), mem8_2, (0x10, 0x34), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0, 0xf_ffff), mem8_2, (0x10, 0x34), limit),
         // and_const not required but allowed
         Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0x34_ffff)),
     );
     // This must be none, as Mem16 with mask f_ffff requires the lower half of third byte be 0
     assert_eq!(
-        simplify_xor_base_for_shifted_rec(mem16, (0, 0xf_ffff), mem8_2, (0x10, 0x34), ctx, limit),
+        simplify_xor_base_for_shifted_rec(sctx, mem16, (0, 0xf_ffff), mem8_2, (0x10, 0x34), limit),
         None,
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_0, (0, 0xff), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0, 0xffff), mem8_0, (0, 0xff), limit),
         Some(ctx.mem16(ctx.register(0), 0)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_0, (0, 0xffff), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0, 0xffff), mem8_0, (0, 0xffff), limit),
         Some(ctx.mem16(ctx.register(0), 0)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted_rec(mem16, (0, 0xffff), mem8_0, (0, 0xffff), ctx, limit),
+        simplify_xor_base_for_shifted_rec(sctx, mem16, (0, 0xffff), mem8_0, (0, 0xffff), limit),
         None,
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0x10, 0xffff), mem8_0, (0x10, 0xff), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0x10, 0xffff), mem8_0, (0x10, 0xff), limit),
         Some(ctx.lsh_const(ctx.mem16(ctx.register(0), 0), 0x10)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0, 0xffff), mem8_0, (0, 0xf), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0, 0xffff), mem8_0, (0, 0xf), limit),
         Some(ctx.mem16(ctx.register(0), 0)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0x10, 0xffff), mem8_0, (0x10, 0xf), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0x10, 0xffff), mem8_0, (0x10, 0xf), limit),
         Some(ctx.lsh_const(ctx.mem16(ctx.register(0), 0), 0x10)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0, 0xfff), mem8_0, (0, 0xf), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0, 0xfff), mem8_0, (0, 0xf), limit),
         // and_const not required but allowed
         Some(ctx.and_const(ctx.mem32(ctx.register(0), 0), 0xfff)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0x10, 0xfff), mem8_0, (0x10, 0xf), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0x10, 0xfff), mem8_0, (0x10, 0xf), limit),
         // and_const not required but allowed
         Some(ctx.lsh_const(ctx.and_const(ctx.mem16(ctx.register(0), 0), 0xfff), 0x10)),
     );
     // Similar to above but shifts which aren't divisible by 8
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0x13, 0xffff), mem8_0, (0x13, 0xf), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0x13, 0xffff), mem8_0, (0x13, 0xf), limit),
         Some(ctx.lsh_const(ctx.mem16(ctx.register(0), 0), 0x13)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(mem16, (0x13, 0xfff), mem8_0, (0x13, 0xf), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, mem16, (0x13, 0xfff), mem8_0, (0x13, 0xf), limit),
         // and_const not required but allowed
         Some(ctx.lsh_const(ctx.and_const(ctx.mem16(ctx.register(0), 0), 0xfff), 0x13)),
     );
     assert_eq!(
-        simplify_xor_base_for_shifted(ctx.constant(0x33), (0, 0xfff), ctx.constant(0x56), (0, 0xffff), ctx, limit),
+        simplify_xor_base_for_shifted(sctx, ctx.constant(0x33), (0, 0xfff), ctx.constant(0x56), (0, 0xffff), limit),
         None,
     );
 }
