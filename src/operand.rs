@@ -1635,7 +1635,7 @@ impl<'e> OperandContext<'e> {
     /// Returns `Operand` for `left & right`.
     pub fn and_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let mut simplify = simplify::SimplifyCtx::new(self);
-        simplify::simplify_and_const(left, right, &mut simplify)
+        simplify.and_const(left, right)
     }
 
     /// Returns `Operand` for `left | right`.
@@ -1682,7 +1682,7 @@ impl<'e> OperandContext<'e> {
     /// Returns `Operand` for `left == right`.
     pub fn eq_const(&'e self, left: Operand<'e>, right: u64) -> Operand<'e> {
         let mut simplify = simplify::SimplifyCtx::new(self);
-        simplify::simplify_eq_const(left, right, &mut simplify)
+        simplify.eq_const(left, right)
     }
 
     /// Returns `Operand` for `left != right`.
