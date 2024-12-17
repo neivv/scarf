@@ -6900,22 +6900,42 @@ fn should_stop_with_and_mask(sctx: &mut SimplifyCtx<'_>) -> bool {
 /// in a way that preserves less significant bits affecting more significant bits, as well
 /// as preserving certain bits that have to be *zero* in order for the bit propagation
 /// possibilities to not change.
+#[inline]
 fn simplify_with_and_mask<'e>(
     op: Operand<'e>,
     mask: u64,
     sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
-    if mask == u64::MAX {
+    simplify_with_and_mask_full(op, mask, mask, sctx)
+}
+
+/// Adds may_zero_mask to simplify_with_and_mask.
+/// That is, while zero bits in `mask` represent bits that may be changed to any value,
+/// zero bits in `may_zero_mask` only allow changing the bit to 0.
+///
+/// E.g. for `op` `Mem16[x] & 8080`, `mask` 8080 allows replacing it with `Mem16[x]`, while
+/// `may_zero_mask` 8080 won't. `may_zero_mask` 80 will still allow replacing it with
+/// `Mem8[x] & 80`
+///
+/// `mask & may_zero_mask == may_zero_mask` should be true. (mask may have more bits set to 1 but
+/// not less)
+fn simplify_with_and_mask_full<'e>(
+    op: Operand<'e>,
+    mask: u64,
+    may_zero_mask: u64,
+    sctx: &mut SimplifyCtx<'e>,
+) -> Operand<'e> {
+    if may_zero_mask == u64::MAX {
         return op;
     }
     let relevant_mask = op.relevant_bits_mask();
-    if relevant_mask & mask == 0 {
+    if relevant_mask & may_zero_mask == 0 {
         return sctx.ctx.const_0();
     }
     if op.0.flags & super::FLAG_CAN_SIMPLIFY_WITH_AND_MASK == 0 {
         return op;
     }
-    if relevant_mask & mask == relevant_mask {
+    if relevant_mask & may_zero_mask == relevant_mask {
         if op.0.flags & super::FLAG_COULD_REMOVE_CONST_AND == 0 {
             return op;
         }
@@ -6924,15 +6944,17 @@ fn simplify_with_and_mask<'e>(
         return op;
     }
     sctx.with_and_mask_count += 1;
-    let new = simplify_with_and_mask_inner(op, mask, sctx);
+    let new = simplify_with_and_mask_inner(op, mask, may_zero_mask, sctx);
     new
 }
 
 fn simplify_with_and_mask_inner<'e>(
     op: Operand<'e>,
     mask: u64,
+    may_zero_mask: u64,
     sctx: &mut SimplifyCtx<'e>,
 ) -> Operand<'e> {
+    // TODO Probably should replace almost every use of mask with may_zero_mask
     match *op.ty() {
         OperandType::Arithmetic(ref arith) => {
             match arith.ty {
@@ -6991,12 +7013,17 @@ fn simplify_with_and_mask_inner<'e>(
                     }
                 }
                 ArithOpType::Or | ArithOpType::Xor => {
-                    simplify_with_and_mask_or_xor(op, arith, mask, sctx)
+                    simplify_with_and_mask_or_xor(op, mask, may_zero_mask, sctx, arith)
                 }
                 ArithOpType::Lsh => {
                     if let Some(c) = arith.right.if_constant() {
                         let c = c as u8;
-                        let left = simplify_with_and_mask(arith.left, mask >> c, sctx);
+                        let left = simplify_with_and_mask_full(
+                            arith.left,
+                            mask >> c,
+                            may_zero_mask >> c,
+                            sctx,
+                        );
                         if let Some(mem) = left.if_memory() {
                             // If byte-sized shift can be replaced with and mask by
                             // changing address, do that.
@@ -7042,7 +7069,12 @@ fn simplify_with_and_mask_inner<'e>(
                 ArithOpType::Rsh => {
                     if let Some(c) = arith.right.if_constant() {
                         let c = c as u8;
-                        let left = simplify_with_and_mask(arith.left, mask << c, sctx);
+                        let left = simplify_with_and_mask_full(
+                            arith.left,
+                            mask << c,
+                            may_zero_mask << c,
+                            sctx,
+                        );
                         if left == arith.left {
                             op
                         } else {
@@ -7061,9 +7093,11 @@ fn simplify_with_and_mask_inner<'e>(
                         return result;
                     }
                     let orig_mask = mask;
-                    let mut left_mask;
+                    let left_mask;
                     let right_mask;
                     let add_sub_max;
+                    let left_zero_mask;
+                    let right_zero_mask;
 
                     // The mask can be applied separately to left and right if
                     // any of the unmasked bits input don't affect masked bits in result.
@@ -7176,6 +7210,8 @@ fn simplify_with_and_mask_inner<'e>(
                             .reverse_bits();
                         left_mask = l_result | mask;
                         right_mask = r_result | mask;
+                        left_zero_mask = left_mask;
+                        right_zero_mask = right_mask;
                         if left_mask == u64::MAX && right_mask == u64::MAX {
                             return op;
                         }
@@ -7213,6 +7249,8 @@ fn simplify_with_and_mask_inner<'e>(
                         // but left can be simplified without filling with r_low_zero_mask
                         left_mask = (mask_filled_to_lowest & !r_low_zero_mask) | mask;
                         right_mask = mask_filled_to_lowest;
+                        left_zero_mask = left_mask;
+                        right_zero_mask = right_mask;
                         add_sub_max = mask_filled_to_lowest;
                     } else {
                         // Otherwise fill the mask to 000..111 having any bit after
@@ -7225,10 +7263,30 @@ fn simplify_with_and_mask_inner<'e>(
                         };
                         left_mask = mask;
                         right_mask = mask;
+                        // Allow zeroing bits that are above current relbit mask, that
+                        // can be helpful for simplification.
+                        let relbit_high = op.relevant_bits().end;
+                        let relbits_filled_to_lowest = if relbit_high >= 64 {
+                            u64::MAX
+                        } else {
+                            (1u64 << relbit_high).wrapping_sub(1)
+                        };
+                        let mask_bits_inside_relbits = orig_mask & relbits_filled_to_lowest;
+                        let mask_end_bit2 = 64 - mask_bits_inside_relbits.leading_zeros() as u8;
+                        let zero_mask = if mask_end_bit2 >= 64 {
+                            u64::MAX
+                        } else {
+                            (1u64 << mask_end_bit2).wrapping_sub(1)
+                        };
+                        left_zero_mask = zero_mask;
+                        right_zero_mask = zero_mask;
                         add_sub_max = mask;
                     }
                     // Normalize (x + c000) & ffff to (x - 4000) & ffff and similar.
                     let mut simplified_right = None;
+                    // These may be mutated below
+                    let mut left_mask = left_mask;
+                    let mut left_zero_mask = left_zero_mask;
                     if let Some(orig_c) = arith.right.if_constant() {
                         let ctx = sctx.ctx;
                         let c = orig_c & right_mask;
@@ -7279,6 +7337,7 @@ fn simplify_with_and_mask_inner<'e>(
                                 // High bits of left mask can be known to be useless
                                 // shift them out
                                 left_mask = left_mask >> shift;
+                                left_zero_mask = left_zero_mask >> shift;
                             }
                         }
                         if c != orig_c {
@@ -7289,13 +7348,14 @@ fn simplify_with_and_mask_inner<'e>(
                     }
 
                     let simplified_right = simplified_right.unwrap_or_else(|| {
-                        simplify_with_and_mask(arith.right, right_mask, sctx)
+                        simplify_with_and_mask_full(arith.right, right_mask, right_zero_mask, sctx)
                     });
 
                     if should_stop_with_and_mask(sctx) {
                         return op;
                     }
-                    let simplified_left = simplify_with_and_mask(arith.left, left_mask, sctx);
+                    let simplified_left =
+                        simplify_with_and_mask_full(arith.left, left_mask, left_zero_mask, sctx);
                     if should_stop_with_and_mask(sctx) {
                         return op;
                     }
@@ -7323,8 +7383,8 @@ fn simplify_with_and_mask_inner<'e>(
         OperandType::Memory(ref mem) => {
             simplify_with_and_mask_mem(op, mem, mask, sctx.ctx)
         }
-        OperandType::Constant(c) => if c & mask != c {
-            sctx.ctx.constant(c & mask)
+        OperandType::Constant(c) => if c & may_zero_mask != c {
+            sctx.ctx.constant(c & may_zero_mask)
         } else {
             op
         }
@@ -7337,8 +7397,8 @@ fn simplify_with_and_mask_inner<'e>(
             }
         }
         OperandType::Select(condition, if_true, if_false) => {
-            let new_if_true = simplify_with_and_mask(if_true, mask, sctx);
-            let new_if_false = simplify_with_and_mask(if_false, mask, sctx);
+            let new_if_true = simplify_with_and_mask_full(if_true, mask, may_zero_mask, sctx);
+            let new_if_false = simplify_with_and_mask_full(if_false, mask, may_zero_mask, sctx);
             if new_if_true != if_true || new_if_false != if_false {
                 // Condition doesn't change here so it doesn't have to be checked again.
                 let ctx = sctx.ctx;
@@ -7461,9 +7521,10 @@ fn simplify_with_and_mask_add_sub_try_extract_inner_mask<'e>(
 /// `op = OperandType::Arithmetic(arith)`.
 fn simplify_with_and_mask_or_xor<'e>(
     op: Operand<'e>,
-    arith: &ArithOperand<'e>,
     mask: u64,
+    may_zero_mask: u64,
     sctx: &mut SimplifyCtx<'e>,
+    arith: &ArithOperand<'e>,
 ) -> Operand<'e> {
     let arith_ty = arith.ty;
     // It can be pretty common to get (x | C) without x being another or
@@ -7477,10 +7538,10 @@ fn simplify_with_and_mask_or_xor<'e>(
                 mask
             };
             let left = simplify_with_and_mask(arith.left, left_mask, sctx);
-            let right = if mask & c == c {
+            let right = if may_zero_mask & c == c {
                 arith.right
             } else {
-                sctx.ctx.constant(mask & c)
+                sctx.ctx.constant(may_zero_mask & c)
             };
             if (left == arith.left && right == arith.right) ||
                 should_stop_with_and_mask(sctx)
@@ -8506,4 +8567,42 @@ fn simplify_with_and_mask_add_const_with_holes() {
     let s1 = simplify_with_and_mask(op1, 0x1_0763_c700, &mut SimplifyCtx::new(ctx));
     let s2 = simplify_with_and_mask(s1, 0x1_0763_c700, &mut SimplifyCtx::new(ctx));
     assert_eq!(s1, s2);
+}
+
+#[test]
+fn simplify_with_and_mask_useless_high_bit() {
+    let ctx = &super::OperandContext::new();
+
+    let op1 = ctx.mul_const(
+        ctx.or_const(
+            ctx.mem16(ctx.register(0), 0),
+            0x35_0005,
+        ),
+        0x500,
+    );
+    let s1 = simplify_with_and_mask(op1, 0x2000_0000_0500_0000, &mut SimplifyCtx::new(ctx));
+    let s2 = simplify_with_and_mask(op1, 0x0500_0000, &mut SimplifyCtx::new(ctx));
+    assert_eq!(s1, s2);
+
+    // Check that known-0 bits don't become maybe-1 bits here
+    let op1 = ctx.mul_const(
+        ctx.or_const(
+            ctx.and_const(
+                ctx.register(0),
+                0x7ff_ffff,
+            ),
+            0x35_0005,
+        ),
+        0x5,
+    );
+    let op2 = ctx.mul_const(
+        ctx.or_const(
+            ctx.register(0),
+            0x35_0005,
+        ),
+        0x5,
+    );
+    let s1 = simplify_with_and_mask(op1, 0x2000_0000_0500_0000, &mut SimplifyCtx::new(ctx));
+    let s2 = simplify_with_and_mask(op2, 0x2000_0000_0500_0000, &mut SimplifyCtx::new(ctx));
+    assert_ne!(s1, s2);
 }
