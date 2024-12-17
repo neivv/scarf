@@ -7794,7 +7794,11 @@ fn simplify_add_merge_muls<'e>(
                 }
                 let negate = sum > 0x8000_0000_0000_0000;
                 let sum = if negate { (!sum).wrapping_add(1) } else { sum };
-                ops[pos].0 = simplify_mul(equiv, sctx.ctx.constant(sum), sctx);
+                let mul = simplify_mul(equiv, sctx.ctx.constant(sum), sctx);
+                // Doing simplify_with_and_mask is maybe not the best choice
+                // and it may be better to do later with more exact mask?
+                // But this is better than nothing.
+                ops[pos].0 = simplify_with_and_mask(mul, mask, sctx);
                 ops[pos].1 = negate;
                 pos += 1;
             }
@@ -8605,4 +8609,56 @@ fn simplify_with_and_mask_useless_high_bit() {
     let s1 = simplify_with_and_mask(op1, 0x2000_0000_0500_0000, &mut SimplifyCtx::new(ctx));
     let s2 = simplify_with_and_mask(op2, 0x2000_0000_0500_0000, &mut SimplifyCtx::new(ctx));
     assert_ne!(s1, s2);
+}
+
+#[test]
+fn simplify_with_and_mask_add_to_mul_mask() {
+    let ctx = &super::OperandContext::new();
+
+    let op1 = ctx.add(
+        ctx.and_const(
+            ctx.add(
+                ctx.register(1),
+                ctx.and_const(
+                    ctx.register(2),
+                    0xff00,
+                ),
+            ),
+            0xffff,
+        ),
+        ctx.and_const(
+            ctx.register(2),
+            0xff00,
+        ),
+    );
+    let op2 = ctx.add(
+        ctx.add(
+            ctx.register(1),
+            ctx.and_const(
+                ctx.register(2),
+                0xff00,
+            ),
+        ),
+        ctx.and_const(
+            ctx.register(2),
+            0xff00,
+        ),
+    );
+    let op3 = ctx.add(
+        ctx.add(
+            ctx.register(1),
+            ctx.and_const(
+                ctx.register(2),
+                0x7f00,
+            ),
+        ),
+        ctx.and_const(
+            ctx.register(2),
+            0x7f00,
+        ),
+    );
+    let s1 = simplify_with_and_mask(op1, 0xffff, &mut SimplifyCtx::new(ctx));
+    let s2 = simplify_with_and_mask(op2, 0xffff, &mut SimplifyCtx::new(ctx));
+    assert_eq!(s2, op3);
+    assert_eq!(s1, op3);
 }
