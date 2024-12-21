@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use copyless::BoxHelper;
 use fxhash::FxHasher;
-use hashbrown::hash_map::{HashMap, RawEntryMut};
+use hashbrown::hash_map::{HashMap, EntryRef};
 use typed_arena::Arena;
 
 use super::{ArithOperand, MemAccess, Operand, OperandHashByAddress, OperandType, OperandBase};
@@ -44,24 +44,20 @@ impl<'e> Interner<'e> {
         }
     }
 
-    pub fn intern(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+    pub fn intern(&'e self, ty: &OperandType<'e>) -> Operand<'e> {
         let hash = operand_type_hash(&ty);
         let mut map = self.interned_operands.borrow_mut();
-        let raw_entry = map.raw_entry_mut();
-        let entry = raw_entry.from_hash(hash as u64, |x| unsafe {
-            let op = x.transmute_operand_lifetime();
-            x.hash == hash && *op.ty() == ty
-        });
+        let key = &InternHashOperandRef {
+            hash,
+            ty: &ty,
+            interner: self,
+        };
+        let entry = map.entry_ref(key);
         unsafe {
             match entry {
-                RawEntryMut::Occupied(e) => e.key().transmute_operand_lifetime(),
-                RawEntryMut::Vacant(e) => {
-                    let operand: Operand<'static> = mem::transmute(self.add_operand(ty));
-                    e.insert(InternHashOperand {
-                        hash,
-                        operand,
-                    }, ());
-                    mem::transmute::<Operand<'static>, Operand<'e>>(operand)
+                EntryRef::Occupied(e) => e.key().transmute_operand_lifetime(),
+                EntryRef::Vacant(e) => {
+                    e.insert_entry(()).key().transmute_operand_lifetime()
                 }
             }
         }
@@ -69,7 +65,7 @@ impl<'e> Interner<'e> {
 
     /// Adds an Operand to the arena that the caller intends to *never* pass to intern()
     /// (Or it would intern a separate copy of it)
-    pub fn add_uninterned(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+    pub fn add_uninterned(&'e self, ty: &OperandType<'e>) -> Operand<'e> {
         self.add_operand(ty)
     }
 
@@ -77,14 +73,14 @@ impl<'e> Interner<'e> {
         self.interned_operands.borrow().len()
     }
 
-    fn add_operand(&'e self, ty: OperandType<'e>) -> Operand<'e> {
+    fn add_operand(&'e self, ty: &OperandType<'e>) -> Operand<'e> {
         let relevant_bits = ty.calculate_relevant_bits();
         debug_assert!(relevant_bits.start != relevant_bits.end, "Operand should be zero {:?}", ty);
         let relevant_bits_mask = relevant_bits_mask(relevant_bits.clone());
         let flags = ty.flags(relevant_bits.clone());
         let sort_order = ty.sort_order();
         let base = OperandBase {
-            ty,
+            ty: *ty,
             type_alt_tag: ty.alt_tag(),
             relevant_bits,
             flags,
@@ -260,6 +256,7 @@ fn operand_type_hash(ty: &OperandType<'_>) -> usize {
 }
 
 // Precalculates its hash and uses it to keep rehashing cache friendly.
+#[derive(Eq)]
 struct InternHashOperand {
     // Using usize hash and extending that to 64-bit can be problematic
     // if the hash table implementation assumes that all bits of the
@@ -269,13 +266,54 @@ struct InternHashOperand {
     operand: Operand<'static>,
 }
 
+impl PartialEq for InternHashOperand {
+    fn eq(&self, other: &Self) -> bool {
+        // This function is only implemented since hashbrown required Eq to call entry_ref, pretty
+        // sure if this is called there was some unexpected code path.
+        debug_assert!(false, "Should not be called");
+        self.operand == other.operand
+    }
+}
+
 impl InternHashOperand {
     unsafe fn transmute_operand_lifetime<'e>(&self) -> Operand<'e> {
         mem::transmute::<Operand<'static>, Operand<'e>>(self.operand)
     }
 }
 
+struct InternHashOperandRef<'a, 'e> {
+    hash: usize,
+    ty: &'a OperandType<'e>,
+    interner: &'e Interner<'e>,
+}
+
+impl<'a, 'b, 'e> From<&'b InternHashOperandRef<'a, 'e>> for InternHashOperand {
+    fn from(value: &'b InternHashOperandRef<'a, 'e>) -> Self {
+        let op = value.interner.add_operand(value.ty);
+        let op = unsafe { mem::transmute::<Operand<'e>, Operand<'static>>(op) };
+        Self {
+            hash: value.hash,
+            operand: op,
+        }
+    }
+}
+
+impl<'a, 'e> hashbrown::Equivalent<InternHashOperand> for InternHashOperandRef<'a, 'e> {
+    fn equivalent(&self, key: &InternHashOperand) -> bool {
+        unsafe {
+            let op = key.transmute_operand_lifetime();
+            key.hash == self.hash && *op.ty() == *self.ty
+        }
+    }
+}
+
 impl Hash for InternHashOperand {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self.hash as u64).hash(state)
+    }
+}
+
+impl<'a, 'e> Hash for InternHashOperandRef<'a, 'e> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (self.hash as u64).hash(state)
     }

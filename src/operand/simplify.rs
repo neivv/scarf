@@ -334,7 +334,7 @@ pub fn simplify_float_arith<'e>(
         left,
         right,
     }, size);
-    ctx.intern(ty)
+    ctx.intern(&ty)
 }
 
 pub fn simplify_sign_extend<'e>(
@@ -414,7 +414,7 @@ pub fn simplify_sign_extend<'e>(
             }
         }
         let ty = OperandType::SignExtend(val, from, to);
-        ctx.intern(ty)
+        ctx.intern(&ty)
     }
 }
 
