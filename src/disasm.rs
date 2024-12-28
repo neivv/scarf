@@ -4469,6 +4469,19 @@ pub struct SpecialBytes {
     length: u8,
 }
 
+impl SpecialBytes {
+    /// Creates new SpecialBytes from a byte slice at most 8 bytes long.
+    /// If the slice is longer than 8 bytes, this function will panic.
+    pub fn new(bytes: &[u8]) -> SpecialBytes {
+        assert!(bytes.len() <= 8);
+        let mut data = [0u8; 8];
+        for i in 0..bytes.len() {
+            data[i] = bytes[i];
+        }
+        SpecialBytes { data, length: bytes.len() as u8 }
+    }
+}
+
 impl std::ops::Deref for SpecialBytes {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
