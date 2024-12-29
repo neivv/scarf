@@ -4123,19 +4123,27 @@ fn simplify_and_remove_unnecessary_ors_xors<'e>(
         parts_had_and_with_xor_const: &mut Option<bool>,
     ) -> Option<RemoveResult<'e>> {
         // Check (x ^ C) & ((x & z) | y) => (x ^ C) & y
-        if let Some(op2_inner) = if_xor_const_all_relbits(op2) {
+        // If C doesn't cover every bit of x, but none of the remaining bits are in z,
+        // (x & z) can still be removed.
+        // (In general it would become (x & !C & z) but that is probably not worth transforming.
+        if let Some((op2_inner, xor_const)) = op2.if_xor_with_const() {
+            let non_xored_mask = op2_inner.relevant_bits_mask() & !xor_const;
             if let Some(pos) = parts.iter().position(|&part| {
                 IterArithOps::new(part, ArithOpType::And)
                     .any(|part| part == op2_inner)
             }) {
-                let rest = util::sorted_arith_chain_remove_one_and_join(
-                    ctx,
-                    parts,
-                    pos,
-                    op,
-                    ArithOpType::Or,
-                );
-                return Some(RemoveResult::ReplaceOp(rest));
+                let part = parts[pos];
+                let can_remove = non_xored_mask & part.relevant_bits_mask() == 0;
+                if can_remove {
+                    let rest = util::sorted_arith_chain_remove_one_and_join(
+                        ctx,
+                        parts,
+                        pos,
+                        op,
+                        ArithOpType::Or,
+                    );
+                    return Some(RemoveResult::ReplaceOp(rest));
+                }
             }
         } else {
             // Variant where inner value is (x ^ C)
@@ -4145,23 +4153,34 @@ fn simplify_and_remove_unnecessary_ors_xors<'e>(
                 .get_or_insert_with(|| {
                     parts.iter().any(|&part| {
                         IterArithOps::new(part, ArithOpType::And)
-                            .any(|x| if_xor_const_all_relbits(x).is_some())
+                            .any(|x| x.if_xor_with_const().is_some())
                     })
                 });
             if any_xor_const {
-                if let Some(pos) = parts.iter().position(|&part| {
-                    IterArithOps::new(part, ArithOpType::And)
-                        .filter_map(|x| if_xor_const_all_relbits(x))
-                        .any(|part| part == op2)
-                }) {
-                    let rest = util::sorted_arith_chain_remove_one_and_join(
-                        ctx,
-                        parts,
-                        pos,
-                        op,
-                        ArithOpType::Or,
-                    );
-                    return Some(RemoveResult::ReplaceOp(rest));
+                let part_with_xor_const = parts.iter().enumerate().find_map(|(pos, &part)| {
+                    if let Some((_, xor_const)) = IterArithOps::new(part, ArithOpType::And)
+                        .filter_map(|x| x.if_xor_with_const())
+                        .find(|x| x.0 == op2)
+                    {
+                        Some((pos, xor_const))
+                    } else {
+                        None
+                    }
+                });
+                if let Some((pos, xor_const)) = part_with_xor_const {
+                    let part = parts[pos];
+                    let non_xored_mask = op2.relevant_bits_mask() & !xor_const;
+                    let can_remove = part.relevant_bits_mask() & non_xored_mask == 0;
+                    if can_remove {
+                        let rest = util::sorted_arith_chain_remove_one_and_join(
+                            ctx,
+                            parts,
+                            pos,
+                            op,
+                            ArithOpType::Or,
+                        );
+                        return Some(RemoveResult::ReplaceOp(rest));
+                    }
                 }
             }
         }
@@ -4264,17 +4283,6 @@ fn simplify_and_remove_unnecessary_ors_xors<'e>(
         pos += 1;
     }
     false
-}
-
-/// Returns x for x ^ C where C toggles all relevant bits of X
-fn if_xor_const_all_relbits<'e>(op: Operand<'e>) -> Option<Operand<'e>> {
-    let (l, r) = op.if_xor_with_const()?;
-    let relbits = l.relevant_bits_mask();
-    if r & relbits == relbits {
-        Some(l)
-    } else {
-        None
-    }
 }
 
 /// Merges (x | c1) & (x | c2) to (x | (c1 & c2))
