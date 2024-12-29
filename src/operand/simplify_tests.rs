@@ -12498,3 +12498,53 @@ fn masked_and_add_to_mul() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn and_or_with_reverting_variable_mask() {
+    let ctx = &OperandContext::new();
+    // (x ^ ffff_ffff) & ((x & y) | z)
+    // where x doesn't have high bits set can be simplified to
+    // (x ^ ffff_ffff) & z
+    let x = ctx.mem32(ctx.register(1), 0);
+    let y = ctx.register(5);
+    let z = ctx.register(3);
+    let op1 = ctx.and(
+        ctx.xor_const(x, 0xffff_ffff),
+        ctx.or(
+            ctx.and(x, y),
+            z,
+        ),
+    );
+    let eq1 = ctx.and(
+        ctx.xor_const(x, 0xffff_ffff),
+        z,
+    );
+    assert_eq!(op1, eq1);
+    // x ^ ffff_ffff inside
+    let x = ctx.xor_const(x, 0xffff_ffff);
+    let op1 = ctx.and(
+        ctx.xor_const(x, 0xffff_ffff),
+        ctx.or(
+            ctx.and(x, y),
+            z,
+        ),
+    );
+    let eq1 = ctx.and(
+        ctx.xor_const(x, 0xffff_ffff),
+        z,
+    );
+    assert_eq!(op1, eq1);
+}
+
+#[test]
+fn and_with_reverting_variable_mask() {
+    let ctx = &OperandContext::new();
+    // (x ^ ffff_ffff) & x == 0
+    let x = ctx.mem32(ctx.register(1), 0);
+    let op1 = ctx.and(
+        ctx.xor_const(x, 0xffff_ffff),
+        x,
+    );
+    let eq1 = ctx.const_0();
+    assert_eq!(op1, eq1);
+}

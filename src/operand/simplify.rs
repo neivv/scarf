@@ -4092,8 +4092,11 @@ fn canonicalize_1op_and_with_mask<'e>(
     }
 }
 
-/// Transform (x | y | ...) & x => x
-/// and (x ^ y ^ ...) & x => (u64::MAX ^ y ^ ..) & x.
+/// Transform (x | y | ...) & x => x,
+/// (x ^ y ^ ...) & x => (u64::MAX ^ y ^ ..) & x, and
+/// ((x & z) | y | ...) & (x ^ C) => (y | ...) & (x ^ C),
+///     when C toggles at least every relevant bit of x
+///     Variant: (((x ^ C) & z) | y | ...) & x => (y | ...) & x
 /// Simplifying (x | y | (c1 | c2)) & c2 => c2
 /// here would make sense, as it's based on the same transformation,
 /// but it is done at simplify_with_and_mask since that is called
@@ -4111,6 +4114,60 @@ fn simplify_and_remove_unnecessary_ors_xors<'e>(
         // For xor
         ReplaceOp(Operand<'e>),
     }
+
+    fn check_xor_const_simplify<'e>(
+        ctx: OperandCtx<'e>,
+        parts: &Slice<'e>,
+        op: Operand<'e>,
+        op2: Operand<'e>,
+        parts_had_and_with_xor_const: &mut Option<bool>,
+    ) -> Option<RemoveResult<'e>> {
+        // Check (x ^ C) & ((x & z) | y) => (x ^ C) & y
+        if let Some(op2_inner) = if_xor_const_all_relbits(op2) {
+            if let Some(pos) = parts.iter().position(|&part| {
+                IterArithOps::new(part, ArithOpType::And)
+                    .any(|part| part == op2_inner)
+            }) {
+                let rest = util::sorted_arith_chain_remove_one_and_join(
+                    ctx,
+                    parts,
+                    pos,
+                    op,
+                    ArithOpType::Or,
+                );
+                return Some(RemoveResult::ReplaceOp(rest));
+            }
+        } else {
+            // Variant where inner value is (x ^ C)
+            // Cache knowledge of nothing in `parts` having (x ^ C)
+            // to save some time.
+            let any_xor_const = *parts_had_and_with_xor_const
+                .get_or_insert_with(|| {
+                    parts.iter().any(|&part| {
+                        IterArithOps::new(part, ArithOpType::And)
+                            .any(|x| if_xor_const_all_relbits(x).is_some())
+                    })
+                });
+            if any_xor_const {
+                if let Some(pos) = parts.iter().position(|&part| {
+                    IterArithOps::new(part, ArithOpType::And)
+                        .filter_map(|x| if_xor_const_all_relbits(x))
+                        .any(|part| part == op2)
+                }) {
+                    let rest = util::sorted_arith_chain_remove_one_and_join(
+                        ctx,
+                        parts,
+                        pos,
+                        op,
+                        ArithOpType::Or,
+                    );
+                    return Some(RemoveResult::ReplaceOp(rest));
+                }
+            }
+        }
+        None
+    }
+
     let mut limit = 50u32;
     let mut pos = 0;
     while pos < ops.len() && limit != 0 {
@@ -4119,6 +4176,7 @@ fn simplify_and_remove_unnecessary_ors_xors<'e>(
             if matches!(arith.ty, ArithOpType::Or | ArithOpType::Xor) {
                 let remove_result =
                     util::arith_parts_to_new_slice(ctx, arith.left, arith.right, arith.ty, |parts| {
+                        let mut parts_had_and_with_xor_const = None;
                         for j in 0..ops.len() {
                             if j == pos {
                                 continue;
@@ -4169,6 +4227,17 @@ fn simplify_and_remove_unnecessary_ors_xors<'e>(
                                         return Some(RemoveResult::ReplaceOp(rest_not));
                                     }
                                 }
+                                if arith.ty == ArithOpType::Or {
+                                    if let Some(result) = check_xor_const_simplify(
+                                        ctx,
+                                        parts,
+                                        op,
+                                        op2,
+                                        &mut parts_had_and_with_xor_const,
+                                    ) {
+                                        return Some(result);
+                                    }
+                                }
                             }
                             limit = limit.checked_sub(parts.len() as u32)?;
                         }
@@ -4195,6 +4264,17 @@ fn simplify_and_remove_unnecessary_ors_xors<'e>(
         pos += 1;
     }
     false
+}
+
+/// Returns x for x ^ C where C toggles all relevant bits of X
+fn if_xor_const_all_relbits<'e>(op: Operand<'e>) -> Option<Operand<'e>> {
+    let (l, r) = op.if_xor_with_const()?;
+    let relbits = l.relevant_bits_mask();
+    if r & relbits == relbits {
+        Some(l)
+    } else {
+        None
+    }
 }
 
 /// Merges (x | c1) & (x | c2) to (x | (c1 & c2))
