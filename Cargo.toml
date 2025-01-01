@@ -10,6 +10,7 @@ debug = true
 [dependencies]
 arrayvec = "0.7"
 array-init = "2.0"
+bumpalo = { version = "3.16", features = ["collections"], optional = true }
 byteorder = { version = "1.4", default-features = false }
 copyless = "0.1"
 fxhash = "0.2"
@@ -26,3 +27,4 @@ serde_json = "1.0.91"
 
 [features]
 fuzz = []
+tools = ["bumpalo"]

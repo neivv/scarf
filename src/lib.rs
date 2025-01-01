@@ -76,6 +76,9 @@ mod light_byteorder;
 pub mod operand;
 mod u64_hash;
 
+#[cfg(feature = "tools")]
+pub mod tools;
+
 pub use crate::analysis::{Analyzer, FuncAnalysis};
 pub use crate::disasm::{
     DestOperand, DestArchId, Instruction, Operation, FlagArith, FlagUpdate, operation_helpers,
