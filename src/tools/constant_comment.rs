@@ -26,6 +26,7 @@ impl ArchDef for () {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct ArchX86;
 
 impl ArchDef for ArchX86 {
@@ -52,6 +53,7 @@ impl ArchX86 {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
 pub enum ConstantComment {
     /// Instruction resolves to a constant
     Value(u64),

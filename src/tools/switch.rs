@@ -102,6 +102,7 @@ fn extract_switch_parts<'e, Va: VirtualAddress>(
     })
 }
 
+#[derive(Clone, Debug)]
 pub struct SwitchInfo<'e, Va: VirtualAddress> {
     /// The variable which is being switched on.
     pub main_index: Operand<'e>,
