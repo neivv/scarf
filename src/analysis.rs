@@ -1879,8 +1879,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         let no_jump_addr = address + instruction_len;
         if let Some(rva) = binary.try_rva_32(no_jump_addr) {
             let to = state.0.resolve(to);
-            let (jump, no_jump) =
-                exec_state::assume_jump_flag(state.0, condition, condition_resolved);
+            let (jump, no_jump) = state.0.assume_jump_flag(condition, condition_resolved);
             let jump_state = (jump, state.1.clone());
             let no_jump_state = (no_jump, state.1);
             analysis.add_unchecked_branch(Rva(rva), no_jump_state);

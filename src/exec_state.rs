@@ -231,6 +231,27 @@ pub trait ExecutionState<'e> : Clone + 'e {
     fn add_unresolved_constraint(&mut self, constraint: Constraint<'e>);
     fn add_resolved_constraint_from_unresolved(&mut self);
 
+    /// Called on conditional jumps, splitting the state to two states which will
+    /// be used for branch that follows the jump, and for branch that doesn't.
+    ///
+    /// Simplest implementation can just clone the state, but this defaults to calling
+    /// `scarf::exec_state::assume_jump_flag` too, as that moves constants to flag registers
+    /// as well as updates constraints.
+    ///
+    /// Caller makes sure that `condition_resolved` == `state.resolve(condition)`
+    /// (Or resolve_apply_constraints).
+    ///
+    /// Returns states in `(jump, no_jump)` order.
+    fn assume_jump_flag(
+        mut self,
+        condition: Operand<'e>,
+        condition_resolved: Operand<'e>,
+    ) -> (Self, Self) {
+        let mut no_jump_state = self.clone();
+        assume_jump_flag(&mut self, &mut no_jump_state, condition, condition_resolved);
+        (self, no_jump_state)
+    }
+
     /// Returns smallest and largest (inclusive) value a *resolved* `Operand` can have.
     ///
     /// This usually just returns (0, u64::MAX), but the state may be able to give
@@ -500,22 +521,21 @@ where R: FnMut(Operand<'e>) -> Operand<'e>,
     (resolve(base), 0)
 }
 
-/// Splits state in two, updating the one state with condition assumed be false
-/// on jump, and the other state with condition assumed be true on jump.
+/// Updates the two states for conditional jump to have state based on whether jump is taken
+/// or not.
 ///
 /// Caller must make sure that `condition_resolved` == `state.resolve(condition)`
 /// (Or resolve_apply_constraints).
 ///
-/// Returns states in `(jump, no_jump)` order.
-pub(crate) fn assume_jump_flag<'e, E>(
-    state: E,
+/// Maybe does bit too much x86-specific treatment?
+pub fn assume_jump_flag<'e, E>(
+    jump_state: &mut E,
+    no_jump_state: &mut E,
     condition: Operand<'e>,
     condition_resolved: Operand<'e>,
-) -> (E, E)
+)
 where E: ExecutionState<'e>,
 {
-    let mut no_jump_state = state.clone();
-    let mut jump_state = state;
     let ty = condition.ty();
     if let OperandType::Arithmetic(arith) = ty {
         if matches!(
@@ -553,7 +573,6 @@ where E: ExecutionState<'e>,
         jump_state.set_flag(flag, ctx.const_1());
         no_jump_state.set_flag(flag, ctx.const_0());
     }
-    (jump_state, no_jump_state)
 }
 
 /// Either `scarf::VirtualAddress` in 32-bit or `scarf::VirtualAddress64` in 64-bit
@@ -1489,7 +1508,7 @@ fn sign_extend(value: u64, from: MemAccessSize, to: MemAccessSize) -> u64 {
 }
 
 /// Helper for ExecutionState::value_limits implementations with constraints
-pub(crate) fn value_limits<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64, u64) {
+pub fn value_limits<'e>(constraint: Operand<'e>, value: Operand<'e>) -> (u64, u64) {
     let result = value_limits_recurse(constraint, value);
     let relbits = value.relevant_bits();
     // min possible value from relbits is 0, would need known-1-bits function instead.
