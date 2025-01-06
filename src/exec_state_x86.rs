@@ -455,11 +455,6 @@ impl<'e> State<'e> {
             }
             Operation::Call(_) => {
                 self.unresolved_constraint = None;
-                if let Some(ref mut c) = self.resolved_constraint {
-                    if c.invalidate_memory(ctx) == crate::exec_state::ConstraintFullyInvalid::Yes {
-                        self.resolved_constraint = None
-                    }
-                }
                 self.memory_constraint = None;
                 static UNDEF_REGISTERS: &[u8] = &[0, 1, 2, 4];
                 for &i in UNDEF_REGISTERS.iter() {
@@ -1076,11 +1071,6 @@ impl<'e> State<'e> {
             None => None,
         };
         if let DestOperand::Memory(_) = dest {
-            if let Some(ref mut s) = self.resolved_constraint {
-                if s.invalidate_memory(ctx) == crate::exec_state::ConstraintFullyInvalid::Yes {
-                    self.resolved_constraint = None;
-                }
-            }
             self.memory_constraint = None;
         }
         self.move_to_dest(dest, value, false)

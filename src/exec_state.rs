@@ -1121,18 +1121,6 @@ impl<'e> Constraint<'e> {
         Constraint(o)
     }
 
-    /// Invalidates any assumptions about memory
-    pub(crate) fn invalidate_memory(&mut self, ctx: OperandCtx<'e>) -> ConstraintFullyInvalid {
-        let result = remove_matching_ands_memory(ctx, self.0);
-        match result {
-            Some(s) => {
-                self.0 = s;
-                ConstraintFullyInvalid::No
-            }
-            None => ConstraintFullyInvalid::Yes,
-        }
-    }
-
     /// Invalidates any parts of the constraint that depend on unresolved dest.
     pub(crate) fn x86_invalidate_dest_operand(
         self,
@@ -1165,13 +1153,6 @@ impl<'e> Constraint<'e> {
     pub(crate) fn apply_to(self, ctx: OperandCtx<'e>, oper: Operand<'e>) -> Operand<'e> {
         apply_constraint_split(ctx, self.0, oper, true)
     }
-}
-
-#[derive(Eq, PartialEq, Copy, Clone)]
-#[must_use]
-pub enum ConstraintFullyInvalid {
-    Yes,
-    No,
 }
 
 /// Constraint invalidation helper
