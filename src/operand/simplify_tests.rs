@@ -12588,3 +12588,34 @@ fn and_or_with_reverting_variable_mask2() {
     );
     assert_eq!(op1, eq1);
 }
+
+#[test]
+fn gt_high_constant() {
+    let ctx = &OperandContext::new();
+    // 9 > (x + 9)
+    // is true for x = -1 ..= -9
+    // So x > ffff...fff6
+    let x = ctx.register(1);
+    let op1 = ctx.gt(
+        ctx.constant(9),
+        ctx.add_const(x, 9),
+    );
+    let eq1 = ctx.gt(
+        x,
+        ctx.constant(0xffff_ffff_ffff_fff6),
+    );
+    assert_eq!(op1, eq1);
+
+    // Similarly 9 > ((x + 9) & ffff_ffff)
+    // is true for (x & ffff_ffff) = -1 ..= -9
+    // So x & ffff_ffff > ffff_fff6
+    let op1 = ctx.gt(
+        ctx.constant(9),
+        ctx.and_const(ctx.add_const(x, 9), 0xffff_ffff),
+    );
+    let eq1 = ctx.gt(
+        ctx.and_const(x, 0xffff_ffff),
+        ctx.constant(0xffff_fff6),
+    );
+    assert_eq!(op1, eq1);
+}

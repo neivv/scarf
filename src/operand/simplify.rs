@@ -73,6 +73,11 @@ impl<'e> SimplifyCtx<'e> {
     pub(super) fn constant(&self, value: u64) -> Operand<'e> {
         self.ctx.constant(value)
     }
+
+    pub(super) fn neq_const(&mut self, left: Operand<'e>, right: u64) -> Operand<'e> {
+        let eq = self.eq_const(left, right);
+        self.eq_const(eq, 0)
+    }
 }
 
 pub fn simplify_arith<'e>(
@@ -8085,35 +8090,66 @@ pub fn simplify_gt<'e>(
             if let Some((inner, from, to)) = right.if_sign_extend() {
                 return simplify_gt_sext_const(ctx, c, inner, from, to, true);
             }
-            if let Some((l, r)) = right.if_arithmetic_sub() {
-                if let Some(c2) = r.if_constant() {
-                    if let Some((inner, from, to)) = l.if_sign_extend() {
-                        let low = c2;
-                        let high = c2.wrapping_add(c);
-                        // Not sure if this would also work when low > high,
-                        // but not doing that now.
-                        if high > low {
-                            return simplify_gt_sext_range(ctx, low, high, inner, from, to);
-                        }
+            if let Some((l, c2)) = right.if_sub_with_const() {
+                if let Some((inner, from, to)) = l.if_sign_extend() {
+                    let low = c2;
+                    let high = c2.wrapping_add(c);
+                    // Not sure if this would also work when low > high,
+                    // but not doing that now.
+                    if high > low {
+                        return simplify_gt_sext_range(ctx, low, high, inner, from, to);
                     }
+                }
+            }
+            // C > x + C is true for -1 ..= -C values
+            // So `x > u64::MAX - C`
+            // Also `C > (x + C) & ff` to `x & ff > ff - C`
+            let (right_inner, mask) = {
+                let (inner, mask) = Operand::and_masked(right);
+                if mask.wrapping_add(1) & mask != 0 {
+                    (right, u64::MAX)
+                } else {
+                    (inner, mask)
+                }
+            };
+            if let Some((l, c2)) = right_inner.if_add_with_const() {
+                if c == c2 {
+                    let l = match mask == u64::MAX {
+                        true => l,
+                        false => sctx.and_const(l, mask),
+                    };
+                    return simplify_gt_const_right(l, None, mask - c2, sctx);
                 }
             }
         }
         (None, Some(c)) => {
-            // x > 0 if x != 0
-            if c == 0 {
-                return ctx.neq(left, right);
-            }
-            let relbit_mask = left.relevant_bits_mask();
-            if c >= relbit_mask {
-                return ctx.const_0();
-            }
-            if let Some((inner, from, to)) = left.if_sign_extend() {
-                return simplify_gt_sext_const(ctx, c, inner, from, to, false);
-            }
+            return simplify_gt_const_right(left, Some(right), c, sctx);
         }
         _ => (),
     }
+    ctx.intern_arith(left, right, ArithOpType::GreaterThan)
+}
+
+/// Expecting `right.if_constant() == Some(c)` if right is set
+fn simplify_gt_const_right<'e>(
+    left: Operand<'e>,
+    right: Option<Operand<'e>>,
+    c: u64,
+    sctx: &mut SimplifyCtx<'e>,
+) -> Operand<'e> {
+    // x > 0 => x != 0 => (x == 0) == 0
+    if c == 0 {
+        return sctx.neq_const(left, 0);
+    }
+    let ctx = sctx.ctx;
+    let relbit_mask = left.relevant_bits_mask();
+    if c >= relbit_mask {
+        return ctx.const_0();
+    }
+    if let Some((inner, from, to)) = left.if_sign_extend() {
+        return simplify_gt_sext_const(ctx, c, inner, from, to, false);
+    }
+    let right = right.unwrap_or_else(|| ctx.constant(c));
     ctx.intern_arith(left, right, ArithOpType::GreaterThan)
 }
 
