@@ -1197,7 +1197,13 @@ impl<'e> OperandContext<'e> {
             match ty {
                 OperandType::Constant(..) | OperandType::Undefined(..) |
                     OperandType::Arithmetic(..) => false,
-                OperandType::Arch(r) => r.value() >= 16 && r.if_x86_flag().is_none(),
+                OperandType::Arch(r) => {
+                    let is_fast_cased_reg = r.value() < 16;
+                    let is_fast_cased_flag =
+                        disasm::x86_arch_tag(r.value()) == disasm::X86_FLAG_TAG &&
+                        r.value() < 6;
+                    !is_fast_cased_reg && !is_fast_cased_flag
+                }
                 _ => true,
             },
             "General-purpose intern function called for OperandType with specialized interning",
@@ -4127,6 +4133,21 @@ mod test {
             let a = ctx.register(i as u8);
             assert_eq!(a.if_register(), Some(i as u8));
             assert_eq!(a, ctx.register(i as u8));
+        }
+    }
+
+    #[test]
+    fn intern_arch() {
+        let ctx = OperandContext::new();
+        for i in 0..256u32 {
+            let a = ctx.register(i as u8);
+            let b = ctx.arch(i);
+            assert_eq!(a, b);
+        }
+
+        for i in 0..256u32 {
+            // Had a bug with special handling of flag interning
+            let _ = ctx.arch(0x50000 | i);
         }
     }
 }
