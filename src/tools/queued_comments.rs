@@ -85,18 +85,35 @@ impl<'b, Va: VirtualAddress> QueuedComments<'b, Va> {
                 last.text.push_str(&comment);
                 return;
             } else {
-                assert!(
-                    last.address < address,
-                    "Inserting comments at higher addresses is not implemented (not allowed?))",
-                );
+                if last.address < address {
+                    comments.push(Comment {
+                        address,
+                        text: comment,
+                    });
+                } else {
+                    match comments.binary_search_by_key(&address, |x| x.address) {
+                        Ok(index) => {
+                            let text = &mut comments[index].text;
+                            text.push_str(", ");
+                            text.push_str(&comment);
+                        }
+                        Err(index) => {
+                            comments.insert(index, Comment {
+                                address,
+                                text: comment,
+                            });
+                        }
+                    }
+                }
+                return;
             }
         } else {
             comments.reserve(8);
+            comments.push(Comment {
+                address,
+                text: comment,
+            });
         }
-        comments.push(Comment {
-            address,
-            text: comment,
-        });
     }
 
     pub fn finish<F: FnMut(Va, String)>(mut self, mut add_comment: F) {
@@ -371,6 +388,27 @@ mod test {
         assert_eq!(
             out,
             vec![
+            ],
+        );
+    }
+
+    #[test]
+    fn add_to_earlier_address() {
+        let bump = &Bump::new();
+        let mut q = QueuedComments::new(bump);
+        let mut out = Vec::new();
+        q.branch_start_(VirtualAddress64(108));
+        q.add_to_address(VirtualAddress64(108), "Test1".into());
+        q.add_to_address(VirtualAddress64(116), "Test3".into());
+        q.add_to_address(VirtualAddress64(110), "Test2".into());
+        q.finish(|a, text| out.push((a.as_u64(), text)));
+        out.sort_unstable();
+        assert_eq!(
+            out,
+            vec![
+                (108, "Test1".into()),
+                (110, "Test2".into()),
+                (116, "Test3".into()),
             ],
         );
     }
