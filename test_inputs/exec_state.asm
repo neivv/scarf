@@ -1,4 +1,4 @@
-; nasm -f bin exec_state.asm -o exec_state.bin
+; nasm -f bin test_inputs/exec_state.asm -o test_inputs/exec_state.bin
 bits 32
 org 0x401000
 
@@ -8,6 +8,7 @@ dd movzx_mem
 dd movsx_mem
 dd switch_cases_in_memory
 dd jump_conditions
+dd switch_negative_cases
 
 movzx_test:
 mov eax, 0x88081001
@@ -86,4 +87,34 @@ add eax, 4
 cmp esi, eax
 jle .loop
 .end:
+ret
+
+switch_negative_cases:
+xor ecx, ecx
+add eax, 3
+cmp eax, 3
+jae .end
+; eax < 3
+lea ecx, [.switch_table]
+mov ecx, dword [ecx + eax * 4]
+lea eax, [.fail]
+add eax, ecx
+xor ecx, ecx
+jmp eax
+.switch_table:
+dd .case1 - .fail
+dd .case2 - .fail
+dd .case2 - .fail
+dd .fail - .fail
+.fail:
+int3
+.case1:
+add ecx, 6
+add ebx, 6
+.case2:
+add ecx, 6
+add edx, 6
+jmp .end
+.end:
+xor eax, eax
 ret

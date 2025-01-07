@@ -1691,10 +1691,21 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
     /// constant that is being added to any values read from the table,
     /// and size in bytes of one value in table.
     /// E.g. dest = ret.2 + read_'ret.3'_bytes(ret.0 + ret.1 * ret.3)
-    fn is_switch_jump<'e, VirtualAddress: exec_state::VirtualAddress>(
+    fn is_switch_jump<'e, Va: exec_state::VirtualAddress>(
         to: Operand<'e>,
         ctx: OperandCtx<'e>,
-    ) -> Option<(VirtualAddress, Operand<'e>, u64, MemAccessSize)> {
+    ) -> Option<(Va, Operand<'e>, u64, MemAccessSize)> {
+        // remove (x + y) & ffff_ffff mask on 32bit
+        let to = match to.if_and_with_const() {
+            Some((inner, c)) => {
+                if c == Va::max_value().as_u64() {
+                    inner
+                } else {
+                    to
+                }
+            }
+            None => to,
+        };
         let (base, mem) = match to.if_arithmetic_add() {
             Some((l, r)) => (r.if_constant()?, l),
             None => (0, to),
@@ -1726,7 +1737,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                 }
                 let (index, r) = index.if_arithmetic_mul()?;
                 let c = u32::try_from(r.if_constant()?).ok()?;
-                if c == VirtualAddress::SIZE || base != 0 {
+                if c == Va::SIZE || base != 0 {
                     let (mem_size, shift) = match c {
                         1 => (MemAccessSize::Mem8, 0),
                         2 => (MemAccessSize::Mem16, 1),
@@ -1738,7 +1749,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                         Some(s) => ctx.and_const(index, s >> shift),
                         None => index,
                     };
-                    Some((VirtualAddress::from_u64(switch_table), index, base, mem_size))
+                    Some((Va::from_u64(switch_table), index, base, mem_size))
                 } else {
                     None
                 }
@@ -1766,10 +1777,14 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         let code_len = code_section.data.len() as u32;
         let code_end = code_offset + code_len;
 
-        let start = limits.0.min(u32::MAX as u64) as u32;
-        let end = limits.1.min(u32::MAX as u64) as u32;
-        let mut pos = start << size_shift;
-        let end = end << size_shift;
+        // Truncating to u32.. Probably fine since BinaryFile is not expected to be over 4GB..
+        // Will have to sign extend later on in the function in order to handle negative offsets
+        // correctly.
+        let start = limits.0 as u32;
+        let end = limits.1 as u32;
+        let va_mask = Va::max_value().as_u64() as u32;
+        let mut pos = (start << size_shift) & va_mask;
+        let end = (end << size_shift) & va_mask;
 
         // Handle reads of switch table values as `(u64(data - shift) >> shift) & mask`,
         // shift is 0 if switch table is right at section start to make `data - shift` not
@@ -1780,7 +1795,7 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
         let switch_table_section = binary.section_by_addr(switch_table_addr)?;
         let section_relative = (switch_table_addr.as_u64() as usize)
             .wrapping_sub(switch_table_section.virtual_address.as_u64() as usize)
-            .wrapping_add(pos as usize);
+            .wrapping_add(pos as i32 as isize as usize);
         if section_relative < 8 {
             switch_table_shift = 0u32;
             switch_table_data = switch_table_section.data.get(section_relative..)?;
@@ -1791,8 +1806,9 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                 .get((section_relative - shift_bytes as usize)..)?;
         }
 
+        let mut reached_end = false;
         Some(std::iter::from_fn(move || {
-            if pos > end {
+            if reached_end {
                 return None;
             }
 
@@ -1802,7 +1818,8 @@ fn update_analysis_for_jump<'e, Exec: ExecutionState<'e>, S: AnalysisState>(
                     return None;
                 }
             }
-            pos = pos.wrapping_add(case_size);
+            reached_end = pos == end;
+            pos = pos.wrapping_add(case_size) & va_mask;
             if switch_table_data.len() < 8 {
                 return None;
             }

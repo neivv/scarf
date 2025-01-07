@@ -1181,6 +1181,18 @@ fn not_binary_mem_read() {
     ]);
 }
 
+#[test]
+fn switch_negative_cases() {
+    let ctx = &OperandContext::new();
+
+    test(6, &[
+         (ctx.register(0), ctx.constant(0)),
+         (ctx.register(1), ctx.new_undef()),
+         (ctx.register(2), ctx.new_undef()),
+         (ctx.register(3), ctx.new_undef()),
+    ]);
+}
+
 struct CollectEndState<'e> {
     end_state: Option<ExecutionState<'e>>,
 }

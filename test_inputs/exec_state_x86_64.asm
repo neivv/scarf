@@ -1,4 +1,4 @@
-; nasm -f bin exec_state_x86_64.asm -o exec_state_x86_64.bin
+; nasm -f bin test_inputs/exec_state_x86_64.asm -o test_inputs/exec_state_x86_64.bin
 bits 64
 default rel
 org 0x401000
@@ -6,6 +6,7 @@ org 0x401000
 dq switch_cases_in_memory
 dq switch_different_resolved_constraints_on_branch_end
 dq switch_u32_with_sub
+dq switch_negative_cases
 
 switch_cases_in_memory:
 xor edx, edx
@@ -129,3 +130,33 @@ jmp .end2
 ret
 .fake:
 int3
+
+switch_negative_cases:
+xor ecx, ecx
+add rax, 3
+cmp rax, 3
+jae .end
+; rax < 3
+lea rcx, [.switch_table]
+mov ecx, dword [rcx + rax * 4]
+lea rax, [.fail]
+add rax, rcx
+xor ecx, ecx
+jmp rax
+.switch_table:
+dd .case1 - .fail
+dd .case2 - .fail
+dd .case2 - .fail
+dd .fail - .fail
+.fail:
+int3
+.case1:
+add ecx, 6
+add ebx, 6
+.case2:
+add ecx, 6
+add edx, 6
+jmp .end
+.end:
+xor eax, eax
+ret
