@@ -88,20 +88,20 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         const VARIANTS: &[&str] = &[
-            "Register", "Flag", "Constant", "Memory", "Arithmetic", "ArithmeticFloat",
-            "Undefined", "SignExtend", "Custom",
+            "Register", "Constant", "Memory", "Arithmetic", "ArithmeticFloat",
+            "Undefined", "SignExtend", "Select", "Custom",
         ];
 
         #[derive(Copy, Clone)]
         enum Variant {
             Arch,
-            Flag,
             Constant,
             Memory,
             Arithmetic,
             ArithmeticFloat,
             Undefined,
             SignExtend,
+            Select,
             Custom,
         }
 
@@ -121,20 +121,24 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                     fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
                         where E: de::Error
                     {
+                        // Note: values are what OperandType's derive(Seralize) does,
+                        // so enum order.
                         match value {
                             0 => Ok(Variant::Arch),
-                            3 => Ok(Variant::Flag),
-                            4 => Ok(Variant::Constant),
-                            5 => Ok(Variant::Memory),
-                            6 => Ok(Variant::Arithmetic),
-                            7 => Ok(Variant::ArithmeticFloat),
-                            8 => Ok(Variant::Undefined),
-                            9 => Ok(Variant::SignExtend),
-                            10 => Ok(Variant::Custom),
-                            x => Err(de::Error::invalid_value(
-                                de::Unexpected::Unsigned(x),
-                                &"Invalid variant id",
-                            )),
+                            1 => Ok(Variant::Constant),
+                            2 => Ok(Variant::Memory),
+                            3 => Ok(Variant::Arithmetic),
+                            4 => Ok(Variant::ArithmeticFloat),
+                            5 => Ok(Variant::Undefined),
+                            6 => Ok(Variant::SignExtend),
+                            7 => Ok(Variant::Select),
+                            8 => Ok(Variant::Custom),
+                            x => {
+                                Err(de::Error::invalid_value(
+                                    de::Unexpected::Unsigned(x),
+                                    &"Invalid variant id",
+                                ))
+                            }
                         }
                     }
 
@@ -143,13 +147,13 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                     {
                         match value {
                             "Register" => Ok(Variant::Arch),
-                            "Flag" => Ok(Variant::Flag),
                             "Constant" => Ok(Variant::Constant),
                             "Memory" => Ok(Variant::Memory),
                             "Arithmetic" => Ok(Variant::Arithmetic),
                             "ArithmeticFloat" => Ok(Variant::ArithmeticFloat),
                             "Undefined" => Ok(Variant::Undefined),
                             "SignExtend" => Ok(Variant::SignExtend),
+                            "Select" => Ok(Variant::Select),
                             "Custom" => Ok(Variant::Custom),
                             _ => Err(de::Error::unknown_variant(value, VARIANTS)),
                         }
@@ -200,6 +204,28 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
             }
         }
 
+        struct SelectVisitor<'e>(OperandCtx<'e>);
+
+        impl<'de, 'e> Visitor<'de> for SelectVisitor<'e> {
+            type Value = (Operand<'e>, Operand<'e>, Operand<'e>);
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("(Operand, Operand, Operand)")
+            }
+
+            fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error>
+                where V: SeqAccess<'de>
+            {
+                let a = seq.next_element_seed(DeserializeOperand(self.0))?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let b = seq.next_element_seed(DeserializeOperand(self.0))?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let c = seq.next_element_seed(DeserializeOperand(self.0))?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                Ok((a, b, c))
+            }
+        }
+
         struct OperandTypeVisitor<'e>(OperandCtx<'e>);
 
         impl<'de, 'e> Visitor<'de> for OperandTypeVisitor<'e> {
@@ -217,10 +243,6 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                     Variant::Arch => {
                         let r: u32 = v.newtype_variant()?;
                         Ok(self.0.arch(r))
-                    }
-                    Variant::Flag => {
-                        let flag = v.newtype_variant()?;
-                        Ok(self.0.flag(flag))
                     }
                     Variant::Constant => {
                         let c = v.newtype_variant()?;
@@ -251,6 +273,10 @@ impl<'de, 'e> DeserializeSeed<'de> for DeserializeOperandType<'e> {
                     Variant::ArithmeticFloat => {
                         let (a, b) = v.tuple_variant(2, ArithFloatVisitor(self.0))?;
                         Ok(self.0.float_arithmetic(a.ty, a.left, a.right, b))
+                    }
+                    Variant::Select => {
+                        let (a, b, c) = v.tuple_variant(3, SelectVisitor(self.0))?;
+                        Ok(self.0.select(a, b, c))
                     }
                     Variant::SignExtend => {
                         let (a, b, c) = v.tuple_variant(3, SextVisitor(self.0))?;

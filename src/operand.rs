@@ -4045,6 +4045,39 @@ mod test {
     }
 
     #[test]
+    fn serialize_binary() {
+        use serde::de::DeserializeSeed;
+        // Test binary roundtrip. Binary serialization doesn't any other stability
+        // guarantees than working on same library version.
+        let ctx = &OperandContext::new();
+        let op = ctx.and(
+            ctx.register(6),
+            ctx.mem32(
+                ctx.sub(
+                    ctx.select(
+                        ctx.eq(
+                            ctx.register(35),
+                            ctx.flag_z(),
+                        ),
+                        ctx.custom(2),
+                        ctx.sign_extend(
+                            ctx.arch(0x991406),
+                            MemAccessSize::Mem16,
+                            MemAccessSize::Mem32,
+                        ),
+                    ),
+                    ctx.constant(6),
+                ),
+                0x999,
+            ),
+        );
+        let serialized = postcard::to_allocvec(&op).unwrap();
+        let mut des = postcard::Deserializer::from_bytes(&serialized);
+        let op2: Operand<'_> = ctx.deserialize_seed().deserialize(&mut des).unwrap();
+        assert_eq!(op, op2);
+    }
+
+    #[test]
     fn matching_funcs() {
         let ctx = OperandContext::new();
         assert_eq!(ctx.constant(5).if_constant(), Some(5));
