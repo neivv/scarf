@@ -91,7 +91,7 @@ impl SliceStack {
         let slice_ptr;
         unsafe {
             let chunks = self.chunks.get();
-            if let Some(&chunk) = (*chunks).get(chunk_index) {
+            if let Some(&chunk) = (&*chunks).get(chunk_index) {
                 slice_ptr = NonNull::new_unchecked(
                     chunk.cast::<usize>().add(slice_start % CHUNK_SIZE)
                 );
@@ -282,7 +282,7 @@ impl<'e> Slice<'e, usize> {
                 }
                 (*chunks).push(ptr as *mut [usize; CHUNK_SIZE]);
             }
-            let new_chunk = (*chunks)[insert_chunk_index] as *mut usize;
+            let new_chunk = (&*chunks)[insert_chunk_index] as *mut usize;
             if len != 0 {
                 let len_usize = len.wrapping_mul(index_per_entry);
                 ptr::copy_nonoverlapping(self.slice_ptr.as_ptr(), new_chunk, len_usize);
