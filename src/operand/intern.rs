@@ -57,7 +57,7 @@ impl<'e> Interner<'e> {
             match entry {
                 EntryRef::Occupied(e) => e.key().transmute_operand_lifetime(),
                 EntryRef::Vacant(e) => {
-                    e.insert_entry(()).key().transmute_operand_lifetime()
+                    e.insert_entry_with_key(key.into(), ()).key().transmute_operand_lifetime()
                 }
             }
         }
